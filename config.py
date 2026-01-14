@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 配置管理模块
 """
 
 import os
+import json
 from pathlib import Path
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -53,6 +54,7 @@ class Config:
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
     openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
+    openai_reserve_providers: Optional[str] = None  # OpenAI 兼容备用 Provider 列表（JSON 数组）
     
     # === 搜索引擎配置（支持多 Key 负载均衡）===
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
@@ -177,6 +179,7 @@ class Config:
             openai_api_key=os.getenv('OPENAI_API_KEY'),
             openai_base_url=os.getenv('OPENAI_BASE_URL'),
             openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
+            openai_reserve_providers=os.getenv('OPENAI_RESERVE_PROVIDERS'),
             tavily_api_keys=tavily_api_keys,
             serpapi_keys=serpapi_keys,
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
@@ -219,10 +222,36 @@ class Config:
         if not self.tushare_token:
             warnings.append("提示：未配置 Tushare Token，将使用其他数据源")
         
-        if not self.gemini_api_key and not self.openai_api_key:
+        if not self.gemini_api_key and not self.openai_api_key and not self.openai_reserve_providers:
             warnings.append("警告：未配置 Gemini 或 OpenAI API Key，AI 分析功能将不可用")
         elif not self.gemini_api_key:
             warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
+
+        if self.openai_reserve_providers:
+            try:
+                providers = json.loads(self.openai_reserve_providers)
+            except Exception as e:
+                warnings.append(f"警告：OPENAI_RESERVE_PROVIDERS 不是合法 JSON（将忽略备用池）: {e}")
+            else:
+                if not isinstance(providers, list):
+                    warnings.append("警告：OPENAI_RESERVE_PROVIDERS 必须是 JSON 数组（将忽略备用池）")
+                else:
+                    invalid_items = []
+                    for item_index, item in enumerate(providers, 1):
+                        if not isinstance(item, dict):
+                            invalid_items.append(f"第{item_index}项不是对象")
+                            continue
+                        missing = [k for k in ("base_url", "api_key", "model") if not item.get(k)]
+                        if missing:
+                            invalid_items.append(f"第{item_index}项缺少 {','.join(missing)}")
+                            continue
+                        base_url = str(item.get("base_url", "")).strip()
+                        if base_url and not base_url.startswith("http"):
+                            invalid_items.append(f"第{item_index}项 base_url 非 http(s)")
+                    if invalid_items:
+                        preview = "; ".join(invalid_items[:3])
+                        suffix = "..." if len(invalid_items) > 3 else ""
+                        warnings.append(f"警告：OPENAI_RESERVE_PROVIDERS 存在无效项（将跳过无效项）: {preview}{suffix}")
         
         if not self.tavily_api_keys and not self.serpapi_keys:
             warnings.append("提示：未配置搜索引擎 API Key (Tavily/SerpAPI)，新闻搜索功能将不可用")

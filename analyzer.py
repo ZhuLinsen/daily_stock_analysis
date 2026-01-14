@@ -428,35 +428,93 @@ class GeminiAnalyzer:
         - 通义千问
         - Moonshot 等
         """
-        config = get_config()
-        
-        # 检查 OpenAI API Key 是否有效（过滤占位符）
-        openai_key_valid = (
-            config.openai_api_key and 
-            not config.openai_api_key.startswith('your_') and 
-            len(config.openai_api_key) > 10
-        )
-        
-        if not openai_key_valid:
+        providers = self._get_openai_providers()
+        if not providers:
             logger.debug("OpenAI 兼容 API 未配置或配置无效")
             return
-        
+
+        for provider_index, provider in enumerate(providers, 1):
+            client = self._init_openai_client(provider)
+            if not client:
+                continue
+
+            self._openai_client = client
+            self._current_model_name = provider["model"]
+            self._use_openai = True
+            logger.info(
+                f"OpenAI 兼容 API 初始化成功 (provider {provider_index}/{len(providers)}, "
+                f"base_url: {provider.get('base_url')}, model: {provider.get('model')})"
+            )
+            return
+
+        logger.error("OpenAI 兼容 API 初始化失败：所有 provider 均不可用")
+
+    def _get_openai_providers(self) -> List[Dict[str, str]]:
+        """构建 OpenAI 兼容 Provider 池（主配置 + 备用池）"""
+        config = get_config()
+        providers: List[Dict[str, str]] = []
+
+        # 主配置（兼容历史：base_url 可为空，表示使用官方默认地址）
+        primary_key = (config.openai_api_key or "").strip()
+        primary_model = (config.openai_model or "").strip()
+        primary_base_url = (config.openai_base_url or "").strip()
+        if primary_key and not primary_key.startswith('your_') and len(primary_key) > 10 and primary_model:
+            providers.append({
+                "api_key": primary_key,
+                "base_url": primary_base_url,
+                "model": primary_model,
+            })
+
+        # 备用池（JSON 数组，三要素缺一不可）
+        reserve_raw = (getattr(config, "openai_reserve_providers", None) or "").strip()
+        if reserve_raw:
+            try:
+                reserve_list = json.loads(reserve_raw)
+            except Exception as e:
+                logger.warning(f"[OpenAI] OPENAI_RESERVE_PROVIDERS 解析失败，将忽略备用池: {e}")
+                reserve_list = []
+
+            if isinstance(reserve_list, list):
+                for item in reserve_list:
+                    if not isinstance(item, dict):
+                        continue
+                    api_key = str(item.get("api_key", "")).strip()
+                    base_url = str(item.get("base_url", "")).strip()
+                    model = str(item.get("model", "")).strip()
+                    if not api_key or not base_url or not model:
+                        continue
+                    if api_key.startswith('your_') or len(api_key) <= 10:
+                        continue
+                    providers.append({
+                        "api_key": api_key,
+                        "base_url": base_url,
+                        "model": model,
+                    })
+
+        return providers
+
+    def _init_openai_client(self, provider: Dict[str, str]) -> Optional[Any]:
+        """按 provider 初始化 OpenAI 客户端，失败返回 None"""
+        api_key = (provider.get("api_key") or "").strip()
+        base_url = (provider.get("base_url") or "").strip()
+
+        if not api_key:
+            return None
+
         try:
             from openai import OpenAI
-            
-            # base_url 可选，不填则使用 OpenAI 官方默认地址
-            client_kwargs = {"api_key": config.openai_api_key}
-            if config.openai_base_url and config.openai_base_url.startswith('http'):
-                client_kwargs["base_url"] = config.openai_base_url
-            
-            self._openai_client = OpenAI(**client_kwargs)
-            self._current_model_name = config.openai_model
-            self._use_openai = True
-            logger.info(f"OpenAI 兼容 API 初始化成功 (base_url: {config.openai_base_url}, model: {config.openai_model})")
         except ImportError:
             logger.error("未安装 openai 库，请运行: pip install openai")
+            return None
+
+        try:
+            client_kwargs: Dict[str, Any] = {"api_key": api_key}
+            if base_url and base_url.startswith('http'):
+                client_kwargs["base_url"] = base_url
+            return OpenAI(**client_kwargs)
         except Exception as e:
-            logger.error(f"OpenAI 兼容 API 初始化失败: {e}")
+            logger.warning(f"[OpenAI] 客户端初始化失败 (base_url: {base_url}): {e}")
+            return None
     
     def _init_model(self) -> None:
         """
@@ -535,7 +593,7 @@ class GeminiAnalyzer:
     
     def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
         """
-        调用 OpenAI 兼容 API
+        调用 OpenAI 兼容 API（支持 provider 轮询切换）
         
         Args:
             prompt: 提示词
@@ -547,43 +605,70 @@ class GeminiAnalyzer:
         config = get_config()
         max_retries = config.gemini_max_retries
         base_delay = config.gemini_retry_delay
-        
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    delay = min(delay, 60)
-                    logger.info(f"[OpenAI] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
-                    time.sleep(delay)
-                
-                response = self._openai_client.chat.completions.create(
-                    model=self._current_model_name,
-                    messages=[
-                        {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=generation_config.get('temperature', 0.7),
-                    max_tokens=generation_config.get('max_output_tokens', 8192),
-                )
-                
-                if response and response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
-                else:
+
+        providers = self._get_openai_providers()
+        if not providers:
+            raise Exception("OpenAI 兼容 API 未配置")
+
+        last_error: Optional[Exception] = None
+
+        for provider_index, provider in enumerate(providers, 1):
+            client = self._init_openai_client(provider)
+            if not client:
+                continue
+
+            self._openai_client = client
+            self._current_model_name = provider["model"]
+            self._use_openai = True
+
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        delay = min(delay, 60)
+                        logger.info(
+                            f"[OpenAI] provider {provider_index}/{len(providers)} 第 {attempt + 1} 次重试，"
+                            f"等待 {delay:.1f} 秒..."
+                        )
+                        time.sleep(delay)
+
+                    response = self._openai_client.chat.completions.create(
+                        model=self._current_model_name,
+                        messages=[
+                            {"role": "system", "content": self.SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=generation_config.get('temperature', 0.7),
+                        max_tokens=generation_config.get('max_output_tokens', 8192),
+                    )
+
+                    if response and response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
+
                     raise ValueError("OpenAI API 返回空响应")
-                    
-            except Exception as e:
-                error_str = str(e)
-                is_rate_limit = '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower()
-                
-                if is_rate_limit:
-                    logger.warning(f"[OpenAI] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                else:
-                    logger.warning(f"[OpenAI] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                
-                if attempt == max_retries - 1:
-                    raise
-        
-        raise Exception("OpenAI API 调用失败，已达最大重试次数")
+
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e)
+                    is_rate_limit = '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower()
+
+                    if is_rate_limit:
+                        logger.warning(
+                            f"[OpenAI] provider {provider_index}/{len(providers)} 限流，"
+                            f"第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[OpenAI] provider {provider_index}/{len(providers)} 调用失败，"
+                            f"第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}"
+                        )
+
+                    if attempt == max_retries - 1:
+                        logger.warning(
+                            f"[OpenAI] provider {provider_index}/{len(providers)} 重试耗尽，切换下一个 provider"
+                        )
+
+        raise last_error or Exception("OpenAI API 调用失败，已达最大重试次数")
     
     def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
         """
@@ -663,7 +748,7 @@ class GeminiAnalyzer:
             except Exception as openai_error:
                 logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                 raise last_error or openai_error
-        elif config.openai_api_key and config.openai_base_url:
+        elif self._get_openai_providers():
             # 尝试懒加载初始化 OpenAI
             logger.warning("[Gemini] 所有重试失败，尝试初始化 OpenAI 兼容 API")
             self._init_openai_fallback()
