@@ -129,7 +129,31 @@ python main.py --market-review    # 仅大盘复盘
 python main.py --schedule         # 定时任务模式
 ```
 
-### 方式三：Docker 部署
+### 方式三：Web 管理台（本地）
+
+> 用于管理环境变量配置并浏览 Markdown 报告
+
+```bash
+# 1. 启动后端（配置与报告 API）
+python web_admin/server.py
+
+# 2. 前端开发模式（另开终端）
+cd web
+npm install
+npm run dev
+```
+
+生产构建（可由 `web_admin/server.py` 直接提供静态页面）：
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+python web_admin/server.py
+```
+
+### 方式四：Docker 部署
 
 ```bash
 # 配置环境变量
@@ -231,6 +255,8 @@ daily_stock_analysis/
 ├── scheduler.py         # 定时任务
 ├── storage.py           # 数据存储
 ├── config.py            # 配置管理
+├── web_admin/           # Web 管理台后端
+├── web/                 # Web 管理台前端
 ├── data_provider/       # 数据源适配器
 │   ├── akshare_fetcher.py
 │   ├── tushare_fetcher.py
@@ -279,7 +305,7 @@ daily_stock_analysis/
 - [x] 大盘复盘
 - [x] 定时推送
 - [x] GitHub Actions
-- [ ] Web 管理界面
+- [x] Web 管理界面
 - [ ] 自选股动态管理 API
 - [ ] 历史分析回测
 - [ ] 多策略支持

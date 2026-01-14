@@ -1,0 +1,71 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui;
+  }
+
+  body {
+    @apply text-pretty bg-slate-50 text-slate-900;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-balance;
+  }
+}
+
+@layer components {
+  @import "markstream-vue/index.css";
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.markstream-vue {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markstream-vue table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.markstream-vue th,
+.markstream-vue td {
+  word-break: break-word;
+}
+
+.markstream-vue img {
+  max-width: 100%;
+  height: auto;
+}
+
+.markstream-vue pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markstream-vue code {
+  word-break: break-word;
+}
+
+.markstream-vue h2 {
+  scroll-margin-top: 6rem;
+}
+
+.console-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.6);
+}

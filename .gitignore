@@ -60,3 +60,6 @@ Thumbs.db
 htmlcov/
 
 docs/
+
+# Web
+node_modules/
