@@ -344,6 +344,92 @@ class SerpAPISearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class ExaSearchProvider(BaseSearchProvider):
+    """
+    Exa 搜索引擎
+
+    特点：
+    - AI 优化的搜索引擎，专为 LLM 应用设计
+    - 高质量的搜索结果和内容提取
+    - 支持语义搜索和时间过滤
+
+    文档：https://docs.exa.ai/
+    """
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Exa")
+
+    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+        """执行 Exa 搜索"""
+        try:
+            from exa_py import Exa
+        except ImportError:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="exa-py 未安装，请运行: pip install exa-py"
+            )
+
+        try:
+            client = Exa(api_key=api_key)
+
+            # 执行搜索（使用 auto 搜索类型，支持语义搜索）
+            response = client.search_and_contents(
+                query=query,
+                num_results=max_results,
+                text={"max_characters": 500},  # 获取摘要内容
+            )
+
+            # 记录原始响应到日志
+            logger.info(f"[Exa] 搜索完成，query='{query}', 返回 {len(response.results)} 条结果")
+            logger.debug(f"[Exa] 原始响应: {response}")
+
+            # 解析结果
+            results = []
+            for item in response.results:
+                results.append(SearchResult(
+                    title=item.title or '',
+                    snippet=(item.text or '')[:500],  # 截取前500字
+                    url=item.url or '',
+                    source=self._extract_domain(item.url or ''),
+                    published_date=item.published_date if hasattr(item, 'published_date') else None,
+                ))
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+
+        except Exception as e:
+            error_msg = str(e)
+            # 检查是否是配额问题
+            if 'rate limit' in error_msg.lower() or 'quota' in error_msg.lower():
+                error_msg = f"API 配额已用尽: {error_msg}"
+
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except:
+            return '未知来源'
+
+
 class SearchService:
     """
     搜索服务
@@ -357,28 +443,35 @@ class SearchService:
     def __init__(
         self,
         tavily_keys: Optional[List[str]] = None,
+        exa_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
     ):
         """
         初始化搜索服务
-        
+
         Args:
             tavily_keys: Tavily API Key 列表
+            exa_keys: Exa API Key 列表
             serpapi_keys: SerpAPI Key 列表
         """
         self._providers: List[BaseSearchProvider] = []
-        
+
         # 初始化搜索引擎（按优先级排序）
         # Tavily 优先（免费额度更多，每月 1000 次）
         if tavily_keys:
             self._providers.append(TavilySearchProvider(tavily_keys))
             logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
-        
-        # SerpAPI 作为备选（每月 100 次）
+
+        # Exa 作为备选（AI 优化的搜索引擎）
+        if exa_keys:
+            self._providers.append(ExaSearchProvider(exa_keys))
+            logger.info(f"已配置 Exa 搜索，共 {len(exa_keys)} 个 API Key")
+
+        # SerpAPI 作为最后备选（每月 100 次）
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
-        
+
         if not self._providers:
             logger.warning("未配置任何搜索引擎 API Key，新闻搜索功能将不可用")
     
@@ -655,16 +748,17 @@ _search_service: Optional[SearchService] = None
 def get_search_service() -> SearchService:
     """获取搜索服务单例"""
     global _search_service
-    
+
     if _search_service is None:
         from config import get_config
         config = get_config()
-        
+
         _search_service = SearchService(
             tavily_keys=config.tavily_api_keys,
+            exa_keys=config.exa_api_keys,
             serpapi_keys=config.serpapi_keys,
         )
-    
+
     return _search_service
 
 

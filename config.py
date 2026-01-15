@@ -56,6 +56,7 @@ class Config:
     
     # === 搜索引擎配置（支持多 Key 负载均衡）===
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
+    exa_api_keys: List[str] = field(default_factory=list)  # Exa API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
     
     # === 通知配置（可同时配置多个，全部推送）===
@@ -158,7 +159,10 @@ class Config:
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
         tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
         tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
-        
+
+        exa_keys_str = os.getenv('EXA_API_KEYS', '')
+        exa_api_keys = [k.strip() for k in exa_keys_str.split(',') if k.strip()]
+
         serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
         serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
         
@@ -178,6 +182,7 @@ class Config:
             openai_base_url=os.getenv('OPENAI_BASE_URL'),
             openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
             tavily_api_keys=tavily_api_keys,
+            exa_api_keys=exa_api_keys,
             serpapi_keys=serpapi_keys,
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
@@ -224,8 +229,8 @@ class Config:
         elif not self.gemini_api_key:
             warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
         
-        if not self.tavily_api_keys and not self.serpapi_keys:
-            warnings.append("提示：未配置搜索引擎 API Key (Tavily/SerpAPI)，新闻搜索功能将不可用")
+        if not self.tavily_api_keys and not self.serpapi_keys and not self.exa_api_keys:
+            warnings.append("提示：未配置搜索引擎 API Key (Tavily/Exa/SerpAPI)，新闻搜索功能将不可用")
         
         # 检查通知配置
         has_notification = (

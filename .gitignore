@@ -62,3 +62,4 @@ htmlcov/
 docs/
 
 run.sh
+.ace-tool/

@@ -23,8 +23,8 @@
 
 ### 📊 数据来源
 - **行情数据**: AkShare（免费）、Tushare、Baostock、YFinance
-- **新闻搜索**: Tavily、SerpAPI
-- **AI 分析**: 
+- **新闻搜索**: Tavily、Exa、SerpAPI
+- **AI 分析**:
   - 主力：Google Gemini（gemini-3-flash-preview）—— [免费获取](https://aistudio.google.com/)
   - 备选：应大家要求，也支持了OpenAI 兼容 API（DeepSeek、通义千问、Moonshot 等）
 
@@ -94,6 +94,7 @@
 |------------|------|:----:|
 | `STOCK_LIST` | 自选股代码，如 `600519,300750,002594` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 推荐 |
+| `EXA_API_KEYS` | [Exa](https://exa.ai/) 搜索 API（AI 优化的搜索引擎） | 可选 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/) 备用搜索 | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/) Token | 可选 |
 
@@ -199,6 +200,7 @@ GEMINI_MODEL=gemini-3-flash-preview     # 主模型
 GEMINI_MODEL_FALLBACK=gemini-2.5-flash  # 备选模型
 
 # === 可选 ===
+EXA_API_KEYS=your_exa_key               # Exa 搜索（AI 优化）
 TUSHARE_TOKEN=your_token                # Tushare数据源
 SERPAPI_API_KEYS=your_serpapi_key       # 备用搜索
 ```
