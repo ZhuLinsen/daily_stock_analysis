@@ -13,7 +13,7 @@ A股自选股智能分析系统 - 配置管理模块
 import os
 from pathlib import Path
 from typing import List, Optional
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
 
@@ -203,6 +203,35 @@ class Config:
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""
         cls._instance = None
+
+    def refresh_stock_list(self) -> None:
+        """
+        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
+        
+        支持两种配置方式：
+        1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
+        2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
+        """
+        # 若 .env 中配置了 STOCK_LIST，则以 .env 为准；否则回退到系统环境变量
+        env_path = Path(__file__).parent / '.env'
+        stock_list_str = ''
+        if env_path.exists():
+            env_values = dotenv_values(env_path)
+            stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
+
+        if not stock_list_str:
+            stock_list_str = os.getenv('STOCK_LIST', '')
+
+        stock_list = [
+            code.strip()
+            for code in stock_list_str.split(',')
+            if code.strip()
+        ]
+
+        if not stock_list:        
+            stock_list = ['000001']
+
+        self.stock_list = stock_list
     
     def validate(self) -> List[str]:
         """

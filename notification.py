@@ -1140,6 +1140,8 @@ class NotificationService:
             }
         }
         
+        说明：飞书文本消息不会渲染 Markdown，需使用交互卡片（lark_md）格式
+        
         注意：飞书文本消息限制约 20KB，超长内容会自动分批发送
         可通过环境变量 FEISHU_MAX_BYTES 调整限制值
         
@@ -1153,16 +1155,19 @@ class NotificationService:
             logger.warning("飞书 Webhook 未配置，跳过推送")
             return False
         
+        # 飞书 lark_md 支持有限，先做格式转换
+        formatted_content = self._format_feishu_markdown(content)
+
         max_bytes = self._feishu_max_bytes  # 从配置读取，默认 20000 字节
         
         # 检查字节长度，超长则分批发送
-        content_bytes = len(content.encode('utf-8'))
+        content_bytes = len(formatted_content.encode('utf-8'))
         if content_bytes > max_bytes:
             logger.info(f"飞书消息内容超长({content_bytes}字节/{len(content)}字符)，将分批发送")
-            return self._send_feishu_chunked(content, max_bytes)
+            return self._send_feishu_chunked(formatted_content, max_bytes)
         
         try:
-            return self._send_feishu_message(content)
+            return self._send_feishu_message(formatted_content)
         except Exception as e:
             logger.error(f"发送飞书消息失败: {e}")
             return False
@@ -1314,42 +1319,140 @@ class NotificationService:
         return success_count == total_chunks
     
     def _send_feishu_message(self, content: str) -> bool:
-        """发送单条飞书消息"""
-        payload = {
+        """发送单条飞书消息（优先使用 Markdown 卡片）"""
+        def _post_payload(payload: Dict[str, Any]) -> bool:
+            logger.debug(f"飞书请求 URL: {self._feishu_url}")
+            logger.debug(f"飞书请求 payload 长度: {len(content)} 字符")
+
+            response = requests.post(
+                self._feishu_url,
+                json=payload,
+                timeout=30
+            )
+
+            logger.debug(f"飞书响应状态码: {response.status_code}")
+            logger.debug(f"飞书响应内容: {response.text}")
+
+            if response.status_code == 200:
+                result = response.json()
+                code = result.get('code') if 'code' in result else result.get('StatusCode')
+                if code == 0:
+                    logger.info("飞书消息发送成功")
+                    return True
+                else:
+                    error_msg = result.get('msg') or result.get('StatusMessage', '未知错误')
+                    error_code = result.get('code') or result.get('StatusCode', 'N/A')
+                    logger.error(f"飞书返回错误 [code={error_code}]: {error_msg}")
+                    logger.error(f"完整响应: {result}")
+                    return False
+            else:
+                logger.error(f"飞书请求失败: HTTP {response.status_code}")
+                logger.error(f"响应内容: {response.text}")
+                return False
+
+        # 1) 优先使用交互卡片（支持 Markdown 渲染）
+        card_payload = {
+            "msg_type": "interactive",
+            "card": {
+                "config": {"wide_screen_mode": True},
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "A股智能分析报告"
+                    }
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": content
+                        }
+                    }
+                ]
+            }
+        }
+
+        if _post_payload(card_payload):
+            return True
+
+        # 2) 回退为普通文本消息
+        text_payload = {
             "msg_type": "text",
             "content": {
                 "text": content
             }
         }
-        
-        logger.debug(f"飞书请求 URL: {self._feishu_url}")
-        logger.debug(f"飞书请求 payload 长度: {len(content)} 字符")
-        
-        response = requests.post(
-            self._feishu_url,
-            json=payload,
-            timeout=30
-        )
-        
-        logger.debug(f"飞书响应状态码: {response.status_code}")
-        logger.debug(f"飞书响应内容: {response.text}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            code = result.get('code') if 'code' in result else result.get('StatusCode')
-            if code == 0:
-                logger.info("飞书消息发送成功")
-                return True
-            else:
-                error_msg = result.get('msg') or result.get('StatusMessage', '未知错误')
-                error_code = result.get('code') or result.get('StatusCode', 'N/A')
-                logger.error(f"飞书返回错误 [code={error_code}]: {error_msg}")
-                logger.error(f"完整响应: {result}")
-                return False
-        else:
-            logger.error(f"飞书请求失败: HTTP {response.status_code}")
-            logger.error(f"响应内容: {response.text}")
-            return False
+
+        return _post_payload(text_payload)
+
+    def _format_feishu_markdown(self, content: str) -> str:
+        """
+        将通用 Markdown 转换为飞书 lark_md 更友好的格式
+        - 飞书不支持 Markdown 标题（# / ## / ###），用加粗代替
+        - 引用块使用前缀替代
+        - 分隔线统一为细线
+        - 表格转换为条目列表
+        """
+        def _flush_table_rows(buffer: List[str], output: List[str]) -> None:
+            if not buffer:
+                return
+
+            def _parse_row(row: str) -> List[str]:
+                cells = [c.strip() for c in row.strip().strip('|').split('|')]
+                return [c for c in cells if c]
+
+            rows = []
+            for raw in buffer:
+                if re.match(r'^\s*\|?\s*[:-]+\s*(\|\s*[:-]+\s*)+\|?\s*$', raw):
+                    continue
+                parsed = _parse_row(raw)
+                if parsed:
+                    rows.append(parsed)
+
+            if not rows:
+                return
+
+            header = rows[0]
+            data_rows = rows[1:] if len(rows) > 1 else []
+            for row in data_rows:
+                pairs = []
+                for idx, cell in enumerate(row):
+                    key = header[idx] if idx < len(header) else f"列{idx + 1}"
+                    pairs.append(f"{key}：{cell}")
+                output.append(f"• {' | '.join(pairs)}")
+
+        lines = []
+        table_buffer: List[str] = []
+
+        for raw_line in content.splitlines():
+            line = raw_line.rstrip()
+
+            if line.strip().startswith('|'):
+                table_buffer.append(line)
+                continue
+
+            if table_buffer:
+                _flush_table_rows(table_buffer, lines)
+                table_buffer = []
+
+            if re.match(r'^#{1,6}\s+', line):
+                title = re.sub(r'^#{1,6}\s+', '', line).strip()
+                line = f"**{title}**" if title else ""
+            elif line.startswith('> '):
+                quote = line[2:].strip()
+                line = f"💬 {quote}" if quote else ""
+            elif line.strip() == '---':
+                line = '────────'
+            elif line.startswith('- '):
+                line = f"• {line[2:].strip()}"
+
+            lines.append(line)
+
+        if table_buffer:
+            _flush_table_rows(table_buffer, lines)
+
+        return "\n".join(lines).strip()
     
     def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
         """

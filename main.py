@@ -500,6 +500,7 @@ class StockAnalysisPipeline:
         
         # 使用配置中的股票列表
         if stock_codes is None:
+            self.config.refresh_stock_list()
             stock_codes = self.config.stock_list
         
         if not stock_codes:
