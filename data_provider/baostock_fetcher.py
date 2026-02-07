@@ -15,6 +15,7 @@ BaostockFetcher - 备用数据源 2 (Priority 3)
 """
 
 import logging
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, Generator
@@ -29,8 +30,21 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _is_us_code(stock_code: str) -> bool:
+    """
+    判断代码是否为美股
+    
+    美股代码规则：
+    - 1-5个大写字母，如 'AAPL', 'TSLA'
+    - 可能包含 '.'，如 'BRK.B'
+    """
+    code = stock_code.strip().upper()
+    return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
 class BaostockFetcher(BaseFetcher):
@@ -52,7 +66,7 @@ class BaostockFetcher(BaseFetcher):
     """
     
     name = "BaostockFetcher"
-    priority = 3
+    priority = int(os.getenv("BAOSTOCK_PRIORITY", "3"))
     
     def __init__(self):
         """初始化 BaostockFetcher"""
@@ -153,11 +167,16 @@ class BaostockFetcher(BaseFetcher):
         使用 query_history_k_data_plus() 获取日线数据
         
         流程：
-        1. 使用上下文管理器管理连接
-        2. 转换股票代码格式
-        3. 调用 API 查询数据
-        4. 将结果转换为 DataFrame
+        1. 检查是否为美股（不支持）
+        2. 使用上下文管理器管理连接
+        3. 转换股票代码格式
+        4. 调用 API 查询数据
+        5. 将结果转换为 DataFrame
         """
+        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_us_code(stock_code):
+            raise DataFetchError(f"BaostockFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+        
         # 转换代码格式
         bs_code = self._convert_stock_code(stock_code)
         

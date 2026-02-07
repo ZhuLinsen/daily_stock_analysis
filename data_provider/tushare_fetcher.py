@@ -15,9 +15,10 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 """
 
 import logging
+import re
 import time
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
 from tenacity import (
@@ -30,8 +31,21 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
 from src.config import get_config
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _is_us_code(stock_code: str) -> bool:
+    """
+    判断代码是否为美股
+    
+    美股代码规则：
+    - 1-5个大写字母，如 'AAPL', 'TSLA'
+    - 可能包含 '.'，如 'BRK.B'
+    """
+    code = stock_code.strip().upper()
+    return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
 class TushareFetcher(BaseFetcher):
@@ -52,7 +66,7 @@ class TushareFetcher(BaseFetcher):
     """
     
     name = "TushareFetcher"
-    priority = 2  # 默认优先级，会在 __init__ 中根据配置动态调整
+    priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
 
     def __init__(self, rate_limit_per_minute: int = 80):
         """
@@ -217,12 +231,17 @@ class TushareFetcher(BaseFetcher):
         
         流程：
         1. 检查 API 是否可用
-        2. 执行速率限制检查
-        3. 转换股票代码格式
-        4. 调用 API 获取数据
+        2. 检查是否为美股（不支持）
+        3. 执行速率限制检查
+        4. 转换股票代码格式
+        5. 调用 API 获取数据
         """
         if self._api is None:
             raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
+        
+        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_us_code(stock_code):
+            raise DataFetchError(f"TushareFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
         
         # 速率限制检查
         self._check_rate_limit()
@@ -453,8 +472,21 @@ class TushareFetcher(BaseFetcher):
             # Tushare 旧版接口使用 6 位代码
             code_6 = stock_code.split('.')[0] if '.' in stock_code else stock_code
 
+            # 特殊处理指数代码：旧版接口需要前缀 (sh000001, sz399001)
+            # 简单的指数判断逻辑
+            if code_6 == '000001':  # 上证指数
+                symbol = 'sh000001'
+            elif code_6 == '399001': # 深证成指
+                symbol = 'sz399001'
+            elif code_6 == '399006': # 创业板指
+                symbol = 'sz399006'
+            elif code_6 == '000300': # 沪深300
+                symbol = 'sh000300'
+            else:
+                symbol = code_6
+
             # 调用旧版实时接口 (ts.get_realtime_quotes)
-            df = ts.get_realtime_quotes(code_6)
+            df = ts.get_realtime_quotes(symbol)
 
             if df is None or df.empty:
                 return None
@@ -490,6 +522,153 @@ class TushareFetcher(BaseFetcher):
         except Exception as e:
             logger.warning(f"Tushare (旧版) 获取实时行情失败 {stock_code}: {e}")
             return None
+
+    def get_main_indices(self) -> Optional[List[dict]]:
+        """
+        获取主要指数实时行情 (Tushare Pro)
+        """
+        if self._api is None:
+            return None
+
+        from .realtime_types import safe_float
+
+        # 指数映射：Tushare代码 -> 名称
+        indices_map = {
+            '000001.SH': '上证指数',
+            '399001.SZ': '深证成指',
+            '399006.SZ': '创业板指',
+            '000688.SH': '科创50',
+            '000016.SH': '上证50',
+            '000300.SH': '沪深300',
+        }
+
+        try:
+            self._check_rate_limit()
+
+            # Tushare index_daily 获取历史数据，实时数据需用其他接口或估算
+            # 由于 Tushare 免费用户可能无法获取指数实时行情，这里作为备选
+            # 使用 index_daily 获取最近交易日数据
+
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - pd.Timedelta(days=5)).strftime('%Y%m%d')
+
+            results = []
+
+            # 批量获取所有指数数据
+            for ts_code, name in indices_map.items():
+                try:
+                    df = self._api.index_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+                    if df is not None and not df.empty:
+                        row = df.iloc[0] # 最新一天
+
+                        current = safe_float(row['close'])
+                        prev_close = safe_float(row['pre_close'])
+
+                        results.append({
+                            'code': ts_code.split('.')[0], # 兼容 sh000001 格式需转换，这里保持纯数字
+                            'name': name,
+                            'current': current,
+                            'change': safe_float(row['change']),
+                            'change_pct': safe_float(row['pct_chg']),
+                            'open': safe_float(row['open']),
+                            'high': safe_float(row['high']),
+                            'low': safe_float(row['low']),
+                            'prev_close': prev_close,
+                            'volume': safe_float(row['vol']),
+                            'amount': safe_float(row['amount']) * 1000, # 千元转元
+                            'amplitude': 0.0 # Tushare index_daily 不直接返回振幅
+                        })
+                except Exception as e:
+                    logger.debug(f"Tushare 获取指数 {name} 失败: {e}")
+                    continue
+
+            if results:
+                return results
+            else:
+                logger.warning("[Tushare] 未获取到指数行情数据")
+
+        except Exception as e:
+            logger.error(f"[Tushare] 获取指数行情失败: {e}")
+
+        return None
+
+    def get_market_stats(self) -> Optional[dict]:
+        """
+        获取市场涨跌统计 (Tushare Pro)
+        """
+        if self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+
+            # 获取最近交易日 (获取过去20天，确保有足够历史)
+            start_date = (datetime.now() - pd.Timedelta(days=20)).strftime('%Y%m%d')
+            trade_cal = self._api.trade_cal(exchange='', start_date=start_date, end_date=datetime.now().strftime('%Y%m%d'), is_open='1')
+
+            if trade_cal is None or trade_cal.empty:
+                return None
+
+            # 确保按日期升序排列 (Tushare有时返回降序)
+            trade_cal = trade_cal.sort_values('cal_date')
+
+            # 尝试获取最新一天的数据
+            last_date = trade_cal.iloc[-1]['cal_date']
+            logger.info(f"[Tushare] Calendar suggests last trading date: {last_date}")
+
+            # 注意：每日指标接口 daily 可能数据量较大
+            # 如果是在盘中调用，当天的数据可能还未生成，导致返回空或极少数据
+            df = self._api.daily(trade_date=last_date)
+
+            current_len = len(df) if df is not None else 0
+            logger.info(f"[Tushare] Initial fetch for {last_date} returned {current_len} records")
+
+            # 如果数据过少（<100条），说明当天数据未就绪，尝试使用前一交易日
+            if df is None or len(df) < 100:
+                if len(trade_cal) > 1:
+                    prev_date = trade_cal.iloc[-2]['cal_date']
+                    logger.warning(f"Data for {last_date} is incomplete (count={current_len}), falling back to {prev_date}")
+                    last_date = prev_date
+                    df = self._api.daily(trade_date=last_date)
+                else:
+                    logger.warning(f"[Tushare] {last_date} 数据不足且无可用历史交易日")
+
+            logger.info(f"Calculating stats using data from date: {last_date}")
+
+            if df is not None and not df.empty:
+                logger.info(f"[Tushare] 使用交易日 {last_date} 进行市场统计分析")
+                up_count = len(df[df['pct_chg'] > 0])
+                down_count = len(df[df['pct_chg'] < 0])
+                flat_count = len(df[df['pct_chg'] == 0])
+
+                # 涨停跌停估算 (9.9%阈值)
+                limit_up = len(df[df['pct_chg'] >= 9.9])
+                limit_down = len(df[df['pct_chg'] <= -9.9])
+
+                total_amount = df['amount'].sum() * 1000 / 1e8 # 千元 -> 元 -> 亿元
+
+                return {
+                    'up_count': up_count,
+                    'down_count': down_count,
+                    'flat_count': flat_count,
+                    'limit_up_count': limit_up,
+                    'limit_down_count': limit_down,
+                    'total_amount': total_amount
+                }
+            else:
+                logger.warning("[Tushare] 获取市场统计数据为空")
+
+        except Exception as e:
+            logger.error(f"[Tushare] 获取市场统计失败: {e}")
+
+        return None
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
+        """
+        获取板块涨跌榜 (Tushare Pro)
+        """
+        # Tushare 获取板块数据较复杂，暂时返回 None，让 AkShare 处理
+        return None
 
 
 if __name__ == "__main__":

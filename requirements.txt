@@ -42,3 +42,7 @@ dingtalk-stream >= 0.24.3    # 钉钉 Stream SDK
 
 # Discord 机器人
 discord.py>=2.0.0              # Discord 机器人开发库
+
+# Web Content Extraction
+newspaper3k>=0.2.8          # Article extraction
+lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml versions

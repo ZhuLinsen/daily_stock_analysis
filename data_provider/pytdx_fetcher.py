@@ -15,6 +15,7 @@ PytdxFetcher - 通达信数据源 (Priority 2)
 """
 
 import logging
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, Generator, List, Tuple
@@ -29,8 +30,21 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _is_us_code(stock_code: str) -> bool:
+    """
+    判断代码是否为美股
+    
+    美股代码规则：
+    - 1-5个大写字母，如 'AAPL', 'TSLA'
+    - 可能包含 '.'，如 'BRK.B'
+    """
+    code = stock_code.strip().upper()
+    return bool(re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', code))
 
 
 class PytdxFetcher(BaseFetcher):
@@ -53,7 +67,7 @@ class PytdxFetcher(BaseFetcher):
     """
     
     name = "PytdxFetcher"
-    priority = 2
+    priority = int(os.getenv("PYTDX_PRIORITY", "2"))
     
     # 默认通达信行情服务器列表
     DEFAULT_HOSTS = [
@@ -186,10 +200,15 @@ class PytdxFetcher(BaseFetcher):
         使用 get_security_bars() 获取日线数据
         
         流程：
-        1. 使用上下文管理器管理连接
-        2. 判断市场代码
-        3. 调用 API 获取 K 线数据
+        1. 检查是否为美股（不支持）
+        2. 使用上下文管理器管理连接
+        3. 判断市场代码
+        4. 调用 API 获取 K 线数据
         """
+        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_us_code(stock_code):
+            raise DataFetchError(f"PytdxFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+        
         market, code = self._get_market_code(stock_code)
         
         # 计算需要获取的交易日数量（估算）

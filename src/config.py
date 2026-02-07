@@ -98,7 +98,11 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
-    
+
+    # AstrBot 通知配置
+    astrbot_token: Optional[str] = None
+    astrbot_url: Optional[str] = None
+
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
 
@@ -140,7 +144,12 @@ class Config:
     # 筹码分布开关（该接口不稳定，云端部署建议关闭）
     enable_chip_distribution: bool = True
     # 实时行情数据源优先级（逗号分隔）
-    realtime_source_priority: str = "akshare_sina,tencent,efinance,akshare_em"
+    # 推荐顺序：tencent > akshare_sina > efinance > akshare_em > tushare
+    # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
+    # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+    # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+    # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
+    realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
     # 实时行情缓存时间（秒）
     realtime_cache_ttl: int = 600
     # 熔断器冷却时间（秒）
@@ -335,6 +344,8 @@ class Config:
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            astrbot_url=os.getenv('ASTRBOT_URL'),
+            astrbot_token=os.getenv('ASTRBOT_TOKEN'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             report_type=os.getenv('REPORT_TYPE', 'simple').lower(),
             analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
@@ -381,9 +392,11 @@ class Config:
             enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
             enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
             # 实时行情数据源优先级：
-            # - akshare_sina/tencent: 单股票直连查询，轻量级，推荐放前面
-            # - efinance/akshare_em: 全量拉取，数据丰富但负载大
-            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'akshare_sina,tencent,efinance,akshare_em'),
+            # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）
+            # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+            # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+            # - tushare: Tushare Pro，需要2000积分，数据全面
+            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'tencent,akshare_sina,efinance,akshare_em'),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
         )
@@ -401,13 +414,16 @@ class Config:
         1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
         2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
         """
-        # 若 .env 中配置了 STOCK_LIST，则以 .env 为准；否则回退到系统环境变量
-        env_path = Path(__file__).parent / '.env'
+        # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
+        # 也能获取到最新的股票列表配置
+        env_path = Path(__file__).parent.parent / '.env'
         stock_list_str = ''
         if env_path.exists():
+            # 直接从 .env 文件读取最新的配置
             env_values = dotenv_values(env_path)
             stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
 
+        # 如果 .env 文件不存在或未配置，才尝试从系统环境变量读取
         if not stock_list_str:
             stock_list_str = os.getenv('STOCK_LIST', '')
 

@@ -19,8 +19,40 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from itertools import cycle
+import requests
+from newspaper import Article, Config
 
 logger = logging.getLogger(__name__)
+
+
+def fetch_url_content(url: str, timeout: int = 5) -> str:
+    """
+    获取 URL 网页正文内容 (使用 newspaper3k)
+    """
+    try:
+        # 配置 newspaper3k
+        config = Config()
+        config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        config.request_timeout = timeout
+        config.fetch_images = False  # 不下载图片
+        config.memoize_articles = False # 不缓存
+
+        article = Article(url, config=config, language='zh') # 默认中文，但也支持其他
+        article.download()
+        article.parse()
+
+        # 获取正文
+        text = article.text.strip()
+
+        # 简单的后处理，去除空行
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        text = '\n'.join(lines)
+
+        return text[:1500]  # 限制返回长度（比 bs4 稍微多一点，因为 newspaper 解析更干净）
+    except Exception as e:
+        logger.debug(f"Fetch content failed for {url}: {e}")
+
+    return ""
 
 
 @dataclass
@@ -120,17 +152,18 @@ class BaseSearchProvider(ABC):
         logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {self._key_errors[key]}")
     
     @abstractmethod
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行搜索（子类实现）"""
         pass
     
-    def search(self, query: str, max_results: int = 5) -> SearchResponse:
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
         """
         执行搜索
         
         Args:
             query: 搜索关键词
             max_results: 最大返回结果数
+            days: 搜索最近几天的时间范围（默认7天）
             
         Returns:
             SearchResponse 对象
@@ -147,7 +180,7 @@ class BaseSearchProvider(ABC):
         
         start_time = time.time()
         try:
-            response = self._do_search(query, api_key, max_results)
+            response = self._do_search(query, api_key, max_results, days=days)
             response.search_time = time.time() - start_time
             
             if response.success:
@@ -187,7 +220,7 @@ class TavilySearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Tavily")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 Tavily 搜索"""
         try:
             from tavily import TavilyClient
@@ -203,14 +236,14 @@ class TavilySearchProvider(BaseSearchProvider):
         try:
             client = TavilyClient(api_key=api_key)
             
-            # 执行搜索（优化：使用advanced深度、限制最近7天）
+            # 执行搜索（优化：使用advanced深度、限制最近几天）
             response = client.search(
                 query=query,
                 search_depth="advanced",  # advanced 获取更多结果
                 max_results=max_results,
                 include_answer=False,
                 include_raw_content=False,
-                days=7,  # 只搜索最近7天的内容
+                days=days,  # 搜索最近天数的内容
             )
             
             # 记录原始响应到日志
@@ -276,7 +309,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "SerpAPI")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行 SerpAPI 搜索"""
         try:
             from serpapi import GoogleSearch
@@ -290,11 +323,27 @@ class SerpAPISearchProvider(BaseSearchProvider):
             )
         
         try:
-            # 使用百度搜索（对中文股票新闻更友好）
+            # 确定时间范围参数 tbs
+            tbs = "qdr:w"  # 默认一周
+            if days <= 1:
+                tbs = "qdr:d"  # 过去24小时
+            elif days <= 7:
+                tbs = "qdr:w"  # 过去一周
+            elif days <= 30:
+                tbs = "qdr:m"  # 过去一月
+            else:
+                tbs = "qdr:y"  # 过去一年
+
+            # 使用 Google 搜索 (获取 Knowledge Graph, Answer Box 等)
             params = {
-                "engine": "baidu",  # 使用百度搜索
+                "engine": "google",
                 "q": query,
                 "api_key": api_key,
+                "google_domain": "google.com.hk", # 使用香港谷歌，中文支持较好
+                "hl": "zh-cn",  # 中文界面
+                "gl": "cn",     # 中国地区偏好
+                "tbs": tbs,     # 时间范围限制
+                "num": max_results # 请求的结果数量，注意：Google API有时不严格遵守
             }
             
             search = GoogleSearch(params)
@@ -305,17 +354,122 @@ class SerpAPISearchProvider(BaseSearchProvider):
             
             # 解析结果
             results = []
-            organic_results = response.get('organic_results', [])
             
+            # 1. 解析 Knowledge Graph (知识图谱)
+            kg = response.get('knowledge_graph', {})
+            if kg:
+                title = kg.get('title', '知识图谱')
+                desc = kg.get('description', '')
+                
+                # 提取额外属性
+                details = []
+                for key in ['type', 'founded', 'headquarters', 'employees', 'ceo']:
+                    val = kg.get(key)
+                    if val:
+                        details.append(f"{key}: {val}")
+                        
+                snippet = f"{desc}\n" + " | ".join(details) if details else desc
+                
+                results.append(SearchResult(
+                    title=f"[知识图谱] {title}",
+                    snippet=snippet,
+                    url=kg.get('source', {}).get('link', ''),
+                    source="Google Knowledge Graph"
+                ))
+                
+            # 2. 解析 Answer Box (精选回答/行情卡片)
+            ab = response.get('answer_box', {})
+            if ab:
+                ab_title = ab.get('title', '精选回答')
+                ab_snippet = ""
+                
+                # 财经类回答
+                if ab.get('type') == 'finance_results':
+                    stock = ab.get('stock', '')
+                    price = ab.get('price', '')
+                    currency = ab.get('currency', '')
+                    movement = ab.get('price_movement', {})
+                    mv_val = movement.get('percentage', 0)
+                    mv_dir = movement.get('movement', '')
+                    
+                    ab_title = f"[行情卡片] {stock}"
+                    ab_snippet = f"价格: {price} {currency}\n涨跌: {mv_dir} {mv_val}%"
+                    
+                    # 提取表格数据
+                    if 'table' in ab:
+                        table_data = []
+                        for row in ab['table']:
+                            if 'name' in row and 'value' in row:
+                                table_data.append(f"{row['name']}: {row['value']}")
+                        if table_data:
+                            ab_snippet += "\n" + "; ".join(table_data)
+                            
+                # 普通文本回答
+                elif 'snippet' in ab:
+                    ab_snippet = ab.get('snippet', '')
+                    list_items = ab.get('list', [])
+                    if list_items:
+                        ab_snippet += "\n" + "\n".join([f"- {item}" for item in list_items])
+                
+                elif 'answer' in ab:
+                    ab_snippet = ab.get('answer', '')
+                    
+                if ab_snippet:
+                    results.append(SearchResult(
+                        title=f"[精选回答] {ab_title}",
+                        snippet=ab_snippet,
+                        url=ab.get('link', '') or ab.get('displayed_link', ''),
+                        source="Google Answer Box"
+                    ))
+
+            # 3. 解析 Related Questions (相关问题)
+            rqs = response.get('related_questions', [])
+            for rq in rqs[:3]: # 取前3个
+                question = rq.get('question', '')
+                snippet = rq.get('snippet', '')
+                link = rq.get('link', '')
+                
+                if question and snippet:
+                     results.append(SearchResult(
+                        title=f"[相关问题] {question}",
+                        snippet=snippet,
+                        url=link,
+                        source="Google Related Questions"
+                     ))
+
+            # 4. 解析 Organic Results (自然搜索结果)
+            organic_results = response.get('organic_results', [])
+
             for item in organic_results[:max_results]:
+                link = item.get('link', '')
+                snippet = item.get('snippet', '')
+
+                # 增强：如果需要，解析网页正文
+                # 策略：如果摘要太短，或者为了获取更多信息，可以请求网页
+                # 这里我们对所有结果尝试获取正文，但为了性能，仅获取前1000字符
+                content = ""
+                if link:
+                   try:
+                       fetched_content = fetch_url_content(link, timeout=5)
+                       if fetched_content:
+                           # 如果获取到了正文，将其拼接到 snippet 中，或者替换 snippet
+                           # 这里选择拼接，保留原摘要
+                           content = fetched_content
+                           if len(content) > 500:
+                               snippet = f"{snippet}\n\n【网页详情】\n{content[:500]}..."
+                           else:
+                               snippet = f"{snippet}\n\n【网页详情】\n{content}"
+                   except Exception as e:
+                       logger.debug(f"[SerpAPI] Fetch content failed: {e}")
+
                 results.append(SearchResult(
                     title=item.get('title', ''),
-                    snippet=item.get('snippet', '')[:500],
-                    url=item.get('link', ''),
-                    source=item.get('source', self._extract_domain(item.get('link', ''))),
+                    snippet=snippet[:1000], # 限制总长度
+                    url=link,
+                    source=item.get('source', self._extract_domain(link)),
                     published_date=item.get('date'),
                 ))
-            
+
             return SearchResponse(
                 query=query,
                 results=results,
@@ -360,7 +514,7 @@ class BochaSearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Bocha")
     
-    def _do_search(self, query: str, api_key: str, max_results: int) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行博查搜索"""
         try:
             import requests
@@ -383,10 +537,21 @@ class BochaSearchProvider(BaseSearchProvider):
                 'Content-Type': 'application/json'
             }
             
+            # 确定时间范围
+            freshness = "oneWeek"
+            if days <= 1:
+                freshness = "oneDay"
+            elif days <= 7:
+                freshness = "oneWeek"
+            elif days <= 30:
+                freshness = "oneMonth"
+            else:
+                freshness = "oneYear"
+
             # 请求参数（严格按照API文档）
             payload = {
                 "query": query,
-                "freshness": "oneMonth",  # 搜索近一个月，适合捕获财报、公告等信息
+                "freshness": freshness,  # 动态时间范围
                 "summary": True,  # 启用AI摘要
                 "count": min(max_results, 50)  # 最大50条
             }
@@ -609,28 +774,35 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
-        # 默认重点关注关键词（基于交易理念）
-        if focus_keywords is None:
-            focus_keywords = [
-                "年报预告", "业绩预告", "业绩快报",  # 业绩相关
-                "减持", "增持", "回购",              # 股东动向
-                "机构调研", "机构评级",              # 机构动向
-                "利好", "利空",                      # 消息面
-                "合同", "订单", "中标",              # 业务进展
-            ]
-        
+        # 智能确定搜索时间范围
+        # 策略：
+        # 1. 周二至周五：搜索近1天（24小时）
+        # 2. 周六、周日：搜索近2-3天（覆盖周末）
+        # 3. 周一：搜索近3天（覆盖周末）
+        today_weekday = datetime.now().weekday()
+        if today_weekday == 0: # 周一
+            search_days = 3
+        elif today_weekday >= 5: # 周六(5)、周日(6)
+            search_days = 2
+        else: # 周二(1) - 周五(4)
+            search_days = 1
+
         # 构建搜索查询（优化搜索效果）
-        # 主查询：股票名称 + 核心关键词
-        query = f"{stock_name} {stock_code} 股票 最新消息"
-        
-        logger.info(f"搜索股票新闻: {stock_name}({stock_code})")
+        if focus_keywords:
+            # 如果提供了关键词，直接使用关键词作为查询
+            query = " ".join(focus_keywords)
+        else:
+            # 默认主查询：股票名称 + 核心关键词
+            query = f"{stock_name} {stock_code} 股票 最新消息"
+
+        logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
         
         # 依次尝试各个搜索引擎
         for provider in self._providers:
             if not provider.is_available:
                 continue
             
-            response = provider.search(query, max_results)
+            response = provider.search(query, max_results, days=search_days)
             
             if response.success and response.results:
                 logger.info(f"使用 {provider.name} 搜索成功")
