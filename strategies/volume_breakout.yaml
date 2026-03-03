@@ -1,0 +1,44 @@
+# Volume Breakout Strategy / 放量突破
+# Price breaks above resistance on heavy volume (>2x average).
+
+name: volume_breakout
+display_name: 放量突破
+description: 检测放量突破阻力位信号。适用于股价接近已知阻力位时。
+category: trend
+core_rules: [1, 2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - get_realtime_quote
+
+instructions: |
+  **放量突破（Volume Breakout Strategy）**
+
+  突破判定标准：
+
+  1. **阻力位识别**：
+     - 使用 `analyze_trend` → resistance_levels 获取阻力位。
+     - 通常为 20 日高点或前期震荡平台顶部。
+
+  2. **量能确认**（关联理念3：效率优先）：
+     - 当日成交量 > 5 日均量的 2 倍。
+     - 使用 `get_realtime_quote` → volume_ratio > 2.0 确认。
+     - 使用 `get_daily_history` 计算均量进行交叉验证。
+
+  3. **价格确认**（关联理念1：严进策略）：
+     - 收盘价必须站上阻力位。
+     - 收盘应在当日振幅上方 30%（强势收盘）。
+     - 突破后乖离率检查：仍需 < 5%，避免追高。
+
+  4. **后续验证**（如有数据）：
+     - 次日开盘应在突破位之上，区分真突破与假突破。
+
+  5. **风险过滤**（关联理念5：风险排查）：
+     - 通过 `search_stock_news` 检查无重大利空。
+     - PE 不应过高（避免泡沫型突破）。
+
+  评分调整：
+  - 放量突破确认：sentiment_score +12
+  - 突破伴随板块共振（板块也走强）：额外 +5
+  - 理想买点设在突破位附近，止损设在突破位下方 3%。
+  - 在 `buy_reason` 和 `volume_analysis` 中注明"放量突破"。

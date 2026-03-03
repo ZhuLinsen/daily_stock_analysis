@@ -1,0 +1,68 @@
+# ===================================
+# A股自选股智能分析系统 - Docker Compose
+# ===================================
+# 
+# 使用方式:
+#   定时模式: docker-compose -f ./docker/docker-compose.yml up -d
+#   FastAPI模式: docker-compose -f ./docker/docker-compose.yml up -d server
+#   同时启动: docker-compose -f ./docker/docker-compose.yml up -d analyzer server
+
+name: daily-stock-analysis
+version: '3.8'
+
+x-common: &common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  restart: unless-stopped
+
+  # 环境变量（从 .env 文件加载）
+  env_file:
+    - ../.env
+
+  volumes:
+    - ../data:/app/data
+    - ../logs:/app/logs
+    - ../reports:/app/reports
+    - ../.env:/app/.env
+    - ../strategies:/app/strategies:ro
+    # 如需覆盖前端静态资源，可挂载本地 static 目录
+    # - ../static:/app/static:ro
+
+  environment:
+    - TZ=Asia/Shanghai
+
+    # Web/API service bind address (must be 0.0.0.0 inside container)
+    - WEBUI_HOST=0.0.0.0
+    # API_PORT 从 .env 文件读取，无需在此硬编码
+
+    # 代理设置（如果需要）
+    # - http_proxy=http://host.docker.internal:10809
+    # - https_proxy=http://host.docker.internal:10809
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+  # 资源限制
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+      reservations:
+        memory: 256M
+
+services:
+  # 定时任务模式
+  analyzer:
+    <<: *common
+    container_name: stock-analyzer
+
+  # FastAPI 模式
+  server:
+    <<: *common
+    container_name: stock-server
+    command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
+    # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
+    ports:
+      - "${API_PORT:-8000}:${API_PORT:-8000}"

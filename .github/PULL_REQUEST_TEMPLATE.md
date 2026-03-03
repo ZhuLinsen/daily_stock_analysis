@@ -1,39 +1,51 @@
-## 变更类型
+## PR Type
 
-- [ ] 🐛 Bug 修复
-- [ ] ✨ 新功能
-- [ ] 📝 文档更新
-- [ ] 🎨 代码优化/重构
-- [ ] ⚡ 性能优化
-- [ ] 🔧 配置/构建相关
+- [ ] fix
+- [ ] feat
+- [ ] refactor
+- [ ] docs
+- [ ] chore
+- [ ] test
 
-## 变更描述
+## Background And Problem
 
-简要描述这个 PR 做了什么。
+请描述当前问题、影响范围与触发场景。
 
-## 关联 Issue
+## Scope Of Change
 
-关联的 Issue 编号（如有）：fixes #
+请列出本 PR 修改的模块和文件范围。
 
-## 测试说明
+## Issue Link
 
-描述如何测试这些变更：
+必须填写以下之一：
+- `Fixes #<issue_number>`
+- `Refs #<issue_number>`
+- 无 Issue 时说明原因与验收标准
 
-1. 步骤一
-2. 步骤二
-3. ...
+## Verification Commands And Results
 
-## 检查清单
+请填写你实际执行过的命令和关键结果（不要只写“已测试”）：
 
-- [ ] 代码符合项目规范
-- [ ] 已添加必要的注释/文档
-- [ ] 已在本地测试通过
-- [ ] 已更新相关文档（如需要）
+```bash
+# example
+./scripts/ci_gate.sh
+python -m pytest -m "not network"
+```
 
-## 截图（如适用）
+关键输出/结论：
 
-如有 UI 变更，请附上截图。
+## Compatibility And Risk
 
-## 其他说明
+请说明兼容性影响、潜在风险（如无请写 `None`）。
 
-其他需要说明的内容。
+## Rollback Plan
+
+请至少写一句可执行的回滚方案（必填）。
+
+## Checklist
+
+- [ ] 我已确认本 PR 有明确动机和业务价值
+- [ ] 我已提供可复现的验证命令与结果
+- [ ] 我已评估兼容性与风险
+- [ ] 我已提供回滚方案
+- [ ] 若涉及用户可见变更，我已同步更新 `README.md` 与 `docs/CHANGELOG.md`

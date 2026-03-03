@@ -1,0 +1,42 @@
+name: Auto Tag
+
+# 触发条件：当代码 push 到 main 分支时
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'local/**'
+      - '.github/**'
+      - 'source/**'
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    # Default: NO tag. Only tag when commit message contains #patch, #minor, or #major.
+    if: >-
+      contains(github.event.head_commit.message, '#patch') ||
+      contains(github.event.head_commit.message, '#minor') ||
+      contains(github.event.head_commit.message, '#major')
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        uses: anothrNick/github-tag-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          DEFAULT_BUMP: patch
+          INITIAL_VERSION: 2.1.0
+          PATCH_STRING_TOKEN: '#patch'
+          MINOR_STRING_TOKEN: '#minor'
+          MAJOR_STRING_TOKEN: '#major'

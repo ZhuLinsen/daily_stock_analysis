@@ -1,10 +1,13 @@
-# 环境变量文件（包含敏感信息）
+# 环境变量文件（包含敏感信息，禁止提交）
 .env
-.env.local
+.env.*
+*.env
+*.env.local
 .env.*.local
 
 # 测试文件（可能包含敏感配置）
-test_*.py
+# 仅忽略仓库根目录下的临时 test_*.py 脚本；tests/ 目录下的单元测试需要纳入版本控制。
+/test_*.py
 !test_env.py
 
 # Python
@@ -41,6 +44,7 @@ env/
 *.swp
 *.swo
 *~
+.cursorrules
 
 # 数据和日志
 data/
@@ -59,4 +63,17 @@ Thumbs.db
 .coverage
 htmlcov/
 
-docs/
+local/
+
+run.sh
+
+verify_*.py
+
+# ignore claude files
+.claude/
+CLAUDE.md
+
+# ignore static files
+static/
+/apps/dsa-desktop/dist/
+/apps/dsa-desktop/node_modules/

@@ -6,6 +6,15 @@ labels: bug
 assignees: ''
 ---
 
+## ⚠️ 提交前必读
+请确认已更新到最新版本后再提交 Issue，避免重复报告已修复的问题。
+
+## 版本确认（必填）
+- [ ] 我已同步最新代码（Fork 用户请先 Sync fork，然后重新运行 Actions）
+- 代码版本：
+  - 本地运行：执行 `git rev-parse --short HEAD` 的输出：______
+  - GitHub Actions：查看 workflow 运行日志开头的 commit hash：______
+
 ## 问题描述
 简明扼要地描述遇到的问题。
 
