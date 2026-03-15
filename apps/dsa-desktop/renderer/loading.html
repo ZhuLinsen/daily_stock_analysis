@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daily Stock Analysis</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Fira Sans", "IBM Plex Sans", "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top left, #1e293b, #0f172a 55%);
+        color: var(--text);
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .panel {
+        width: min(640px, 90vw);
+        background: rgba(17, 24, 39, 0.9);
+        border: 1px solid rgba(56, 189, 248, 0.2);
+        border-radius: 16px;
+        padding: 32px 36px;
+        box-shadow: 0 30px 80px rgba(15, 23, 42, 0.35);
+      }
+
+      .title {
+        font-size: 24px;
+        margin: 0 0 8px;
+        letter-spacing: 0.4px;
+      }
+
+      .subtitle {
+        margin: 0 0 24px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .error {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: rgba(239, 68, 68, 0.08);
+        border: 1px solid rgba(239, 68, 68, 0.4);
+        color: #fecaca;
+        font-size: 12px;
+        line-height: 1.5;
+        display: none;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 12px rgba(56, 189, 248, 0.8);
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      .tips {
+        margin-top: 20px;
+        font-size: 12px;
+        color: rgba(148, 163, 184, 0.8);
+      }
+
+      @keyframes pulse {
+        0%, 100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.4);
+          opacity: 0.6;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1 class="title">Daily Stock Analysis</h1>
+      <p class="subtitle">Launching local analysis service</p>
+      <div class="status">
+        <span class="dot"></span>
+        <span>Preparing backend and loading UI...</span>
+      </div>
+      <p class="tips">If this takes long, check your API keys and network connectivity.</p>
+      <div class="error" id="errorBox"></div>
+    </div>
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search);
+        const error = params.get('error');
+        if (!error) return;
+        const box = document.getElementById('errorBox');
+        if (!box) return;
+        box.textContent = `Error: ${decodeURIComponent(error)}`;
+        box.style.display = 'block';
+      })();
+    </script>
+  </body>
+</html>

@@ -9,6 +9,7 @@
 
 import logging
 import threading
+import uuid
 from typing import List
 
 from bot.commands.base import BotCommand
@@ -104,7 +105,12 @@ class BatchCommand(BotCommand):
             config = get_config()
             
             # 创建分析管道
-            pipeline = StockAnalysisPipeline(config=config)
+            pipeline = StockAnalysisPipeline(
+                config=config,
+                source_message=message,
+                query_id=uuid.uuid4().hex,
+                query_source="bot"
+            )
             
             # 执行分析（会自动推送汇总报告）
             results = pipeline.run(

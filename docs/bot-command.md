@@ -197,7 +197,7 @@ class CommandDispatcher:
 
 ## 五、Webhook 路由
 
-在 [web/router.py](../web/router.py) 中注册新路由：
+在 [api/v1/router.py](../api/v1/router.py) 中注册路由：
 
 ```python
 # Webhook 路由

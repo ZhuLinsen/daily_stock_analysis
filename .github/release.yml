@@ -1,0 +1,43 @@
+changelog:
+  exclude:
+    labels:
+      - duplicate
+      - invalid
+      - wontfix
+      - stale
+      - skip-changelog
+    authors:
+      - dependabot
+      - github-actions[bot]
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - enhancement
+    - title: "🤖 AI & Analysis"
+      labels:
+        - ai
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+    - title: "📡 Data Sources"
+      labels:
+        - data-source
+    - title: "🔔 Notifications"
+      labels:
+        - notification
+        - feishu
+    - title: "⚙️ Configuration"
+      labels:
+        - configuration
+    - title: "🧪 Testing"
+      labels:
+        - testing
+    - title: "🔧 CI/CD & Maintenance"
+      labels:
+        - ci/cd
+    - title: "📝 Documentation"
+      labels:
+        - documentation
+    - title: "🔀 Other Changes"
+      labels:
+        - "*"

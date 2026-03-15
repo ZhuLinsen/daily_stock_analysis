@@ -196,6 +196,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_TIME` | `18:00` | 每日执行时间 |
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
 | `TAVILY_API_KEYS` | - | 新闻搜索（可选） |
+| `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 
 ---
 
@@ -353,12 +354,16 @@ git push -u origin main
 | `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 可选* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 可选* |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选* |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | 可选* |
 | `EMAIL_SENDER` | 发件人邮箱 | 可选* |
 | `EMAIL_PASSWORD` | 邮箱授权码 | 可选* |
+| `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey | 可选* |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（多个逗号分隔） | 可选* |
 | `STOCK_LIST` | 自选股列表，如 `600519,300750` | ✅ |
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 推荐 |
+| `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | 可选 |
 | `SERPAPI_API_KEYS` | SerpAPI Key | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json） | 可选 |
 | `TUSHARE_TOKEN` | Tushare Token | 可选 |
 | `GEMINI_MODEL` | 模型名称（默认 gemini-2.0-flash） | 可选 |
 

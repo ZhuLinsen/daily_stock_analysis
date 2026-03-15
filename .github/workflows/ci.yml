@@ -1,85 +1,94 @@
-# CI 流程 - Pull Request 自动检测
-# 当有 PR 提交或推送到 main 分支时自动运行
-
 name: CI
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**.py'
-      - 'requirements.txt'
-      - 'pyproject.toml'
-      - 'setup.cfg'
-      - '.github/workflows/**'
-      - 'Dockerfile'
-      - 'docker-compose.yml'
   pull_request:
     branches: [main]
-    paths:
-      - '**.py'
-      - 'requirements.txt'
-      - 'pyproject.toml'
-      - 'setup.cfg'
-      - '.github/workflows/**'
-      - 'Dockerfile'
-      - 'docker-compose.yml'
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  # ==================== 核心检查（必须通过）====================
-  check:
-    name: ✅ 代码检查
+  changes:
+    name: 🔎 Change Detection
     runs-on: ubuntu-latest
-    
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
-      - name: 📥 检出代码
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-      
-      - name: 🐍 设置 Python
+      - name: 🧭 Filter paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'apps/dsa-web/**'
+
+  backend-gate:
+    name: backend-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
-      - name: 📦 安装依赖
+      - name: 📦 Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install flake8
-      
-      - name: 🐍 语法检查
-        run: |
-          python -m py_compile main.py src/config.py src/analyzer.py src/notification.py
-          python -m py_compile src/storage.py src/scheduler.py src/search_service.py
-          python -m py_compile src/market_analyzer.py src/stock_analyzer.py
-          python -m py_compile data_provider/*.py
-          echo "✅ Python 语法检查通过"
-      
-      - name: 🔎 静态分析 (严重错误)
-        run: |
-          # 只检查严重错误：语法错误、未定义变量等
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-      
-      - name: ✅ 模块导入测试
-        run: |
-          python -c "from src.config import get_config; print('✅ config')"
-          python -c "from src.storage import DatabaseManager; print('✅ storage')"
-          python -c "from src.notification import NotificationService; print('✅ notification')"
-          python -c "from data_provider import DataFetcherManager; print('✅ data_provider')"
-          python -c "from src.analyzer import GeminiAnalyzer; print('✅ analyzer')"
-          echo "✅ 所有模块导入成功"
+          pip install flake8 pytest
+      - name: ✅ Run backend gate
+        run: ./scripts/ci_gate.sh
 
-  # ==================== Docker 构建测试 ====================
-  docker:
-    name: 🐳 Docker 构建
+  docker-build:
+    name: docker-build
     runs-on: ubuntu-latest
-    needs: [check]
-    
+    needs: [backend-gate]
     steps:
-      - name: 📥 检出代码
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-      
-      - name: 🐳 构建镜像
+      - name: 🐳 Build image
         run: |
           docker build -t stock-analysis:test -f docker/Dockerfile .
           docker run --rm stock-analysis:test python -c "print('✅ Docker OK')"
+      - name: 🔍 Docker smoke imports
+        run: |
+          docker run --rm stock-analysis:test python -c "
+          from src.config import get_config; print('✅ config')
+          from src.storage import DatabaseManager; print('✅ storage')
+          from src.notification import NotificationService; print('✅ notification')
+          from data_provider import DataFetcherManager; print('✅ data_provider')
+          from src.analyzer import GeminiAnalyzer; print('✅ analyzer')
+          from patch.eastmoney_patch import eastmoney_patch; print('✅ patch')
+          from bot.dispatcher import CommandDispatcher; print('✅ bot')
+          from api.app import app; print('✅ api')
+          print('✅ All Docker imports OK')
+          "
+
+  web-gate:
+    name: web-gate
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.frontend == 'true'
+    defaults:
+      run:
+        working-directory: apps/dsa-web
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/dsa-web/package-lock.json
+      - name: 📦 Install
+        run: npm ci
+      - name: 🔎 Lint
+        run: npm run lint
+      - name: 🏗️ Build
+        run: npm run build

@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse
+from data_provider.base import canonical_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class AnalyzeCommand(BotCommand):
     分析指定股票代码，生成 AI 分析报告并推送。
     
     用法：
-        /analyze 600519       - 分析贵州茅台
+        /analyze 600519       - 分析贵州茅台（精简报告）
         /analyze 600519 full  - 分析并生成完整报告
     """
     
@@ -66,20 +67,20 @@ class AnalyzeCommand(BotCommand):
     
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行分析命令"""
-        code = args[0].lower()
+        code = canonical_stock_code(args[0])
         
-        # 检查是否需要完整报告
-        report_type = "full"
-        # if len(args) > 1 and args[1].lower() in ["full", "完整", "详细"]:
-        #     report_type = "full"
+        # 检查是否需要完整报告（默认精简，传 full/完整/详细 切换）
+        report_type = "simple"
+        if len(args) > 1 and args[1].lower() in ["full", "完整", "详细"]:
+            report_type = "full"
         logger.info(f"[AnalyzeCommand] 分析股票: {code}, 报告类型: {report_type}")
         
         try:
             # 调用分析服务
-            from web.services import get_analysis_service
+            from src.services.task_service import get_task_service
             from src.enums import ReportType
             
-            service = get_analysis_service()
+            service = get_task_service()
             
             # 提交异步分析任务
             result = service.submit_analysis(

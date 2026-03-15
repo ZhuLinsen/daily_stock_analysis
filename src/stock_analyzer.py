@@ -18,11 +18,13 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Dict, Any, List
 from enum import Enum
 
 import pandas as pd
 import numpy as np
+
+from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +181,7 @@ class StockTrendAnalyzer:
     6. RSI 指标 - 超买超卖判断
     """
     
-    # 交易参数配置
-    BIAS_THRESHOLD = 5.0        # 乖离率阈值（%），超过此值不买入
+    # 交易参数配置（BIAS_THRESHOLD 从 Config 读取，见 _generate_signal）
     VOLUME_SHRINK_RATIO = 0.7   # 缩量判断阈值（当日量/5日均量）
     VOLUME_HEAVY_RATIO = 1.5    # 放量判断阈值
     MA_SUPPORT_TOLERANCE = 0.02  # MA 支撑判断容忍度（2%）
@@ -613,10 +614,23 @@ class StockTrendAnalyzer:
         elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
             risks.append(f"⚠️ {result.trend_status.value}，不宜做多")
 
-        # === 乖离率评分（20分）===
+        # === 乖离率评分（20分，强势趋势补偿）===
         bias = result.bias_ma5
+        if bias != bias or bias is None:  # NaN or None defense
+            bias = 0.0
+        base_threshold = get_config().bias_threshold
+
+        # Strong trend compensation: relax threshold for STRONG_BULL with high strength
+        trend_strength = result.trend_strength if result.trend_strength == result.trend_strength else 0.0
+        if result.trend_status == TrendStatus.STRONG_BULL and (trend_strength or 0) >= 70:
+            effective_threshold = base_threshold * 1.5
+            is_strong_trend = True
+        else:
+            effective_threshold = base_threshold
+            is_strong_trend = False
+
         if bias < 0:
-            # 价格在 MA5 下方（回调中）
+            # Price below MA5 (pullback)
             if bias > -3:
                 score += 20
                 reasons.append(f"✅ 价格略低于MA5({bias:.1f}%)，回踩买点")
@@ -629,12 +643,24 @@ class StockTrendAnalyzer:
         elif bias < 2:
             score += 18
             reasons.append(f"✅ 价格贴近MA5({bias:.1f}%)，介入好时机")
-        elif bias < self.BIAS_THRESHOLD:
+        elif bias < base_threshold:
             score += 14
             reasons.append(f"⚡ 价格略高于MA5({bias:.1f}%)，可小仓介入")
+        elif bias > effective_threshold:
+            score += 4
+            risks.append(
+                f"❌ 乖离率过高({bias:.1f}%>{effective_threshold:.1f}%)，严禁追高！"
+            )
+        elif bias > base_threshold and is_strong_trend:
+            score += 10
+            reasons.append(
+                f"⚡ 强势趋势中乖离率偏高({bias:.1f}%)，可轻仓追踪"
+            )
         else:
             score += 4
-            risks.append(f"❌ 乖离率过高({bias:.1f}%>5%)，严禁追高！")
+            risks.append(
+                f"❌ 乖离率过高({bias:.1f}%>{base_threshold:.1f}%)，严禁追高！"
+            )
 
         # === 量能评分（15分）===
         volume_scores = {

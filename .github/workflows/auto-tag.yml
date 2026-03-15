@@ -16,23 +16,27 @@ on:
 jobs:
   tag:
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '#skip') && !contains(github.event.head_commit.message, '#none')"
+    # Default: NO tag. Only tag when commit message contains #patch, #minor, or #major.
+    if: >-
+      contains(github.event.head_commit.message, '#patch') ||
+      contains(github.event.head_commit.message, '#minor') ||
+      contains(github.event.head_commit.message, '#major')
 
-    # 设置权限，允许创建 tag
     permissions:
       contents: write
 
     steps:
-      # Step 1: 检出代码，fetch-depth: 0 获取完整历史（用于读取已有 tag）
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Step 2: 自动计算并创建新版本 tag
       - name: Bump version and push tag
         uses: anothrNick/github-tag-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WITH_V: true              # tag 格式带 v 前缀，如 v2.1.1
-          DEFAULT_BUMP: patch       # 默认增加补丁版本 +0.0.1
-          INITIAL_VERSION: 2.1.0    # 如果没有 tag，从这个版本开始
+          WITH_V: true
+          DEFAULT_BUMP: patch
+          INITIAL_VERSION: 2.1.0
+          PATCH_STRING_TOKEN: '#patch'
+          MINOR_STRING_TOKEN: '#minor'
+          MAJOR_STRING_TOKEN: '#major'

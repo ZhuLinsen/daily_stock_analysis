@@ -98,7 +98,7 @@ test_a_stock() {
 test_etf() {
     header "测试场景: ETF分析"
     info "分析ETF: 563230(卫星ETF)"
-    python3 main.py --stocks 563230 --no-market-review "$@"
+    python3 main.py --stocks 563230,512400 --no-market-review "$@"
     success "ETF分析测试完成"
 }
 
@@ -248,7 +248,6 @@ test_syntax() {
     python3 -m py_compile main.py src/config.py src/notification.py \
         data_provider/akshare_fetcher.py \
         data_provider/yfinance_fetcher.py \
-        web/handlers.py \
         bot/commands/analyze.py
 
     success "语法检查通过"
