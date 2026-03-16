@@ -22,8 +22,16 @@ from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Keep this test runnable when optional LLM/runtime deps are not installed.
+for optional_module in ("litellm", "json_repair"):
+    try:
+        __import__(optional_module)
+    except ModuleNotFoundError:
+        sys.modules[optional_module] = mock.MagicMock()
+
 from src.config import Config
 from src.notification import NotificationService, NotificationChannel
+from src.analyzer import AnalysisResult
 import requests
 
 
@@ -46,6 +54,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
     测试设计：
 
     测试按照渠道的字母顺序排列，在合适位置添加新的测试方法。
+    如果采用长消息分批发送，必须单独测试分批发送的逻辑，
+        e.g. test_send_to_discord_via_notification_service_with_bot_requires_chunking
 
     1. 添加模拟配置：
     使用 mock.patch 装饰器来模拟 get_config 函数，
@@ -63,6 +73,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
     4. 使用 assertTrue 检查 send 的返回值。
 
     5. 使用 assert_called_once 检查请求函数是否被调用一次。
+    测试分批发送时，使用 assertAlmostEqual(mock_post.call_count, ...) 检查请求函数被调用次数
+
     """
 
     @mock.patch("src.notification.get_config")
@@ -140,6 +152,98 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+        
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            discord_bot_token="TOKEN",
+            discord_main_channel_id="123",
+            discord_max_words=2000,
+        )
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.DISCORD, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
+
+
+class TestNotificationServiceReportGeneration(unittest.TestCase):
+    """报告生成与选路相关测试。"""
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_aggregate_report_routes_by_report_type(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+
+        with mock.patch.object(service, "generate_dashboard_report", return_value="dashboard") as mock_dashboard, mock.patch.object(
+            service, "generate_brief_report", return_value="brief"
+        ) as mock_brief:
+            self.assertEqual(service.generate_aggregate_report([result], "simple"), "dashboard")
+            self.assertEqual(service.generate_aggregate_report([result], "full"), "dashboard")
+            self.assertEqual(service.generate_aggregate_report([result], "detailed"), "dashboard")
+            self.assertEqual(service.generate_aggregate_report([result], "brief"), "brief")
+
+        self.assertEqual(mock_dashboard.call_count, 3)
+        mock_brief.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_keeps_legacy_simple_format(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=True)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+
+        with mock.patch("src.services.report_renderer.render") as mock_render:
+            out = service.generate_single_stock_report(result)
+
+        mock_render.assert_not_called()
+        self.assertIn("贵州茅台", out)
+        self.assertIn("600519", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_history_compare_context_uses_cache(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_history_compare_n=3)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            query_id="q-1",
+        )
+
+        with mock.patch(
+            "src.services.history_comparison_service.get_signal_changes_batch",
+            return_value={"600519": []},
+        ) as mock_batch:
+            first = service._get_history_compare_context([result])
+            second = service._get_history_compare_context([result])
+
+        self.assertEqual(first, {"history_by_code": {"600519": []}})
+        self.assertEqual(second, {"history_by_code": {"600519": []}})
+        mock_batch.assert_called_once()
 
     @mock.patch("src.notification.get_config")
     @mock.patch("smtplib.SMTP_SSL")
@@ -202,6 +306,21 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+        
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_feishu_via_notification_service_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(feishu_webhook_url="https://feishu.example", feishu_max_bytes=2000)
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"code": 0})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
@@ -239,6 +358,27 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_pushplus_via_notification_service_requires_chunking(
+        self,
+        mock_post: mock.MagicMock,
+        mock_get_config: mock.MagicMock,
+        _mock_sleep: mock.MagicMock,
+    ):
+        cfg = _make_config(pushplus_token="TOKEN")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"code": 200})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.PUSHPLUS, service.get_available_channels())
+
+        ok = service.send("A" * 25000)
+
+        self.assertTrue(ok)
+        self.assertGreaterEqual(mock_post.call_count, 2)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
@@ -288,6 +428,21 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_wechat_via_notification_service_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(wechat_webhook_url="https://wechat.example", wechat_max_bytes=2000)
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"errcode": 0})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.WECHAT, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
 
 
 if __name__ == "__main__":

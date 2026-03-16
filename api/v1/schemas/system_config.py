@@ -8,6 +8,13 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class SystemConfigOption(BaseModel):
+    """Select option metadata for frontend rendering."""
+
+    label: str
+    value: str
+
+
 class SystemConfigFieldSchema(BaseModel):
     """Metadata schema for a single config field."""
 
@@ -21,7 +28,7 @@ class SystemConfigFieldSchema(BaseModel):
     is_required: bool
     is_editable: bool
     default_value: Optional[str] = None
-    options: List[str] = Field(default_factory=list)
+    options: List[str | SystemConfigOption] = Field(default_factory=list)
     validation: Dict[str, Any] = Field(default_factory=dict)
     display_order: int
 
@@ -114,6 +121,29 @@ class ValidateSystemConfigResponse(BaseModel):
 
     valid: bool
     issues: List[ConfigValidationIssue]
+
+
+class TestLLMChannelRequest(BaseModel):
+    """Request payload for testing one LLM channel."""
+
+    name: str = "channel"
+    protocol: str = "openai"
+    base_url: str = ""
+    api_key: str = ""
+    models: List[str] = Field(default_factory=list)
+    enabled: bool = True
+    timeout_seconds: float = 20.0
+
+
+class TestLLMChannelResponse(BaseModel):
+    """Response payload for one LLM channel connectivity test."""
+
+    success: bool
+    message: str
+    error: Optional[str] = None
+    resolved_protocol: Optional[str] = None
+    resolved_model: Optional[str] = None
+    latency_ms: Optional[int] = None
 
 
 class SystemConfigValidationErrorResponse(BaseModel):

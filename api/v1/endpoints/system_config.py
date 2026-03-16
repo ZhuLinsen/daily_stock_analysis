@@ -14,6 +14,8 @@ from api.v1.schemas.system_config import (
     SystemConfigResponse,
     SystemConfigSchemaResponse,
     SystemConfigValidationErrorResponse,
+    TestLLMChannelRequest,
+    TestLLMChannelResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
     ValidateSystemConfigRequest,
@@ -135,6 +137,51 @@ def validate_system_config(
             detail={
                 "error": "internal_error",
                 "message": "Failed to validate system configuration",
+            },
+        )
+
+
+@router.post(
+    "/config/llm/test-channel",
+    response_model=TestLLMChannelResponse,
+    responses={
+        200: {"description": "Channel test completed"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Test one LLM channel",
+    description="Run a minimal LLM request against one unsaved or saved channel definition.",
+)
+def test_llm_channel(
+    request: TestLLMChannelRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestLLMChannelResponse:
+    """Validate and test one channel definition without writing `.env`."""
+    try:
+        payload = service.test_llm_channel(
+            name=request.name,
+            protocol=request.protocol,
+            base_url=request.base_url,
+            api_key=request.api_key,
+            models=request.models,
+            enabled=request.enabled,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return TestLLMChannelResponse.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to test LLM channel: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to test LLM channel",
             },
         )
 

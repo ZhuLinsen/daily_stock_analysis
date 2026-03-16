@@ -26,6 +26,11 @@ export type SystemConfigUIControl =
   | 'switch'
   | 'time';
 
+export interface SystemConfigOption {
+  label: string;
+  value: string;
+}
+
 export interface SystemConfigFieldSchema {
   key: string;
   title?: string;
@@ -37,7 +42,7 @@ export interface SystemConfigFieldSchema {
   isRequired: boolean;
   isEditable: boolean;
   defaultValue?: string | null;
-  options: string[];
+  options: Array<string | SystemConfigOption>;
   validation: Record<string, unknown>;
   displayOrder: number;
 }
@@ -108,6 +113,25 @@ export interface ConfigValidationIssue {
 export interface ValidateSystemConfigResponse {
   valid: boolean;
   issues: ConfigValidationIssue[];
+}
+
+export interface TestLLMChannelRequest {
+  name: string;
+  protocol: string;
+  baseUrl?: string;
+  apiKey?: string;
+  models: string[];
+  enabled?: boolean;
+  timeoutSeconds?: number;
+}
+
+export interface TestLLMChannelResponse {
+  success: boolean;
+  message: string;
+  error?: string | null;
+  resolvedProtocol?: string | null;
+  resolvedModel?: string | null;
+  latencyMs?: number | null;
 }
 
 export interface SystemConfigValidationErrorResponse {

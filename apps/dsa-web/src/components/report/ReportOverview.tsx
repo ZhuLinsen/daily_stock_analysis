@@ -18,10 +18,10 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
 }) => {
   // 根据涨跌幅获取颜色
   const getPriceChangeColor = (changePct: number | undefined): string => {
-    if (changePct === undefined || changePct === null) return 'text-muted';
+    if (changePct === undefined || changePct === null) return 'text-muted-text';
     if (changePct > 0) return 'text-[#ff4d4d]'; // 红涨
     if (changePct < 0) return 'text-[#00d46a]'; // 绿跌
-    return 'text-muted';
+    return 'text-muted-text';
   };
 
   // 格式化涨跌幅
@@ -61,7 +61,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   <span className="font-mono text-xs text-cyan bg-cyan/10 px-1.5 py-0.5 rounded">
                     {meta.stockCode}
                   </span>
-                  <span className="text-xs text-muted flex items-center gap-1">
+                  <span className="text-xs text-muted-text flex items-center gap-1">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>

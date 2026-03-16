@@ -17,20 +17,15 @@
 import logging
 import random
 import time
+from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Callable, Optional, List, Tuple, Dict, Any
 
 import pandas as pd
 import numpy as np
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-
-from src.analyzer import STOCK_NAME_MAP
+from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+from .fundamental_adapter import AkshareFundamentalAdapter
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -38,6 +33,33 @@ logger = logging.getLogger(__name__)
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+
+
+def unwrap_exception(exc: Exception) -> Exception:
+    """
+    Follow chained exceptions and return the deepest non-cyclic cause.
+    """
+    current = exc
+    visited = set()
+
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        next_exc = current.__cause__ or current.__context__
+        if next_exc is None:
+            break
+        current = next_exc
+
+    return current
+
+
+def summarize_exception(exc: Exception) -> Tuple[str, str]:
+    """
+    Build a stable summary for logs while preserving the application-layer message.
+    """
+    root = unwrap_exception(exc)
+    error_type = type(root).__name__
+    message = str(exc).strip() or str(root).strip() or error_type
+    return error_type, " ".join(message.split())
 
 
 def normalize_stock_code(stock_code: str) -> str:
@@ -48,10 +70,13 @@ def normalize_stock_code(stock_code: str) -> str:
     - '600519'      -> '600519'   (already clean)
     - 'SH600519'    -> '600519'   (strip SH prefix)
     - 'SZ000001'    -> '000001'   (strip SZ prefix)
+    - 'BJ920748'    -> '920748'   (strip BJ prefix, BSE)
     - 'sh600519'    -> '600519'   (case-insensitive)
     - '600519.SH'   -> '600519'   (strip .SH suffix)
     - '000001.SZ'   -> '000001'   (strip .SZ suffix)
+    - '920748.BJ'   -> '920748'   (strip .BJ suffix, BSE)
     - 'HK00700'     -> 'HK00700'  (keep HK prefix for HK stocks)
+    - '1810.HK'     -> 'HK01810'  (normalize HK suffix to canonical prefix form)
     - 'AAPL'        -> 'AAPL'     (keep US stock ticker as-is)
 
     This function is applied at the DataProviderManager layer so that
@@ -60,6 +85,12 @@ def normalize_stock_code(stock_code: str) -> str:
     code = stock_code.strip()
     upper = code.upper()
 
+    # Normalize HK prefix to a canonical 5-digit form (e.g. hk1810 -> HK01810)
+    if upper.startswith('HK') and not upper.startswith('HK.'):
+        candidate = upper[2:]
+        if candidate.isdigit() and 1 <= len(candidate) <= 5:
+            return f"HK{candidate.zfill(5)}"
+
     # Strip SH/SZ prefix (e.g. SH600519 -> 600519)
     if upper.startswith(('SH', 'SZ')) and not upper.startswith('SH.') and not upper.startswith('SZ.'):
         candidate = code[2:]
@@ -67,13 +98,104 @@ def normalize_stock_code(stock_code: str) -> str:
         if candidate.isdigit() and len(candidate) in (5, 6):
             return candidate
 
-    # Strip .SH/.SZ suffix (e.g. 600519.SH -> 600519)
+    # Strip BJ prefix (e.g. BJ920748 -> 920748)
+    if upper.startswith('BJ') and not upper.startswith('BJ.'):
+        candidate = code[2:]
+        if candidate.isdigit() and len(candidate) == 6:
+            return candidate
+
+    # Strip .SH/.SZ/.BJ suffix (e.g. 600519.SH -> 600519, 920748.BJ -> 920748)
     if '.' in code:
         base, suffix = code.rsplit('.', 1)
-        if suffix.upper() in ('SH', 'SZ', 'SS') and base.isdigit():
+        if suffix.upper() == 'HK' and base.isdigit() and 1 <= len(base) <= 5:
+            return f"HK{base.zfill(5)}"
+        if suffix.upper() in ('SH', 'SZ', 'SS', 'BJ') and base.isdigit():
             return base
 
     return code
+
+
+ETF_PREFIXES = ("51", "52", "56", "58", "15", "16", "18")
+
+
+def _is_us_market(code: str) -> bool:
+    """判断是否为美股/美股指数代码（不含中文前后缀）。"""
+    from .us_index_mapping import is_us_stock_code, is_us_index_code
+
+    normalized = (code or "").strip().upper()
+    return is_us_index_code(normalized) or is_us_stock_code(normalized)
+
+
+def _is_hk_market(code: str) -> bool:
+    """
+    判定是否为港股代码。
+
+    支持 `HK00700` 及纯 5 位数字形式（A 股 ETF/股票常见为 6 位）。
+    """
+    normalized = (code or "").strip().upper()
+    if normalized.endswith(".HK"):
+        base = normalized[:-3]
+        return base.isdigit() and 1 <= len(base) <= 5
+    if normalized.startswith("HK"):
+        digits = normalized[2:]
+        return digits.isdigit() and 1 <= len(digits) <= 5
+    if normalized.isdigit() and len(normalized) == 5:
+        return True
+    return False
+
+
+def _is_etf_code(code: str) -> bool:
+    """判定 A 股 ETF 基金代码（保守规则）。"""
+    normalized = normalize_stock_code(code)
+    return (
+        normalized.isdigit()
+        and len(normalized) == 6
+        and normalized.startswith(ETF_PREFIXES)
+    )
+
+
+def _market_tag(code: str) -> str:
+    """返回市场标签: cn/us/hk."""
+    if _is_us_market(code):
+        return "us"
+    if _is_hk_market(code):
+        return "hk"
+    return "cn"
+
+
+def is_bse_code(code: str) -> bool:
+    """
+    Check if the code is a Beijing Stock Exchange (BSE) A-share code.
+
+    BSE rules:
+    - Old format (pre-2024): 8xxxxx (e.g. 838163), 4xxxxx (e.g. 430047)
+    - New format (2024+, post full migration Oct 2025): 920xxx+
+    Note: 900xxx are Shanghai B-shares, NOT BSE — must return False.
+    """
+    c = (code or "").strip().split(".")[0]
+    if len(c) != 6 or not c.isdigit():
+        return False
+    return c.startswith(("8", "4")) or c.startswith("92")
+
+def is_st_stock(name: str) -> bool:
+    """
+    Check if the stock is an ST or *ST stock based on its name.
+
+    ST stocks have special trading rules and typically a ±5% limit.
+    """
+    n = (name or "").upper()
+    return 'ST' in n
+
+def is_kc_cy_stock(code: str) -> bool:
+    """
+    Check if the stock is a STAR Market (科创板) or ChiNext (创业板) stock based on its code.
+
+    - STAR Market: Codes starting with 688
+    - ChiNext: Codes starting with 300
+    Both have a ±20% limit.
+    """
+    c = (code or "").strip().split(".")[0]
+    return c.startswith("688") or c.startswith("30")
 
 
 def canonical_stock_code(code: str) -> str:
@@ -230,8 +352,9 @@ class BaseFetcher(ABC):
             from datetime import timedelta
             start_dt = datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=days * 2)
             start_date = start_dt.strftime('%Y-%m-%d')
-        
-        logger.info(f"[{self.name}] 获取 {stock_code} 数据: {start_date} ~ {end_date}")
+
+        request_start = time.time()
+        logger.info(f"[{self.name}] 开始获取 {stock_code} 日线数据: 范围={start_date} ~ {end_date}")
         
         try:
             # Step 1: 获取原始数据
@@ -248,13 +371,22 @@ class BaseFetcher(ABC):
             
             # Step 4: 计算技术指标
             df = self._calculate_indicators(df)
-            
-            logger.info(f"[{self.name}] {stock_code} 获取成功，共 {len(df)} 条数据")
+
+            elapsed = time.time() - request_start
+            logger.info(
+                f"[{self.name}] {stock_code} 获取成功: 范围={start_date} ~ {end_date}, "
+                f"rows={len(df)}, elapsed={elapsed:.2f}s"
+            )
             return df
             
         except Exception as e:
-            logger.error(f"[{self.name}] 获取 {stock_code} 失败: {str(e)}")
-            raise DataFetchError(f"[{self.name}] {stock_code}: {str(e)}") from e
+            elapsed = time.time() - request_start
+            error_type, error_reason = summarize_exception(e)
+            logger.error(
+                f"[{self.name}] {stock_code} 获取失败: 范围={start_date} ~ {end_date}, "
+                f"error_type={error_type}, elapsed={elapsed:.2f}s, reason={error_reason}"
+            )
+            raise DataFetchError(f"[{self.name}] {stock_code}: {error_reason}") from e
     
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -359,6 +491,174 @@ class DataFetcherManager:
         else:
             # 默认数据源将在首次使用时延迟加载
             self._init_default_fetchers()
+        self._fundamental_adapter = AkshareFundamentalAdapter()
+        self._fundamental_cache: Dict[str, Dict[str, Any]] = {}
+        self._fundamental_cache_lock = RLock()
+        self._fundamental_timeout_worker_limit = 8
+        self._fundamental_timeout_slots = BoundedSemaphore(self._fundamental_timeout_worker_limit)
+
+    def _get_fundamental_cache_key(self, stock_code: str, budget_seconds: Optional[float] = None) -> str:
+        """生成基本面缓存 key（包含预算分桶以避免低预算结果污染高预算请求）。"""
+        normalized_code = normalize_stock_code(stock_code)
+        if budget_seconds is None:
+            return f"{normalized_code}|budget=default"
+        try:
+            budget = max(0.0, float(budget_seconds))
+        except (TypeError, ValueError):
+            budget = 0.0
+        # 100ms bucket to balance cache reuse and scenario isolation.
+        budget_bucket = int(round(budget * 10))
+        return f"{normalized_code}|budget={budget_bucket}"
+
+    def _prune_fundamental_cache(self, ttl_seconds: int, max_entries: int) -> None:
+        """Prune expired and overflow fundamental cache items."""
+        with self._fundamental_cache_lock:
+            if not self._fundamental_cache:
+                return
+
+            now_ts = time.time()
+            if ttl_seconds > 0:
+                cache_items = list(self._fundamental_cache.items())
+                expired_keys = [
+                    key
+                    for key, value in cache_items
+                    if now_ts - float(value.get("ts", 0)) > ttl_seconds
+                ]
+                for key in expired_keys:
+                    self._fundamental_cache.pop(key, None)
+
+            if max_entries > 0 and len(self._fundamental_cache) > max_entries:
+                overflow = len(self._fundamental_cache) - max_entries
+                sorted_items = sorted(
+                    list(self._fundamental_cache.items()),
+                    key=lambda item: float(item[1].get("ts", 0)),
+                )
+                for key, _ in sorted_items[:overflow]:
+                    self._fundamental_cache.pop(key, None)
+
+    @staticmethod
+    def _is_missing_board_value(value: Any) -> bool:
+        """Return True when a board field value should be treated as missing."""
+        if value is None:
+            return True
+        try:
+            if pd.isna(value):
+                return True
+        except Exception:
+            pass
+        text = str(value).strip()
+        return text == "" or text.lower() in {"nan", "none", "null", "na", "n/a"}
+
+    @staticmethod
+    def _normalize_belong_boards(raw_data: Any) -> List[Dict[str, Any]]:
+        """Normalize belong-board results from heterogeneous providers."""
+        if DataFetcherManager._is_missing_board_value(raw_data):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        dedupe = set()
+
+        if isinstance(raw_data, pd.DataFrame):
+            if raw_data.empty:
+                return []
+            name_col = next(
+                (
+                    col
+                    for col in raw_data.columns
+                    if str(col) in {"板块名称", "板块", "所属板块", "板块名", "name", "industry"}
+                ),
+                None,
+            )
+            code_col = next(
+                (
+                    col
+                    for col in raw_data.columns
+                    if str(col) in {"板块代码", "代码", "code"}
+                ),
+                None,
+            )
+            type_col = next(
+                (
+                    col
+                    for col in raw_data.columns
+                    if str(col) in {"板块类型", "类别", "type"}
+                ),
+                None,
+            )
+            if name_col is None:
+                return []
+            for _, row in raw_data.iterrows():
+                board_name_raw = row.get(name_col, "")
+                if DataFetcherManager._is_missing_board_value(board_name_raw):
+                    continue
+                board_name = str(board_name_raw).strip()
+                if board_name in dedupe:
+                    continue
+                dedupe.add(board_name)
+                item = {"name": board_name}
+                if code_col is not None:
+                    board_code_raw = row.get(code_col, "")
+                    if not DataFetcherManager._is_missing_board_value(board_code_raw):
+                        item["code"] = str(board_code_raw).strip()
+                if type_col is not None:
+                    board_type_raw = row.get(type_col, "")
+                    if not DataFetcherManager._is_missing_board_value(board_type_raw):
+                        item["type"] = str(board_type_raw).strip()
+                normalized.append(item)
+            return normalized
+
+        if isinstance(raw_data, dict):
+            raw_data = [raw_data]
+
+        if isinstance(raw_data, (list, tuple, set)):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    board_name_raw = (
+                        item.get("name")
+                        or item.get("board_name")
+                        or item.get("板块名称")
+                        or item.get("板块")
+                        or item.get("所属板块")
+                        or item.get("板块名")
+                        or item.get("industry")
+                        or item.get("行业")
+                    )
+                    if DataFetcherManager._is_missing_board_value(board_name_raw):
+                        continue
+                    board_name = str(board_name_raw).strip()
+                    if board_name in dedupe:
+                        continue
+                    dedupe.add(board_name)
+                    normalized_item: Dict[str, Any] = {"name": board_name}
+                    code_raw = (
+                        item.get("code")
+                        or item.get("板块代码")
+                        or item.get("代码")
+                    )
+                    if not DataFetcherManager._is_missing_board_value(code_raw):
+                        normalized_item["code"] = str(code_raw).strip()
+                    type_raw = (
+                        item.get("type")
+                        or item.get("板块类型")
+                        or item.get("类别")
+                    )
+                    if not DataFetcherManager._is_missing_board_value(type_raw):
+                        normalized_item["type"] = str(type_raw).strip()
+                    normalized.append(normalized_item)
+                    continue
+                if DataFetcherManager._is_missing_board_value(item):
+                    continue
+                board_name = str(item).strip()
+                if board_name in dedupe:
+                    continue
+                dedupe.add(board_name)
+                normalized.append({"name": board_name})
+            return normalized
+
+        if not DataFetcherManager._is_missing_board_value(raw_data):
+            board_name = str(raw_data).strip()
+            return [{"name": board_name}]
+        return []
     
     def _init_default_fetchers(self) -> None:
         """
@@ -380,10 +680,6 @@ class DataFetcherManager:
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
-        from src.config import get_config
-
-        config = get_config()
-
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
@@ -449,13 +745,18 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
 
         errors = []
+        total_fetchers = len(self._fetchers)
+        request_start = time.time()
 
         # 快速路径：美股指数与美股股票直接路由到 YfinanceFetcher
         if is_us_index_code(stock_code) or is_us_stock_code(stock_code):
-            for fetcher in self._fetchers:
+            for attempt, fetcher in enumerate(self._fetchers, start=1):
                 if fetcher.name == "YfinanceFetcher":
                     try:
-                        logger.info(f"[{fetcher.name}] 美股/美股指数 {stock_code} 直接路由...")
+                        logger.info(
+                            f"[数据源尝试 {attempt}/{total_fetchers}] [{fetcher.name}] "
+                            f"美股/美股指数 {stock_code} 直接路由..."
+                        )
                         df = fetcher.get_daily_data(
                             stock_code=stock_code,
                             start_date=start_date,
@@ -463,21 +764,30 @@ class DataFetcherManager:
                             days=days,
                         )
                         if df is not None and not df.empty:
-                            logger.info(f"[{fetcher.name}] 成功获取 {stock_code}")
+                            elapsed = time.time() - request_start
+                            logger.info(
+                                f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
+                                f"rows={len(df)}, elapsed={elapsed:.2f}s"
+                            )
                             return df, fetcher.name
                     except Exception as e:
-                        error_msg = f"[{fetcher.name}] 失败: {str(e)}"
-                        logger.warning(error_msg)
+                        error_type, error_reason = summarize_exception(e)
+                        error_msg = f"[{fetcher.name}] ({error_type}) {error_reason}"
+                        logger.warning(
+                            f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
+                            f"error_type={error_type}, reason={error_reason}"
+                        )
                         errors.append(error_msg)
                     break
             # YfinanceFetcher failed or not found
             error_summary = f"美股/美股指数 {stock_code} 获取失败:\n" + "\n".join(errors)
-            logger.error(error_summary)
+            elapsed = time.time() - request_start
+            logger.error(f"[数据源终止] {stock_code} 获取失败: elapsed={elapsed:.2f}s\n{error_summary}")
             raise DataFetchError(error_summary)
 
-        for fetcher in self._fetchers:
+        for attempt, fetcher in enumerate(self._fetchers, start=1):
             try:
-                logger.info(f"尝试使用 [{fetcher.name}] 获取 {stock_code}...")
+                logger.info(f"[数据源尝试 {attempt}/{total_fetchers}] [{fetcher.name}] 获取 {stock_code}...")
                 df = fetcher.get_daily_data(
                     stock_code=stock_code,
                     start_date=start_date,
@@ -486,19 +796,31 @@ class DataFetcherManager:
                 )
                 
                 if df is not None and not df.empty:
-                    logger.info(f"[{fetcher.name}] 成功获取 {stock_code}")
+                    elapsed = time.time() - request_start
+                    logger.info(
+                        f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
+                        f"rows={len(df)}, elapsed={elapsed:.2f}s"
+                    )
                     return df, fetcher.name
                     
             except Exception as e:
-                error_msg = f"[{fetcher.name}] 失败: {str(e)}"
-                logger.warning(error_msg)
+                error_type, error_reason = summarize_exception(e)
+                error_msg = f"[{fetcher.name}] ({error_type}) {error_reason}"
+                logger.warning(
+                    f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
+                    f"error_type={error_type}, reason={error_reason}"
+                )
                 errors.append(error_msg)
+                if attempt < total_fetchers:
+                    next_fetcher = self._fetchers[attempt]
+                    logger.info(f"[数据源切换] {stock_code}: [{fetcher.name}] -> [{next_fetcher.name}]")
                 # 继续尝试下一个数据源
                 continue
         
         # 所有数据源都失败
         error_summary = f"所有数据源获取 {stock_code} 失败:\n" + "\n".join(errors)
-        logger.error(error_summary)
+        elapsed = time.time() - request_start
+        logger.error(f"[数据源终止] {stock_code} 获取失败: elapsed={elapsed:.2f}s\n{error_summary}")
         raise DataFetchError(error_summary)
     
     @property
@@ -529,9 +851,14 @@ class DataFetcherManager:
         stock_codes = [normalize_stock_code(c) for c in stock_codes]
 
         from src.config import get_config
-        
+
         config = get_config()
-        
+
+        # Issue #455: PREFETCH_REALTIME_QUOTES=false 可禁用预取，避免全市场拉取
+        if not getattr(config, "prefetch_realtime_quotes", True):
+            logger.debug("[预取] PREFETCH_REALTIME_QUOTES=false，跳过批量预取")
+            return 0
+
         # 如果实时行情被禁用，跳过预取
         if not config.enable_realtime_quote:
             logger.debug("[预取] 实时行情功能已禁用，跳过预取")
@@ -603,7 +930,6 @@ class DataFetcherManager:
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
-        from .realtime_types import get_realtime_circuit_breaker
         from .akshare_fetcher import _is_us_code
         from .us_index_mapping import is_us_index_code
         from src.config import get_config
@@ -645,6 +971,26 @@ class DataFetcherManager:
                             logger.warning(f"[实时行情] 美股 {stock_code} 获取失败: {e}")
                     break
             logger.warning(f"[实时行情] 美股 {stock_code} 无可用数据源")
+            return None
+
+        # 港股实时行情只走港股专用入口，避免按 A 股 source_priority
+        # 反复触发同一个 ak.stock_hk_spot_em() 接口。
+        if _is_hk_market(stock_code):
+            for fetcher in self._fetchers:
+                if fetcher.name != "AkshareFetcher":
+                    continue
+                if not hasattr(fetcher, 'get_realtime_quote'):
+                    break
+                try:
+                    quote = fetcher.get_realtime_quote(stock_code, source="hk")
+                    if quote is not None and quote.has_basic_data():
+                        logger.info(f"[实时行情] 港股 {stock_code} 成功获取 (来源: akshare_hk)")
+                        return quote
+                except Exception as e:
+                    logger.warning(f"[实时行情] 港股 {stock_code} 获取失败: {e}")
+                break
+
+            logger.warning(f"[实时行情] 港股 {stock_code} 无可用数据源")
             return None
         
         # 获取配置的数据源优先级
@@ -836,7 +1182,7 @@ class DataFetcherManager:
         logger.warning(f"[筹码分布] {stock_code} 所有数据源均失败")
         return None
 
-    def get_stock_name(self, stock_code: str) -> Optional[str]:
+    def get_stock_name(self, stock_code: str, allow_realtime: bool = True) -> Optional[str]:
         """
         获取股票中文名称（自动切换数据源）
         
@@ -847,14 +1193,16 @@ class DataFetcherManager:
         
         Args:
             stock_code: 股票代码
+            allow_realtime: Whether to query realtime quote first. Set False when
+                caller only wants lightweight prefetch without triggering heavy
+                realtime source calls.
             
         Returns:
             股票中文名称，所有数据源都失败则返回 None
         """
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
-        if stock_code in STOCK_NAME_MAP:
-            return STOCK_NAME_MAP[stock_code]
+        static_name = STOCK_NAME_MAP.get(stock_code)
 
         # 1. 先检查缓存
         if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
@@ -864,30 +1212,80 @@ class DataFetcherManager:
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
         
-        # 2. 尝试从实时行情中获取（最快）
-        quote = self.get_realtime_quote(stock_code)
-        if quote and hasattr(quote, 'name') and quote.name:
-            name = quote.name
-            self._stock_name_cache[stock_code] = name
-            logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
-            return name
-        
+        # 2. 尝试从实时行情中获取（最快，可按需禁用）
+        if allow_realtime:
+            quote = self.get_realtime_quote(stock_code)
+            if quote and hasattr(quote, 'name') and is_meaningful_stock_name(getattr(quote, 'name', ''), stock_code):
+                name = quote.name
+                self._stock_name_cache[stock_code] = name
+                logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
+                return name
+
+        if is_meaningful_stock_name(static_name, stock_code):
+            self._stock_name_cache[stock_code] = static_name
+            return static_name
+
         # 3. 依次尝试各个数据源
         for fetcher in self._fetchers:
             if hasattr(fetcher, 'get_stock_name'):
                 try:
                     name = fetcher.get_stock_name(stock_code)
-                    if name:
+                    if is_meaningful_stock_name(name, stock_code):
                         self._stock_name_cache[stock_code] = name
                         logger.info(f"[股票名称] 从 {fetcher.name} 获取: {stock_code} -> {name}")
                         return name
                 except Exception as e:
                     logger.debug(f"[股票名称] {fetcher.name} 获取失败: {e}")
                     continue
-        
+
         # 4. 所有数据源都失败
         logger.warning(f"[股票名称] 所有数据源都无法获取 {stock_code} 的名称")
         return ""
+
+    def get_belong_boards(self, stock_code: str) -> List[Dict[str, Any]]:
+        """
+        Get stock membership boards through capability probing.
+
+        Keep this at manager layer to avoid changing BaseFetcher abstraction.
+        """
+        stock_code = normalize_stock_code(stock_code)
+        if _market_tag(stock_code) != "cn":
+            return []
+        for fetcher in self._fetchers:
+            if not hasattr(fetcher, "get_belong_board"):
+                continue
+            try:
+                raw_data = fetcher.get_belong_board(stock_code)
+                boards = self._normalize_belong_boards(raw_data)
+                if boards:
+                    logger.info(f"[{fetcher.name}] 获取所属板块成功: {stock_code}, count={len(boards)}")
+                    return boards
+            except Exception as e:
+                logger.debug(f"[{fetcher.name}] 获取所属板块失败: {e}")
+                continue
+        return []
+
+    def prefetch_stock_names(self, stock_codes: List[str], use_bulk: bool = False) -> None:
+        """
+        Pre-fetch stock names into cache before parallel analysis (Issue #455).
+
+        When use_bulk=False, only calls get_stock_name per code (no get_stock_list),
+        avoiding full-market fetch. Sequential execution to avoid rate limits.
+
+        Args:
+            stock_codes: Stock codes to prefetch.
+            use_bulk: If True, may use get_stock_list (full fetch). Default False.
+        """
+        if not stock_codes:
+            return
+        stock_codes = [normalize_stock_code(c) for c in stock_codes]
+        if use_bulk:
+            self.batch_get_stock_names(stock_codes)
+            return
+        for code in stock_codes:
+            # Skip realtime lookup to avoid triggering expensive full-market quote
+            # requests during the prefetch phase.
+            self.get_stock_name(code, allow_realtime=False)
 
     def batch_get_stock_names(self, stock_codes: List[str]) -> Dict[str, str]:
         """
@@ -976,15 +1374,782 @@ class DataFetcherManager:
                 continue
         return {}
 
-    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
-        """获取板块涨跌榜（自动切换数据源）"""
-        for fetcher in self._fetchers:
+    def _run_with_timeout(
+        self,
+        task: Callable[[], Any],
+        timeout_seconds: float,
+        task_name: str,
+    ) -> Tuple[Optional[Any], Optional[str], int]:
+        """
+        Execute a task in a short-lived thread and enforce a timeout.
+
+        Returns:
+            (result, error, duration_ms)
+        """
+        start = time.time()
+        timeout_value = max(0.0, timeout_seconds)
+        if timeout_value <= 0:
+            return None, f"{task_name} timeout", 0
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, Exception] = {}
+
+        if not self._fundamental_timeout_slots.acquire(blocking=False):
+            return None, f"{task_name} timeout worker pool exhausted", int(timeout_value * 1000)
+
+        def runner() -> None:
+            try:
+                result_holder["value"] = task()
+            except Exception as exc:
+                error_holder["value"] = exc
+            finally:
+                try:
+                    self._fundamental_timeout_slots.release()
+                except ValueError:
+                    pass
+
+        worker = Thread(target=runner, daemon=True, name=f"fundamental-{task_name}")
+        try:
+            worker.start()
+        except Exception as exc:
+            try:
+                self._fundamental_timeout_slots.release()
+            except ValueError:
+                pass
+            return None, str(exc), int((time.time() - start) * 1000)
+        worker.join(timeout=timeout_value)
+        if worker.is_alive():
+            return None, f"{task_name} timeout", int(timeout_value * 1000)
+        if "value" in error_holder:
+            return None, str(error_holder["value"]), int((time.time() - start) * 1000)
+        return result_holder.get("value"), None, int((time.time() - start) * 1000)
+
+    def _run_with_retry(
+        self,
+        task: Callable[[], Any],
+        timeout_seconds: float,
+        task_name: str,
+    ) -> Tuple[Optional[Any], Optional[str], int]:
+        """
+        Execute a task with bounded budget and best-effort retries.
+
+        Returns:
+            (result, error, total_duration_ms)
+        """
+        config = self._get_fundamental_config()
+        attempts = max(1, int(config.fundamental_retry_max))
+        remaining_seconds = max(0.0, float(timeout_seconds))
+        total_cost_ms = 0
+        last_error: Optional[str] = None
+
+        for _ in range(attempts):
+            if remaining_seconds <= 0:
+                break
+            result, err, cost_ms = self._run_with_timeout(task, remaining_seconds, task_name)
+            total_cost_ms += cost_ms
+            remaining_seconds = max(0.0, remaining_seconds - cost_ms / 1000)
+            if err is None:
+                return result, None, total_cost_ms
+            last_error = err
+            if remaining_seconds <= 0:
+                break
+
+        return None, last_error, total_cost_ms
+
+    def _get_fundamental_config(self):
+        from src.config import get_config
+        return get_config()
+
+    @staticmethod
+    def _normalize_source_chain(
+        entries: Any,
+        provider: str,
+        result: str,
+        duration_ms: int,
+    ) -> List[Dict[str, Any]]:
+        """Normalize free-form source chain entries to structured dict list."""
+        if entries is None:
+            return [{"provider": provider, "result": result, "duration_ms": duration_ms}]
+
+        normalized: List[Dict[str, Any]] = []
+        if not isinstance(entries, (list, tuple)):
+            entries = [entries]
+
+        for item in entries:
+            if isinstance(item, dict):
+                normalized.append({
+                    "provider": str(item.get("provider") or provider),
+                    "result": str(item.get("result") or result),
+                    "duration_ms": int(item.get("duration_ms", duration_ms)),
+                })
+                continue
+
+            if item is None:
+                continue
+
+            provider_name = str(item)
+            normalized.append({
+                "provider": provider_name,
+                "result": result,
+                "duration_ms": duration_ms,
+            })
+
+        if not normalized:
+            return [{"provider": provider, "result": result, "duration_ms": duration_ms}]
+
+        return normalized
+
+    @staticmethod
+    def _block_status(payload: Dict[str, Any], available: bool = True) -> str:
+        if not available:
+            return "not_supported"
+        if not payload:
+            return "partial"
+        return "ok"
+
+    @staticmethod
+    def _build_fundamental_block(
+        status: str,
+        payload: Optional[Dict[str, Any]] = None,
+        source_chain: Optional[List[Dict[str, Any]]] = None,
+        errors: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "status": status,
+            "coverage": {"status": status},
+            "source_chain": source_chain or [],
+            "errors": errors or [],
+            "data": payload or {},
+        }
+
+    @staticmethod
+    def _has_meaningful_payload(payload: Any) -> bool:
+        if payload is None:
+            return False
+        if isinstance(payload, str):
+            normalized = payload.strip().lower()
+            return normalized not in ("", "-", "nan", "none", "null", "n/a", "na")
+        if isinstance(payload, dict):
+            return any(DataFetcherManager._has_meaningful_payload(v) for v in payload.values())
+        if isinstance(payload, (list, tuple, set)):
+            return any(DataFetcherManager._has_meaningful_payload(v) for v in payload)
+        try:
+            if pd.isna(payload):
+                return False
+        except Exception:
+            pass
+        return True
+
+    @staticmethod
+    def _infer_block_status(payload: Any, fallback_status: str) -> str:
+        if DataFetcherManager._has_meaningful_payload(payload):
+            return "ok"
+        if fallback_status in ("failed", "partial", "not_supported"):
+            return fallback_status
+        return "partial"
+
+    @staticmethod
+    def _should_cache_fundamental_context(context: Any) -> bool:
+        if not isinstance(context, dict):
+            return False
+        status = str(context.get("status", "")).strip().lower()
+        if status == "ok":
+            return True
+        if status == "failed":
+            return False
+        for block in (
+            "valuation",
+            "growth",
+            "earnings",
+            "institution",
+            "capital_flow",
+            "dragon_tiger",
+            "boards",
+        ):
+            payload = context.get(block, {})
+            if isinstance(payload, dict) and DataFetcherManager._has_meaningful_payload(payload.get("data")):
+                return True
+        return False
+
+    def _build_market_not_supported(self, market: str, reason: str) -> Dict[str, Any]:
+        blocks = {
+            "valuation": self._build_fundamental_block(
+                "partial" if market == "etf" else "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "growth": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "earnings": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "institution": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "capital_flow": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "dragon_tiger": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+            "boards": self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                [reason],
+            ),
+        }
+        return {
+            "market": market,
+            "status": "partial" if market == "etf" else "not_supported",
+            "coverage": {
+                block: blocks[block]["status"] for block in blocks
+            },
+            "source_chain": [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+            "errors": [reason],
+            **blocks,
+        }
+
+    def build_failed_fundamental_context(self, stock_code: str, reason: str) -> Dict[str, Any]:
+        """Build a consistent failed-context payload for caller-side fallback."""
+        market = _market_tag(stock_code)
+        block_names = (
+            "valuation",
+            "growth",
+            "earnings",
+            "institution",
+            "capital_flow",
+            "dragon_tiger",
+            "boards",
+        )
+        blocks = {
+            block: self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+                [reason],
+            )
+            for block in block_names
+        }
+        return {
+            "market": market,
+            "status": "failed",
+            "coverage": {block: "failed" for block in block_names},
+            "source_chain": [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+            "errors": [reason],
+            **blocks,
+        }
+
+    def get_fundamental_context(
+        self,
+        stock_code: str,
+        budget_seconds: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Aggregate fundamental blocks with fail-open semantics.
+        """
+        from src.config import get_config
+
+        config = get_config()
+        if not config.enable_fundamental_pipeline:
+            return self._build_market_not_supported(
+                market=_market_tag(stock_code),
+                reason="fundamental pipeline disabled",
+            )
+
+        stock_code = normalize_stock_code(stock_code)
+        market = _market_tag(stock_code)
+        is_etf = _is_etf_code(stock_code)
+        if market in {"us", "hk"}:
+            return self._build_market_not_supported(
+                market=market,
+                reason="market not supported",
+            )
+
+        stage_timeout = float(
+            budget_seconds if budget_seconds is not None else config.fundamental_stage_timeout_seconds
+        )
+        stage_timeout = max(0.0, stage_timeout)
+        fetch_timeout = float(config.fundamental_fetch_timeout_seconds)
+        fetch_timeout = max(0.0, fetch_timeout)
+
+        cache_ttl = int(config.fundamental_cache_ttl_seconds)
+        cache_max_entries = max(0, int(getattr(config, "fundamental_cache_max_entries", 256)))
+        cache_key = self._get_fundamental_cache_key(stock_code, stage_timeout)
+        if cache_ttl > 0:
+            self._prune_fundamental_cache(cache_ttl, cache_max_entries)
+            with self._fundamental_cache_lock:
+                cache_item = self._fundamental_cache.get(cache_key)
+                if cache_item:
+                    age = time.time() - float(cache_item.get("ts", 0))
+                    if age <= cache_ttl:
+                        return cache_item.get("context", {})
+
+        remaining_seconds = stage_timeout
+        result_ctx: Dict[str, Any] = {
+            "market": market,
+            "valuation": {},
+            "growth": {},
+            "earnings": {},
+            "institution": {},
+            "capital_flow": {},
+            "dragon_tiger": {},
+            "boards": {},
+            "coverage": {},
+            "source_chain": [],
+            "errors": [],
+        }
+
+        start_ts = time.time()
+
+        def _consume_budget(consumed_ms: int) -> None:
+            nonlocal remaining_seconds
+            remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
+
+        valuation_timeout = min(fetch_timeout, remaining_seconds)
+        if valuation_timeout > 0:
+            quote_payload, valuation_err, valuation_ms = self._run_with_retry(
+                lambda: self.get_realtime_quote(stock_code),
+                valuation_timeout,
+                "fundamental_valuation",
+            )
+            _consume_budget(valuation_ms)
+        else:
+            quote_payload, valuation_err, valuation_ms = None, "fundamental stage timeout", 0
+
+        valuation_payload = {
+            "pe_ratio": getattr(quote_payload, "pe_ratio", None) if quote_payload else None,
+            "pb_ratio": getattr(quote_payload, "pb_ratio", None) if quote_payload else None,
+            "total_mv": getattr(quote_payload, "total_mv", None) if quote_payload else None,
+            "circ_mv": getattr(quote_payload, "circ_mv", None) if quote_payload else None,
+        }
+        valuation_status = self._infer_block_status(
+            valuation_payload,
+            "partial" if quote_payload is not None else "not_supported",
+        )
+        if valuation_status == "partial" and valuation_err and not self._has_meaningful_payload(valuation_payload):
+            valuation_status = "failed"
+        result_ctx["valuation"] = self._build_fundamental_block(
+            valuation_status,
+            valuation_payload,
+            self._normalize_source_chain(
+                [{"provider": "realtime_quote", "result": valuation_status, "duration_ms": valuation_ms}],
+                "realtime_quote",
+                valuation_status,
+                valuation_ms,
+            ),
+            [valuation_err] if valuation_err else [],
+        )
+
+        # growth / earnings / institution (one AkShare call)
+        if remaining_seconds <= 0:
+            bundle_status = "failed"
+            bundle_payload: Dict[str, Any] = {}
+            bundle_errors = ["fundamental stage timeout"]
+            bundle_ms = 0
+        else:
+            bundle_timeout = min(fetch_timeout, remaining_seconds)
+            bundle_payload, bundle_err_msg, bundle_ms = self._run_with_retry(
+                lambda: self._fundamental_adapter.get_fundamental_bundle(stock_code),
+                bundle_timeout,
+                "fundamental_bundle",
+            )
+            _consume_budget(bundle_ms)
+            if not isinstance(bundle_payload, dict):
+                bundle_status = "failed"
+                bundle_payload = {}
+                bundle_errors = ["fundamental_bundle failed"]
+                if bundle_err_msg:
+                    bundle_errors.append(bundle_err_msg)
+            else:
+                bundle_status = str(bundle_payload.get("status", "not_supported"))
+                bundle_errors = [bundle_err_msg] if bundle_err_msg else []
+
+        bundle_chain = self._normalize_source_chain(
+            bundle_payload.get("source_chain", []),
+            "fundamental_bundle",
+            bundle_status,
+            bundle_ms,
+        ) if isinstance(bundle_payload, dict) else self._normalize_source_chain(
+            None,
+            "fundamental_bundle",
+            bundle_status,
+            bundle_ms,
+        )
+        growth_payload = bundle_payload.get("growth", {}) if isinstance(bundle_payload, dict) else {}
+        earnings_payload = bundle_payload.get("earnings", {}) if isinstance(bundle_payload, dict) else {}
+        institution_payload = bundle_payload.get("institution", {}) if isinstance(bundle_payload, dict) else {}
+        adapter_errors = list(bundle_payload.get("errors", [])) if isinstance(bundle_payload, dict) else []
+        adapter_errors.extend(bundle_errors)
+
+        growth_status = self._infer_block_status(growth_payload, bundle_status)
+        earnings_status = self._infer_block_status(earnings_payload, bundle_status)
+        institution_status = self._infer_block_status(institution_payload, bundle_status)
+
+        result_ctx["growth"] = self._build_fundamental_block(
+            growth_status,
+            growth_payload,
+            bundle_chain,
+            adapter_errors,
+        )
+        result_ctx["earnings"] = self._build_fundamental_block(
+            earnings_status,
+            earnings_payload,
+            bundle_chain,
+            adapter_errors,
+        )
+        result_ctx["institution"] = self._build_fundamental_block(
+            institution_status,
+            institution_payload,
+            bundle_chain,
+            adapter_errors,
+        )
+
+        # capital flow
+        if is_etf:
+            result_ctx["capital_flow"] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["etf not fully supported"],
+            )
+            result_ctx["dragon_tiger"] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["etf not fully supported"],
+            )
+            result_ctx["boards"] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["etf not fully supported"],
+            )
+            result_ctx["status"] = "partial"
+        else:
+            capital_flow_budget = min(fetch_timeout, remaining_seconds)
+            capital_flow_start = time.time()
+            result_ctx["capital_flow"] = self.get_capital_flow_context(
+                stock_code,
+                budget_seconds=capital_flow_budget,
+            )
+            _consume_budget(int((time.time() - capital_flow_start) * 1000))
+
+            dragon_tiger_budget = min(fetch_timeout, remaining_seconds)
+            dragon_tiger_start = time.time()
+            result_ctx["dragon_tiger"] = self.get_dragon_tiger_context(
+                stock_code,
+                budget_seconds=dragon_tiger_budget,
+            )
+            _consume_budget(int((time.time() - dragon_tiger_start) * 1000))
+
+            result_ctx["boards"] = self.get_board_context(
+                stock_code,
+                budget_seconds=min(fetch_timeout, remaining_seconds),
+            )
+
+        block_statuses = {
+            "valuation": result_ctx["valuation"].get("status", "not_supported"),
+            "growth": result_ctx["growth"].get("status", "not_supported"),
+            "earnings": result_ctx["earnings"].get("status", "not_supported"),
+            "institution": result_ctx["institution"].get("status", "not_supported"),
+            "capital_flow": result_ctx["capital_flow"].get("status", "not_supported"),
+            "dragon_tiger": result_ctx["dragon_tiger"].get("status", "not_supported"),
+            "boards": result_ctx["boards"].get("status", "not_supported"),
+        }
+        result_ctx["coverage"] = block_statuses
+        for block in (
+            "valuation",
+            "growth",
+            "earnings",
+            "institution",
+            "capital_flow",
+            "dragon_tiger",
+            "boards",
+        ):
+            result_ctx["errors"].extend(result_ctx[block].get("errors", []))
+            result_ctx["source_chain"].extend(result_ctx[block].get("source_chain", []))
+
+        if is_etf:
+            # Keep ETF downgrade semantics for overall status even when valuation is available.
+            result_ctx["status"] = (
+                "not_supported" if all(value == "not_supported" for value in block_statuses.values()) else "partial"
+            )
+        elif all(value == "not_supported" for value in block_statuses.values()):
+            result_ctx["status"] = "not_supported"
+        elif "failed" in block_statuses.values() or "partial" in block_statuses.values():
+            result_ctx["status"] = "partial"
+        else:
+            result_ctx["status"] = "ok"
+
+        result_ctx["elapsed_ms"] = int((time.time() - start_ts) * 1000)
+        if cache_ttl > 0 and self._should_cache_fundamental_context(result_ctx):
+            with self._fundamental_cache_lock:
+                self._fundamental_cache[cache_key] = {
+                    "ts": time.time(),
+                    "context": result_ctx,
+                }
+            self._prune_fundamental_cache(cache_ttl, cache_max_entries)
+        return result_ctx
+
+    def get_capital_flow_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """资金流向块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_capital_flow(stock_code),
+            timeout,
+            "capital_flow",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": cost_ms}],
+                [err or "capital_flow failed"],
+            )
+
+        stock_flow = payload.get("stock_flow") or {}
+        sector_rankings = payload.get("sector_rankings") or {}
+        has_stock_flow = False
+        if isinstance(stock_flow, dict):
+            has_stock_flow = any(v is not None for v in stock_flow.values())
+        has_sector_rankings = bool(sector_rankings.get("top")) or bool(sector_rankings.get("bottom"))
+        adapter_status = str(payload.get("status", "not_supported"))
+        if has_stock_flow or has_sector_rankings:
+            capital_flow_status = "ok"
+        elif adapter_status == "not_supported":
+            capital_flow_status = "not_supported"
+        else:
+            capital_flow_status = "partial"
+
+        return self._build_fundamental_block(
+            capital_flow_status,
+            {
+                "stock_flow": payload.get("stock_flow", {}),
+                "sector_rankings": payload.get("sector_rankings", {}),
+            },
+            self._normalize_source_chain(
+                payload.get("source_chain", []),
+                "capital_flow",
+                capital_flow_status,
+                cost_ms,
+            ),
+            list(payload.get("errors", [])) + ([err] if err else []),
+        )
+
+    def get_dragon_tiger_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """龙虎榜块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_dragon_tiger_flag(stock_code),
+            timeout,
+            "dragon_tiger",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": cost_ms}],
+                [err or "dragon_tiger failed"],
+            )
+        return self._build_fundamental_block(
+            (payload.get("status") if isinstance(payload.get("status"), str) else "partial"),
+            {
+                "is_on_list": bool(payload.get("is_on_list", False)),
+                "recent_count": int(payload.get("recent_count", 0)),
+                "latest_date": payload.get("latest_date"),
+            },
+            self._normalize_source_chain(
+                payload.get("source_chain", []),
+                "dragon_tiger",
+                str(payload.get("status", "ok")),
+                cost_ms,
+            ),
+            list(payload.get("errors", [])) + ([err] if err else []),
+        )
+
+    def get_board_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """板块榜单块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+
+        def task() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], str]:
+            return self._get_sector_rankings_with_meta(5)
+
+        rankings, err, cost_ms = self._run_with_retry(task, timeout, "boards")
+        if isinstance(rankings, tuple) and len(rankings) == 4:
+            top, bottom, chain, chain_error = rankings
+            if chain_error and not err:
+                err = chain_error
+            if not top and not bottom:
+                return self._build_fundamental_block(
+                    "failed",
+                    {},
+                    chain if chain else [{"provider": "sector_rankings", "result": "failed", "duration_ms": cost_ms}],
+                    [err or "boards empty from all sources"],
+                )
+            board_status = "ok" if top and bottom else "partial"
+            return self._build_fundamental_block(
+                board_status,
+                {"top": top or [], "bottom": bottom or []},
+                chain if chain else self._normalize_source_chain(
+                    ["sector_rankings"],
+                    "boards",
+                    board_status,
+                    cost_ms,
+                ),
+                [err] if err else [],
+            )
+
+        return self._build_fundamental_block(
+            "failed",
+            {},
+            [{"provider": "sector_rankings", "result": "failed", "duration_ms": cost_ms}],
+            [err or "boards failed"],
+        )
+
+    def _get_sector_rankings_with_meta(
+        self,
+        n: int = 5,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict[str, Any]], str]:
+        """Get sector rankings with ordered fallback chain metadata."""
+        # Keep this list intentionally constrained to stable sector-capable providers.
+        # AkshareFetcher internally handles EM -> Sina fallback.
+        fetcher_order = ["AkshareFetcher", "TushareFetcher", "EfinanceFetcher"]
+        source_chain: List[Dict[str, Any]] = []
+        last_error = ""
+
+        for fetcher_name in fetcher_order:
+            fetcher = next((f for f in self._fetchers if f.name == fetcher_name), None)
+            if fetcher is None:
+                source_chain.append(
+                    {
+                        "provider": fetcher_name,
+                        "result": "not_available",
+                        "duration_ms": 0,
+                        "error": "fetcher not registered",
+                    }
+                )
+                last_error = f"{fetcher_name} not registered"
+                continue
+
+            start = time.time()
             try:
                 data = fetcher.get_sector_rankings(n)
-                if data:
+                duration_ms = int((time.time() - start) * 1000)
+                if data and data[0] is not None and data[1] is not None:
+                    source_chain.append(
+                        {
+                            "provider": fetcher.name,
+                            "result": "ok",
+                            "duration_ms": duration_ms,
+                        }
+                    )
                     logger.info(f"[{fetcher.name}] 获取板块排行成功")
-                    return data
+                    return data[0], data[1], source_chain, ""
+
+                last_error = f"{fetcher.name}返回空结果"
+                source_chain.append(
+                    {
+                        "provider": fetcher.name,
+                        "result": "empty",
+                        "duration_ms": duration_ms,
+                        "error": last_error,
+                    }
+                )
             except Exception as e:
-                logger.warning(f"[{fetcher.name}] 获取板块排行失败: {e}")
-                continue
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                duration_ms = int((time.time() - start) * 1000)
+                source_chain.append(
+                    {
+                        "provider": fetcher.name,
+                        "result": "failed",
+                        "duration_ms": duration_ms,
+                        "error": error_reason,
+                    }
+                )
+                logger.warning(f"[{fetcher.name}] 获取板块排行失败: {error_reason}")
+
+        return [], [], source_chain, last_error
+
+    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+        """获取板块涨跌榜（自动切换数据源）"""
+        # 按需求固定回退顺序：Akshare(EM) -> Akshare(Sina) -> Tushare -> Efinance
+        top, bottom, _, last_error = self._get_sector_rankings_with_meta(n)
+        if top or bottom:
+            return top, bottom
+        logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
         return [], []

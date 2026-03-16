@@ -523,7 +523,8 @@ class BacktestEngine:
     def _compute_advice_breakdown(results: List[BacktestResultLike]) -> Dict[str, Any]:
         breakdown: Dict[str, Dict[str, int]] = {}
         for row in results:
-            advice = (row.operation_advice or "").strip() or "(unknown)"
+            raw_advice = row.operation_advice
+            advice = (raw_advice if isinstance(raw_advice, str) else str(raw_advice or "")).strip() or "(unknown)"
             bucket = breakdown.setdefault(advice, {"total": 0, "win": 0, "loss": 0, "neutral": 0})
             bucket["total"] += 1
             outcome = (row.outcome or "").strip()

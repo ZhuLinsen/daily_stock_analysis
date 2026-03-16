@@ -231,6 +231,34 @@ class BacktestService:
             return None
         return self._summary_to_dict(summary)
 
+    def get_global_summary(self, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Return overall backtest metrics normalized for Agent memory consumers."""
+        return self._normalize_learning_summary(
+            self.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
+        )
+
+    def get_stock_summary(self, code: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Return per-stock backtest metrics normalized for Agent memory consumers."""
+        return self._normalize_learning_summary(
+            self.get_summary(scope="stock", code=code, eval_window_days=eval_window_days)
+        )
+
+    def get_strategy_summary(self, strategy_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Return strategy-like summary metrics for Agent memory consumers.
+
+        The current backtest storage layer only persists overall / per-stock rollups.
+        Until strategy-tagged backtest summaries are available, use the overall rollup
+        so memory and calibration features can still consume real historical metrics.
+        """
+        summary = self.get_global_summary(eval_window_days=eval_window_days)
+        if summary is None:
+            return None
+
+        normalized = dict(summary)
+        normalized["strategy_id"] = strategy_id
+        normalized["source_scope"] = summary.get("scope", "overall")
+        return normalized
+
     def _resolve_analysis_date(self, analysis) -> Optional[date]:
         parsed = self.repo.parse_analysis_date_from_snapshot(analysis.context_snapshot)
         if parsed:
@@ -390,3 +418,29 @@ class BacktestService:
             "advice_breakdown": json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {},
             "diagnostics": json.loads(row.diagnostics_json) if row.diagnostics_json else {},
         }
+
+    @staticmethod
+    def _normalize_learning_summary(summary: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Normalize summary metrics to the ratio-based shape expected by Agent memory."""
+        if summary is None:
+            return None
+
+        normalized = dict(summary)
+        normalized["win_rate"] = BacktestService._pct_to_ratio(summary.get("win_rate_pct"), default=0.5)
+        normalized["direction_accuracy"] = BacktestService._pct_to_ratio(
+            summary.get("direction_accuracy_pct"),
+            default=0.5,
+        )
+
+        avg_return_pct = summary.get("avg_simulated_return_pct")
+        if avg_return_pct is None:
+            avg_return_pct = summary.get("avg_stock_return_pct")
+        normalized["avg_return"] = BacktestService._pct_to_ratio(avg_return_pct, default=0.0)
+        return normalized
+
+    @staticmethod
+    def _pct_to_ratio(value: Optional[float], default: float = 0.0) -> float:
+        try:
+            return float(value) / 100.0
+        except (TypeError, ValueError):
+            return default

@@ -6,7 +6,7 @@ A股自选股智能分析系统 - 搜索服务模块
 
 职责：
 1. 提供统一的新闻搜索接口
-2. 支持 Tavily 和 SerpAPI 两种搜索引擎
+2. 支持 Bocha、Tavily、Brave、SerpAPI、SearXNG 多种搜索引擎
 3. 多 Key 负载均衡和故障转移
 4. 搜索结果缓存和格式化
 """
@@ -51,6 +51,20 @@ _SEARCH_TRANSIENT_EXCEPTIONS = (
 def _post_with_retry(url: str, *, headers: Dict[str, str], json: Dict[str, Any], timeout: int) -> requests.Response:
     """POST with retry on transient SSL/network errors."""
     return requests.post(url, headers=headers, json=json, timeout=timeout)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type(_SEARCH_TRANSIENT_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _get_with_retry(
+    url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int
+) -> requests.Response:
+    """GET with retry on transient SSL/network errors."""
+    return requests.get(url, headers=headers, params=params, timeout=timeout)
 
 
 def fetch_url_content(url: str, timeout: int = 5) -> str:
@@ -723,6 +737,232 @@ class BochaSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class MiniMaxSearchProvider(BaseSearchProvider):
+    """
+    MiniMax Web Search (Coding Plan API)
+
+    Features:
+    - Backed by MiniMax Coding Plan subscription
+    - Returns structured organic results with title/link/snippet/date
+    - No native time-range parameter; time filtering is done via query
+      augmentation and client-side date filtering
+    - Circuit-breaker protection: 3 consecutive failures -> 300s cooldown
+
+    API endpoint: POST https://api.minimaxi.com/v1/coding_plan/search
+    """
+
+    API_ENDPOINT = "https://api.minimaxi.com/v1/coding_plan/search"
+
+    # Circuit-breaker settings
+    _CB_FAILURE_THRESHOLD = 3
+    _CB_COOLDOWN_SECONDS = 300  # 5 minutes
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "MiniMax")
+        # Circuit breaker state
+        self._consecutive_failures = 0
+        self._circuit_open_until: float = 0.0
+
+    @property
+    def is_available(self) -> bool:
+        """Check availability considering circuit breaker state."""
+        if not super().is_available:
+            return False
+        if self._consecutive_failures >= self._CB_FAILURE_THRESHOLD:
+            if time.time() < self._circuit_open_until:
+                return False
+            # Cooldown expired -> half-open, allow one probe
+        return True
+
+    def _record_success(self, key: str) -> None:
+        super()._record_success(key)
+        # Reset circuit breaker on success
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+
+    def _record_error(self, key: str) -> None:
+        super()._record_error(key)
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._CB_FAILURE_THRESHOLD:
+            self._circuit_open_until = time.time() + self._CB_COOLDOWN_SECONDS
+            logger.warning(
+                f"[MiniMax] Circuit breaker OPEN – "
+                f"{self._consecutive_failures} consecutive failures, "
+                f"cooldown {self._CB_COOLDOWN_SECONDS}s"
+            )
+
+    # ------------------------------------------------------------------
+    # Time-range helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _time_hint(days: int, is_chinese: bool = True) -> str:
+        """Build a time-hint string to append to the search query."""
+        if is_chinese:
+            if days <= 1:
+                return "今天"
+            elif days <= 3:
+                return "最近三天"
+            elif days <= 7:
+                return "最近一周"
+            else:
+                return "最近一个月"
+        else:
+            if days <= 1:
+                return "today"
+            elif days <= 3:
+                return "past 3 days"
+            elif days <= 7:
+                return "past week"
+            else:
+                return "past month"
+
+    @staticmethod
+    def _is_within_days(date_str: Optional[str], days: int) -> bool:
+        """Check whether *date_str* falls within the last *days* days.
+
+        Accepts common formats: ``2025-06-01``, ``2025/06/01``,
+        ``Jun 1, 2025``, ISO-8601 with timezone, etc.
+        Returns True when date_str is None or unparseable (keep the result).
+        """
+        if not date_str:
+            return True
+        try:
+            from dateutil import parser as dateutil_parser
+            dt = dateutil_parser.parse(date_str, fuzzy=True)
+            from datetime import timedelta, timezone
+            now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now()
+            return (now - dt) <= timedelta(days=days + 1)  # +1 buffer
+        except Exception:
+            return True  # Keep result when date is unparseable
+
+    # ------------------------------------------------------------------
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        """Execute MiniMax web search."""
+        try:
+            # Detect language hint from query (simple heuristic)
+            has_cjk = any('\u4e00' <= ch <= '\u9fff' for ch in query)
+            time_hint = self._time_hint(days, is_chinese=has_cjk)
+            augmented_query = f"{query} {time_hint}"
+
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+                'MM-API-Source': 'Minimax-MCP',
+            }
+            payload = {"q": augmented_query}
+
+            response = _post_with_retry(
+                self.API_ENDPOINT, headers=headers, json=payload, timeout=15
+            )
+
+            # HTTP error handling
+            if response.status_code != 200:
+                error_msg = self._parse_http_error(response)
+                logger.warning(f"[MiniMax] Search failed: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            data = response.json()
+
+            # Check base_resp status
+            base_resp = data.get('base_resp', {})
+            if base_resp.get('status_code', 0) != 0:
+                error_msg = base_resp.get('status_msg', 'Unknown API error')
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            logger.info(f"[MiniMax] Search done, query='{query}'")
+            logger.debug(f"[MiniMax] Raw response keys: {list(data.keys())}")
+
+            # Parse organic results
+            results: List[SearchResult] = []
+            for item in data.get('organic', []):
+                date_val = item.get('date')
+
+                # Client-side time filtering
+                if not self._is_within_days(date_val, days):
+                    continue
+
+                results.append(SearchResult(
+                    title=item.get('title', ''),
+                    snippet=(item.get('snippet', '') or '')[:500],
+                    url=item.get('link', ''),
+                    source=self._extract_domain(item.get('link', '')),
+                    published_date=date_val,
+                ))
+
+                if len(results) >= max_results:
+                    break
+
+            logger.info(f"[MiniMax] Parsed {len(results)} results (after time filter)")
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+
+        except requests.exceptions.Timeout:
+            error_msg = "Request timeout"
+            logger.error(f"[MiniMax] {error_msg}")
+            return SearchResponse(
+                query=query, results=[], provider=self.name,
+                success=False, error_message=error_msg,
+            )
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Network error: {e}"
+            logger.error(f"[MiniMax] {error_msg}")
+            return SearchResponse(
+                query=query, results=[], provider=self.name,
+                success=False, error_message=error_msg,
+            )
+        except Exception as e:
+            error_msg = f"Unexpected error: {e}"
+            logger.error(f"[MiniMax] {error_msg}")
+            return SearchResponse(
+                query=query, results=[], provider=self.name,
+                success=False, error_message=error_msg,
+            )
+
+    @staticmethod
+    def _parse_http_error(response) -> str:
+        """Parse HTTP error response from MiniMax API."""
+        try:
+            ct = response.headers.get('content-type', '')
+            if 'json' in ct:
+                err = response.json()
+                base_resp = err.get('base_resp', {})
+                msg = base_resp.get('status_msg') or err.get('message') or str(err)
+                return msg
+            return response.text[:200]
+        except Exception:
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """Extract domain from URL as source label."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except Exception:
+            return '未知来源'
+
+
 class BraveSearchProvider(BaseSearchProvider):
     """
     Brave Search 搜索引擎
@@ -899,6 +1139,176 @@ class BraveSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class SearXNGSearchProvider(BaseSearchProvider):
+    """
+    SearXNG search engine (self-hosted, no quota).
+
+    Uses base_urls as "keys" for load balancing. Requires format: json in settings.yml.
+    """
+
+    def __init__(self, base_urls: List[str]):
+        super().__init__(base_urls, "SearXNG")
+
+    @staticmethod
+    def _parse_http_error(response) -> str:
+        """Parse HTTP error details for easier diagnostics."""
+        try:
+            raw_content_type = response.headers.get("content-type", "")
+            content_type = raw_content_type if isinstance(raw_content_type, str) else ""
+            if "json" in content_type:
+                error_data = response.json()
+                if isinstance(error_data, dict):
+                    message = error_data.get("error") or error_data.get("message")
+                    if message:
+                        return str(message)
+                return str(error_data)
+            raw_text = getattr(response, "text", "")
+            body = raw_text.strip() if isinstance(raw_text, str) else ""
+            return body[:200] if body else f"HTTP {response.status_code}"
+        except Exception:
+            raw_text = getattr(response, "text", "")
+            body = raw_text if isinstance(raw_text, str) else ""
+            return f"HTTP {response.status_code}: {body[:200]}"
+
+    def _do_search(  # type: ignore[override]
+        self, query: str, base_url: str, max_results: int, days: int = 7
+    ) -> SearchResponse:
+        """Execute SearXNG search."""
+        try:
+            base = base_url.rstrip("/")
+            search_url = base if base.endswith("/search") else base + "/search"
+
+            if days <= 1:
+                time_range = "day"
+            elif days <= 7:
+                time_range = "week"
+            elif days <= 30:
+                time_range = "month"
+            else:
+                time_range = "year"
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            params = {
+                "q": query,
+                "format": "json",
+                "time_range": time_range,
+                "pageno": 1,
+            }
+
+            response = _get_with_retry(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code != 200:
+                error_msg = self._parse_http_error(response)
+                if response.status_code == 403:
+                    error_msg = (
+                        f"{error_msg}；SearXNG 实例可能未启用 JSON 输出（请检查 settings.yml），"
+                        "或实例/代理拒绝了本次访问"
+                    )
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            try:
+                data = response.json()
+            except Exception:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="响应JSON解析失败",
+                )
+
+            if not isinstance(data, dict):
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="响应格式无效",
+                )
+
+            raw = data.get("results", [])
+            if not isinstance(raw, list):
+                raw = []
+
+            results = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                url_val = item.get("url")
+                if not url_val:
+                    continue
+                raw_published_date = item.get("publishedDate")
+
+                snippet = (item.get("content") or item.get("description") or "")[:500]
+                published_date = None
+                if raw_published_date:
+                    try:
+                        dt = datetime.fromisoformat(raw_published_date.replace("Z", "+00:00"))
+                        published_date = dt.strftime("%Y-%m-%d")
+                    except (ValueError, AttributeError):
+                        published_date = raw_published_date
+
+                results.append(
+                    SearchResult(
+                        title=item.get("title", ""),
+                        snippet=snippet,
+                        url=url_val,
+                        source=self._extract_domain(url_val),
+                        published_date=published_date,
+                    )
+                )
+                if len(results) >= max_results:
+                    break
+
+            return SearchResponse(query=query, results=results, provider=self.name, success=True)
+
+        except requests.exceptions.Timeout:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="请求超时",
+            )
+        except requests.exceptions.RequestException as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"网络请求失败: {e}",
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"未知错误: {e}",
+            )
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """Extract domain from URL as source label."""
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace("www.", "")
+            return domain or "未知来源"
+        except Exception:
+            return "未知来源"
+
+
 class SearchService:
     """
     搜索服务
@@ -935,6 +1345,8 @@ class SearchService:
         tavily_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
+        minimax_keys: Optional[List[str]] = None,
+        searxng_base_urls: Optional[List[str]] = None,
         news_max_age_days: int = 3,
     ):
         """
@@ -945,6 +1357,8 @@ class SearchService:
             tavily_keys: Tavily API Key 列表
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
+            minimax_keys: MiniMax API Key 列表
+            searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             news_max_age_days: 新闻最大时效（天）
         """
         self._providers: List[BaseSearchProvider] = []
@@ -970,6 +1384,16 @@ class SearchService:
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
+
+        # 5. MiniMax（Coding Plan Web Search，结构化结果）
+        if minimax_keys:
+            self._providers.append(MiniMaxSearchProvider(minimax_keys))
+            logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
+
+        # 6. SearXNG（自建实例，无配额兜底，最后兜底）
+        if searxng_base_urls:
+            self._providers.append(SearXNGSearchProvider(searxng_base_urls))
+            logger.info(f"已配置 SearXNG 搜索，共 {len(searxng_base_urls)} 个实例")
         
         if not self._providers:
             logger.warning("未配置任何搜索引擎 API Key，新闻搜索功能将不可用")
@@ -1551,6 +1975,8 @@ def get_search_service() -> SearchService:
             tavily_keys=config.tavily_api_keys,
             brave_keys=config.brave_api_keys,
             serpapi_keys=config.serpapi_keys,
+            minimax_keys=config.minimax_api_keys,
+            searxng_base_urls=config.searxng_base_urls,
             news_max_age_days=config.news_max_age_days,
         )
     

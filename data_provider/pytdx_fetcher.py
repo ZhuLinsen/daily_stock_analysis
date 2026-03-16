@@ -28,7 +28,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
 import os
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,8 @@ class PytdxFetcher(BaseFetcher):
         ("59.173.18.140", 7709),   # 武汉
         ("180.153.39.51", 7709),   # 杭州
     ]
+    # Pytdx get_security_list returns at most 1000 items per page
+    SECURITY_LIST_PAGE_SIZE = 1000
     
     def __init__(self, hosts: Optional[List[Tuple[str, int]]] = None):
         """
@@ -229,6 +231,27 @@ class PytdxFetcher(BaseFetcher):
             return 1, code  # 上海
         else:
             return 0, code  # 深圳
+
+    def _build_stock_list_cache(self, api) -> None:
+        """
+        Build a full stock code -> name cache from paginated security lists.
+        """
+        self._stock_list_cache = {}
+
+        for market in (0, 1):
+            start = 0
+            while True:
+                stocks = api.get_security_list(market, start) or []
+                for stock in stocks:
+                    code = stock.get('code')
+                    name = stock.get('name')
+                    if code and name:
+                        self._stock_list_cache[code] = name
+
+                if len(stocks) < self.SECURITY_LIST_PAGE_SIZE:
+                    break
+
+                start += self.SECURITY_LIST_PAGE_SIZE
     
     @retry(
         stop=stop_after_attempt(3),
@@ -251,6 +274,16 @@ class PytdxFetcher(BaseFetcher):
         # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_us_code(stock_code):
             raise DataFetchError(f"PytdxFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+
+        # 港股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"PytdxFetcher 不支持港股 {stock_code}，请使用 AkshareFetcher")
+
+        # 北交所不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if is_bse_code(stock_code):
+            raise DataFetchError(
+                f"PytdxFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
+            )
         
         market, code = self._get_market_code(stock_code)
         
@@ -337,6 +370,10 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             股票名称，失败返回 None
         """
+        # 港股不支持（pytdx 不含港股数据）
+        if _is_hk_market(stock_code):
+            return None
+
         # 先检查缓存
         if stock_code in self._stock_name_cache:
             return self._stock_name_cache[stock_code]
@@ -347,13 +384,7 @@ class PytdxFetcher(BaseFetcher):
             with self._pytdx_session() as api:
                 # 获取股票列表（缓存）
                 if self._stock_list_cache is None:
-                    # 获取深圳和上海股票列表
-                    sz_stocks = api.get_security_list(0, 0)  # 深圳
-                    sh_stocks = api.get_security_list(1, 0)  # 上海
-                    
-                    self._stock_list_cache = {}
-                    for stock in (sz_stocks or []) + (sh_stocks or []):
-                        self._stock_list_cache[stock['code']] = stock['name']
+                    self._build_stock_list_cache(api)
                 
                 # 查找股票名称
                 name = self._stock_list_cache.get(code)
@@ -383,6 +414,10 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             实时行情数据字典，失败返回 None
         """
+        if is_bse_code(stock_code):
+            raise DataFetchError(
+                f"PytdxFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
+            )
         try:
             market, code = self._get_market_code(stock_code)
             

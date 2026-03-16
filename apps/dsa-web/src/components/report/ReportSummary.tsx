@@ -24,6 +24,10 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
   const recordId = report.meta.id;
 
   const { meta, summary, strategy, details } = report;
+  const modelUsed = (meta.modelUsed || '').trim();
+  const shouldShowModel = Boolean(
+    modelUsed && !['unknown', 'error', 'none', 'null', 'n/a'].includes(modelUsed.toLowerCase()),
+  );
 
   return (
     <div className="space-y-3 animate-fade-in">
@@ -42,6 +46,13 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
 
       {/* 透明度与追溯区 */}
       <ReportDetails details={details} recordId={recordId} />
+
+      {/* 分析模型标记（Issue #528）— 报告末尾 */}
+      {shouldShowModel && (
+        <p className="text-xs text-gray-500 mt-3">
+          分析模型: {modelUsed}
+        </p>
+      )}
     </div>
   );
 };

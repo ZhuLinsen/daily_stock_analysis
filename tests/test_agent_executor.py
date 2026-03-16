@@ -20,8 +20,15 @@ from unittest.mock import MagicMock, patch, call
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Keep this test runnable when optional LLM runtime deps are not installed.
+try:
+    import litellm  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["litellm"] = MagicMock()
+
 from src.agent.executor import AgentExecutor, AgentResult
 from src.agent.llm_adapter import LLMResponse, ToolCall
+from src.agent.runner import parse_dashboard_json, serialize_tool_result
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
 
 
@@ -251,7 +258,120 @@ class TestAgentExecutor(unittest.TestCase):
         result = executor.run("Test unknown tool")
 
         self.assertTrue(result.success)
+        self.assertEqual(len(result.tool_calls_log), 1)
         self.assertFalse(result.tool_calls_log[0]["success"])
+        self.assertFalse(result.tool_calls_log[0]["cached"])
+
+    def test_non_retriable_tool_failure_is_cached_across_hk_variants(self):
+        """Equivalent HK code variants should not re-execute a non-retriable failing tool."""
+        calls = []
+
+        def _quote(stock_code):
+            calls.append(stock_code)
+            return {
+                "error": f"No realtime quote available for {stock_code}",
+                "retriable": False,
+                "note": "Skip retry",
+            }
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="get_realtime_quote",
+                description="Get realtime quote",
+                parameters=[
+                    ToolParameter(name="stock_code", type="string", description="Stock code"),
+                ],
+                handler=_quote,
+            )
+        )
+        adapter = _make_mock_adapter()
+
+        adapter.call_with_tools.side_effect = [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(id="q1", name="get_realtime_quote", arguments={"stock_code": "hk01810"}),
+                ],
+                usage={"total_tokens": 10},
+                provider="openai",
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(id="q2", name="get_realtime_quote", arguments={"stock_code": "1810.HK"}),
+                ],
+                usage={"total_tokens": 10},
+                provider="openai",
+            ),
+            LLMResponse(
+                content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+                tool_calls=[],
+                usage={"total_tokens": 10},
+                provider="openai",
+            ),
+        ]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze HK01810")
+
+        self.assertTrue(result.success)
+        self.assertEqual(calls, ["hk01810"])
+        self.assertEqual(len(result.tool_calls_log), 2)
+        self.assertFalse(result.tool_calls_log[0]["cached"])
+        self.assertTrue(result.tool_calls_log[1]["cached"])
+
+    def test_model_trace_deduplicates_and_keeps_order(self):
+        """Model trace should keep call order and de-duplicate repeated models."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        step1 = LLMResponse(
+            content="first tool call",
+            tool_calls=[ToolCall(id="m1", name="echo", arguments={"message": "a"})],
+            usage={"total_tokens": 10},
+            provider="gemini",
+            model="gemini/gemini-2.0-flash",
+        )
+        step2 = LLMResponse(
+            content="second tool call",
+            tool_calls=[ToolCall(id="m2", name="echo", arguments={"message": "b"})],
+            usage={"total_tokens": 10},
+            provider="gemini",
+            model="gemini/gemini-2.0-flash",
+        )
+        step3 = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            tool_calls=[],
+            usage={"total_tokens": 10},
+            provider="openai",
+            model="openai/gpt-4o-mini",
+        )
+        adapter.call_with_tools.side_effect = [step1, step2, step3]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.model, "gemini/gemini-2.0-flash, openai/gpt-4o-mini")
+
+    def test_model_trace_skips_error_provider(self):
+        """Error provider placeholder should not appear in model trace."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="llm failed",
+            tool_calls=[],
+            usage={"total_tokens": 3},
+            provider="error",
+            model="",
+        )
+
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        result = executor.run("Analyze 600519")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.model, "")
 
 
 # ============================================================
@@ -259,35 +379,30 @@ class TestAgentExecutor(unittest.TestCase):
 # ============================================================
 
 class TestDashboardParsing(unittest.TestCase):
-    """Test _parse_dashboard with various input formats."""
-
-    def setUp(self):
-        self.executor = AgentExecutor(
-            ToolRegistry(), _make_mock_adapter(), max_steps=1
-        )
+    """Test parse_dashboard_json with various input formats."""
 
     def test_parse_markdown_json_block(self):
         content = f"Here is my analysis:\n```json\n{json.dumps(SAMPLE_DASHBOARD)}\n```\nDone."
-        result = self.executor._parse_dashboard(content)
+        result = parse_dashboard_json(content)
         self.assertIsNotNone(result)
         self.assertEqual(result["sentiment_score"], 75)
 
     def test_parse_raw_json(self):
         content = json.dumps(SAMPLE_DASHBOARD)
-        result = self.executor._parse_dashboard(content)
+        result = parse_dashboard_json(content)
         self.assertIsNotNone(result)
 
     def test_parse_json_in_text(self):
         content = f"Let me present: {json.dumps(SAMPLE_DASHBOARD)} — that's all."
-        result = self.executor._parse_dashboard(content)
+        result = parse_dashboard_json(content)
         self.assertIsNotNone(result)
 
     def test_parse_empty_content(self):
-        self.assertIsNone(self.executor._parse_dashboard(""))
-        self.assertIsNone(self.executor._parse_dashboard(None))
+        self.assertIsNone(parse_dashboard_json(""))
+        self.assertIsNone(parse_dashboard_json(None))
 
     def test_parse_no_json(self):
-        self.assertIsNone(self.executor._parse_dashboard("This is just plain text with no JSON"))
+        self.assertIsNone(parse_dashboard_json("This is just plain text with no JSON"))
 
 
 # ============================================================
@@ -295,29 +410,24 @@ class TestDashboardParsing(unittest.TestCase):
 # ============================================================
 
 class TestSerializeToolResult(unittest.TestCase):
-    """Test _serialize_tool_result for various types."""
-
-    def setUp(self):
-        self.executor = AgentExecutor(
-            ToolRegistry(), _make_mock_adapter(), max_steps=1
-        )
+    """Test serialize_tool_result for various types."""
 
     def test_serialize_none(self):
-        result = self.executor._serialize_tool_result(None)
+        result = serialize_tool_result(None)
         self.assertEqual(json.loads(result), {"result": None})
 
     def test_serialize_string(self):
-        result = self.executor._serialize_tool_result("hello")
+        result = serialize_tool_result("hello")
         self.assertEqual(result, "hello")
 
     def test_serialize_dict(self):
         d = {"key": "value", "num": 42}
-        result = self.executor._serialize_tool_result(d)
+        result = serialize_tool_result(d)
         self.assertEqual(json.loads(result), d)
 
     def test_serialize_list(self):
         lst = [1, 2, 3]
-        result = self.executor._serialize_tool_result(lst)
+        result = serialize_tool_result(lst)
         self.assertEqual(json.loads(result), lst)
 
     def test_serialize_dataclass(self):
@@ -326,7 +436,7 @@ class TestSerializeToolResult(unittest.TestCase):
             name: str = "test"
             value: int = 42
 
-        result = self.executor._serialize_tool_result(Sample())
+        result = serialize_tool_result(Sample())
         parsed = json.loads(result)
         self.assertEqual(parsed["name"], "test")
         self.assertEqual(parsed["value"], 42)

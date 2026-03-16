@@ -248,8 +248,6 @@ class MarketAnalyzer:
             return []
         
         all_news = []
-        today = datetime.now()
-        date_str = today.strftime('%Y年%m月%d日')
 
         # 按 region 使用不同的新闻搜索词
         search_queries = self.profile.news_queries
@@ -295,26 +293,16 @@ class MarketAnalyzer:
         # 构建 Prompt
         prompt = self._build_review_prompt(overview, news)
         
-        try:
-            logger.info("[大盘] 调用大模型生成复盘报告...")
-            
-            generation_config = {
-                'temperature': 0.7,
-                'max_output_tokens': 2048,
-            }
-            
-            review = self.analyzer._call_litellm(prompt, generation_config)
-            
-            if review:
-                logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")
-                # Inject structured data tables into LLM prose sections
-                return self._inject_data_into_review(review, overview)
-            else:
-                logger.warning("[大盘] 大模型返回为空")
-                return self._generate_template_review(overview, news)
-                
-        except Exception as e:
-            logger.error(f"[大盘] 大模型生成复盘报告失败: {e}")
+        logger.info("[大盘] 调用大模型生成复盘报告...")
+        # Use the public generate_text() entry point — never access private analyzer attributes.
+        review = self.analyzer.generate_text(prompt, max_tokens=2048, temperature=0.7)
+
+        if review:
+            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+            # Inject structured data tables into LLM prose sections
+            return self._inject_data_into_review(review, overview)
+        else:
+            logger.warning("[大盘] 大模型返回为空，使用模板报告")
             return self._generate_template_review(overview, news)
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:

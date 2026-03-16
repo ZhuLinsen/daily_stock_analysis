@@ -61,9 +61,10 @@ def get_tool_registry():
     from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
     from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
     from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+    from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
 
     registry = ToolRegistry()
-    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS:
+    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS:
         registry.register(tool_fn)
 
     _TOOL_REGISTRY = registry
@@ -114,7 +115,11 @@ def get_skill_manager(config=None):
 
 
 def build_agent_executor(config=None, skills: Optional[List[str]] = None):
-    """Build and return a configured AgentExecutor.
+    """Build and return a configured AgentExecutor (or future orchestrator).
+
+    When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
+    multiple specialised agents. Otherwise it returns the legacy single-agent
+    executor.
 
     Args:
         config: Application config object.  When *None*, ``get_config()`` is
@@ -130,7 +135,8 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         from src.config import get_config
         config = get_config()
 
-    from src.agent.executor import AgentExecutor
+    arch = getattr(config, "agent_arch", "single")
+
     from src.agent.llm_adapter import LLMToolAdapter
 
     registry = get_tool_registry()
@@ -138,14 +144,41 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
 
     skills_to_activate = skills if skills is not None else (getattr(config, "agent_skills", None) or DEFAULT_AGENT_SKILLS)
     skill_manager.activate(skills_to_activate if skills_to_activate else ["all"])
-    logger.info("[AgentFactory] Activated strategies: %s", skills_to_activate)
+    logger.info("[AgentFactory] Activated strategies: %s (arch=%s)", skills_to_activate, arch)
 
     llm_adapter = LLMToolAdapter(config)
+
+    if arch == "multi":
+        return _build_orchestrator(config, registry, llm_adapter, skill_manager)
+
+    from src.agent.executor import AgentExecutor
     return AgentExecutor(
         tool_registry=registry,
         llm_adapter=llm_adapter,
         skill_instructions=skill_manager.get_skill_instructions(),
         max_steps=getattr(config, "agent_max_steps", 10),
+    )
+
+
+def _build_orchestrator(config, registry, llm_adapter, skill_manager):
+    """Build and return an :class:`AgentOrchestrator` (multi-agent mode).
+
+    The orchestrator presents the same ``run()`` / ``chat()`` interface as
+    :class:`AgentExecutor` so callers need no changes.
+    """
+    from src.agent.orchestrator import AgentOrchestrator
+
+    mode = getattr(config, "agent_orchestrator_mode", "standard")
+    logger.info("[AgentFactory] Building AgentOrchestrator (mode=%s)", mode)
+
+    return AgentOrchestrator(
+        tool_registry=registry,
+        llm_adapter=llm_adapter,
+        skill_instructions=skill_manager.get_skill_instructions(),
+        max_steps=getattr(config, "agent_max_steps", 10),
+        mode=mode,
+        skill_manager=skill_manager,
+        config=config,
     )
 
 

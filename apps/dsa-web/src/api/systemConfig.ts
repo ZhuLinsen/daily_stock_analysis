@@ -1,40 +1,52 @@
 import apiClient from './index';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
 import type {
   SystemConfigConflictResponse,
   SystemConfigResponse,
   SystemConfigSchemaResponse,
   SystemConfigValidationErrorResponse,
+  TestLLMChannelRequest,
+  TestLLMChannelResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
   ValidateSystemConfigRequest,
   ValidateSystemConfigResponse,
 } from '../types/systemConfig';
 
-type ApiErrorPayload = {
-  error?: string;
-  message?: string;
-  issues?: unknown;
-  current_config_version?: string;
-};
-
 export class SystemConfigValidationError extends Error {
   issues: SystemConfigValidationErrorResponse['issues'];
+  parsedError: ParsedApiError;
 
-  constructor(message: string, issues: SystemConfigValidationErrorResponse['issues']) {
+  constructor(message: string, issues: SystemConfigValidationErrorResponse['issues'], parsedError?: ParsedApiError) {
     super(message);
     this.name = 'SystemConfigValidationError';
     this.issues = issues;
+    this.parsedError = parsedError ?? createParsedApiError({
+      title: '配置校验失败',
+      message,
+      rawMessage: message,
+      status: 400,
+      category: 'http_error',
+    });
   }
 }
 
 export class SystemConfigConflictError extends Error {
   currentConfigVersion?: string;
+  parsedError: ParsedApiError;
 
-  constructor(message: string, currentConfigVersion?: string) {
+  constructor(message: string, currentConfigVersion?: string, parsedError?: ParsedApiError) {
     super(message);
     this.name = 'SystemConfigConflictError';
     this.currentConfigVersion = currentConfigVersion;
+    this.parsedError = parsedError ?? createParsedApiError({
+      title: '配置版本冲突',
+      message,
+      rawMessage: message,
+      status: 409,
+      category: 'http_error',
+    });
   }
 }
 
@@ -59,13 +71,16 @@ function toSnakeValidatePayload(payload: ValidateSystemConfigRequest): Record<st
   };
 }
 
-function extractApiMessage(error: unknown, fallback: string): string {
-  if (!error || typeof error !== 'object' || !('response' in error)) {
-    return fallback;
-  }
-
-  const response = (error as { response?: { data?: ApiErrorPayload } }).response;
-  return response?.data?.message || fallback;
+function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<string, unknown> {
+  return {
+    name: payload.name,
+    protocol: payload.protocol,
+    base_url: payload.baseUrl ?? '',
+    api_key: payload.apiKey ?? '',
+    models: payload.models,
+    enabled: payload.enabled ?? true,
+    timeout_seconds: payload.timeoutSeconds ?? 20,
+  };
 }
 
 export const systemConfigApi = {
@@ -89,6 +104,14 @@ export const systemConfigApi = {
     return toCamelCase<ValidateSystemConfigResponse>(response.data);
   },
 
+  async testLLMChannel(payload: TestLLMChannelRequest): Promise<TestLLMChannelResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/llm/test-channel',
+      toSnakeTestChannelPayload(payload),
+    );
+    return toCamelCase<TestLLMChannelResponse>(response.data);
+  },
+
   async update(payload: UpdateSystemConfigRequest): Promise<UpdateSystemConfigResponse> {
     try {
       const response = await apiClient.put<Record<string, unknown>>(
@@ -97,28 +120,31 @@ export const systemConfigApi = {
       );
       return toCamelCase<UpdateSystemConfigResponse>(response.data);
     } catch (error: unknown) {
+      const parsed = getParsedApiError(error);
       if (error && typeof error === 'object' && 'response' in error) {
         const status = (error as { response?: { status?: number } }).response?.status;
-        const payloadData = (error as { response?: { data?: ApiErrorPayload } }).response?.data;
+        const payloadData = (error as { response?: { data?: unknown } }).response?.data;
 
         if (status === 400) {
           const validationError = toCamelCase<SystemConfigValidationErrorResponse>(payloadData ?? {});
           throw new SystemConfigValidationError(
-            validationError.message || '配置校验失败',
+            parsed.message || validationError.message || '配置校验失败',
             validationError.issues || [],
+            parsed,
           );
         }
 
         if (status === 409) {
           const conflict = toCamelCase<SystemConfigConflictResponse>(payloadData ?? {});
           throw new SystemConfigConflictError(
-            conflict.message || '配置版本冲突',
+            parsed.message || conflict.message || '配置版本冲突',
             conflict.currentConfigVersion,
+            parsed,
           );
         }
       }
 
-      throw new Error(extractApiMessage(error, '更新系统配置失败'));
+      throw error;
     }
   },
 };

@@ -6,8 +6,9 @@
 // ============ 请求类型 ============
 
 export interface AnalysisRequest {
-  stockCode: string;
-  reportType?: 'simple' | 'detailed';
+  stockCode?: string;
+  stockCodes?: string[];
+  reportType?: 'simple' | 'detailed' | 'full' | 'brief';
   forceRefresh?: boolean;
   asyncMode?: boolean;
 }
@@ -20,10 +21,11 @@ export interface ReportMeta {
   queryId: string;
   stockCode: string;
   stockName: string;
-  reportType: 'simple' | 'detailed';
+  reportType: 'simple' | 'detailed' | 'full' | 'brief';
   createdAt: string;
   currentPrice?: number;
   changePct?: number;
+  modelUsed?: string;  // 分析使用的 LLM 模型（Issue #528）
 }
 
 /** 情绪标签 */
@@ -78,6 +80,29 @@ export interface TaskAccepted {
   status: 'pending' | 'processing';
   message?: string;
 }
+
+export interface BatchTaskAcceptedItem {
+  taskId: string;
+  stockCode: string;
+  status: 'pending' | 'processing';
+  message?: string;
+}
+
+export interface BatchDuplicateTaskItem {
+  stockCode: string;
+  existingTaskId: string;
+  message: string;
+}
+
+export interface BatchTaskAcceptedResponse {
+  accepted: BatchTaskAcceptedItem[];
+  duplicates: BatchDuplicateTaskItem[];
+  message: string;
+}
+
+export type AnalyzeAsyncResponse = TaskAccepted | BatchTaskAcceptedResponse;
+
+export type AnalyzeResponse = AnalysisResult | AnalyzeAsyncResponse;
 
 /** 任务状态 */
 export interface TaskStatus {

@@ -22,12 +22,16 @@ lark-oapi>=1.0.0             # 飞书API
 
 # 数据处理
 pandas>=2.0.0               # 数据分析
+pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
+openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
 numpy>=1.24.0               # 数值计算
 json-repair>=0.55.1         # JSON 修复
 
 # AI 分析
 litellm>=1.80.10            # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
+PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
 
 # 搜索引擎（用于获取股票新闻）
 tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
@@ -49,6 +53,9 @@ discord.py>=2.0.0              # Discord 机器人开发库
 # Web Content Extraction
 newspaper3k>=0.2.8          # Article extraction
 lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml versions
+
+# 报告模板引擎（Report Engine P0）
+jinja2>=3.1.0               # Jinja2 template engine for report rendering
 
 # FastAPI Web 框架
 fastapi>=0.109.0            # 现代 Python Web 框架

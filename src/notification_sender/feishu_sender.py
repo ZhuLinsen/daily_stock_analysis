@@ -8,9 +8,10 @@
 import logging
 from typing import Dict, Any
 import requests
+import time
 
 from src.config import Config
-from src.formatters import format_feishu_markdown, truncate_to_bytes
+from src.formatters import format_feishu_markdown, chunk_content_by_max_bytes
 
 
 logger = logging.getLogger(__name__)
@@ -87,62 +88,7 @@ class FeishuSender:
         Returns:
             是否全部发送成功
         """
-        import time
-        
-        def get_bytes(s: str) -> int:
-            """获取字符串的 UTF-8 字节数"""
-            return len(s.encode('utf-8'))
-        
-        # 智能分割：优先按 "---" 分隔（股票之间的分隔线）
-        # 如果没有分隔线，按 "### " 标题分割（每只股票的标题）
-        if "\n---\n" in content:
-            sections = content.split("\n---\n")
-            separator = "\n---\n"
-        elif "\n### " in content:
-            # 按 ### 分割，但保留 ### 前缀
-            parts = content.split("\n### ")
-            sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
-            separator = "\n"
-        else:
-            # 无法智能分割，按行强制分割
-            return self._send_feishu_force_chunked(content, max_bytes)
-        
-        chunks = []
-        current_chunk = []
-        current_bytes = 0
-        separator_bytes = get_bytes(separator)
-        
-        for section in sections:
-            section_bytes = get_bytes(section) + separator_bytes
-            
-            # 如果单个 section 就超长，需要强制截断
-            if section_bytes > max_bytes:
-                # 先发送当前积累的内容
-                if current_chunk:
-                    chunks.append(separator.join(current_chunk))
-                    current_chunk = []
-                    current_bytes = 0
-                
-                # 强制截断这个超长 section（按字节截断）
-                truncated = truncate_to_bytes(section, max_bytes - 200)
-                truncated += "\n\n...(本段内容过长已截断)"
-                chunks.append(truncated)
-                continue
-            
-            # 检查加入后是否超长
-            if current_bytes + section_bytes > max_bytes:
-                # 保存当前块，开始新块
-                if current_chunk:
-                    chunks.append(separator.join(current_chunk))
-                current_chunk = [section]
-                current_bytes = section_bytes
-            else:
-                current_chunk.append(section)
-                current_bytes += section_bytes
-        
-        # 添加最后一块
-        if current_chunk:
-            chunks.append(separator.join(current_chunk))
+        chunks = chunk_content_by_max_bytes(content, max_bytes, add_page_marker=True)
         
         # 分批发送
         total_chunks = len(chunks)
@@ -151,15 +97,8 @@ class FeishuSender:
         logger.info(f"飞书分批发送：共 {total_chunks} 批")
         
         for i, chunk in enumerate(chunks):
-            # 添加分页标记
-            if total_chunks > 1:
-                page_marker = f"\n\n📄 ({i+1}/{total_chunks})"
-                chunk_with_marker = chunk + page_marker
-            else:
-                chunk_with_marker = chunk
-            
             try:
-                if self._send_feishu_message(chunk_with_marker):
+                if self._send_feishu_message(chunk):
                     success_count += 1
                     logger.info(f"飞书第 {i+1}/{total_chunks} 批发送成功")
                 else:
@@ -168,53 +107,6 @@ class FeishuSender:
                 logger.error(f"飞书第 {i+1}/{total_chunks} 批发送异常: {e}")
             
             # 批次间隔，避免触发频率限制
-            if i < total_chunks - 1:
-                time.sleep(1)
-        
-        return success_count == total_chunks
-    
-    def _send_feishu_force_chunked(self, content: str, max_bytes: int) -> bool:
-        """
-        强制按字节分割发送（无法智能分割时的 fallback）
-        
-        Args:
-            content: 完整消息内容
-            max_bytes: 单条消息最大字节数
-        """
-        import time
-        
-        chunks = []
-        current_chunk = ""
-        
-        # 按行分割，确保不会在多字节字符中间截断
-        lines = content.split('\n')
-        
-        for line in lines:
-            test_chunk = current_chunk + ('\n' if current_chunk else '') + line
-            if len(test_chunk.encode('utf-8')) > max_bytes - 100:  # 预留空间给分页标记
-                if current_chunk:
-                    chunks.append(current_chunk)
-                current_chunk = line
-            else:
-                current_chunk = test_chunk
-        
-        if current_chunk:
-            chunks.append(current_chunk)
-        
-        total_chunks = len(chunks)
-        success_count = 0
-        
-        logger.info(f"飞书强制分批发送：共 {total_chunks} 批")
-        
-        for i, chunk in enumerate(chunks):
-            page_marker = f"\n\n📄 ({i+1}/{total_chunks})" if total_chunks > 1 else ""
-            
-            try:
-                if self._send_feishu_message(chunk + page_marker):
-                    success_count += 1
-            except Exception as e:
-                logger.error(f"飞书第 {i+1}/{total_chunks} 批发送异常: {e}")
-            
             if i < total_chunks - 1:
                 time.sleep(1)
         

@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
+import requests
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -42,7 +43,7 @@ from tenacity import (
 
 from patch.eastmoney_patch import eastmoney_patch
 from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
@@ -56,6 +57,9 @@ RealtimeQuote = UnifiedRealtimeQuote
 
 
 logger = logging.getLogger(__name__)
+
+SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
+TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 
 
 # User-Agent 池，用于随机轮换
@@ -121,7 +125,10 @@ def _is_hk_code(stock_code: str) -> bool:
         True 表示是港股代码，False 表示不是港股代码
     """
     # 去除可能的 'hk' 前缀并检查是否为纯数字
-    code = stock_code.lower()
+    code = stock_code.strip().lower()
+    if code.endswith('.hk'):
+        numeric_part = code[:-3]
+        return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
     if code.startswith('hk'):
         # 带 hk 前缀的一定是港股，去掉前缀后应为纯数字（1-5位）
         numeric_part = code[2:]
@@ -168,6 +175,80 @@ def _is_us_code(stock_code: str) -> bool:
         False
     """
     return is_us_stock_code(stock_code)
+
+
+def _to_sina_tx_symbol(stock_code: str) -> str:
+    """Convert 6-digit A-share code to sh/sz/bj prefixed symbol for Sina/Tencent APIs."""
+    base = (stock_code.strip().split(".")[0] if "." in stock_code else stock_code).strip()
+    if is_bse_code(base):
+        return f"bj{base}"
+    # Shanghai: 60xxxx, 5xxxx (ETF), 90xxxx (B-shares)
+    if base.startswith(("6", "5", "90")):
+        return f"sh{base}"
+    return f"sz{base}"
+
+
+def _classify_realtime_http_error(exc: Exception) -> Tuple[str, str]:
+    """
+    Classify Sina/Tencent realtime quote failures into stable categories.
+    """
+    detail = str(exc).strip() or type(exc).__name__
+    lowered = detail.lower()
+
+    remote_disconnect_keywords = (
+        "remotedisconnected",
+        "remote end closed connection without response",
+        "connection aborted",
+        "connection broken",
+        "protocolerror",
+        "chunkedencodingerror",
+    )
+    timeout_keywords = (
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "connecttimeout",
+    )
+    rate_limit_keywords = (
+        "banned",
+        "blocked",
+        "频率",
+        "rate limit",
+        "too many requests",
+        "429",
+        "限制",
+        "forbidden",
+        "403",
+    )
+
+    if any(keyword in lowered for keyword in remote_disconnect_keywords):
+        return "remote_disconnect", detail
+    if isinstance(exc, (TimeoutError, requests.exceptions.Timeout)) or any(
+        keyword in lowered for keyword in timeout_keywords
+    ):
+        return "timeout", detail
+    if any(keyword in lowered for keyword in rate_limit_keywords):
+        return "rate_limit_or_anti_bot", detail
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "request_error", detail
+    return "unknown_request_error", detail
+
+
+def _build_realtime_failure_message(
+    source_name: str,
+    endpoint: str,
+    stock_code: str,
+    symbol: str,
+    category: str,
+    detail: str,
+    elapsed: float,
+    error_type: str,
+) -> str:
+    return (
+        f"{source_name} 实时行情接口失败: endpoint={endpoint}, stock_code={stock_code}, "
+        f"symbol={symbol}, category={category}, error_type={error_type}, "
+        f"elapsed={elapsed:.2f}s, detail={detail}"
+    )
 
 
 class AkshareFetcher(BaseFetcher):
@@ -358,11 +439,8 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        # 转换代码格式：sh600000, sz000001
-        if stock_code.startswith(('6', '5', '9')):
-            symbol = f"sh{stock_code}"
-        else:
-            symbol = f"sz{stock_code}"
+        # 转换代码格式：sh600000, sz000001, bj920748
+        symbol = _to_sina_tx_symbol(stock_code)
 
         self._enforce_rate_limit()
 
@@ -407,11 +485,8 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
-        # 转换代码格式：sh600000, sz000001
-        if stock_code.startswith(('6', '5', '9')):
-            symbol = f"sh{stock_code}"
-        else:
-            symbol = f"sz{stock_code}"
+        # 转换代码格式：sh600000, sz000001, bj920748
+        symbol = _to_sina_tx_symbol(stock_code)
 
         self._enforce_rate_limit()
 
@@ -719,14 +794,8 @@ class AkshareFetcher(BaseFetcher):
         Returns:
             UnifiedRealtimeQuote 对象，获取失败返回 None
         """
-        # 检查熔断器状态
         circuit_breaker = get_realtime_circuit_breaker()
-        source_key = f"akshare_{source}"
-        
-        if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-            return None
-        
+
         # 根据代码类型选择不同的获取方法
         if _is_us_code(stock_code):
             # 美股不使用 Akshare，由 YfinanceFetcher 处理
@@ -735,8 +804,16 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            source_key = "akshare_etf"
+            if not circuit_breaker.is_available(source_key):
+                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+                return None
             return self._get_etf_realtime_quote(stock_code)
         else:
+            source_key = f"akshare_{source}"
+            if not circuit_breaker.is_available(source_key):
+                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+                return None
             # 普通 A 股：根据 source 选择数据源
             if source == "sina":
                 return self._get_stock_realtime_quote_sina(stock_code)
@@ -858,52 +935,91 @@ class AkshareFetcher(BaseFetcher):
         """
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "akshare_sina"
+        symbol = _to_sina_tx_symbol(stock_code)
+        url = f"http://{SINA_REALTIME_ENDPOINT}={symbol}"
+        api_start = time.time()
         
         try:
-            import requests
-            
-            # 判断市场前缀
-            if stock_code.startswith(('6', '5', '9')):
-                symbol = f"sh{stock_code}"
-            else:
-                symbol = f"sz{stock_code}"
-            
-            url = f"http://hq.sinajs.cn/list={symbol}"
             headers = {
                 'Referer': 'http://finance.sina.com.cn',
                 'User-Agent': random.choice(USER_AGENTS)
             }
             
-            logger.info(f"[API调用] 新浪财经接口获取 {stock_code} 实时行情...")
+            logger.info(
+                f"[API调用] 新浪财经接口获取 {stock_code} 实时行情: endpoint={SINA_REALTIME_ENDPOINT}, symbol={symbol}"
+            )
             
             self._enforce_rate_limit()
             response = requests.get(url, headers=headers, timeout=10)
             response.encoding = 'gbk'
+            api_elapsed = time.time() - api_start
             
             if response.status_code != 200:
-                logger.warning(f"[API错误] 新浪接口返回状态码 {response.status_code}")
-                circuit_breaker.record_failure(source_key, f"HTTP {response.status_code}")
+                failure_message = _build_realtime_failure_message(
+                    source_name="新浪",
+                    endpoint=SINA_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="http_status",
+                    detail=f"HTTP {response.status_code}",
+                    elapsed=api_elapsed,
+                    error_type="HTTPStatus",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             # 解析数据：var hq_str_sh600519="贵州茅台,1866.000,1870.000,..."
             content = response.text.strip()
             if '=""' in content or not content:
-                logger.warning(f"[API返回] 新浪接口未找到 {stock_code} 数据")
+                failure_message = _build_realtime_failure_message(
+                    source_name="新浪",
+                    endpoint=SINA_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="empty_response",
+                    detail="empty quote payload",
+                    elapsed=api_elapsed,
+                    error_type="EmptyResponse",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             # 提取引号内的数据
             data_start = content.find('"')
             data_end = content.rfind('"')
             if data_start == -1 or data_end == -1:
-                logger.warning(f"[API返回] 新浪接口数据格式异常")
-                circuit_breaker.record_failure(source_key, "数据格式异常")
+                failure_message = _build_realtime_failure_message(
+                    source_name="新浪",
+                    endpoint=SINA_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="malformed_payload",
+                    detail="quote payload missing quotes",
+                    elapsed=api_elapsed,
+                    error_type="MalformedPayload",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             data_str = content[data_start+1:data_end]
             fields = data_str.split(',')
             
             if len(fields) < 32:
-                logger.warning(f"[API返回] 新浪接口数据字段不足: {len(fields)}")
+                failure_message = _build_realtime_failure_message(
+                    source_name="新浪",
+                    endpoint=SINA_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="insufficient_fields",
+                    detail=f"field_count={len(fields)}",
+                    elapsed=api_elapsed,
+                    error_type="InsufficientFields",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             circuit_breaker.record_success(source_key)
@@ -935,13 +1051,27 @@ class AkshareFetcher(BaseFetcher):
                 pre_close=pre_close,
             )
             
-            logger.info(f"[实时行情-新浪] {stock_code} {quote.name}: 价格={quote.price}, "
-                       f"涨跌={quote.change_pct:.2f}%" if quote.change_pct else "")
+            logger.info(
+                f"[实时行情-新浪] {stock_code} {quote.name}: endpoint={SINA_REALTIME_ENDPOINT}, "
+                f"价格={quote.price}, 涨跌={quote.change_pct}, 成交量={quote.volume}, elapsed={api_elapsed:.2f}s"
+            )
             return quote
             
         except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情(新浪)失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
+            api_elapsed = time.time() - api_start
+            category, detail = _classify_realtime_http_error(e)
+            failure_message = _build_realtime_failure_message(
+                source_name="新浪",
+                endpoint=SINA_REALTIME_ENDPOINT,
+                stock_code=stock_code,
+                symbol=symbol,
+                category=category,
+                detail=detail,
+                elapsed=api_elapsed,
+                error_type=type(e).__name__,
+            )
+            logger.error(failure_message)
+            circuit_breaker.record_failure(source_key, failure_message)
             return None
     
     def _get_stock_realtime_quote_tencent(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
@@ -955,59 +1085,98 @@ class AkshareFetcher(BaseFetcher):
         接口格式：http://qt.gtimg.cn/q=sh600519,sz000001
         """
         circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "tencent"
+        source_key = "akshare_tencent"
+        symbol = _to_sina_tx_symbol(stock_code)
+        url = f"http://{TENCENT_REALTIME_ENDPOINT}={symbol}"
+        api_start = time.time()
         
         try:
-            import requests
-            
-            # 判断市场前缀
-            if stock_code.startswith(('6', '5', '9')):
-                symbol = f"sh{stock_code}"
-            else:
-                symbol = f"sz{stock_code}"
-            
-            url = f"http://qt.gtimg.cn/q={symbol}"
             headers = {
                 'Referer': 'http://finance.qq.com',
                 'User-Agent': random.choice(USER_AGENTS)
             }
             
-            logger.info(f"[API调用] 腾讯财经接口获取 {stock_code} 实时行情...")
+            logger.info(
+                f"[API调用] 腾讯财经接口获取 {stock_code} 实时行情: endpoint={TENCENT_REALTIME_ENDPOINT}, symbol={symbol}"
+            )
             
             self._enforce_rate_limit()
             response = requests.get(url, headers=headers, timeout=10)
             response.encoding = 'gbk'
+            api_elapsed = time.time() - api_start
             
             if response.status_code != 200:
-                logger.warning(f"[API错误] 腾讯接口返回状态码 {response.status_code}")
-                circuit_breaker.record_failure(source_key, f"HTTP {response.status_code}")
+                failure_message = _build_realtime_failure_message(
+                    source_name="腾讯",
+                    endpoint=TENCENT_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="http_status",
+                    detail=f"HTTP {response.status_code}",
+                    elapsed=api_elapsed,
+                    error_type="HTTPStatus",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             content = response.text.strip()
             if '=""' in content or not content:
-                logger.warning(f"[API返回] 腾讯接口未找到 {stock_code} 数据")
+                failure_message = _build_realtime_failure_message(
+                    source_name="腾讯",
+                    endpoint=TENCENT_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="empty_response",
+                    detail="empty quote payload",
+                    elapsed=api_elapsed,
+                    error_type="EmptyResponse",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             # 提取数据
             data_start = content.find('"')
             data_end = content.rfind('"')
             if data_start == -1 or data_end == -1:
-                logger.warning(f"[API返回] 腾讯接口数据格式异常")
-                circuit_breaker.record_failure(source_key, "数据格式异常")
+                failure_message = _build_realtime_failure_message(
+                    source_name="腾讯",
+                    endpoint=TENCENT_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="malformed_payload",
+                    detail="quote payload missing quotes",
+                    elapsed=api_elapsed,
+                    error_type="MalformedPayload",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             data_str = content[data_start+1:data_end]
             fields = data_str.split('~')
-            
+
             if len(fields) < 45:
-                logger.warning(f"[API返回] 腾讯接口数据字段不足: {len(fields)}")
+                failure_message = _build_realtime_failure_message(
+                    source_name="腾讯",
+                    endpoint=TENCENT_REALTIME_ENDPOINT,
+                    stock_code=stock_code,
+                    symbol=symbol,
+                    category="insufficient_fields",
+                    detail=f"field_count={len(fields)}",
+                    elapsed=api_elapsed,
+                    error_type="InsufficientFields",
+                )
+                logger.warning(failure_message)
+                circuit_breaker.record_failure(source_key, failure_message)
                 return None
             
             circuit_breaker.record_success(source_key)
             
             # 腾讯数据字段顺序（完整）：
             # 1:名称 2:代码 3:最新价 4:昨收 5:今开 6:成交量(手) 7:外盘 8:内盘
-            # 9-28:买卖五档 30:时间戳 31:涨跌额 32:涨跌幅(%) 33:今开 34:最高 35:最低/成交量/成交额
+            # 9-28:买卖五档 30:时间戳 31:涨跌额 32:涨跌幅(%) 33:最高 34:最低 35:收盘/成交量/成交额
             # 36:成交量(手) 37:成交额(万) 38:换手率(%) 39:市盈率 43:振幅(%)
             # 44:流通市值(亿) 45:总市值(亿) 46:市净率 47:涨停价 48:跌停价 49:量比
             # 使用 realtime_types.py 中的统一转换函数
@@ -1020,8 +1189,8 @@ class AkshareFetcher(BaseFetcher):
                 change_amount=safe_float(fields[31]) if len(fields) > 31 else None,
                 volume=safe_int(fields[6]) * 100 if fields[6] else None,  # 腾讯返回的是手，转为股
                 open_price=safe_float(fields[5]),
-                high=safe_float(fields[34]) if len(fields) > 34 else None,
-                low=safe_float(fields[35].split('/')[0]) if len(fields) > 35 and '/' in str(fields[35]) else safe_float(fields[35]) if len(fields) > 35 else None,
+                high=safe_float(fields[33]) if len(fields) > 33 else None,  # 修正：字段 33 是最高价
+                low=safe_float(fields[34]) if len(fields) > 34 else None,  # 修正：字段 34 是最低价
                 pre_close=safe_float(fields[4]),
                 turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
                 amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
@@ -1032,13 +1201,28 @@ class AkshareFetcher(BaseFetcher):
                 total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,  # 总市值(亿->元)
             )
             
-            logger.info(f"[实时行情-腾讯] {stock_code} {quote.name}: 价格={quote.price}, "
-                       f"涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
+            logger.info(
+                f"[实时行情-腾讯] {stock_code} {quote.name}: endpoint={TENCENT_REALTIME_ENDPOINT}, "
+                f"价格={quote.price}, 涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
+                f"换手率={quote.turnover_rate}%, elapsed={api_elapsed:.2f}s"
+            )
             return quote
             
         except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情(腾讯)失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
+            api_elapsed = time.time() - api_start
+            category, detail = _classify_realtime_http_error(e)
+            failure_message = _build_realtime_failure_message(
+                source_name="腾讯",
+                endpoint=TENCENT_REALTIME_ENDPOINT,
+                stock_code=stock_code,
+                symbol=symbol,
+                category=category,
+                detail=detail,
+                elapsed=api_elapsed,
+                error_type=type(e).__name__,
+            )
+            logger.error(failure_message)
+            circuit_breaker.record_failure(source_key, failure_message)
             return None
     
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
@@ -1122,9 +1306,9 @@ class AkshareFetcher(BaseFetcher):
                 volume_ratio=safe_float(row.get('量比')),
                 turnover_rate=safe_float(row.get('换手率')),
                 amplitude=safe_float(row.get('振幅')),
-                open_price=safe_float(row.get('今开')),
-                high=safe_float(row.get('最高')),
-                low=safe_float(row.get('最低')),
+                open_price=safe_float(row.get('开盘价')),
+                high=safe_float(row.get('最高价')),
+                low=safe_float(row.get('最低价')),
                 total_mv=safe_float(row.get('总市值')),
                 circ_mv=safe_float(row.get('流通市值')),
                 high_52w=safe_float(row.get('52周最高')),
@@ -1156,6 +1340,10 @@ class AkshareFetcher(BaseFetcher):
         import akshare as ak
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "akshare_hk"
+
+        if not circuit_breaker.is_available(source_key):
+            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            return None
         
         try:
             # 防封禁策略
@@ -1163,7 +1351,12 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
             
             # 确保代码格式正确（5位数字）
-            code = stock_code.lower().replace('hk', '').zfill(5)
+            raw_code = stock_code.strip().lower()
+            if raw_code.endswith('.hk'):
+                raw_code = raw_code[:-3]
+            if raw_code.startswith('hk'):
+                raw_code = raw_code[2:]
+            code = raw_code.zfill(5)
             
             logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
             import time as _time
@@ -1234,6 +1427,11 @@ class AkshareFetcher(BaseFetcher):
         # 美股没有筹码分布数据（Akshare 不支持）
         if _is_us_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是美股，无筹码分布数据")
+            return None
+
+        # 港股没有筹码分布数据（stock_cyq_em 是 A 股专属接口）
+        if _is_hk_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 是港股，无筹码分布数据")
             return None
 
         # ETF/指数没有筹码分布数据
@@ -1404,7 +1602,7 @@ class AkshareFetcher(BaseFetcher):
             logger.info("[API调用] ak.stock_zh_a_spot_em() 获取市场统计...")
             df = ak.stock_zh_a_spot_em()
             if df is not None and not df.empty:
-                return self._calc_market_stats(df, change_col='涨跌幅', amount_col='成交额')
+                return self._calc_market_stats(df)
         except Exception as e:
             logger.warning(f"[Akshare] 东财接口获取市场统计失败: {e}，尝试新浪接口")
 
@@ -1416,20 +1614,7 @@ class AkshareFetcher(BaseFetcher):
             logger.info("[API调用] ak.stock_zh_a_spot() 获取市场统计(新浪)...")
             df = ak.stock_zh_a_spot()
             if df is not None and not df.empty:
-                change_col = None
-                for col in ['change_percent', 'changepercent', '涨跌幅', 'trade_ratio']:
-                    if col in df.columns:
-                        change_col = col
-                        break
-
-                amount_col = None
-                for col in ['amount', '成交额', 'trade_amount']:
-                    if col in df.columns:
-                        amount_col = col
-                        break
-
-                if change_col:
-                    return self._calc_market_stats(df, change_col=change_col, amount_col=amount_col)
+                return self._calc_market_stats(df)
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取市场统计也失败: {e}")
 
@@ -1438,25 +1623,90 @@ class AkshareFetcher(BaseFetcher):
     def _calc_market_stats(
         self,
         df: pd.DataFrame,
-        change_col: str,
-        amount_col: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        ) -> Optional[Dict[str, Any]]:
         """从行情 DataFrame 计算涨跌统计。"""
-        if change_col not in df.columns:
-            return None
+        import numpy as np
 
-        df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+        df = df.copy()
+        
+        # 1. 提取基础比对数据：最新价、昨收
+        # 兼容不同接口返回的列名 sina/em efinance tushare xtdata
+        code_col = next((c for c in ['代码', '股票代码', 'ts_code','stock_code'] if c in df.columns), None)
+        name_col = next((c for c in ['名称', '股票名称','name','name'] if c in df.columns), None)
+        close_col = next((c for c in ['最新价', '最新价', 'close','lastPrice'] if c in df.columns), None)
+        pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close','lastClose'] if c in df.columns), None)
+        amount_col = next((c for c in ['成交额', '成交额', 'amount','amount'] if c in df.columns), None) 
+        
+        limit_up_count = 0
+        limit_down_count = 0
+        up_count = 0
+        down_count = 0
+        flat_count = 0
+
+        for code, name, current_price, pre_close, amount in zip(
+            df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
+        ):
+            
+            # 停牌过滤 efinance 的停牌数据有时候会缺失价格显示为 '-'，em 显示为none
+            if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
+                continue
+            
+            # em、efinance 为str 需要转换为float
+            current_price = float(current_price)
+            pre_close = float(pre_close)
+            
+            # 获取去除前缀的纯数字代码
+            pure_code = normalize_stock_code(str(code)) 
+
+            # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
+            if is_bse_code(pure_code): 
+                ratio = 0.30
+            elif is_kc_cy_stock(pure_code): #pure_code.startswith(('688', '30')):
+                ratio = 0.20
+            elif is_st_stock(name): #'ST' in str_name:
+                ratio = 0.05
+            else:
+                ratio = 0.10
+
+            # B. 严格按照 A 股规则计算涨跌停价：昨收 * (1 ± 比例) -> 四舍五入保留2位小数
+            limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
+            limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
+
+            limit_up_price_Tolerance = round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
+            limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
+
+            # C. 精确比对
+            if current_price > 0 :
+                is_limit_up = (current_price > 0) and (abs(current_price - limit_up_price) <= limit_up_price_Tolerance)
+                is_limit_down = (current_price > 0) and (abs(current_price - limit_down_price) <= limit_down_price_Tolerance)
+
+                if is_limit_up:
+                    limit_up_count += 1
+                if is_limit_down:
+                    limit_down_count += 1
+
+                if current_price > pre_close:
+                    up_count += 1
+                elif current_price < pre_close:
+                    down_count += 1
+                else:
+                    flat_count += 1
+                
+        # 统计数量
         stats = {
-            'up_count': len(df[df[change_col] > 0]),
-            'down_count': len(df[df[change_col] < 0]),
-            'flat_count': len(df[df[change_col] == 0]),
-            'limit_up_count': len(df[df[change_col] >= 9.9]),
-            'limit_down_count': len(df[df[change_col] <= -9.9]),
+            'up_count': up_count,
+            'down_count': down_count,
+            'flat_count': flat_count,
+            'limit_up_count': limit_up_count,
+            'limit_down_count': limit_down_count,
             'total_amount': 0.0,
         }
+        
+        # 成交额统计
         if amount_col and amount_col in df.columns:
             df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
-            stats['total_amount'] = df[amount_col].sum() / 1e8
+            stats['total_amount'] = (df[amount_col].sum() / 1e8)
+            
         return stats
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
@@ -1606,3 +1856,20 @@ if __name__ == "__main__":
             print("[港股实时] 未获取到数据")
     except Exception as e:
         print(f"[港股实时] 获取失败: {e}")
+
+    # 测试市场统计
+    print("\n" + "=" * 50)
+    print("Testing get_market_stats (akshare)")
+    print("=" * 50)
+    try:
+        stats = fetcher.get_market_stats()
+        if stats:
+            print(f"Market Stats successfully computed:")
+            print(f"Up: {stats['up_count']} (Limit Up: {stats['limit_up_count']})")
+            print(f"Down: {stats['down_count']} (Limit Down: {stats['limit_down_count']})")
+            print(f"Flat: {stats['flat_count']}")
+            print(f"Total Amount: {stats['total_amount']:.2f} 亿 (Yi)")
+        else:
+            print("Failed to compute market stats.")
+    except Exception as e:
+        print(f"Failed to compute market stats: {e}")

@@ -11,9 +11,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.config import get_config
+from src.services.agent_model_service import list_agent_model_deployments
 
 # Tool name -> Chinese display name mapping
 TOOL_DISPLAY_NAMES: Dict[str, str] = {
@@ -39,8 +40,14 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
-    skills: Optional[List[str]] = None
+    skills: Optional[List[str]] = None  # Deprecated, use strategies
+    strategies: Optional[List[str]] = None  # Trading strategy ids to activate
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+
+    @property
+    def effective_strategies(self) -> Optional[List[str]]:
+        """Return strategies, falling back to legacy skills field."""
+        return self.strategies or self.skills
 
 class ChatResponse(BaseModel):
     success: bool
@@ -55,6 +62,31 @@ class StrategyInfo(BaseModel):
 
 class StrategiesResponse(BaseModel):
     strategies: List[StrategyInfo]
+
+
+class AgentModelDeployment(BaseModel):
+    deployment_id: str
+    model: str
+    provider: str
+    source: str
+    api_base: Optional[str] = None
+    deployment_name: Optional[str] = None
+    is_primary: bool = False
+    is_fallback: bool = False
+
+
+class AgentModelsResponse(BaseModel):
+    models: List[AgentModelDeployment]
+
+
+@router.get("/models", response_model=AgentModelsResponse)
+async def get_agent_models():
+    """Get configured Agent model deployments for frontend selection."""
+    config = get_config()
+    return AgentModelsResponse(
+        models=[AgentModelDeployment(**item) for item in list_agent_model_deployments(config)]
+    )
+
 
 @router.get("/strategies", response_model=StrategiesResponse)
 async def get_strategies():
@@ -78,20 +110,28 @@ async def agent_chat(request: ChatRequest):
     """
     config = get_config()
     
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
         
     session_id = request.session_id or str(uuid.uuid4())
     
     try:
-        executor = _build_executor(config, request.skills)
+        strategies = request.effective_strategies
+        executor = _build_executor(config, strategies)
+
+        # Pass explicit strategies into context for the orchestrator.
+        # Direct assignment so caller-provided strategies always take precedence
+        # over any stale value carried in the context dict.
+        ctx = dict(request.context or {})
+        if strategies:
+            ctx["strategies"] = strategies
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: executor.chat(message=request.message, session_id=session_id,
-                                  context=request.context),
+                                  context=ctx),
         )
 
         return ChatResponse(
@@ -123,10 +163,23 @@ class SessionMessagesResponse(BaseModel):
 
 
 @router.get("/chat/sessions", response_model=SessionsResponse)
-async def list_chat_sessions(limit: int = 50):
-    """获取聊天会话列表"""
+async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
+    """获取聊天会话列表
+
+    Args:
+        limit: Maximum number of sessions to return.
+        user_id: Optional platform-prefixed user identifier for session
+            isolation.  When provided, only sessions whose session_id
+            starts with this prefix are returned.  The value must
+            include the platform prefix, e.g. ``telegram_12345``,
+            ``feishu_ou_abc``.
+    """
     from src.storage import get_db
-    sessions = get_db().get_chat_sessions(limit=limit)
+    sessions = get_db().get_chat_sessions(
+        limit=limit,
+        session_prefix=user_id,
+        extra_session_ids=[user_id] if user_id else None,
+    )
     return SessionsResponse(sessions=sessions)
 
 
@@ -146,10 +199,39 @@ async def delete_chat_session(session_id: str):
     return {"deleted": count}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
+class SendChatRequest(BaseModel):
+    """Request body for sending chat content to notification channels."""
+
+    content: str = Field(..., min_length=1, max_length=50000)
+    title: Optional[str] = None
+
+
+@router.post("/chat/send")
+async def send_chat_to_notification(request: SendChatRequest):
+    """
+    Send chat session content to configured notification channels.
+    Uses run_in_executor to avoid blocking the event loop.
+    """
+    from src.notification import NotificationService
+
+    loop = asyncio.get_running_loop()
+    success = await loop.run_in_executor(
+        None,
+        lambda: NotificationService().send(request.content),
+    )
+    if not success:
+        return {
+            "success": False,
+            "error": "no_channels",
+            "message": "未配置通知渠道，请先在设置中配置",
+        }
+    return {"success": True}
+
+
+def _build_executor(config, strategies: Optional[List[str]] = None):
     """Build and return a configured AgentExecutor (sync helper)."""
     from src.agent.factory import build_agent_executor
-    return build_agent_executor(config, skills=skills)
+    return build_agent_executor(config, skills=strategies)
 
 
 @router.post("/chat/stream")
@@ -165,12 +247,19 @@ async def agent_chat_stream(request: ChatRequest):
       - error: error occurred, contains 'message'
     """
     config = get_config()
-    if not config.agent_mode:
+    if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
+
+    # Pass explicit strategies into context for the orchestrator.
+    # Direct assignment so caller-provided strategies always take precedence.
+    strategies = request.effective_strategies
+    stream_ctx = dict(request.context or {})
+    if strategies:
+        stream_ctx["strategies"] = strategies
 
     def progress_callback(event: dict):
         # Enrich tool events with display names
@@ -181,12 +270,12 @@ async def agent_chat_stream(request: ChatRequest):
 
     def run_sync():
         try:
-            executor = _build_executor(config, request.skills)
+            executor = _build_executor(config, strategies)
             result = executor.chat(
                 message=request.message,
                 session_id=session_id,
                 progress_callback=progress_callback,
-                context=request.context,
+                context=stream_ctx,
             )
             asyncio.run_coroutine_threadsafe(
                 queue.put({

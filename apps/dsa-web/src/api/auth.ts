@@ -13,6 +13,31 @@ export const authApi = {
     return data;
   },
 
+  async updateSettings(
+    authEnabled: boolean,
+    password?: string,
+    passwordConfirm?: string,
+    currentPassword?: string
+  ): Promise<AuthStatusResponse> {
+    const body: {
+      authEnabled: boolean;
+      password?: string;
+      passwordConfirm?: string;
+      currentPassword?: string;
+    } = { authEnabled };
+    if (password !== undefined) {
+      body.password = password;
+    }
+    if (passwordConfirm !== undefined) {
+      body.passwordConfirm = passwordConfirm;
+    }
+    if (currentPassword !== undefined) {
+      body.currentPassword = currentPassword;
+    }
+    const { data } = await apiClient.post<AuthStatusResponse>('/api/v1/auth/settings', body);
+    return data;
+  },
+
   async login(password: string, passwordConfirm?: string): Promise<void> {
     const body: { password: string; passwordConfirm?: string } = { password };
     if (passwordConfirm !== undefined) {

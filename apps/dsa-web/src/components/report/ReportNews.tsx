@@ -1,6 +1,9 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
+import type { ParsedApiError } from '../../api/error';
+import { getParsedApiError } from '../../api/error';
 import { Card } from '../common';
+import { ApiErrorAlert } from '../common';
 import { historyApi } from '../../api/history';
 import type { NewsIntelItem } from '../../types/analysis';
 
@@ -15,7 +18,7 @@ interface ReportNewsProps {
 export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [items, setItems] = useState<NewsIntelItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ParsedApiError | null>(null);
 
   const fetchNews = useCallback(async () => {
     if (!recordId) return;
@@ -26,7 +29,7 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) 
       const response = await historyApi.getNews(recordId, limit);
       setItems(response.items || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载资讯失败');
+      setError(getParsedApiError(err));
     } finally {
       setIsLoading(false);
     }
@@ -67,27 +70,22 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) 
       </div>
 
       {error && !isLoading && (
-        <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-danger/10 border border-danger/20 text-xs text-danger">
-          <span>{error}</span>
-          <button
-            type="button"
-            onClick={fetchNews}
-            className="text-xs text-cyan hover:text-white transition-colors"
-          >
-            重试
-          </button>
-        </div>
+        <ApiErrorAlert
+          error={error}
+          actionLabel="重试"
+          onAction={() => void fetchNews()}
+        />
       )}
 
       {isLoading && !error && (
-        <div className="flex items-center gap-2 text-xs text-secondary">
+        <div className="flex items-center gap-2 text-xs text-secondary-text">
           <div className="w-4 h-4 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
           加载资讯中...
         </div>
       )}
 
       {!isLoading && !error && items.length === 0 && (
-        <div className="text-xs text-muted">暂无相关资讯</div>
+        <div className="text-xs text-muted-text">暂无相关资讯</div>
       )}
 
       {!isLoading && !error && items.length > 0 && (
@@ -103,7 +101,7 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) 
                     {item.title}
                   </p>
                   {item.snippet && (
-                    <p className="text-xs text-secondary mt-1 text-left">
+                    <p className="text-xs text-secondary-text mt-1 text-left">
                       {item.snippet}
                     </p>
                   )}

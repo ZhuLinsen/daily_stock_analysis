@@ -180,7 +180,8 @@ def prepare_webui_frontend_assets() -> bool:
 
     commands = []
     if needs_install:
-        commands.append([npm_path, "install"])
+        lock_exists = (frontend_dir / "package-lock.json").exists()
+        commands.append([npm_path, "ci" if lock_exists else "install"])
     if needs_build:
         commands.append([npm_path, "run", "build"])
 

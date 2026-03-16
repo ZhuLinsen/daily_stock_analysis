@@ -10,7 +10,7 @@ import json
 import requests
 
 from src.config import Config
-from src.formatters import chunk_markdown_by_bytes, truncate_to_bytes
+from src.formatters import chunk_content_by_max_bytes, slice_at_max_bytes
 
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,7 @@ class CustomWebhookSender:
 
         # 为 payload 开销预留空间，避免 body 超限
         budget = max(1000, max_bytes - 1500)
-        chunks = chunk_markdown_by_bytes(content, budget)
+        chunks = chunk_content_by_max_bytes(content, budget)
         if not chunks:
             return False
 
@@ -222,7 +222,7 @@ class CustomWebhookSender:
             body_bytes = len(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
             if body_bytes > max_bytes:
                 hard_budget = max(200, budget - (body_bytes - max_bytes) - 200)
-                payload["markdown"]["text"] = truncate_to_bytes(payload["markdown"]["text"], hard_budget)
+                payload["markdown"]["text"], _ = slice_at_max_bytes(payload["markdown"]["text"], hard_budget)
 
             if self._post_custom_webhook(url, payload, timeout=30):
                 ok += 1

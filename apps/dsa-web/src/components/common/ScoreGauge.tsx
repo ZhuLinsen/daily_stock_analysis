@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useState, useEffect, useRef } from 'react';
 import { getSentimentLabel } from '../../types/analysis';
+import { cn } from '../../utils/cn';
 
 interface ScoreGaugeProps {
   score: number;
@@ -10,8 +11,7 @@ interface ScoreGaugeProps {
 }
 
 /**
- * 情绪评分仪表盘 - 发光环形进度条
- * 参考金融终端风格设计，带过渡动画
+ * Sentiment score gauge with an animated glowing ring.
  */
 export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   score,
@@ -19,24 +19,24 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   showLabel = true,
   className = '',
 }) => {
-  // 动画状态
+  // Animated score state.
   const [animatedScore, setAnimatedScore] = useState(0);
   const [displayScore, setDisplayScore] = useState(0);
   const animationRef = useRef<number | null>(null);
   const prevScoreRef = useRef(0);
 
-  // 动画效果
+  // Animate transitions between score updates.
   useEffect(() => {
     const startScore = prevScoreRef.current;
     const endScore = score;
-    const duration = 1000; // 动画时长 ms
+    const duration = 1000; // Animation duration in ms.
     const startTime = performance.now();
 
     const animate = (currentTime: number) => {
       const elapsed = currentTime - startTime;
       const progress = Math.min(elapsed / duration, 1);
       
-      // 使用 easeOutCubic 缓动函数
+      // Use an ease-out cubic curve for a smoother finish.
       const easeOut = 1 - Math.pow(1 - progress, 3);
       
       const currentScore = startScore + (endScore - startScore) * easeOut;
@@ -61,7 +61,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
 
   const label = getSentimentLabel(score);
 
-  // 尺寸配置
+  // Size configuration for each gauge variant.
   const sizeConfig = {
     sm: { width: 100, stroke: 8, fontSize: 'text-2xl', labelSize: 'text-xs', gap: 6 },
     md: { width: 140, stroke: 10, fontSize: 'text-4xl', labelSize: 'text-sm', gap: 8 },
@@ -72,25 +72,24 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
   const radius = (width - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
   
-  // 从顶部开始，显示 270 度（3/4 圆弧）
+  // Start from the top and render a 270-degree arc.
   const arcLength = circumference * 0.75;
   const progress = (animatedScore / 100) * arcLength;
 
-  // 颜色映射 - 使用动画分数计算颜色过渡
+  // Map the animated score to the active gauge color.
   const getStrokeColor = (s: number) => {
-    if (s >= 60) return '#00d4ff'; // 青色 - 贪婪
-    if (s >= 40) return '#a855f7'; // 紫色 - 中性
-    return '#ff4466'; // 红色 - 恐惧
+    if (s >= 60) return '#00d4ff'; // Cyan for greed.
+    if (s >= 40) return '#a855f7'; // Purple for neutral.
+    return '#ff4466'; // Red for fear.
   };
 
   const strokeColor = getStrokeColor(animatedScore);
   const glowColor = `${strokeColor}66`;
 
   return (
-    <div className={`flex flex-col items-center ${className}`}>
-      {/* 标题 */}
+    <div className={cn('flex flex-col items-center', className)}>
       {showLabel && (
-        <span className="label-uppercase mb-3 text-secondary">
+        <span className="label-uppercase mb-3 text-secondary-text">
           恐惧贪婪指数
         </span>
       )}
@@ -103,13 +102,13 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
           style={{ filter: `drop-shadow(0 0 12px ${glowColor})` }}
         >
           <defs>
-            {/* 渐变定义 */}
+            {/* Gradient definition */}
             <linearGradient id={`gauge-gradient-${score}`} x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stopColor={strokeColor} stopOpacity="0.6" />
               <stop offset="100%" stopColor={strokeColor} stopOpacity="1" />
             </linearGradient>
             
-            {/* 发光滤镜 */}
+            {/* Glow filter */}
             <filter id={`gauge-glow-${score}`}>
               <feGaussianBlur stdDeviation="4" result="blur" />
               <feMerge>
@@ -119,7 +118,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
             </filter>
           </defs>
 
-          {/* 背景轨道 - 3/4 圆弧 */}
+          {/* Background track */}
           <circle
             cx={width / 2}
             cy={width / 2}
@@ -132,7 +131,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
             transform={`rotate(135 ${width / 2} ${width / 2})`}
           />
 
-          {/* 发光层 */}
+          {/* Glow layer */}
           <circle
             cx={width / 2}
             cy={width / 2}
@@ -147,7 +146,7 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
             filter={`url(#gauge-glow-${score})`}
           />
 
-          {/* 进度圆弧 */}
+          {/* Progress arc */}
           <circle
             cx={width / 2}
             cy={width / 2}
@@ -161,14 +160,9 @@ export const ScoreGauge: React.FC<ScoreGaugeProps> = ({
           />
         </svg>
 
-        {/* 中心数值 */}
+        {/* Center value */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span
-            className={`font-bold ${fontSize} text-white`}
-            style={{ 
-              textShadow: `0 0 30px ${glowColor}`,
-            }}
-          >
+          <span className={cn('font-bold text-white', fontSize)} style={{ textShadow: `0 0 30px ${glowColor}` }}>
             {displayScore}
           </span>
           {showLabel && (

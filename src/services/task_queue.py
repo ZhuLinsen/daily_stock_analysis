@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Dict, Set, List, Callable, Any, TYPE_CHECKING
+from typing import Optional, Dict, Set, List, Callable, Any, TYPE_CHECKING, Tuple
 
 if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
@@ -218,43 +218,96 @@ class AnalysisTaskQueue:
             DuplicateTaskError: 股票正在分析中
         """
         stock_code = canonical_stock_code(stock_code)
+        if not stock_code:
+            raise ValueError("股票代码不能为空或仅包含空白字符")
+
+        accepted, duplicates = self.submit_tasks_batch(
+            [stock_code],
+            stock_name=stock_name,
+            report_type=report_type,
+            force_refresh=force_refresh,
+        )
+        if duplicates:
+            raise duplicates[0]
+        return accepted[0]
+
+    def submit_tasks_batch(
+        self,
+        stock_codes: List[str],
+        stock_name: Optional[str] = None,
+        report_type: str = "detailed",
+        force_refresh: bool = False,
+    ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
+        """
+        批量提交分析任务。
+
+        - 重复股票会被跳过并记录在 duplicates 中
+        - 如果线程池提交过程中发生异常，则回滚本次已创建任务，避免部分成功
+        """
+        accepted: List[TaskInfo] = []
+        duplicates: List[DuplicateTaskError] = []
+        created_task_ids: List[str] = []
+
+        normalized_codes = [
+            normalized for normalized in (canonical_stock_code(code) for code in stock_codes)
+            if normalized
+        ]
+
         with self._data_lock:
-            # 检查重复
-            if stock_code in self._analyzing_stocks:
-                existing_task_id = self._analyzing_stocks[stock_code]
-                raise DuplicateTaskError(stock_code, existing_task_id)
-            
-            # 创建任务
-            task_id = uuid.uuid4().hex
-            task_info = TaskInfo(
-                task_id=task_id,
-                stock_code=stock_code,
-                stock_name=stock_name,
-                status=TaskStatus.PENDING,
-                message="任务已加入队列",
-                report_type=report_type,
-            )
-            
-            # 注册任务
-            self._tasks[task_id] = task_info
-            self._analyzing_stocks[stock_code] = task_id
-            
-            # 提交到线程池执行
-            future = self.executor.submit(
-                self._execute_task,
-                task_id,
-                stock_code,
-                report_type,
-                force_refresh,
-            )
-            self._futures[task_id] = future
-            
-            logger.info(f"[TaskQueue] 任务已提交: {stock_code} -> {task_id}")
-        
-        # 广播任务创建事件（锁外执行避免死锁）
-        self._broadcast_event("task_created", task_info.to_dict())
-        
-        return task_info
+            for stock_code in normalized_codes:
+                if stock_code in self._analyzing_stocks:
+                    existing_task_id = self._analyzing_stocks[stock_code]
+                    duplicates.append(DuplicateTaskError(stock_code, existing_task_id))
+                    continue
+
+                task_id = uuid.uuid4().hex
+                task_info = TaskInfo(
+                    task_id=task_id,
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    status=TaskStatus.PENDING,
+                    message="任务已加入队列",
+                    report_type=report_type,
+                )
+                self._tasks[task_id] = task_info
+                self._analyzing_stocks[stock_code] = task_id
+
+                try:
+                    future = self.executor.submit(
+                        self._execute_task,
+                        task_id,
+                        stock_code,
+                        report_type,
+                        force_refresh,
+                    )
+                except Exception:
+                    # 回滚当前批次，避免 API 拿不到 task_id 却留下半提交任务。
+                    self._rollback_submitted_tasks_locked(created_task_ids + [task_id])
+                    raise
+
+                self._futures[task_id] = future
+                accepted.append(task_info)
+                created_task_ids.append(task_id)
+                logger.info(f"[TaskQueue] 任务已提交: {stock_code} -> {task_id}")
+
+            # Keep task_created ordered before worker-emitted task_started/task_completed.
+            # Broadcasting here also preserves batch rollback semantics because we only
+            # reach this point after every submit in the batch has succeeded.
+            for task_info in accepted:
+                self._broadcast_event("task_created", task_info.to_dict())
+
+        return accepted, duplicates
+
+    def _rollback_submitted_tasks_locked(self, task_ids: List[str]) -> None:
+        """回滚当前批次已创建但尚未稳定返回给调用方的任务。"""
+        for task_id in task_ids:
+            future = self._futures.pop(task_id, None)
+            if future is not None:
+                future.cancel()
+
+            task = self._tasks.pop(task_id, None)
+            if task and self._analyzing_stocks.get(task.stock_code) == task_id:
+                del self._analyzing_stocks[task.stock_code]
     
     def get_task(self, task_id: str) -> Optional[TaskInfo]:
         """

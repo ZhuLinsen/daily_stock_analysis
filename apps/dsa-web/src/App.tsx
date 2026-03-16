@@ -1,12 +1,17 @@
 import type React from 'react';
+import { useEffect } from 'react';
 import {BrowserRouter as Router, Routes, Route, NavLink, useLocation, Navigate} from 'react-router-dom';
+import { RiExchangeFundsLine } from '@remixicon/react';
 import HomePage from './pages/HomePage';
 import BacktestPage from './pages/BacktestPage';
 import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
+import PortfolioPage from './pages/PortfolioPage';
+import { ApiErrorAlert } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
 
 // 侧边导航图标
@@ -22,6 +27,10 @@ const BacktestIcon: React.FC<{ active?: boolean }> = ({active}) => (
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={active ? 2 : 1.5}
               d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
     </svg>
+);
+
+const PortfolioIcon: React.FC<{ active?: boolean }> = ({active}) => (
+    <RiExchangeFundsLine className="w-6 h-6" size={active ? 25 : 24} />
 );
 
 const SettingsIcon: React.FC<{ active?: boolean }> = ({active}) => (
@@ -67,6 +76,12 @@ const NAV_ITEMS: DockItem[] = [
         icon: ChatIcon,
     },
     {
+        key: 'portfolio',
+        label: '持仓',
+        to: '/portfolio',
+        icon: PortfolioIcon,
+    },
+    {
         key: 'backtest',
         label: '回测',
         to: '/backtest',
@@ -83,6 +98,7 @@ const NAV_ITEMS: DockItem[] = [
 // Dock 导航栏
 const DockNav: React.FC = () => {
     const {authEnabled, logout} = useAuth();
+    const completionBadge = useAgentChatStore((s) => s.completionBadge);
     return (
         <aside className="dock-nav" aria-label="主导航">
             <div className="dock-surface">
@@ -96,6 +112,27 @@ const DockNav: React.FC = () => {
                 <nav className="dock-items" aria-label="页面">
                     {NAV_ITEMS.map((item) => {
                         const Icon = item.icon;
+                        if (item.key === 'chat') {
+                            return (
+                                <div key="chat" className="relative inline-flex">
+                                    <NavLink
+                                        to="/chat"
+                                        end={false}
+                                        title="问股"
+                                        aria-label="问股"
+                                        className={({isActive}) => `dock-item${isActive ? ' is-active' : ''}`}
+                                    >
+                                        {({isActive}) => <Icon active={isActive}/>}
+                                    </NavLink>
+                                    {completionBadge && (
+                                        <span
+                                            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-cyan border-2 border-base z-10 pointer-events-none"
+                                            aria-label="问股有新消息"
+                                        />
+                                    )}
+                                </div>
+                            );
+                        }
                         return (
                             <NavLink
                                 key={item.key}
@@ -133,6 +170,10 @@ const AppContent: React.FC = () => {
     const location = useLocation();
     const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
 
+    useEffect(() => {
+        useAgentChatStore.getState().setCurrentRoute(location.pathname);
+    }, [location.pathname]);
+
     if (isLoading) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-base">
@@ -144,7 +185,9 @@ const AppContent: React.FC = () => {
     if (loadError) {
         return (
             <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-base px-4">
-                <p className="text-sm text-red-400">无法连接到服务器，请检查后端是否正常运行。</p>
+                <div className="w-full max-w-lg">
+                    <ApiErrorAlert error={loadError}/>
+                </div>
                 <button
                     type="button"
                     className="btn-primary"
@@ -175,6 +218,7 @@ const AppContent: React.FC = () => {
                 <Routes>
                     <Route path="/" element={<HomePage/>}/>
                     <Route path="/chat" element={<ChatPage/>}/>
+                    <Route path="/portfolio" element={<PortfolioPage/>}/>
                     <Route path="/backtest" element={<BacktestPage/>}/>
                     <Route path="/settings" element={<SettingsPage/>}/>
                     <Route path="/login" element={<LoginPage/>}/>

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 from litellm import Router
 
-from src.config import get_config
+from src.config import get_config, get_api_keys_for_model, extra_litellm_params, get_configured_llm_models
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class LLMResponse:
     reasoning_content: Optional[str] = None  # Chain-of-thought (CoT) from DeepSeek thinking mode; must be passed back in multi-turn assistant messages; None for other providers
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
+    model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
 
 
@@ -110,62 +111,70 @@ class LLMToolAdapter:
         self._litellm_available = False
         self._init_litellm()
 
-    def _get_api_keys_for_model(self, model: str) -> List[str]:
-        """Return API keys for the given litellm model based on provider prefix."""
-        config = self._config
-        if model.startswith("gemini/") or model.startswith("vertex_ai/"):
-            return [k for k in config.gemini_api_keys if k and len(k) >= 8]
-        if model.startswith("anthropic/"):
-            return [k for k in config.anthropic_api_keys if k and len(k) >= 8]
-        # openai/, deepseek/, or any other provider uses openai_api_keys
-        return [k for k in config.openai_api_keys if k and len(k) >= 8]
-
-    def _extra_litellm_params(self, model: str) -> dict:
-        """Build extra litellm params (api_base, custom headers) for a model."""
-        config = self._config
-        params: Dict[str, Any] = {}
-        if not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
-            if config.openai_base_url:
-                params["api_base"] = config.openai_base_url
-            if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
-                params["extra_headers"] = {"APP-Code": "GPIJ3886"}
-        return params
+    def _has_channel_config(self) -> bool:
+        """Check if multi-channel config (channels / YAML) is active."""
+        return bool(self._config.llm_model_list) and not all(
+            e.get('model_name', '').startswith('__legacy_') for e in self._config.llm_model_list
+        )
 
     def _init_litellm(self) -> None:
-        """Initialize litellm Router for multi-key, or flag single-key availability."""
+        """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._config
         litellm_model = config.litellm_model
         if not litellm_model:
             logger.warning("Agent LLM: LITELLM_MODEL not configured")
             return
 
-        keys = self._get_api_keys_for_model(litellm_model)
-        if not keys:
-            logger.warning(f"Agent LLM: No API keys found for model {litellm_model}")
-            return
-
         self._litellm_available = True
 
-        if len(keys) > 1:
-            extra_params = self._extra_litellm_params(litellm_model)
-            model_list = [
-                {
-                    "model_name": litellm_model,
-                    "litellm_params": {
-                        "model": litellm_model,
-                        "api_key": k,
-                        **extra_params,
-                    },
-                }
-                for k in keys
-            ]
+        # --- Channel / YAML path ---
+        if self._has_channel_config():
+            model_list = config.llm_model_list
             self._router = Router(
                 model_list=model_list,
                 routing_strategy="simple-shuffle",
                 num_retries=2,
             )
-            models_in_router = list(dict.fromkeys(m["litellm_params"]["model"] for m in model_list))
-            logger.info(f"Agent LLM: Router initialized with {len(keys)} keys for {litellm_model} (models: {models_in_router})")
+            unique_models = list(dict.fromkeys(
+                e['litellm_params']['model'] for e in model_list
+            ))
+            logger.info(
+                f"Agent LLM: Router initialized from channels/YAML — "
+                f"{len(model_list)} deployment(s), models: {unique_models}"
+            )
+            return
+
+        # --- Legacy path ---
+        keys = get_api_keys_for_model(litellm_model, config)
+        if not keys:
+            logger.info(
+                f"Agent LLM: litellm initialized (model={litellm_model}, "
+                f"API key from environment)"
+            )
+            return
+
+        if len(keys) > 1:
+            ep = extra_litellm_params(litellm_model, config)
+            legacy_model_list = [
+                {
+                    "model_name": litellm_model,
+                    "litellm_params": {
+                        "model": litellm_model,
+                        "api_key": k,
+                        **ep,
+                    },
+                }
+                for k in keys
+            ]
+            self._router = Router(
+                model_list=legacy_model_list,
+                routing_strategy="simple-shuffle",
+                num_retries=2,
+            )
+            logger.info(
+                f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
+                f"for {litellm_model}"
+            )
         else:
             logger.info(f"Agent LLM: litellm initialized (model={litellm_model})")
 
@@ -203,6 +212,38 @@ class LLMToolAdapter:
         Returns:
             LLMResponse with either content (final answer) or tool_calls.
         """
+        return self.call_completion(messages, tools=tools, provider=provider)
+
+    def call_text(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Send a text-only completion through the shared routing stack."""
+        return self.call_completion(
+            messages,
+            tools=None,
+            provider=provider,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def call_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[dict]] = None,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Shared completion path for both tool and text-only calls."""
         config = self._config
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -210,7 +251,14 @@ class LLMToolAdapter:
         last_error = None
         for model in models_to_try:
             try:
-                return self._call_litellm_model(messages, tools, model)
+                return self._call_litellm_model(
+                    messages,
+                    tools or [],
+                    model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                )
             except Exception as e:
                 logger.warning(f"Agent LLM call failed with {model}: {e}")
                 last_error = e
@@ -225,6 +273,10 @@ class LLMToolAdapter:
         messages: List[Dict[str, Any]],
         tools: List[dict],
         model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Call a specific litellm model with OpenAI-format messages and tools."""
         openai_messages = self._convert_messages(messages)
@@ -235,8 +287,12 @@ class LLMToolAdapter:
         call_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": openai_messages,
-            "temperature": self._get_temperature(model),
+            "temperature": self._get_temperature(model) if temperature is None else temperature,
         }
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            call_kwargs["timeout"] = timeout
 
         extra = get_thinking_extra_body(model_short)
         if extra:
@@ -246,25 +302,29 @@ class LLMToolAdapter:
             call_kwargs["tools"] = tools
 
         # Use Router for primary model (multi-key), direct litellm for others
-        if self._router and model == self._config.litellm_model:
+        use_channel_router = self._has_channel_config()
+        _router_model_names = set(get_configured_llm_models(self._config.llm_model_list))
+        if use_channel_router and self._router and model in _router_model_names:
+            # Channel / YAML path: Router manages all models in its model_list
+            response = self._router.completion(**call_kwargs)
+        elif self._router and model == self._config.litellm_model and not use_channel_router:
+            # Legacy path: Router for primary model multi-key
             response = self._router.completion(**call_kwargs)
         else:
-            keys = self._get_api_keys_for_model(model)
+            # Legacy/direct-env path: direct call (also handles direct-env
+            # providers like groq/ or bedrock/ that are not in the Router
+            # model_list even when channel mode is active)
+            keys = get_api_keys_for_model(model, self._config)
             if keys:
                 call_kwargs["api_key"] = keys[0]
-            call_kwargs.update(self._extra_litellm_params(model))
+            call_kwargs.update(extra_litellm_params(model, self._config))
             response = litellm.completion(**call_kwargs)
 
         return self._parse_litellm_response(response, model)
 
     def _get_temperature(self, model: str) -> float:
-        """Return temperature from config based on provider prefix."""
-        config = self._config
-        if model.startswith("gemini/") or model.startswith("vertex_ai/"):
-            return config.gemini_temperature
-        if model.startswith("anthropic/"):
-            return config.anthropic_temperature
-        return config.openai_temperature
+        """Return unified temperature from config."""
+        return self._config.llm_temperature
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal message format to OpenAI-compatible format for litellm."""
@@ -356,5 +416,6 @@ class LLMToolAdapter:
             reasoning_content=reasoning_content,
             usage=usage,
             provider=provider_name,
+            model=model,
             raw=response,
         )

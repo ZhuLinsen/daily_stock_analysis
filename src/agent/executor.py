@@ -8,40 +8,22 @@ Orchestrates the LLM + tools interaction loop:
 3. If tool_call → execute tool → feed result back
 4. If text → parse as final answer
 5. Loop until final answer or max_steps
+
+The core execution loop is delegated to :mod:`src.agent.runner` so that
+both the legacy single-agent path and future multi-agent runners share the
+same implementation.
 """
 
 import json
 import logging
-import re
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from json_repair import repair_json
-
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.runner import run_agent_loop, parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-
-# Tool name → short label used to build contextual thinking messages
-_THINKING_TOOL_LABELS: Dict[str, str] = {
-    "get_realtime_quote": "行情获取",
-    "get_daily_history": "K线数据获取",
-    "analyze_trend": "技术指标分析",
-    "get_chip_distribution": "筹码分布分析",
-    "search_stock_news": "新闻搜索",
-    "search_comprehensive_intel": "综合情报搜索",
-    "get_market_indices": "市场概览获取",
-    "get_sector_rankings": "行业板块分析",
-    "get_analysis_context": "历史分析上下文",
-    "get_stock_info": "基本信息获取",
-    "analyze_pattern": "K线形态识别",
-    "get_volume_analysis": "量能分析",
-    "calculate_ma": "均线计算",
-}
 
 
 # ============================================================
@@ -58,6 +40,7 @@ class AgentResult:
     total_steps: int = 0
     total_tokens: int = 0
     provider: str = ""
+    model: str = ""                            # comma-separated models used (supports fallback)
     error: Optional[str] = None
 
 
@@ -324,10 +307,6 @@ class AgentExecutor:
         Returns:
             AgentResult with parsed dashboard or error.
         """
-        start_time = time.time()
-        tool_calls_log: List[Dict[str, Any]] = []
-        total_tokens = 0
-
         # Build system prompt with skills
         skills_section = ""
         if self.skill_instructions:
@@ -343,7 +322,7 @@ class AgentExecutor:
             {"role": "user", "content": self._build_user_message(task, context)},
         ]
 
-        return self._run_loop(messages, tool_decls, start_time, tool_calls_log, total_tokens, parse_dashboard=True)
+        return self._run_loop(messages, tool_decls, parse_dashboard=True)
 
     def chat(self, message: str, session_id: str, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None) -> AgentResult:
         """Execute the agent loop for a free-form chat message.
@@ -358,10 +337,6 @@ class AgentExecutor:
             AgentResult with the text response.
         """
         from src.agent.conversation import conversation_manager
-        
-        start_time = time.time()
-        tool_calls_log: List[Dict[str, Any]] = []
-        total_tokens = 0
 
         # Build system prompt with skills
         skills_section = ""
@@ -411,7 +386,7 @@ class AgentExecutor:
         # Persist the user turn immediately so the session appears in history during processing
         conversation_manager.add_message(session_id, "user", message)
 
-        result = self._run_loop(messages, tool_decls, start_time, tool_calls_log, total_tokens, parse_dashboard=False, progress_callback=progress_callback)
+        result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
@@ -422,162 +397,47 @@ class AgentExecutor:
 
         return result
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], start_time: float, tool_calls_log: List[Dict[str, Any]], total_tokens: int, parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
-        provider_used = ""
+    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+        """Delegate to the shared runner and adapt the result.
 
-        for step in range(self.max_steps):
-            logger.info(f"Agent step {step + 1}/{self.max_steps}")
+        This preserves the exact same observable behaviour as the original
+        inline implementation while sharing the single authoritative loop
+        in :mod:`src.agent.runner`.
+        """
+        loop_result = run_agent_loop(
+            messages=messages,
+            tool_registry=self.tool_registry,
+            llm_adapter=self.llm_adapter,
+            max_steps=self.max_steps,
+            progress_callback=progress_callback,
+        )
 
-            if progress_callback:
-                if not tool_calls_log:
-                    thinking_msg = "正在制定分析路径..."
-                else:
-                    last_tool = tool_calls_log[-1].get("tool", "")
-                    label = _THINKING_TOOL_LABELS.get(last_tool, last_tool)
-                    thinking_msg = f"「{label}」已完成，继续深入分析..."
-                progress_callback({"type": "thinking", "step": step + 1, "message": thinking_msg})
+        model_str = loop_result.model
 
-            response = self.llm_adapter.call_with_tools(messages, tool_decls)
-            provider_used = response.provider
-            total_tokens += response.usage.get("total_tokens", 0)
+        if parse_dashboard and loop_result.success:
+            dashboard = parse_dashboard_json(loop_result.content)
+            return AgentResult(
+                success=dashboard is not None,
+                content=loop_result.content,
+                dashboard=dashboard,
+                tool_calls_log=loop_result.tool_calls_log,
+                total_steps=loop_result.total_steps,
+                total_tokens=loop_result.total_tokens,
+                provider=loop_result.provider,
+                model=model_str,
+                error=None if dashboard else "Failed to parse dashboard JSON from agent response",
+            )
 
-            if response.tool_calls:
-                # LLM wants to call tools
-                logger.info(f"Agent requesting {len(response.tool_calls)} tool call(s): "
-                          f"{[tc.name for tc in response.tool_calls]}")
-
-                # Add assistant message with tool calls to history
-                assistant_msg: Dict[str, Any] = {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                            **({"thought_signature": tc.thought_signature} if tc.thought_signature is not None else {}),
-                        }
-                        for tc in response.tool_calls
-                    ],
-                }
-                # Only present for DeepSeek thinking mode; None for all other providers
-                if response.reasoning_content is not None:
-                    assistant_msg["reasoning_content"] = response.reasoning_content
-                messages.append(assistant_msg)
-
-                # Execute tool calls — parallel when multiple, sequential when single
-                tool_results: List[Dict[str, Any]] = []
-
-                def _exec_single_tool(tc_item):
-                    """Execute one tool and return (tc, result_str, success, duration)."""
-                    t0 = time.time()
-                    try:
-                        res = self.tool_registry.execute(tc_item.name, **tc_item.arguments)
-                        res_str = self._serialize_tool_result(res)
-                        ok = True
-                    except Exception as e:
-                        res_str = json.dumps({"error": str(e)})
-                        ok = False
-                        logger.warning(f"Tool '{tc_item.name}' failed: {e}")
-                    dur = time.time() - t0
-                    return tc_item, res_str, ok, round(dur, 2)
-
-                if len(response.tool_calls) == 1:
-                    # Single tool — run inline (no thread overhead)
-                    tc = response.tool_calls[0]
-                    if progress_callback:
-                        progress_callback({"type": "tool_start", "step": step + 1, "tool": tc.name})
-                    _, result_str, success, tool_duration = _exec_single_tool(tc)
-                    if progress_callback:
-                        progress_callback({"type": "tool_done", "step": step + 1, "tool": tc.name, "success": success, "duration": tool_duration})
-                    tool_calls_log.append({
-                        "step": step + 1, "tool": tc.name, "arguments": tc.arguments,
-                        "success": success, "duration": tool_duration, "result_length": len(result_str),
-                    })
-                    tool_results.append({"tc": tc, "result_str": result_str})
-                else:
-                    # Multiple tools — run in parallel threads
-                    for tc in response.tool_calls:
-                        if progress_callback:
-                            progress_callback({"type": "tool_start", "step": step + 1, "tool": tc.name})
-
-                    with ThreadPoolExecutor(max_workers=min(len(response.tool_calls), 5)) as pool:
-                        futures = {pool.submit(_exec_single_tool, tc): tc for tc in response.tool_calls}
-                        for future in as_completed(futures):
-                            tc_item, result_str, success, tool_duration = future.result()
-                            if progress_callback:
-                                progress_callback({"type": "tool_done", "step": step + 1, "tool": tc_item.name, "success": success, "duration": tool_duration})
-                            tool_calls_log.append({
-                                "step": step + 1, "tool": tc_item.name, "arguments": tc_item.arguments,
-                                "success": success, "duration": tool_duration, "result_length": len(result_str),
-                            })
-                            tool_results.append({"tc": tc_item, "result_str": result_str})
-
-                # Append tool results to messages (ordered by original tool_calls order)
-                tc_order = {tc.id: i for i, tc in enumerate(response.tool_calls)}
-                tool_results.sort(key=lambda x: tc_order.get(x["tc"].id, 0))
-                for tr in tool_results:
-                    messages.append({
-                        "role": "tool",
-                        "name": tr["tc"].name,
-                        "tool_call_id": tr["tc"].id,
-                        "content": tr["result_str"],
-                    })
-
-            else:
-                # LLM returned text — this is the final answer
-                logger.info(f"Agent completed in {step + 1} steps "
-                          f"({time.time() - start_time:.1f}s, {total_tokens} tokens)")
-                if progress_callback:
-                    progress_callback({"type": "generating", "step": step + 1, "message": "正在生成最终分析..."})
-
-                final_content = response.content or ""
-                
-                if parse_dashboard:
-                    dashboard = self._parse_dashboard(final_content)
-                    return AgentResult(
-                        success=dashboard is not None,
-                        content=final_content,
-                        dashboard=dashboard,
-                        tool_calls_log=tool_calls_log,
-                        total_steps=step + 1,
-                        total_tokens=total_tokens,
-                        provider=provider_used,
-                        error=None if dashboard else "Failed to parse dashboard JSON from agent response",
-                    )
-                else:
-                    if response.provider == "error":
-                        return AgentResult(
-                            success=False,
-                            content="",
-                            dashboard=None,
-                            tool_calls_log=tool_calls_log,
-                            total_steps=step + 1,
-                            total_tokens=total_tokens,
-                            provider=provider_used,
-                            error=final_content,
-                        )
-                    return AgentResult(
-                        success=True,
-                        content=final_content,
-                        dashboard=None,
-                        tool_calls_log=tool_calls_log,
-                        total_steps=step + 1,
-                        total_tokens=total_tokens,
-                        provider=provider_used,
-                        error=None,
-                    )
-
-        # Max steps exceeded
-        logger.warning(f"Agent hit max steps ({self.max_steps})")
         return AgentResult(
-            success=False,
-            content="",
-            tool_calls_log=tool_calls_log,
-            total_steps=self.max_steps,
-            total_tokens=total_tokens,
-            provider=provider_used,
-            error=f"Agent exceeded max steps ({self.max_steps})",
+            success=loop_result.success,
+            content=loop_result.content,
+            dashboard=None,
+            tool_calls_log=loop_result.tool_calls_log,
+            total_steps=loop_result.total_steps,
+            total_tokens=loop_result.total_tokens,
+            provider=loop_result.provider,
+            model=model_str,
+            error=loop_result.error,
         )
 
     def _build_user_message(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -588,92 +448,12 @@ class AgentExecutor:
                 parts.append(f"\n股票代码: {context['stock_code']}")
             if context.get("report_type"):
                 parts.append(f"报告类型: {context['report_type']}")
-            
-            # 注入已有的上下文数据，避免重复获取
+
+            # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):
                 parts.append(f"\n[系统已获取的实时行情]\n{json.dumps(context['realtime_quote'], ensure_ascii=False)}")
             if context.get("chip_distribution"):
                 parts.append(f"\n[系统已获取的筹码分布]\n{json.dumps(context['chip_distribution'], ensure_ascii=False)}")
-                
+
         parts.append("\n请使用可用工具获取缺失的数据（如历史K线、新闻等），然后以决策仪表盘 JSON 格式输出分析结果。")
         return "\n".join(parts)
-
-    def _serialize_tool_result(self, result: Any) -> str:
-        """Serialize a tool result to a JSON string for the LLM."""
-        if result is None:
-            return json.dumps({"result": None})
-        if isinstance(result, str):
-            return result
-        if isinstance(result, (dict, list)):
-            try:
-                return json.dumps(result, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                return str(result)
-        # Dataclass or object with __dict__
-        if hasattr(result, '__dict__'):
-            try:
-                d = {k: v for k, v in result.__dict__.items() if not k.startswith('_')}
-                return json.dumps(d, ensure_ascii=False, default=str)
-            except (TypeError, ValueError):
-                return str(result)
-        return str(result)
-
-    def _parse_dashboard(self, content: str) -> Optional[Dict[str, Any]]:
-        """Extract and parse the Decision Dashboard JSON from agent response."""
-        if not content:
-            return None
-
-        # Try to extract JSON from markdown code blocks
-        json_blocks = re.findall(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-        if json_blocks:
-            for block in json_blocks:
-                try:
-                    parsed = json.loads(block)
-                    if isinstance(parsed, dict):
-                        return parsed
-                except json.JSONDecodeError:
-                    try:
-                        repaired = repair_json(block)
-                        parsed = json.loads(repaired)
-                        if isinstance(parsed, dict):
-                            return parsed
-                    except Exception:
-                        continue
-
-        # Try raw JSON parse
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-
-        # Try json_repair
-        try:
-            repaired = repair_json(content)
-            parsed = json.loads(repaired)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-
-        # Try to find JSON object in text
-        brace_start = content.find('{')
-        brace_end = content.rfind('}')
-        if brace_start >= 0 and brace_end > brace_start:
-            candidate = content[brace_start:brace_end + 1]
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                try:
-                    repaired = repair_json(candidate)
-                    parsed = json.loads(repaired)
-                    if isinstance(parsed, dict):
-                        return parsed
-                except Exception:
-                    pass
-
-        logger.warning("Failed to parse dashboard JSON from agent response")
-        return None

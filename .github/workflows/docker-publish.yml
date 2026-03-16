@@ -24,7 +24,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -41,7 +41,7 @@ jobs:
             echo "Using event ref: ${GITHUB_REF_NAME}"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -58,7 +58,6 @@ jobs:
       - name: Validate release docs
         run: |
           test -f README.md
-          test -f docs/CHANGELOG.md
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             [[ "${{ inputs.release_tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             VERSION="${{ inputs.release_tag }}"
@@ -68,7 +67,15 @@ jobs:
             echo "Unsupported trigger type"
             exit 1
           fi
-          grep -Eq "^## \[${VERSION#v}\]" docs/CHANGELOG.md
+          # Validate using annotated tag message instead of CHANGELOG entry.
+          # Requires: git tag -a <version> -m "<release notes>"
+          TAG_BODY="$(git tag -l --format='%(contents)' "$VERSION")"
+          if [[ -z "${TAG_BODY// }" ]]; then
+            echo "ERROR: Tag $VERSION has no annotation message."
+            echo "Use: git tag -a $VERSION -m '<release notes>' (annotated tag required)"
+            exit 1
+          fi
+          echo "Tag annotation found for $VERSION ($(echo "$TAG_BODY" | wc -l) lines). Gate passed."
 
       - uses: docker/setup-buildx-action@v3
 

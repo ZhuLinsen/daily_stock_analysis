@@ -1,5 +1,6 @@
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi } from '../api/auth';
 
 type AuthContextValue = {
@@ -8,32 +9,31 @@ type AuthContextValue = {
   passwordSet: boolean;
   passwordChangeable: boolean;
   isLoading: boolean;
-  loadError: string | null;
-  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: string }>;
+  loadError: ParsedApiError | null;
+  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
   changePassword: (
     currentPassword: string,
     newPassword: string,
     newPasswordConfirm: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; error?: ParsedApiError }>;
   logout: () => Promise<void>;
   refreshStatus: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function extractLoginError(err: unknown): string {
-  const axiosErr =
-    err && typeof err === 'object' && 'response' in err
-      ? (err as { response?: { status?: number; data?: { message?: string } } })
-      : null;
-  if (axiosErr) {
-    if (axiosErr.response?.status === 429) {
-      return '尝试次数过多，请稍后再试';
-    }
-    const serverMsg = axiosErr.response?.data?.message;
-    return serverMsg || '密码错误';
+function extractLoginError(err: unknown): ParsedApiError {
+  const parsed = getParsedApiError(err);
+  if (parsed.status === 429) {
+    return createParsedApiError({
+      title: '登录尝试过于频繁',
+      message: '尝试次数过多，请稍后再试。',
+      rawMessage: parsed.rawMessage,
+      status: parsed.status,
+      category: parsed.category,
+    });
   }
-  return '登录失败';
+  return parsed;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [passwordSet, setPasswordSet] = useState(false);
   const [passwordChangeable, setPasswordChangeable] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
 
   const fetchStatus = useCallback(async () => {
     setIsLoading(true);
@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPasswordSet(status.passwordSet ?? false);
       setPasswordChangeable(status.passwordChangeable ?? false);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load auth status');
+      setLoadError(getParsedApiError(err));
       setAuthEnabled(false);
       setLoggedIn(false);
       setPasswordSet(false);
@@ -72,7 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (
       password: string,
       passwordConfirm?: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
         await authApi.login(password, passwordConfirm);
         setLoggedIn(true);
@@ -89,17 +89,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       currentPassword: string,
       newPassword: string,
       newPasswordConfirm: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
         await authApi.changePassword(currentPassword, newPassword, newPasswordConfirm);
         return { success: true };
       } catch (err: unknown) {
-        const axiosErr =
-          err && typeof err === 'object' && 'response' in err
-            ? (err as { response?: { data?: { message?: string } } })
-            : null;
-        const msg = axiosErr?.response?.data?.message || '修改失败';
-        return { success: false, error: msg };
+        return { success: false, error: getParsedApiError(err) };
       }
     },
     []

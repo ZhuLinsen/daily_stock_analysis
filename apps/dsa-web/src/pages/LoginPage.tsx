@@ -1,6 +1,9 @@
 import type React from 'react';
 import { useState } from 'react';
+import { ApiErrorAlert } from '../components/common';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import type { ParsedApiError } from '../api/error';
+import { isParsedApiError } from '../api/error';
 import { useAuth } from '../hooks';
 import { SettingsAlert } from '../components/settings';
 
@@ -15,7 +18,7 @@ const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | ParsedApiError | null>(null);
 
   const isFirstTime = !passwordSet;
 
@@ -45,7 +48,7 @@ const LoginPage: React.FC = () => {
         <h1 className="mb-2 text-xl font-semibold text-white">
           {isFirstTime ? '设置初始密码' : '管理员登录'}
         </h1>
-        <p className="mb-6 text-sm text-secondary">
+        <p className="mb-6 text-sm text-secondary-text">
           {isFirstTime
             ? '请设置管理员密码，输入两遍确认'
             : '请输入密码以继续访问'}
@@ -53,7 +56,7 @@ const LoginPage: React.FC = () => {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label htmlFor="password" className="mb-1 block text-sm font-medium text-secondary">
+            <label htmlFor="password" className="mb-1 block text-sm font-medium text-secondary-text">
               {isFirstTime ? '新密码' : '密码'}
             </label>
             <input
@@ -73,7 +76,7 @@ const LoginPage: React.FC = () => {
             <div>
               <label
                 htmlFor="passwordConfirm"
-                className="mb-1 block text-sm font-medium text-secondary"
+                className="mb-1 block text-sm font-medium text-secondary-text"
               >
                 确认密码
               </label>
@@ -90,14 +93,18 @@ const LoginPage: React.FC = () => {
             </div>
           ) : null}
 
-          {error ? (
-            <SettingsAlert
-              title={isFirstTime ? '设置失败' : '登录失败'}
-              message={error}
-              variant="error"
-              className="!mt-3"
-            />
-          ) : null}
+          {error
+            ? isParsedApiError(error)
+              ? <ApiErrorAlert error={error} className="!mt-3" />
+              : (
+                <SettingsAlert
+                  title={isFirstTime ? '设置失败' : '登录失败'}
+                  message={error}
+                  variant="error"
+                  className="!mt-3"
+                />
+              )
+            : null}
 
           <button
             type="submit"

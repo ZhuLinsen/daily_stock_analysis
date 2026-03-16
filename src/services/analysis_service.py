@@ -74,8 +74,8 @@ class AnalysisService:
                 query_source="api"
             )
             
-            # 确定报告类型
-            rt = ReportType.FULL if report_type == "detailed" else ReportType.SIMPLE
+            # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)
+            rt = ReportType.from_str(report_type)
             
             # 执行分析
             result = pipeline.process_single_stock(
@@ -90,7 +90,7 @@ class AnalysisService:
                 return None
             
             # 构建响应
-            return self._build_analysis_response(result, query_id)
+            return self._build_analysis_response(result, query_id, report_type=rt.value)
             
         except Exception as e:
             logger.error(f"分析股票 {stock_code} 失败: {e}", exc_info=True)
@@ -99,7 +99,8 @@ class AnalysisService:
     def _build_analysis_response(
         self, 
         result: Any, 
-        query_id: str
+        query_id: str,
+        report_type: str = "detailed",
     ) -> Dict[str, Any]:
         """
         构建分析响应
@@ -107,6 +108,7 @@ class AnalysisService:
         Args:
             result: AnalysisResult 对象
             query_id: 查询 ID
+            report_type: 归一化后的报告类型
             
         Returns:
             格式化的响应字典
@@ -125,9 +127,10 @@ class AnalysisService:
                 "query_id": query_id,
                 "stock_code": result.code,
                 "stock_name": result.name,
-                "report_type": "detailed",
+                "report_type": report_type,
                 "current_price": result.current_price,
                 "change_pct": result.change_pct,
+                "model_used": getattr(result, "model_used", None),
             },
             "summary": {
                 "analysis_summary": result.analysis_summary,

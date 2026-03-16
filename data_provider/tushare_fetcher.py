@@ -31,10 +31,11 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
 from .realtime_types import UnifiedRealtimeQuote
 from src.config import get_config
 import os
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -270,12 +271,20 @@ class TushareFetcher(BaseFetcher):
         # Already has suffix
         if '.' in code:
             return code.upper()
-        
+
+        # HK stocks are not supported by Tushare
+        if _is_hk_market(code):
+            raise DataFetchError(f"TushareFetcher 不支持港股 {code}，请使用 AkshareFetcher")
+
         # ETF: determine exchange by prefix
         if code.startswith(_ETF_SH_PREFIXES) and len(code) == 6:
             return f"{code}.SH"
         if code.startswith(_ETF_SZ_PREFIXES) and len(code) == 6:
             return f"{code}.SZ"
+        
+        # BSE (Beijing Stock Exchange): 8xxxxx, 4xxxxx, 920xxx
+        if is_bse_code(code):
+            return f"{code}.BJ"
         
         # Regular stocks
         # Shanghai: 600xxx, 601xxx, 603xxx, 688xxx (STAR Market)
@@ -315,6 +324,10 @@ class TushareFetcher(BaseFetcher):
         # US stocks not supported
         if _is_us_code(stock_code):
             raise DataFetchError(f"TushareFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+
+        # HK stocks not supported
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"TushareFetcher 不支持港股 {stock_code}，请使用 AkshareFetcher")
         
         # Rate-limit check
         self._check_rate_limit()
@@ -416,7 +429,11 @@ class TushareFetcher(BaseFetcher):
         if self._api is None:
             logger.warning("Tushare API 未初始化，无法获取股票名称")
             return None
-        
+
+        # HK stocks not supported by Tushare stock_basic
+        if _is_hk_market(stock_code):
+            return None
+
         # 检查缓存
         if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
             return self._stock_name_cache[stock_code]
@@ -514,6 +531,11 @@ class TushareFetcher(BaseFetcher):
         if self._api is None:
             return None
 
+        # HK stocks not supported by Tushare
+        if _is_hk_market(stock_code):
+            logger.debug(f"TushareFetcher 跳过港股实时行情 {stock_code}")
+            return None
+
         from .realtime_types import (
             RealtimeSource,
             safe_float, safe_int
@@ -565,12 +587,14 @@ class TushareFetcher(BaseFetcher):
             # 简单的指数判断逻辑
             if code_6 == '000001':  # 上证指数
                 symbol = 'sh000001'
-            elif code_6 == '399001': # 深证成指
+            elif code_6 == '399001':  # 深证成指
                 symbol = 'sz399001'
-            elif code_6 == '399006': # 创业板指
+            elif code_6 == '399006':  # 创业板指
                 symbol = 'sz399006'
-            elif code_6 == '000300': # 沪深300
+            elif code_6 == '000300':  # 沪深300
                 symbol = 'sh000300'
+            elif is_bse_code(code_6):  # 北交所
+                symbol = f"bj{code_6}"
             else:
                 symbol = code_6
 
@@ -686,73 +710,167 @@ class TushareFetcher(BaseFetcher):
     def get_market_stats(self) -> Optional[dict]:
         """
         获取市场涨跌统计 (Tushare Pro)
+        2000积分 每天访问该接口 ts.pro_api().rt_k 两次
+        接口限制见：https://tushare.pro/document/1?doc_id=108
         """
         if self._api is None:
             return None
 
         try:
             self._check_rate_limit()
+            logger.info("[API调用] ts.pro_api() 获取市场统计...")
+            
+            # 获取当前中国时间，判断是否在交易时间内
+            china_now = datetime.now(ZoneInfo("Asia/Shanghai"))
+            china_now_str = china_now.strftime("%H:%M")
+            current_date = china_now.strftime("%Y%m%d")
 
-            # 获取最近交易日 (获取过去20天，确保有足够历史)
             start_date = (datetime.now() - pd.Timedelta(days=20)).strftime('%Y%m%d')
-            trade_cal = self._api.trade_cal(exchange='', start_date=start_date, end_date=datetime.now().strftime('%Y%m%d'), is_open='1')
+            df_cal = self._api.trade_cal(exchange='SSE', start_date=start_date, end_date=current_date)
 
-            if trade_cal is None or trade_cal.empty:
-                return None
+            # 过滤出 is_open == 1 (开市) 的日期，并转换为列表
+            date_list = df_cal[df_cal['is_open'] == 1]['cal_date'].tolist()
 
-            # 确保按日期升序排列 (Tushare有时返回降序)
-            trade_cal = trade_cal.sort_values('cal_date')
-
-            # 尝试获取最新一天的数据
-            last_date = trade_cal.iloc[-1]['cal_date']
-            logger.info(f"[Tushare] Calendar suggests last trading date: {last_date}")
-
-            # 注意：每日指标接口 daily 可能数据量较大
-            # 如果是在盘中调用，当天的数据可能还未生成，导致返回空或极少数据
-            df = self._api.daily(trade_date=last_date)
-
-            current_len = len(df) if df is not None else 0
-            logger.info(f"[Tushare] Initial fetch for {last_date} returned {current_len} records")
-
-            # 如果数据过少（<100条），说明当天数据未就绪，尝试使用前一交易日
-            if df is None or len(df) < 100:
-                if len(trade_cal) > 1:
-                    prev_date = trade_cal.iloc[-2]['cal_date']
-                    logger.warning(f"Data for {last_date} is incomplete (count={current_len}), falling back to {prev_date}")
-                    last_date = prev_date
-                    df = self._api.daily(trade_date=last_date)
+            if current_date in date_list:
+                if china_now_str < '09:30' or china_now_str > '16:30':
+                    use_realtime = False
                 else:
-                    logger.warning(f"[Tushare] {last_date} 数据不足且无可用历史交易日")
-
-            logger.info(f"Calculating stats using data from date: {last_date}")
-
-            if df is not None and not df.empty:
-                logger.info(f"[Tushare] 使用交易日 {last_date} 进行市场统计分析")
-                up_count = len(df[df['pct_chg'] > 0])
-                down_count = len(df[df['pct_chg'] < 0])
-                flat_count = len(df[df['pct_chg'] == 0])
-
-                # 涨停跌停估算 (9.9%阈值)
-                limit_up = len(df[df['pct_chg'] >= 9.9])
-                limit_down = len(df[df['pct_chg'] <= -9.9])
-
-                total_amount = df['amount'].sum() * 1000 / 1e8 # 千元 -> 元 -> 亿元
-
-                return {
-                    'up_count': up_count,
-                    'down_count': down_count,
-                    'flat_count': flat_count,
-                    'limit_up_count': limit_up,
-                    'limit_down_count': limit_down,
-                    'total_amount': total_amount
-                }
+                    use_realtime = True
             else:
-                logger.warning("[Tushare] 获取市场统计数据为空")
+                use_realtime = False
 
+            # 若实盘的时候使用 则使用其他可以实盘获取的数据源 akshare、efinance
+            if use_realtime:
+                try:
+                    df = self._api.rt_k(ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
+                    if df is not None and not df.empty:
+                        return self._calc_market_stats(df)
+                    
+                except Exception as e:
+                    logger.error(f"[Tushare] ts.pro_api().rt_k 尝试获取实时数据失败: {e}")
+                    return None
+            else:
+
+                if current_date not in date_list:
+                    last_date = date_list[0] # 拿最近的日期
+                else:
+                    if china_now_str < '09:30': 
+                        last_date = date_list[1] # 拿取前一天的数据
+                    else:  # 即 '> 16:30'                  
+                        last_date = date_list[0] # 拿取当天的数据
+
+                try:
+                    df = self._api.daily(TS_CODE='3*.SZ,6*.SH,0*.SZ,92*.BJ',start_date=last_date, end_date=last_date)
+                    # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
+                    df.columns = [col.lower() for col in df.columns]
+
+                    # 获取股票基础信息（包含代码和名称）
+                    df_basic = self._api.stock_basic(fields='ts_code,name')
+                    df = pd.merge(df, df_basic, on='ts_code', how='left')
+                    # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
+                    if 'amount' in df.columns:
+                        df['amount'] = df['amount'] * 1000
+
+                    if df is not None and not df.empty:
+                        return self._calc_market_stats(df)
+                except Exception as e:
+                    logger.error(f"[Tushare] ts.pro_api().daily 获取数据失败: {e}")
+                    
+
+            
         except Exception as e:
             logger.error(f"[Tushare] 获取市场统计失败: {e}")
 
         return None
+    
+    def _calc_market_stats(
+            self,
+            df: pd.DataFrame,
+            ) -> Optional[Dict[str, Any]]:
+            """从行情 DataFrame 计算涨跌统计。"""
+            import numpy as np
+
+            df = df.copy()
+            
+            # 1. 提取基础比对数据：最新价、昨收
+            # 兼容不同接口返回的列名 sina/em efinance tushare xtdata
+            code_col = next((c for c in ['代码', '股票代码', 'ts_code','stock_code'] if c in df.columns), None)
+            name_col = next((c for c in ['名称', '股票名称','name','name'] if c in df.columns), None)
+            close_col = next((c for c in ['最新价', '最新价', 'close','lastPrice'] if c in df.columns), None)
+            pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close','lastClose'] if c in df.columns), None)
+            amount_col = next((c for c in ['成交额', '成交额', 'amount','amount'] if c in df.columns), None) 
+            
+            limit_up_count = 0
+            limit_down_count = 0
+            up_count = 0
+            down_count = 0
+            flat_count = 0
+
+            for code, name, current_price, pre_close, amount in zip(
+                df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
+            ):
+                
+                # 停牌过滤 efinance 的停牌数据有时候会缺失价格显示为 '-'，em 显示为none
+                if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
+                    continue
+                
+                # em、efinance 为str 需要转换为float
+                current_price = float(current_price)
+                pre_close = float(pre_close)
+                
+                # 获取去除前缀的纯数字代码
+                pure_code = normalize_stock_code(str(code)) 
+
+                # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
+                if is_bse_code(pure_code): 
+                    ratio = 0.30
+                elif is_kc_cy_stock(pure_code): #pure_code.startswith(('688', '30')):
+                    ratio = 0.20
+                elif is_st_stock(name): #'ST' in str_name:
+                    ratio = 0.05
+                else:
+                    ratio = 0.10
+
+                # B. 严格按照 A 股规则计算涨跌停价：昨收 * (1 ± 比例) -> 四舍五入保留2位小数
+                limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
+                limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
+
+                limit_up_price_Tolerance = round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
+                limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
+
+                # C. 精确比对
+                if current_price > 0 :
+                    is_limit_up = (current_price > 0) and (abs(current_price - limit_up_price) <= limit_up_price_Tolerance)
+                    is_limit_down = (current_price > 0) and (abs(current_price - limit_down_price) <= limit_down_price_Tolerance)
+
+                    if is_limit_up:
+                        limit_up_count += 1
+                    if is_limit_down:
+                        limit_down_count += 1
+
+                    if current_price > pre_close:
+                        up_count += 1
+                    elif current_price < pre_close:
+                        down_count += 1
+                    else:
+                        flat_count += 1
+                    
+            # 统计数量
+            stats = {
+                'up_count': up_count,
+                'down_count': down_count,
+                'flat_count': flat_count,
+                'limit_up_count': limit_up_count,
+                'limit_down_count': limit_down_count,
+                'total_amount': 0.0,
+            }
+            
+            # 成交额统计
+            if amount_col and amount_col in df.columns:
+                df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
+                stats['total_amount'] = (df[amount_col].sum() / 1e8)
+                
+            return stats
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
         """
@@ -780,3 +898,20 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"获取失败: {e}")
+
+    # 测试市场统计
+    print("\n" + "=" * 50)
+    print("Testing get_market_stats (tushare)")
+    print("=" * 50)
+    try:
+        stats = fetcher.get_market_stats()
+        if stats:
+            print(f"Market Stats successfully computed:")
+            print(f"Up: {stats['up_count']} (Limit Up: {stats['limit_up_count']})")
+            print(f"Down: {stats['down_count']} (Limit Down: {stats['limit_down_count']})")
+            print(f"Flat: {stats['flat_count']}")
+            print(f"Total Amount: {stats['total_amount']:.2f} 亿 (Yi)")
+        else:
+            print("Failed to compute market stats.")
+    except Exception as e:
+        print(f"Failed to compute market stats: {e}")

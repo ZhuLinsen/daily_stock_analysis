@@ -19,10 +19,10 @@ const StrategyItem: React.FC<StrategyItemProps> = ({
 }) => (
   <div className="relative overflow-hidden rounded-lg bg-elevated border border-white/5 p-3 hover:border-white/10 transition-colors">
     <div className="flex flex-col">
-      <span className="text-xs text-muted mb-0.5">{label}</span>
+      <span className="text-xs text-muted-text mb-0.5">{label}</span>
       <span
         className="text-lg font-bold font-mono"
-        style={{ color: value ? color : 'var(--text-muted)' }}
+        style={{ color: value ? color : 'var(--text-muted-text)' }}
       >
         {value || '—'}
       </span>

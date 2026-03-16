@@ -67,4 +67,26 @@ export const historyApi = {
       items: (data.items || []).map(item => toCamelCase<NewsIntelItem>(item)),
     };
   },
+
+  /**
+   * 获取历史报告的 Markdown 格式内容
+   * @param recordId 分析历史记录主键 ID
+   * @returns Markdown 格式的完整报告内容
+   */
+  getMarkdown: async (recordId: number): Promise<string> => {
+    const response = await apiClient.get<{ content: string }>(`/api/v1/history/${recordId}/markdown`);
+    return response.data.content;
+  },
+
+  /**
+   * 批量删除历史记录
+   * @param recordIds 分析历史记录主键 ID 列表
+   */
+  deleteRecords: async (recordIds: number[]): Promise<{ deleted: number }> => {
+    const response = await apiClient.delete<Record<string, unknown>>('/api/v1/history', {
+      data: { record_ids: recordIds },
+    });
+
+    return toCamelCase<{ deleted: number }>(response.data);
+  },
 };

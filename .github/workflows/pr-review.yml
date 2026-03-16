@@ -9,9 +9,12 @@ on:
     paths:
       - '**.py'
       - '**.md'
+      - '**.ts'
+      - '**.tsx'
       - 'docs/**'
       - 'README.md'
       - 'AGENTS.md'
+      - 'apps/dsa-web/**'
       - 'requirements.txt'
       - 'pyproject.toml'
       - 'setup.cfg'
@@ -44,7 +47,7 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -88,7 +91,7 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -97,7 +100,7 @@ jobs:
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
       
       - name: 🐍 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -194,7 +197,7 @@ jobs:
     steps:
       # 先检出主分支（获取最新的 .github/scripts）
       - name: 📥 检出主分支脚本
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
@@ -204,7 +207,7 @@ jobs:
       
       # 再检出 PR 代码（用于 diff 分析）
       - name: 📥 检出 PR 代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -215,7 +218,7 @@ jobs:
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
       
       - name: 🐍 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
@@ -234,10 +237,13 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           AI_REVIEW_STRICT: ${{ vars.AI_REVIEW_STRICT || 'false' }}
+          CI_SYNTAX_OK: ${{ needs.auto-check.outputs.syntax_ok || '' }}
+          CI_HAS_PY_CHANGES: ${{ needs.auto-check.outputs.has_py_changes || 'false' }}
+          CI_AUTO_CHECK_RESULT: ${{ needs.auto-check.result || '' }}
         run: python ../main-scripts/.github/scripts/ai_review.py
       
       - name: 📤 上传审查结果
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ai-review-result
@@ -251,11 +257,11 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       
       - name: 🏷️ 添加标签
         if: github.event_name == 'pull_request_target'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { data: files } = await github.rest.pulls.listFiles({
@@ -332,12 +338,12 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
       
       - name: 📥 下载 AI 审查结果
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         if: needs.ai-review.result == 'success'
         continue-on-error: true
         with:
@@ -348,7 +354,7 @@ jobs:
         env:
           AUTO_CHECK_RESULT: ${{ needs.auto-check.result }}
           AI_REVIEW_RESULT: ${{ needs.ai-review.result }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');

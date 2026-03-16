@@ -1,0 +1,18 @@
+{# Shared macros for report templates #}
+{% macro market_snapshot(result) %}
+{% set snapshot = result.market_snapshot if result.market_snapshot else {} %}
+{% if snapshot %}
+### 📈 当日行情
+
+| 收盘 | 昨收 | 开盘 | 最高 | 最低 | 涨跌幅 | 涨跌额 | 振幅 | 成交量 | 成交额 |
+|------|------|------|------|------|-------|-------|------|--------|--------|
+| {{ snapshot.get('close', 'N/A') }} | {{ snapshot.get('prev_close', 'N/A') }} | {{ snapshot.get('open', 'N/A') }} | {{ snapshot.get('high', 'N/A') }} | {{ snapshot.get('low', 'N/A') }} | {{ snapshot.get('pct_chg', 'N/A') }} | {{ snapshot.get('change_amount', 'N/A') }} | {{ snapshot.get('amplitude', 'N/A') }} | {{ snapshot.get('volume', 'N/A') }} | {{ snapshot.get('amount', 'N/A') }} |
+{% if snapshot.get('price') %}
+
+| 当前价 | 量比 | 换手率 | 行情来源 |
+|-------|------|--------|----------|
+| {{ snapshot.get('price', 'N/A') }} | {{ snapshot.get('volume_ratio', 'N/A') }} | {{ snapshot.get('turnover_rate', 'N/A') }} | {{ snapshot.get('source', 'N/A') }} |
+{% endif %}
+
+{% endif %}
+{% endmacro %}

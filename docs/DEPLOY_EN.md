@@ -196,6 +196,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
 | `TAVILY_API_KEYS` | - | News search (optional) |
+| `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
 ---
 
@@ -360,6 +361,7 @@ Add these Secrets:
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
 | `TAVILY_API_KEYS` | Tavily Search API Key | Recommended |
+| `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
 | `SERPAPI_API_KEYS` | SerpAPI Key | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
 | `GEMINI_MODEL` | Model name (default gemini-2.0-flash) | Optional |

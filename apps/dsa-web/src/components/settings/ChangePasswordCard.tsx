@@ -1,7 +1,9 @@
 import type React from 'react';
 import { useState } from 'react';
+import type { ParsedApiError } from '../../api/error';
+import { isParsedApiError } from '../../api/error';
 import { useAuth } from '../../hooks';
-import { EyeToggleIcon } from '../common';
+import { ApiErrorAlert, EyeToggleIcon } from '../common';
 import { SettingsAlert } from './SettingsAlert';
 
 export const ChangePasswordCard: React.FC = () => {
@@ -13,7 +15,7 @@ export const ChangePasswordCard: React.FC = () => {
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | ParsedApiError | null>(null);
   const [success, setSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,13 +65,13 @@ export const ChangePasswordCard: React.FC = () => {
       <div className="mb-2 flex items-center gap-2">
         <label className="text-sm font-semibold text-white">修改密码</label>
       </div>
-      <p className="mb-3 text-xs text-muted">修改管理员登录密码</p>
+      <p className="mb-3 text-xs text-muted-text">修改管理员登录密码</p>
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div>
           <label
             htmlFor="change-pass-current"
-            className="mb-1 block text-xs font-medium text-secondary"
+            className="mb-1 block text-xs font-medium text-secondary-text"
           >
             当前密码
           </label>
@@ -99,7 +101,7 @@ export const ChangePasswordCard: React.FC = () => {
         <div>
           <label
             htmlFor="change-pass-new"
-            className="mb-1 block text-xs font-medium text-secondary"
+            className="mb-1 block text-xs font-medium text-secondary-text"
           >
             新密码
           </label>
@@ -129,7 +131,7 @@ export const ChangePasswordCard: React.FC = () => {
         <div>
           <label
             htmlFor="change-pass-confirm"
-            className="mb-1 block text-xs font-medium text-secondary"
+            className="mb-1 block text-xs font-medium text-secondary-text"
           >
             确认新密码
           </label>
@@ -157,9 +159,11 @@ export const ChangePasswordCard: React.FC = () => {
           </div>
         </div>
 
-        {error ? (
-          <SettingsAlert title="修改失败" message={error} variant="error" className="!mt-3" />
-        ) : null}
+        {error
+          ? isParsedApiError(error)
+            ? <ApiErrorAlert error={error} className="!mt-3" />
+            : <SettingsAlert title="修改失败" message={error} variant="error" className="!mt-3" />
+          : null}
         {success ? (
           <p className="text-xs text-green-500">密码已修改成功</p>
         ) : null}

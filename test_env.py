@@ -84,12 +84,12 @@ def test_config():
     print(f"  企业微信 Webhook: {'已配置 ✓' if config.wechat_webhook_url else '未配置 ✗'}")
     
     print_section("配置验证")
-    warnings = config.validate()
-    if warnings:
-        for w in warnings:
-            print(f"  ⚠ {w}")
-    else:
-        print("  ✓ 所有配置项验证通过")
+    issues = config.validate_structured()
+    _prefix = {"error": "  ✗", "warning": "  ⚠", "info": "  ·"}
+    for issue in issues:
+        print(f"{_prefix.get(issue.severity, '  ?')} [{issue.severity.upper()}] {issue.message}")
+    if not any(i.severity in ("error", "warning") for i in issues):
+        print("  ✓ 关键配置项验证通过")
     
     return True
 

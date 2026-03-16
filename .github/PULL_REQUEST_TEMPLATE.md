@@ -42,6 +42,19 @@ python -m pytest -m "not network"
 
 请至少写一句可执行的回滚方案（必填）。
 
+## EXTRACT_PROMPT 变更（如适用）
+
+若本 PR 修改了 `src/services/image_stock_extractor.py` 中的 `EXTRACT_PROMPT`，请在此处粘贴完整变更后的 prompt，便于审查者评估指令效果：
+
+<details>
+<summary>点击展开：完整 EXTRACT_PROMPT</summary>
+
+```
+（在此粘贴完整 prompt 内容）
+```
+
+</details>
+
 ## Checklist
 
 - [ ] 我已确认本 PR 有明确动机和业务价值

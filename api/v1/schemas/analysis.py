@@ -38,9 +38,9 @@ class AnalyzeRequest(BaseModel):
         example=["600519", "000858"]
     )
     report_type: str = Field(
-        "detailed", 
-        description="报告类型",
-        pattern="^(simple|detailed)$"
+        "detailed",
+        description="报告类型：simple(精简) / detailed(完整) / full(完整) / brief(简洁)",
+        pattern="^(simple|detailed|full|brief)$",
     )
     force_refresh: bool = Field(
         True,
@@ -105,6 +105,76 @@ class TaskAccepted(BaseModel):
                 "task_id": "task_abc123",
                 "status": "pending",
                 "message": "Analysis task accepted"
+            }
+        }
+
+
+class BatchTaskAcceptedItem(BaseModel):
+    """批量异步任务中的单个成功提交项。"""
+
+    task_id: str = Field(..., description="任务 ID，用于查询状态")
+    stock_code: str = Field(..., description="股票代码")
+    status: str = Field(
+        ...,
+        description="任务状态",
+        pattern="^(pending|processing)$"
+    )
+    message: Optional[str] = Field(None, description="提示信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "task_id": "task_abc123",
+                "stock_code": "600519",
+                "status": "pending",
+                "message": "分析任务已加入队列: 600519"
+            }
+        }
+
+
+class BatchDuplicateTaskItem(BaseModel):
+    """批量异步任务中的重复提交项。"""
+
+    stock_code: str = Field(..., description="股票代码")
+    existing_task_id: str = Field(..., description="已存在的任务 ID")
+    message: str = Field(..., description="错误信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "stock_code": "600519",
+                "existing_task_id": "task_existing_123",
+                "message": "股票 600519 正在分析中 (task_id: task_existing_123)"
+            }
+        }
+
+
+class BatchTaskAcceptedResponse(BaseModel):
+    """批量异步任务接受响应。"""
+
+    accepted: List[BatchTaskAcceptedItem] = Field(default_factory=list, description="成功提交的任务列表")
+    duplicates: List[BatchDuplicateTaskItem] = Field(default_factory=list, description="重复而跳过的任务列表")
+    message: str = Field(..., description="汇总信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "accepted": [
+                    {
+                        "task_id": "task_abc123",
+                        "stock_code": "600519",
+                        "status": "pending",
+                        "message": "分析任务已加入队列: 600519"
+                    }
+                ],
+                "duplicates": [
+                    {
+                        "stock_code": "000858",
+                        "existing_task_id": "task_existing_456",
+                        "message": "股票 000858 正在分析中 (task_id: task_existing_456)"
+                    }
+                ],
+                "message": "已提交 1 个任务，1 个重复跳过"
             }
         }
 

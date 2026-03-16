@@ -175,6 +175,29 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(summary["scope"], "overall")
         self.assertEqual(summary["win_count"], 1)
 
+    def test_agent_learning_summary_helpers_return_normalized_ratios(self) -> None:
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        global_summary = service.get_global_summary(eval_window_days=3)
+        stock_summary = service.get_stock_summary("600519", eval_window_days=3)
+        strategy_summary = service.get_strategy_summary("bull_trend", eval_window_days=3)
+
+        self.assertIsNotNone(global_summary)
+        self.assertEqual(global_summary["total_evaluations"], 1)
+        self.assertAlmostEqual(global_summary["win_rate"], 1.0)
+        self.assertAlmostEqual(global_summary["direction_accuracy"], 1.0)
+        self.assertAlmostEqual(global_summary["avg_return"], 0.10)
+
+        self.assertIsNotNone(stock_summary)
+        self.assertEqual(stock_summary["code"], "600519")
+        self.assertAlmostEqual(stock_summary["win_rate"], 1.0)
+
+        self.assertIsNotNone(strategy_summary)
+        self.assertEqual(strategy_summary["strategy_id"], "bull_trend")
+        self.assertEqual(strategy_summary["source_scope"], "overall")
+        self.assertAlmostEqual(strategy_summary["win_rate"], 1.0)
+
     def test_get_recent_evaluations(self) -> None:
         """Verify get_recent_evaluations returns correct paginated results."""
         service = BacktestService(self.db)
@@ -255,4 +278,3 @@ class BacktestServiceTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

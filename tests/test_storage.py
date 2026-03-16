@@ -52,5 +52,44 @@ class TestStorage(unittest.TestCase):
         self.assertIsNone(DatabaseManager._parse_sniper_value("没有数字"))
         self.assertIsNone(DatabaseManager._parse_sniper_value("MA5但没有元"))
 
+        # 7. 回归：括号内技术指标数字不应被提取
+        self.assertNotEqual(DatabaseManager._parse_sniper_value("1.52-1.53 (回踩MA5/10附近)"), 10.0)
+        self.assertNotEqual(DatabaseManager._parse_sniper_value("1.55-1.56(MA5/M20支撑)"), 20.0)
+        self.assertNotEqual(DatabaseManager._parse_sniper_value("1.49-1.50(MA60附近企稳)"), 60.0)
+        # 验证正确值在区间内
+        self.assertIn(DatabaseManager._parse_sniper_value("1.52-1.53 (回踩MA5/10附近)"), [1.52, 1.53])
+        self.assertIn(DatabaseManager._parse_sniper_value("1.55-1.56(MA5/M20支撑)"), [1.55, 1.56])
+        self.assertIn(DatabaseManager._parse_sniper_value("1.49-1.50(MA60附近企稳)"), [1.49, 1.50])
+
+    def test_get_chat_sessions_prefix_is_scoped_by_colon_boundary(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.save_conversation_message("telegram_12345:chat", "user", "first user")
+        db.save_conversation_message("telegram_123456:chat", "user", "second user")
+
+        sessions = db.get_chat_sessions(session_prefix="telegram_12345")
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["session_id"], "telegram_12345:chat")
+
+        DatabaseManager.reset_instance()
+
+    def test_get_chat_sessions_can_include_legacy_exact_session_id(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.save_conversation_message("feishu_u1", "user", "legacy chat")
+        db.save_conversation_message("feishu_u1:ask_600519", "user", "ask session")
+
+        sessions = db.get_chat_sessions(
+            session_prefix="feishu_u1:",
+            extra_session_ids=["feishu_u1"],
+        )
+
+        self.assertEqual({item["session_id"] for item in sessions}, {"feishu_u1", "feishu_u1:ask_600519"})
+
+        DatabaseManager.reset_instance()
+
 if __name__ == '__main__':
     unittest.main()

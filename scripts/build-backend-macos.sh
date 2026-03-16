@@ -58,6 +58,9 @@ hidden_imports=(
   "multipart"
   "multipart.multipart"
   "json_repair"
+  "tiktoken"
+  "tiktoken_ext"
+  "tiktoken_ext.openai_public"
   "api"
   "api.app"
   "api.deps"
@@ -97,7 +100,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --collect-data litellm)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --collect-data litellm --collect-data tiktoken)
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"

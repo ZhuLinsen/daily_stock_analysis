@@ -111,7 +111,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskAccepted"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TaskAccepted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BatchTaskAcceptedResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -629,10 +636,12 @@
             "type": "string",
             "enum": [
               "simple",
-              "detailed"
+              "detailed",
+              "full",
+              "brief"
             ],
             "default": "detailed",
-            "description": "报告类型"
+            "description": "报告类型：simple(精简) / detailed(完整) / full(完整) / brief(简洁)"
           },
           "force_refresh": {
             "type": "boolean",
@@ -697,6 +706,82 @@
         "required": [
           "task_id",
           "status"
+        ]
+      },
+      "BatchTaskAcceptedItem": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "任务 ID，用于查询状态"
+          },
+          "stock_code": {
+            "type": "string",
+            "description": "股票代码"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "stock_code",
+          "status"
+        ]
+      },
+      "BatchDuplicateTaskItem": {
+        "type": "object",
+        "properties": {
+          "stock_code": {
+            "type": "string",
+            "description": "股票代码"
+          },
+          "existing_task_id": {
+            "type": "string",
+            "description": "已存在的任务 ID"
+          },
+          "message": {
+            "type": "string",
+            "description": "错误信息"
+          }
+        },
+        "required": [
+          "stock_code",
+          "existing_task_id",
+          "message"
+        ]
+      },
+      "BatchTaskAcceptedResponse": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchTaskAcceptedItem"
+            }
+          },
+          "duplicates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchDuplicateTaskItem"
+            }
+          },
+          "message": {
+            "type": "string",
+            "description": "汇总信息"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicates",
+          "message"
         ]
       },
       "TaskStatus": {
@@ -993,6 +1078,10 @@
               "created_at": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "model_used": {
+                "type": "string",
+                "description": "分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）"
               }
             }
           },

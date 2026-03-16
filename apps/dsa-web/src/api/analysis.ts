@@ -3,6 +3,8 @@ import { toCamelCase } from './utils';
 import type {
   AnalysisRequest,
   AnalysisResult,
+  AnalyzeResponse,
+  AnalyzeAsyncResponse,
   AnalysisReport,
   TaskStatus,
   TaskListResponse,
@@ -14,11 +16,12 @@ export const analysisApi = {
   /**
    * 触发股票分析
    * @param data 分析请求参数
-   * @returns 同步模式返回 AnalysisResult，异步模式返回 TaskAccepted（需检查 status code）
+   * @returns 同步模式返回 AnalysisResult；异步模式返回单任务或批量任务接受响应
    */
-  analyze: async (data: AnalysisRequest): Promise<AnalysisResult> => {
+  analyze: async (data: AnalysisRequest): Promise<AnalyzeResponse> => {
     const requestData = {
       stock_code: data.stockCode,
+      stock_codes: data.stockCodes,
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: data.asyncMode || false,
@@ -29,10 +32,10 @@ export const analysisApi = {
       requestData
     );
 
-    const result = toCamelCase<AnalysisResult>(response.data);
+    const result = toCamelCase<AnalyzeResponse>(response.data);
 
-    // 确保 report 字段正确转换
-    if (result.report) {
+    // 确保同步分析返回中的 report 字段正确转换
+    if ('report' in result && result.report) {
       result.report = toCamelCase<AnalysisReport>(result.report);
     }
 
@@ -43,11 +46,12 @@ export const analysisApi = {
    * 异步模式触发分析
    * 返回 task_id，通过 SSE 或轮询获取结果
    * @param data 分析请求参数
-   * @returns 任务接受响应或抛出 409 错误
+   * @returns 单任务或批量任务接受响应；409 时抛出重复任务错误
    */
-  analyzeAsync: async (data: AnalysisRequest): Promise<{ taskId: string; status: string; message?: string }> => {
+  analyzeAsync: async (data: AnalysisRequest): Promise<AnalyzeAsyncResponse> => {
     const requestData = {
       stock_code: data.stockCode,
+      stock_codes: data.stockCodes,
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: true,
@@ -73,7 +77,7 @@ export const analysisApi = {
       throw new DuplicateTaskError(errorData.stockCode, errorData.existingTaskId, errorData.message);
     }
 
-    return toCamelCase<{ taskId: string; status: string; message?: string }>(response.data);
+    return toCamelCase<AnalyzeAsyncResponse>(response.data);
   },
 
   /**

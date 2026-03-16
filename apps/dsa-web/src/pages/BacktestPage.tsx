@@ -1,7 +1,9 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
 import { backtestApi } from '../api/backtest';
-import { Card, Badge, Pagination } from '../components/common';
+import type { ParsedApiError } from '../api/error';
+import { getParsedApiError } from '../api/error';
+import { ApiErrorAlert, Card, Badge, Pagination } from '../components/common';
 import type {
   BacktestResultItem,
   BacktestRunResponse,
@@ -45,14 +47,14 @@ function statusBadge(status: string) {
 function boolIcon(value?: boolean | null) {
   if (value === true) return <span className="text-emerald-400">&#10003;</span>;
   if (value === false) return <span className="text-red-400">&#10007;</span>;
-  return <span className="text-muted">--</span>;
+  return <span className="text-muted-text">--</span>;
 }
 
 // ============ Metric Row ============
 
 const MetricRow: React.FC<{ label: string; value: string; accent?: boolean }> = ({ label, value, accent }) => (
   <div className="flex items-center justify-between py-1.5 border-b border-white/5 last:border-0">
-    <span className="text-xs text-secondary">{label}</span>
+    <span className="text-xs text-secondary-text">{label}</span>
     <span className={`text-sm font-mono font-semibold ${accent ? 'text-cyan' : 'text-white'}`}>{value}</span>
   </div>
 );
@@ -72,13 +74,13 @@ const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> 
     <MetricRow label="TP Trigger Rate" value={pct(metrics.takeProfitTriggerRate)} />
     <MetricRow label="Avg Days to Hit" value={metrics.avgDaysToFirstHit != null ? metrics.avgDaysToFirstHit.toFixed(1) : '--'} />
     <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between">
-      <span className="text-xs text-muted">Evaluations</span>
-      <span className="text-xs text-secondary font-mono">
+      <span className="text-xs text-muted-text">Evaluations</span>
+      <span className="text-xs text-secondary-text font-mono">
         {Number(metrics.completedCount)} / {Number(metrics.totalEvaluations)}
       </span>
     </div>
     <div className="flex items-center justify-between">
-      <span className="text-xs text-muted">W / L / N</span>
+      <span className="text-xs text-muted-text">W / L / N</span>
       <span className="text-xs font-mono">
         <span className="text-emerald-400">{metrics.winCount}</span>
         {' / '}
@@ -94,12 +96,12 @@ const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> 
 
 const RunSummary: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
   <div className="flex items-center gap-4 px-3 py-2 rounded-lg bg-elevated border border-white/5 text-xs font-mono animate-fade-in">
-    <span className="text-secondary">Processed: <span className="text-white">{data.processed}</span></span>
-    <span className="text-secondary">Saved: <span className="text-cyan">{data.saved}</span></span>
-    <span className="text-secondary">Completed: <span className="text-emerald-400">{data.completed}</span></span>
-    <span className="text-secondary">Insufficient: <span className="text-amber-400">{data.insufficient}</span></span>
+    <span className="text-secondary-text">Processed: <span className="text-white">{data.processed}</span></span>
+    <span className="text-secondary-text">Saved: <span className="text-cyan">{data.saved}</span></span>
+    <span className="text-secondary-text">Completed: <span className="text-emerald-400">{data.completed}</span></span>
+    <span className="text-secondary-text">Insufficient: <span className="text-amber-400">{data.insufficient}</span></span>
     {data.errors > 0 && (
-      <span className="text-secondary">Errors: <span className="text-red-400">{data.errors}</span></span>
+      <span className="text-secondary-text">Errors: <span className="text-red-400">{data.errors}</span></span>
     )}
   </div>
 );
@@ -113,7 +115,8 @@ const BacktestPage: React.FC = () => {
   const [forceRerun, setForceRerun] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<ParsedApiError | null>(null);
+  const [pageError, setPageError] = useState<ParsedApiError | null>(null);
 
   // Results state
   const [results, setResults] = useState<BacktestResultItem[]>([]);
@@ -135,8 +138,10 @@ const BacktestPage: React.FC = () => {
       setResults(response.items);
       setTotalResults(response.total);
       setCurrentPage(response.page);
+      setPageError(null);
     } catch (err) {
       console.error('Failed to fetch backtest results:', err);
+      setPageError(getParsedApiError(err));
     } finally {
       setIsLoadingResults(false);
     }
@@ -155,8 +160,10 @@ const BacktestPage: React.FC = () => {
       } else {
         setStockPerf(null);
       }
+      setPageError(null);
     } catch (err) {
       console.error('Failed to fetch performance:', err);
+      setPageError(getParsedApiError(err));
     } finally {
       setIsLoadingPerf(false);
     }
@@ -197,7 +204,7 @@ const BacktestPage: React.FC = () => {
       fetchResults(1, codeFilter.trim() || undefined, evalWindowDays);
       fetchPerformance(codeFilter.trim() || undefined, evalWindowDays);
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : 'Backtest failed');
+      setRunError(getParsedApiError(err));
     } finally {
       setIsRunning(false);
     }
@@ -250,7 +257,7 @@ const BacktestPage: React.FC = () => {
             Filter
           </button>
           <div className="flex items-center gap-1 whitespace-nowrap">
-            <span className="text-xs text-muted">Window</span>
+            <span className="text-xs text-muted-text">Window</span>
             <input
               type="number"
               min={1}
@@ -271,7 +278,7 @@ const BacktestPage: React.FC = () => {
               transition-all duration-200 whitespace-nowrap border cursor-pointer
               ${forceRerun
                 ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
-                : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+                : 'border-white/10 bg-transparent text-muted-text hover:border-white/20 hover:text-secondary-text'
               }
               disabled:opacity-50 disabled:cursor-not-allowed
             `}
@@ -307,7 +314,7 @@ const BacktestPage: React.FC = () => {
           </div>
         )}
         {runError && (
-          <p className="mt-2 text-xs text-danger">{runError}</p>
+          <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
         )}
       </header>
 
@@ -323,7 +330,7 @@ const BacktestPage: React.FC = () => {
             <PerformanceCard metrics={overallPerf} title="Overall Performance" />
           ) : (
             <Card padding="md">
-              <p className="text-xs text-muted text-center py-4">
+              <p className="text-xs text-muted-text text-center py-4">
                 No backtest data yet. Run a backtest to see performance metrics.
               </p>
             </Card>
@@ -336,20 +343,23 @@ const BacktestPage: React.FC = () => {
 
         {/* Right content - Results table */}
         <section className="flex-1 overflow-y-auto">
+          {pageError ? (
+            <ApiErrorAlert error={pageError} className="mb-3" />
+          ) : null}
           {isLoadingResults ? (
             <div className="flex flex-col items-center justify-center h-64">
               <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-              <p className="mt-3 text-secondary text-sm">Loading results...</p>
+              <p className="mt-3 text-secondary-text text-sm">Loading results...</p>
             </div>
           ) : results.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">
               <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
-                <svg className="w-6 h-6 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-6 h-6 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                 </svg>
               </div>
               <h3 className="text-base font-medium text-white mb-1.5">No Results</h3>
-              <p className="text-xs text-muted max-w-xs">
+              <p className="text-xs text-muted-text max-w-xs">
                 Run a backtest to evaluate historical analysis accuracy
               </p>
             </div>
@@ -359,15 +369,15 @@ const BacktestPage: React.FC = () => {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-elevated text-left">
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Code</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Date</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Advice</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Dir.</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Outcome</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-right">Return%</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-center">SL</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider text-center">TP</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary uppercase tracking-wider">Status</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Code</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Date</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Advice</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Dir.</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Outcome</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-right">Return%</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">SL</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">TP</th>
+                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -377,22 +387,22 @@ const BacktestPage: React.FC = () => {
                         className="border-t border-white/5 hover:bg-hover transition-colors"
                       >
                         <td className="px-3 py-2 font-mono text-cyan text-xs">{row.code}</td>
-                        <td className="px-3 py-2 text-xs text-secondary">{row.analysisDate || '--'}</td>
+                        <td className="px-3 py-2 text-xs text-secondary-text">{row.analysisDate || '--'}</td>
                         <td className="px-3 py-2 text-xs text-white truncate max-w-[140px]" title={row.operationAdvice || ''}>
                           {row.operationAdvice || '--'}
                         </td>
                         <td className="px-3 py-2 text-xs">
                           <span className="flex items-center gap-1">
                             {boolIcon(row.directionCorrect)}
-                            <span className="text-muted">{row.directionExpected || ''}</span>
+                            <span className="text-muted-text">{row.directionExpected || ''}</span>
                           </span>
                         </td>
                         <td className="px-3 py-2">{outcomeBadge(row.outcome)}</td>
                         <td className="px-3 py-2 text-xs font-mono text-right">
                           <span className={
                             row.simulatedReturnPct != null
-                              ? row.simulatedReturnPct > 0 ? 'text-emerald-400' : row.simulatedReturnPct < 0 ? 'text-red-400' : 'text-secondary'
-                              : 'text-muted'
+                              ? row.simulatedReturnPct > 0 ? 'text-emerald-400' : row.simulatedReturnPct < 0 ? 'text-red-400' : 'text-secondary-text'
+                              : 'text-muted-text'
                           }>
                             {pct(row.simulatedReturnPct)}
                           </span>
@@ -415,7 +425,7 @@ const BacktestPage: React.FC = () => {
                 />
               </div>
 
-              <p className="text-xs text-muted text-center mt-2">
+              <p className="text-xs text-muted-text text-center mt-2">
                 {totalResults} result{totalResults !== 1 ? 's' : ''} total
               </p>
             </div>

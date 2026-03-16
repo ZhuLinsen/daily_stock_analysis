@@ -38,7 +38,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
           </svg>
         ) : isPending ? (
           // 等待图标
-          <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-4 h-4 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -55,12 +55,12 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
           <span className="text-sm font-medium text-white truncate">
             {task.stockName || task.stockCode}
           </span>
-          <span className="text-xs text-muted">
+          <span className="text-xs text-muted-text">
             {task.stockCode}
           </span>
         </div>
         {task.message && (
-          <p className="text-xs text-secondary truncate mt-0.5">
+          <p className="text-xs text-secondary-text truncate mt-0.5">
             {task.message}
           </p>
         )}
@@ -72,7 +72,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
           className={`text-xs px-1.5 py-0.5 rounded ${
             isProcessing
               ? 'bg-cyan/20 text-cyan'
-              : 'bg-white/10 text-muted'
+              : 'bg-white/10 text-muted-text'
           }`}
         >
           {isProcessing ? '分析中' : '等待中'}
@@ -134,7 +134,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
           </svg>
           <span className="text-sm font-medium text-white">{title}</span>
         </div>
-        <div className="flex items-center gap-2 text-xs text-muted">
+        <div className="flex items-center gap-2 text-xs text-muted-text">
           {processingCount > 0 && (
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-cyan rounded-full animate-pulse" />

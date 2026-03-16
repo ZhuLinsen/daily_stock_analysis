@@ -118,6 +118,24 @@ PROXY_PORT=10809
 
 ---
 
+### LLM 配置常见问题
+
+> 完整说明见 [LLM 配置指南](LLM_CONFIG_GUIDE.md)。
+
+**Q: 配置了 GEMINI_API_KEY 和 LLM_CHANNELS，为什么只用渠道？**
+
+系统按优先级只取一种：`LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys。一旦配置了渠道或 YAML，legacy 区域（`GEMINI_API_KEY` 等）不参与解析。
+
+**Q: test_env 输出 ✗ 未配置任何 LLM 怎么办？**
+
+配置 `LITELLM_CONFIG` / `LLM_CHANNELS` 或至少一个 `*_API_KEY`（如 `GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`AIHUBMIX_KEY`）。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
+
+**Q: 如何同时使用多个模型（如 AIHubmix + DeepSeek + Gemini）？**
+
+使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → 渠道编辑器中可视化配置。
+
+---
+
 ## 📱 推送相关
 
 ### Q8: 机器人推送失败，提示消息过长？

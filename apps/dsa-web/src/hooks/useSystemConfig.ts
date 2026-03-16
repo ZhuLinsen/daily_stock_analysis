@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
 import type {
   ConfigValidationIssue,
@@ -8,8 +9,11 @@ import type {
 } from '../types/systemConfig';
 
 type ToastState = {
-  type: 'success' | 'error';
+  type: 'success';
   message: string;
+} | {
+  type: 'error';
+  error: ParsedApiError;
 } | null;
 
 type RetryAction = 'load' | 'save' | null;
@@ -40,13 +44,6 @@ function sortItemsByOrder(items: SystemConfigItem[]): SystemConfigItem[] {
     }
     return a.key.localeCompare(b.key);
   });
-}
-
-function getReadableError(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return fallback;
 }
 
 function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boolean {
@@ -81,8 +78,8 @@ export function useSystemConfig() {
   // Request state
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
+  const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
 
   const mergedItems = useMemo(() => {
@@ -201,7 +198,7 @@ export function useSystemConfig() {
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
     } catch (error: unknown) {
-      setLoadError(getReadableError(error, '加载系统配置失败'));
+      setLoadError(getParsedApiError(error));
       setRetryAction('load');
     } finally {
       setIsLoading(false);
@@ -259,7 +256,12 @@ export function useSystemConfig() {
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
-        setSaveError('配置校验未通过，请先修正表单错误。');
+        setSaveError(createParsedApiError({
+          title: '配置校验未通过',
+          message: '请先修正表单错误后再保存。',
+          rawMessage: '配置校验未通过，请先修正表单错误。',
+          category: 'http_error',
+        }));
         setRetryAction('save');
         return {
           success: false,
@@ -286,14 +288,20 @@ export function useSystemConfig() {
     } catch (error: unknown) {
       if (error instanceof SystemConfigValidationError) {
         setValidationIssues(error.issues);
-        setSaveError(error.message || '配置校验失败');
+        setSaveError(error.parsedError);
       } else if (error instanceof SystemConfigConflictError) {
-        setSaveError(`${error.message}，请先重新加载配置。`);
+        setSaveError(createParsedApiError({
+          title: '配置版本冲突',
+          message: `${error.message}，请先重新加载配置。`,
+          rawMessage: error.parsedError.rawMessage,
+          status: error.parsedError.status,
+          category: error.parsedError.category,
+        }));
       } else {
-        setSaveError(getReadableError(error, '保存配置失败'));
+        setSaveError(getParsedApiError(error));
       }
 
-      setToast({ type: 'error', message: '配置保存失败。' });
+      setToast({ type: 'error', error: getParsedApiError(error) });
       setRetryAction('save');
       return { success: false, message: '保存失败' };
     } finally {

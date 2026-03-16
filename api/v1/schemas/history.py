@@ -11,7 +11,7 @@
 
 from typing import Optional, List, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HistoryItem(BaseModel):
@@ -65,6 +65,18 @@ class HistoryListResponse(BaseModel):
         }
 
 
+class DeleteHistoryRequest(BaseModel):
+    """删除历史记录请求"""
+
+    record_ids: List[int] = Field(default_factory=list, description="要删除的历史记录主键 ID 列表")
+
+
+class DeleteHistoryResponse(BaseModel):
+    """删除历史记录响应"""
+
+    deleted: int = Field(..., description="实际删除的历史记录数量")
+
+
 class NewsIntelItem(BaseModel):
     """新闻情报条目"""
 
@@ -99,7 +111,9 @@ class NewsIntelResponse(BaseModel):
 
 class ReportMeta(BaseModel):
     """报告元信息"""
-    
+
+    model_config = ConfigDict(protected_namespaces=("model_validate", "model_dump"))
+
     id: Optional[int] = Field(None, description="分析历史记录主键 ID（仅历史报告有此字段）")
     query_id: str = Field(..., description="分析记录关联 query_id（批量分析时重复）")
     stock_code: str = Field(..., description="股票代码")
@@ -108,6 +122,7 @@ class ReportMeta(BaseModel):
     created_at: Optional[str] = Field(None, description="创建时间")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
+    model_used: Optional[str] = Field(None, description="分析使用的 LLM 模型")
 
 
 class ReportSummary(BaseModel):
@@ -144,12 +159,12 @@ class ReportDetails(BaseModel):
 
 class AnalysisReport(BaseModel):
     """完整分析报告"""
-    
+
     meta: ReportMeta = Field(..., description="元信息")
     summary: ReportSummary = Field(..., description="概览区")
     strategy: Optional[ReportStrategy] = Field(None, description="策略点位区")
     details: Optional[ReportDetails] = Field(None, description="详情区")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -174,5 +189,18 @@ class AnalysisReport(BaseModel):
                     "take_profit": "2000.00"
                 },
                 "details": None
+            }
+        }
+
+
+class MarkdownReportResponse(BaseModel):
+    """Markdown 格式报告响应"""
+
+    content: str = Field(..., description="Markdown 格式的完整报告内容")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "content": "# 📊 贵州茅台 (600519) 分析报告\n\n> 分析日期：**2024-01-01**\n\n..."
             }
         }
