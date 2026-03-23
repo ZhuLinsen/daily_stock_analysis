@@ -55,7 +55,7 @@
 
 ### Q4: 数据获取被限流或返回为空？
 
-**现象**：日志显示 `熔断器触发` 或数据返回 `None`
+**现象**：日志显示 `熔断器触发` 或数据返回 `None`，或出现 `RemoteDisconnected`、`push2his.eastmoney.com` 连接被关闭等
 
 **原因**：免费数据源（东方财富、新浪等）有反爬机制，短时间大量请求会被限流。
 
@@ -63,6 +63,8 @@
 1. 系统已内置多数据源自动切换和熔断保护
 2. 减少自选股数量，或增加请求间隔
 3. 避免频繁手动触发分析
+4. 若东财接口频繁失败，可设置 `ENABLE_EASTMONEY_PATCH=true` 启用东财补丁（注入 NID 令牌与随机 User-Agent，降低被限流概率）
+5. 将 `MAX_WORKERS=1` 改为串行获取，减少对东财的并发压力
 
 ---
 
@@ -113,6 +115,24 @@ PROXY_PORT=10809
 ```
 
 > ⚠️ 注意：代理配置仅对本地运行生效，GitHub Actions 环境无需配置代理。
+
+---
+
+### LLM 配置常见问题
+
+> 完整说明见 [LLM 配置指南](LLM_CONFIG_GUIDE.md)。
+
+**Q: 配置了 GEMINI_API_KEY 和 LLM_CHANNELS，为什么只用渠道？**
+
+系统按优先级只取一种：`LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys。一旦配置了渠道或 YAML，legacy 区域（`GEMINI_API_KEY` 等）不参与解析。
+
+**Q: test_env 输出 ✗ 未配置任何 LLM 怎么办？**
+
+配置 `LITELLM_CONFIG` / `LLM_CHANNELS` 或至少一个 `*_API_KEY`（如 `GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`AIHUBMIX_KEY`）。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
+
+**Q: 如何同时使用多个模型（如 AIHubmix + DeepSeek + Gemini）？**
+
+使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → 渠道编辑器中可视化配置。
 
 ---
 
@@ -195,6 +215,14 @@ OPENAI_MODEL=deepseek-chat
 
 ---
 
+### Q12b: 如何使用 Ollama 本地模型？
+
+**配置方法**：使用 `OLLAMA_API_BASE` + `LITELLM_MODEL`，或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`）。
+
+**避坑**：不要使用 `OPENAI_BASE_URL` 配置 Ollama，否则会触发 LiteLLM 的 URL 拼接 bug（如 404、`api/generate/api/show`）。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 示例 4 与渠道示例。
+
+---
+
 ## 🐳 Docker 相关
 
 ### Q13: Docker 容器启动后立即退出？
@@ -269,6 +297,25 @@ python main.py --market-only
 
 ---
 
+### Q17: 为什么周末在 GitHub Actions 手动触发仍显示“非交易日跳过”？
+
+**现象**：已经配置了 `TRADING_DAY_CHECK_ENABLED` 或希望手动运行，但日志仍提示“今日所有相关市场均为非交易日，跳过执行”。
+
+**解决方案**：
+1. 打开 `Actions → 每日股票分析 → Run workflow`
+2. 手动触发时将 `force_run` 设为 `true`（单次强制运行）
+3. 如果希望长期关闭交易日检查，在 `Settings → Secrets and variables → Actions` 中设置：
+   ```bash
+   TRADING_DAY_CHECK_ENABLED=false
+   ```
+
+**规则说明**：
+- `TRADING_DAY_CHECK_ENABLED=true` 且 `force_run=false`：非交易日跳过（默认）
+- `force_run=true`：本次即使非交易日也执行
+- `TRADING_DAY_CHECK_ENABLED=false`：定时和手动都不做交易日检查
+
+---
+
 ## 💬 还有问题？
 
 如果以上内容没有解决你的问题，欢迎：
@@ -278,4 +325,4 @@ python main.py --market-only
 
 ---
 
-*最后更新：2026-02-23*
+*最后更新：2026-02-28*

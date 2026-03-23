@@ -116,6 +116,24 @@ PROXY_PORT=10809
 
 ---
 
+### LLM Configuration
+
+> Full details: [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md).
+
+**Q: Configured both GEMINI_API_KEY and LLM_CHANNELS, why does it only use channels?**
+
+The system uses exactly one mode by priority: `LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys. Once channels or YAML are configured, the legacy section (`GEMINI_API_KEY`, etc.) is not used.
+
+**Q: test_env outputs ✗ No LLM configured, what to do?**
+
+Configure `LITELLM_CONFIG` / `LLM_CHANNELS` or at least one `*_API_KEY` (e.g. `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `AIHUBMIX_KEY`). Run `python test_env.py --config` to validate config, `python test_env.py --llm` to actually call the API.
+
+**Q: How to use multiple models at once (e.g. AIHubmix + DeepSeek + Gemini)?**
+
+Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure visually in Web Settings → AI Model → Channel Editor.
+
+---
+
 ## Push Notification Related
 
 ### Q8: Bot push failed, showing message too long?
@@ -192,6 +210,14 @@ Supported model services:
 - DeepSeek: `https://api.deepseek.com/v1`
 - Qwen (Tongyi Qianwen): `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Moonshot: `https://api.moonshot.cn/v1`
+
+---
+
+### Q12b: How to use Ollama local models?
+
+**Configuration**: Use `OLLAMA_API_BASE` + `LITELLM_MODEL`, or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`).
+
+**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or LiteLLM will incorrectly concatenate URLs (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
 
 ---
 

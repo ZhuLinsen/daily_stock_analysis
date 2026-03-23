@@ -1,0 +1,159 @@
+{% from '_macros.j2' import market_snapshot with context %}
+# 🎯 {{ report_date }} {{ labels.dashboard_title }}
+
+> {{ labels.analyzed_prefix }} **{{ results|length }}** {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+
+## 📊 {{ labels.summary_heading }}
+
+{% for e in enriched %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% endfor %}
+
+---
+{% if not summary_only %}
+{% for e in enriched %}
+{% set result = e.result %}
+{% set dashboard = result.dashboard if result.dashboard else {} %}
+{% set intel = dashboard.get('intelligence') or {} %}
+{% set core = dashboard.get('core_conclusion') or {} %}
+{% set battle = dashboard.get('battle_plan') or {} %}
+{% set data_persp = dashboard.get('data_perspective') or {} %}
+
+## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
+
+{% if intel %}
+### 📰 {{ labels.info_heading }}
+
+{% if intel.get('sentiment_summary') %}
+**💭 {{ labels.sentiment_summary_label }}**: {{ intel.sentiment_summary }}
+{% endif %}
+{% if intel.get('earnings_outlook') %}
+**📊 {{ labels.earnings_outlook_label }}**: {{ intel.earnings_outlook }}
+{% endif %}
+{% if intel.get('risk_alerts') %}
+
+**🚨 {{ labels.risk_alerts_label }}**:
+{% for alert in intel.risk_alerts %}
+- {{ alert }}
+{% endfor %}
+{% endif %}
+{% if intel.get('positive_catalysts') %}
+
+**✨ {{ labels.positive_catalysts_label }}**:
+{% for cat in intel.positive_catalysts %}
+- {{ cat }}
+{% endfor %}
+{% endif %}
+{% if intel.get('latest_news') %}
+
+**📢 {{ labels.latest_news_label }}**: {{ intel.latest_news }}
+{% endif %}
+
+{% endif %}
+
+### 📌 {{ labels.core_conclusion_heading }}
+
+**{{ e.signal_emoji }} {{ e.signal_text }}** | {{ localize_trend_prediction(result.trend_prediction, report_language) }}
+
+> **{{ labels.one_sentence_label }}**: {{ core.get('one_sentence', result.analysis_summary) }}
+
+⏰ **{{ labels.time_sensitivity_label }}**: {{ core.get('time_sensitivity', labels.default_time_sensitivity) }}
+
+{% set pos_advice = core.get('position_advice', {}) %}
+{% if pos_advice %}
+| {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
+|---------|---------|
+| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', localize_operation_advice(result.operation_advice, report_language)) }} |
+| 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
+{% endif %}
+
+{{ market_snapshot(result) }}
+
+{% if data_persp %}
+### 📊 {{ labels.data_perspective_heading }}
+
+{% set trend_data = data_persp.get('trend_status', {}) %}
+{% if trend_data %}
+**{{ labels.ma_alignment_label }}**: {{ trend_data.get('ma_alignment', 'N/A') }} | {{ labels.bullish_alignment_label }}: {{ '✅ ' ~ labels.yes_label if trend_data.get('is_bullish') else '❌ ' ~ labels.no_label }} | {{ labels.trend_strength_label }}: {{ trend_data.get('trend_score', 'N/A') }}/100
+{% endif %}
+
+{% set price_data = data_persp.get('price_position', {}) %}
+{% if price_data %}
+| {{ labels.price_metrics_label }} | {{ labels.current_price_label }} |
+|---------|------|
+| {{ labels.current_price_label }} | {{ price_data.get('current_price', 'N/A') }} |
+| {{ labels.ma5_label }} | {{ price_data.get('ma5', 'N/A') }} |
+| {{ labels.ma10_label }} | {{ price_data.get('ma10', 'N/A') }} |
+| {{ labels.ma20_label }} | {{ price_data.get('ma20', 'N/A') }} |
+| {{ labels.bias_ma5_label }} | {{ price_data.get('bias_ma5', 'N/A') }}% {{ price_data.get('bias_status', 'N/A') }} |
+| {{ labels.support_level_label }} | {{ price_data.get('support_level', 'N/A') }} |
+| {{ labels.resistance_level_label }} | {{ price_data.get('resistance_level', 'N/A') }} |
+{% endif %}
+
+{% set vol_data = data_persp.get('volume_analysis', {}) %}
+{% if vol_data %}
+**{{ labels.volume_label }}**: {{ labels.volume_ratio_label }} {{ vol_data.get('volume_ratio', 'N/A') }} ({{ vol_data.get('volume_status', '') }}) | {{ labels.turnover_rate_label }} {{ vol_data.get('turnover_rate', 'N/A') }}%
+💡 *{{ vol_data.get('volume_meaning', '') }}*
+{% endif %}
+
+{% set chip_data = data_persp.get('chip_structure', {}) %}
+{% if chip_data %}
+**{{ labels.chip_label }}**: {{ chip_data.get('profit_ratio', 'N/A') }} | {{ chip_data.get('avg_cost', 'N/A') }} | {{ chip_data.get('concentration', 'N/A') }} {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }}
+{% endif %}
+{% endif %}
+
+{% if battle %}
+### 🎯 {{ labels.battle_plan_heading }}
+
+{% set sniper = battle.get('sniper_points', {}) %}
+{% if sniper %}
+**📍 {{ labels.action_points_heading }}**
+
+| {{ labels.action_points_heading }} | {{ labels.current_price_label }} |
+|---------|------|
+| 🎯 {{ labels.ideal_buy_label }} | {{ clean_sniper(sniper.get('ideal_buy')) }} |
+| 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
+| 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
+| 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
+{% endif %}
+
+{% set position = battle.get('position_strategy', {}) %}
+{% if position %}
+**💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}
+- {{ labels.entry_plan_label }}: {{ position.get('entry_plan', 'N/A') }}
+- {{ labels.risk_control_label }}: {{ position.get('risk_control', 'N/A') }}
+{% endif %}
+
+{% set checklist = battle.get('action_checklist', []) %}
+{% if checklist %}
+**✅ {{ labels.checklist_heading }}**
+{% for item in checklist %}
+- {{ item }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if not dashboard %}
+{% if result.buy_reason %}
+**💡 操作理由**: {{ result.buy_reason }}
+{% endif %}
+{% if result.risk_warning %}
+**⚠️ 风险提示**: {{ result.risk_warning }}
+{% endif %}
+{% endif %}
+
+{% set hist = history_by_code.get(result.code, []) %}
+{% if hist %}
+### 📜 {{ labels.history_compare_heading }}
+| {{ labels.time_label }} | {{ labels.score_label }} | {{ labels.advice_label }} | {{ labels.trend_label }} |
+|------|------|------|------|
+{% for h in hist %}
+| {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
+{% endfor %}
+{% endif %}
+
+---
+{% endfor %}
+{% endif %}
+
+*{{ labels.generated_at_label }}：{{ report_timestamp }}*

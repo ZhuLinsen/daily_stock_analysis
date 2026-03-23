@@ -14,6 +14,7 @@ from typing import Optional, List, Any
 from enum import Enum
 
 from pydantic import BaseModel, Field
+from src.utils.analysis_metadata import SELECTION_SOURCE_PATTERN
 
 
 class TaskStatusEnum(str, Enum):
@@ -25,7 +26,7 @@ class TaskStatusEnum(str, Enum):
 
 
 class AnalyzeRequest(BaseModel):
-    """分析请求模型"""
+    """Analysis request parameters"""
     
     stock_code: Optional[str] = Field(
         None, 
@@ -38,17 +39,33 @@ class AnalyzeRequest(BaseModel):
         example=["600519", "000858"]
     )
     report_type: str = Field(
-        "detailed", 
-        description="报告类型",
-        pattern="^(simple|detailed)$"
+        "detailed",
+        description="报告类型：simple(精简) / detailed(完整) / full(完整) / brief(简洁)",
+        pattern="^(simple|detailed|full|brief)$",
     )
     force_refresh: bool = Field(
-        True,
+        False,
         description="是否强制刷新（忽略缓存）"
     )
     async_mode: bool = Field(
         False,
         description="是否使用异步模式"
+    )
+    stock_name: Optional[str] = Field(
+        None,
+        description="用户选中的股票名称（自动补全时提供）",
+        example="贵州茅台"
+    )
+    original_query: Optional[str] = Field(
+        None,
+        description="用户原始输入（如茅台、gzmt、600519）",
+        example="茅台"
+    )
+    selection_source: Optional[str] = Field(
+        None,
+        description="股票选择来源：manual(手动输入) | autocomplete(自动补全) | import(导入) | image(图片识别)",
+        pattern=SELECTION_SOURCE_PATTERN,
+        example="autocomplete"
     )
     
     class Config:
@@ -57,7 +74,10 @@ class AnalyzeRequest(BaseModel):
                 "stock_code": "600519",
                 "report_type": "detailed",
                 "force_refresh": False,
-                "async_mode": False
+                "async_mode": False,
+                "stock_name": "贵州茅台",
+                "original_query": "茅台",
+                "selection_source": "autocomplete"
             }
         }
 
@@ -109,8 +129,78 @@ class TaskAccepted(BaseModel):
         }
 
 
+class BatchTaskAcceptedItem(BaseModel):
+    """批量异步任务中的单个成功提交项。"""
+
+    task_id: str = Field(..., description="任务 ID，用于查询状态")
+    stock_code: str = Field(..., description="股票代码")
+    status: str = Field(
+        ...,
+        description="任务状态",
+        pattern="^(pending|processing)$"
+    )
+    message: Optional[str] = Field(None, description="提示信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "task_id": "task_abc123",
+                "stock_code": "600519",
+                "status": "pending",
+                "message": "分析任务已加入队列: 600519"
+            }
+        }
+
+
+class BatchDuplicateTaskItem(BaseModel):
+    """批量异步任务中的重复提交项。"""
+
+    stock_code: str = Field(..., description="股票代码")
+    existing_task_id: str = Field(..., description="已存在的任务 ID")
+    message: str = Field(..., description="错误信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "stock_code": "600519",
+                "existing_task_id": "task_existing_123",
+                "message": "股票 600519 正在分析中 (task_id: task_existing_123)"
+            }
+        }
+
+
+class BatchTaskAcceptedResponse(BaseModel):
+    """批量异步任务接受响应。"""
+
+    accepted: List[BatchTaskAcceptedItem] = Field(default_factory=list, description="成功提交的任务列表")
+    duplicates: List[BatchDuplicateTaskItem] = Field(default_factory=list, description="重复而跳过的任务列表")
+    message: str = Field(..., description="汇总信息")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "accepted": [
+                    {
+                        "task_id": "task_abc123",
+                        "stock_code": "600519",
+                        "status": "pending",
+                        "message": "分析任务已加入队列: 600519"
+                    }
+                ],
+                "duplicates": [
+                    {
+                        "stock_code": "000858",
+                        "existing_task_id": "task_existing_456",
+                        "message": "股票 000858 正在分析中 (task_id: task_existing_456)"
+                    }
+                ],
+                "message": "已提交 1 个任务，1 个重复跳过"
+            }
+        }
+
+
 class TaskStatus(BaseModel):
-    """任务状态模型"""
+    """Task status model"""
     
     task_id: str = Field(..., description="任务 ID")
     status: str = Field(
@@ -132,6 +222,13 @@ class TaskStatus(BaseModel):
         None, 
         description="错误信息（仅在 failed 时存在）"
     )
+    stock_name: Optional[str] = Field(None, description="股票名称")
+    original_query: Optional[str] = Field(None, description="用户原始输入")
+    selection_source: Optional[str] = Field(
+        None,
+        description="选择来源",
+        pattern=SELECTION_SOURCE_PATTERN,
+    )
     
     class Config:
         json_schema_extra = {
@@ -140,16 +237,19 @@ class TaskStatus(BaseModel):
                 "status": "completed",
                 "progress": 100,
                 "result": None,
-                "error": None
+                "error": None,
+                "stock_name": "贵州茅台",
+                "original_query": "茅台",
+                "selection_source": "autocomplete"
             }
         }
 
 
 class TaskInfo(BaseModel):
     """
-    任务详情模型
-    
-    用于任务列表和 SSE 事件推送
+    Task details model
+
+    Used for task list and SSE event delivery
     """
     
     task_id: str = Field(..., description="任务 ID")
@@ -163,6 +263,12 @@ class TaskInfo(BaseModel):
     started_at: Optional[str] = Field(None, description="开始执行时间")
     completed_at: Optional[str] = Field(None, description="完成时间")
     error: Optional[str] = Field(None, description="错误信息（仅在 failed 时存在）")
+    original_query: Optional[str] = Field(None, description="用户原始输入")
+    selection_source: Optional[str] = Field(
+        None,
+        description="选择来源",
+        pattern=SELECTION_SOURCE_PATTERN,
+    )
     
     class Config:
         json_schema_extra = {
@@ -177,7 +283,9 @@ class TaskInfo(BaseModel):
                 "created_at": "2026-02-05T10:30:00",
                 "started_at": "2026-02-05T10:30:01",
                 "completed_at": None,
-                "error": None
+                "error": None,
+                "original_query": "茅台",
+                "selection_source": "autocomplete"
             }
         }
 

@@ -13,13 +13,14 @@ from enum import Enum
 class ReportType(str, Enum):
     """
     报告类型枚举
-    
+
     用于 API 触发分析时选择推送的报告格式。
     继承 str 使其可以直接与字符串比较和序列化。
     """
     SIMPLE = "simple"  # 精简报告：使用 generate_single_stock_report
     FULL = "full"      # 完整报告：使用 generate_dashboard_report
-    
+    BRIEF = "brief"    # 简洁模式：3-5 句话概括，适合移动端/推送
+
     @classmethod
     def from_str(cls, value: str) -> "ReportType":
         """
@@ -32,7 +33,10 @@ class ReportType(str, Enum):
             对应的枚举值，无效输入返回默认值 SIMPLE
         """
         try:
-            return cls(value.lower().strip())
+            normalized = value.lower().strip()
+            if normalized == "detailed":
+                normalized = cls.FULL.value
+            return cls(normalized)
         except (ValueError, AttributeError):
             return cls.SIMPLE
     
@@ -42,4 +46,5 @@ class ReportType(str, Enum):
         return {
             ReportType.SIMPLE: "精简报告",
             ReportType.FULL: "完整报告",
+            ReportType.BRIEF: "简洁报告",
         }.get(self, "精简报告")

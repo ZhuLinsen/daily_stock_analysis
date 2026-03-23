@@ -14,27 +14,72 @@ from src.agent.tools.registry import ToolParameter, ToolDefinition
 logger = logging.getLogger(__name__)
 
 
+def _fetch_trend_data(stock_code: str):
+    """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
+    from datetime import date, timedelta
+    import pandas as pd
+    from data_provider.base import canonical_stock_code, DataFetchError
+    from data_provider import DataFetcherManager
+    from src.storage import get_db
+
+    code = canonical_stock_code(stock_code)
+    if not code:
+        return None
+    end_date = date.today()
+    start_date = end_date - timedelta(days=89)  # ~60 trading days, mirrors pipeline Step 3
+
+    # 1. Try DB
+    try:
+        db = get_db()
+        bars = db.get_data_range(code, start_date, end_date)
+        if bars:
+            df = pd.DataFrame([b.to_dict() for b in bars])
+            logger.debug("analyze_trend(%s): loaded %d rows from DB", stock_code, len(df))
+            return df
+    except Exception as e:
+        logger.debug(
+            "analyze_trend(%s): DB lookup failed (%s), falling back to DataFetcherManager",
+            stock_code, e
+        )
+
+    # 2. Fallback to DataFetcherManager
+    try:
+        manager = DataFetcherManager()
+        df, _ = manager.get_daily_data(code, days=90)
+        if df is not None and not df.empty:
+            logger.info(
+                "analyze_trend(%s): DB empty, loaded %d rows from DataFetcherManager",
+                stock_code, len(df)
+            )
+            return df
+    except DataFetchError as e:
+        logger.warning("analyze_trend(%s): DataFetcherManager failed: %s", stock_code, e)
+    except Exception as e:
+        logger.warning("analyze_trend(%s): DataFetcherManager unexpected error: %s", stock_code, e)
+
+    return None
+
+
 def _handle_analyze_trend(stock_code: str) -> dict:
     """Run technical trend analysis on a stock."""
     from src.stock_analyzer import StockTrendAnalyzer
-    from src.storage import get_db
 
-    db = get_db()
-    analyzer = StockTrendAnalyzer()
+    if not (stock_code and str(stock_code).strip()):
+        return {"error": "stock_code is required"}
 
-    # Fetch raw data from DB context
-    context = db.get_analysis_context(stock_code)
-    if context is None or "raw_data" not in context:
+    df = _fetch_trend_data(stock_code)
+    if df is None or df.empty:
         return {"error": f"No historical data available for trend analysis on {stock_code}"}
 
-    raw_data = context["raw_data"]
-    if not isinstance(raw_data, list) or len(raw_data) < 5:
-        return {"error": f"Insufficient data for trend analysis on {stock_code} (need >= 5 days)"}
+    if len(df) < 20:
+        return {"error": f"Insufficient data for trend analysis on {stock_code} (need >= 20 days)"}
 
-    import pandas as pd
-    df = pd.DataFrame(raw_data)
-
-    result = analyzer.analyze(df, stock_code)
+    analyzer = StockTrendAnalyzer()
+    try:
+        result = analyzer.analyze(df, stock_code)
+    except Exception:
+        logger.warning("analyze_trend(%s): Trend analysis failed", stock_code, exc_info=True)
+        return {"error": f"Trend analysis failed for {stock_code}"}
 
     return {
         "code": result.code,
@@ -76,9 +121,10 @@ def _handle_analyze_trend(stock_code: str) -> dict:
 analyze_trend_tool = ToolDefinition(
     name="analyze_trend",
     description="Run comprehensive technical trend analysis on a stock. "
+                "Fetches historical data from database or data source. "
                 "Returns MA alignment, bias rates, MACD status, RSI levels, "
                 "volume analysis, support/resistance levels, and a buy/sell signal "
-                "with a score (0-100). Requires historical data in the database.",
+                "with a score (0-100).",
     parameters=[
         ToolParameter(
             name="stock_code",

@@ -40,7 +40,11 @@ if [[ -n "${MAC_ARCH}" ]]; then
 fi
 
 echo "Building macOS target arch: ${MAC_ARCH:-default}"
-npx electron-builder --mac dmg "${ARCH_ARGS[@]}"
+if [[ ${#ARCH_ARGS[@]} -gt 0 ]]; then
+  npx electron-builder --mac dmg "${ARCH_ARGS[@]}"
+else
+  npx electron-builder --mac dmg
+fi
 popd >/dev/null
 
 echo "Desktop build completed."

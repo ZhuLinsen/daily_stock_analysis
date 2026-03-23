@@ -23,7 +23,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -37,12 +37,12 @@ jobs:
             git checkout "${RELEASE_TAG}"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -77,7 +77,7 @@ jobs:
           Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
           Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-windows-${{ env.RELEASE_TAG }}
           path: |
@@ -100,7 +100,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -114,18 +114,29 @@ jobs:
             git checkout "${RELEASE_TAG}"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: 'pip'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: |
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-macos-${{ matrix.arch }}-${{ hashFiles('apps/dsa-desktop/package-lock.json') }}
+          restore-keys: |
+            electron-macos-${{ matrix.arch }}-
+
+      - name: Disable Spotlight indexing (prevents hdiutil Resource busy)
+        run: sudo mdutil -a -i off
 
       - name: Build desktop package (macOS)
         env:
@@ -144,7 +155,7 @@ jobs:
           mkdir -p dist/release-assets
           cp "$dmg_file" "dist/release-assets/daily-stock-analysis-macos-${{ matrix.arch }}-${RELEASE_TAG}.dmg"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: desktop-macos-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
           path: dist/release-assets/*.dmg
@@ -158,11 +169,23 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     steps:
-      - name: Validate release tag
+      - uses: actions/checkout@v5
+
+      - name: Validate release tag and extract changelog
+        id: changelog
         run: |
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION="${RELEASE_TAG#v}"
+          # Extract the section for this version from CHANGELOG.md
+          BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" docs/CHANGELOG.md)
+          if [[ -z "$BODY" ]]; then
+            echo "Warning: no CHANGELOG entry found for ${VERSION}"
+            BODY="See [CHANGELOG](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/CHANGELOG.md) for details."
+          fi
+          # Write changelog content + install instructions to file
+          echo "$BODY" > /tmp/release_body.md
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: desktop-*
           path: dist/release-assets
@@ -175,6 +198,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          body_path: /tmp/release_body.md
           generate_release_notes: true
           files: dist/release-assets/*
           fail_on_unmatched_files: true

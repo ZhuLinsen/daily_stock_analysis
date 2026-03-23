@@ -1,8 +1,10 @@
 # 交易策略目录 / Trading Strategies
 
-本目录存放 **自然语言策略文件**（YAML 格式）。系统启动时自动加载此目录下所有 `.yaml` 文件。
+本目录存放 **自然语言交易策略文件**（YAML 格式）。系统启动时自动加载此目录下所有 `.yaml` 文件。
 
-## 如何编写自定义策略
+对用户和文档，我们继续把这些能力称为“策略”；在代码、配置和 API 字段里，它们统一命名为 `skill`，你可以把它理解为“可复用的策略能力包”。
+
+## 如何编写自定义策略（Strategy Skill）
 
 只需创建一个 `.yaml` 文件，用中文（或任意语言）描述你的交易策略即可，**无需编写任何代码**。
 
@@ -39,6 +41,19 @@ required_tools:
   - get_daily_history
   - analyze_trend
 
+# 可选别名（用于 /ask 等自然语言技能选择）
+aliases: [我的战法, 我的模型]
+
+# 以下元数据用于驱动默认行为（可选）
+# default_active: 是否属于默认激活技能集
+# default_router: 是否属于路由 fallback 技能集
+# default_priority: 默认展示/排序优先级，数值越小越靠前
+# market_regimes: 该技能优先适配的市场状态标签
+default_active: true
+default_router: false
+default_priority: 100
+market_regimes: [trending_up]
+
 # 策略详细说明（自然语言，支持 Markdown 格式）
 instructions: |
   **我的策略名称**
@@ -74,7 +89,9 @@ instructions: |
 除了本目录（内置策略），你还可以通过环境变量指定额外的自定义策略目录：
 
 ```env
-AGENT_STRATEGY_DIR=./my_strategies
+AGENT_SKILL_DIR=./my_skills
 ```
 
 系统会同时加载内置策略和自定义策略。如果名称冲突，自定义策略覆盖内置策略。
+
+环境变量名仍然是 `AGENT_SKILL_DIR`，这是内部统一命名后的配置入口；在产品语义上，它依然表示“自定义策略目录”。

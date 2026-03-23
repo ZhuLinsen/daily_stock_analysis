@@ -15,6 +15,13 @@ import uuid
 from typing import Optional, Dict, Any
 
 from src.repositories.analysis_repo import AnalysisRepository
+from src.report_language import (
+    get_sentiment_label,
+    get_localized_stock_name,
+    localize_operation_advice,
+    localize_trend_prediction,
+    normalize_report_language,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +81,8 @@ class AnalysisService:
                 query_source="api"
             )
             
-            # 确定报告类型
-            rt = ReportType.FULL if report_type == "detailed" else ReportType.SIMPLE
+            # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)
+            rt = ReportType.from_str(report_type)
             
             # 执行分析
             result = pipeline.process_single_stock(
@@ -90,7 +97,7 @@ class AnalysisService:
                 return None
             
             # 构建响应
-            return self._build_analysis_response(result, query_id)
+            return self._build_analysis_response(result, query_id, report_type=rt.value)
             
         except Exception as e:
             logger.error(f"分析股票 {stock_code} 失败: {e}", exc_info=True)
@@ -99,7 +106,8 @@ class AnalysisService:
     def _build_analysis_response(
         self, 
         result: Any, 
-        query_id: str
+        query_id: str,
+        report_type: str = "detailed",
     ) -> Dict[str, Any]:
         """
         构建分析响应
@@ -107,6 +115,7 @@ class AnalysisService:
         Args:
             result: AnalysisResult 对象
             query_id: 查询 ID
+            report_type: 归一化后的报告类型
             
         Returns:
             格式化的响应字典
@@ -117,22 +126,26 @@ class AnalysisService:
             sniper_points = result.get_sniper_points() or {}
         
         # 计算情绪标签
-        sentiment_label = self._get_sentiment_label(result.sentiment_score)
+        report_language = normalize_report_language(getattr(result, "report_language", "zh"))
+        sentiment_label = get_sentiment_label(result.sentiment_score, report_language)
+        stock_name = get_localized_stock_name(getattr(result, "name", None), result.code, report_language)
         
         # 构建报告结构
         report = {
             "meta": {
                 "query_id": query_id,
                 "stock_code": result.code,
-                "stock_name": result.name,
-                "report_type": "detailed",
+                "stock_name": stock_name,
+                "report_type": report_type,
+                "report_language": report_language,
                 "current_price": result.current_price,
                 "change_pct": result.change_pct,
+                "model_used": getattr(result, "model_used", None),
             },
             "summary": {
                 "analysis_summary": result.analysis_summary,
-                "operation_advice": result.operation_advice,
-                "trend_prediction": result.trend_prediction,
+                "operation_advice": localize_operation_advice(result.operation_advice, report_language),
+                "trend_prediction": localize_trend_prediction(result.trend_prediction, report_language),
                 "sentiment_score": result.sentiment_score,
                 "sentiment_label": sentiment_label,
             },
@@ -152,27 +165,6 @@ class AnalysisService:
         
         return {
             "stock_code": result.code,
-            "stock_name": result.name,
+            "stock_name": stock_name,
             "report": report,
         }
-    
-    def _get_sentiment_label(self, score: int) -> str:
-        """
-        根据评分获取情绪标签
-        
-        Args:
-            score: 情绪评分 (0-100)
-            
-        Returns:
-            情绪标签
-        """
-        if score >= 80:
-            return "极度乐观"
-        elif score >= 60:
-            return "乐观"
-        elif score >= 40:
-            return "中性"
-        elif score >= 20:
-            return "悲观"
-        else:
-            return "极度悲观"

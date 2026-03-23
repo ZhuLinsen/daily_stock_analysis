@@ -99,6 +99,7 @@ class RealtimeSource(Enum):
     TUSHARE = "tushare"             # Tushare Pro
     TENCENT = "tencent"             # 腾讯直连
     SINA = "sina"                   # 新浪直连
+    STOOQ = "stooq"                 # Stooq 美股兜底
     FALLBACK = "fallback"           # 降级兜底
 
 
@@ -227,15 +228,17 @@ class ChipDistribution:
         
         # 获利比例分析
         if self.profit_ratio >= 0.9:
-            status_parts.append("获利盘极高(>90%)")
+            status_parts.append("获利盘极高(获利盘>90%)")
         elif self.profit_ratio >= 0.7:
-            status_parts.append("获利盘较高(70-90%)")
+            status_parts.append("获利盘较高(获利盘70-90%)")
         elif self.profit_ratio >= 0.5:
-            status_parts.append("获利盘中等(50-70%)")
+            status_parts.append("获利盘中等(获利盘50-70%)")
         elif self.profit_ratio >= 0.3:
-            status_parts.append("套牢盘较多(>30%)")
+            status_parts.append("套牢盘中等(套牢盘50-70%)")
+        elif self.profit_ratio >= 0.1:
+            status_parts.append("套牢盘较高(套牢盘70-90%)")
         else:
-            status_parts.append("套牢盘极重(>70%)")
+            status_parts.append("套牢盘极高(套牢盘>90%)")
         
         # 筹码集中度分析 (90%集中度 < 10% 表示集中)
         if self.concentration_90 < 0.08:

@@ -59,6 +59,9 @@ $hiddenImports = @(
   'multipart',
   'multipart.multipart',
   'json_repair',
+  'tiktoken',
+  'tiktoken_ext',
+  'tiktoken_ext.openai_public',
   'api',
   'api.app',
   'api.deps',
@@ -99,7 +102,9 @@ $pyInstallerArgs = @(
   '--onedir',
   '--noconfirm',
   '--noconsole',
-  '--add-data', 'static;static'
+  '--add-data', 'static;static',
+  '--collect-data', 'litellm',
+  '--collect-data', 'tiktoken'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

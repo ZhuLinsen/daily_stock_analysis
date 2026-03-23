@@ -1,11 +1,12 @@
 import { create } from 'zustand';
+import type { ParsedApiError } from '../api/error';
 import type { AnalysisResult, AnalysisReport } from '../types/analysis';
 
 interface AnalysisState {
   // 分析状态
   isLoading: boolean;
   result: AnalysisResult | null;
-  error: string | null;
+  error: ParsedApiError | null;
 
   // 历史报告视图
   isHistoryView: boolean;
@@ -14,7 +15,7 @@ interface AnalysisState {
   // Actions
   setLoading: (loading: boolean) => void;
   setResult: (result: AnalysisResult | null) => void;
-  setError: (error: string | null) => void;
+  setError: (error: ParsedApiError | null) => void;
   setHistoryReport: (report: AnalysisReport | null) => void;
   reset: () => void;
   resetToAnalysis: () => void;

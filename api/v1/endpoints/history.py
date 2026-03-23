@@ -12,12 +12,14 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Body
 
 from api.deps import get_database_manager
 from api.v1.schemas.history import (
     HistoryListResponse,
     HistoryItem,
+    DeleteHistoryRequest,
+    DeleteHistoryResponse,
     NewsIntelItem,
     NewsIntelResponse,
     AnalysisReport,
@@ -25,10 +27,23 @@ from api.v1.schemas.history import (
     ReportSummary,
     ReportStrategy,
     ReportDetails,
+    MarkdownReportResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
-from src.services.history_service import HistoryService
+from src.report_language import (
+    get_sentiment_label,
+    get_localized_stock_name,
+    localize_operation_advice,
+    localize_trend_prediction,
+    normalize_report_language,
+)
+from src.services.history_service import HistoryService, MarkdownReportGenerationError
+from src.utils.data_processing import (
+    normalize_model_used,
+    extract_fundamental_detail_fields,
+    extract_board_detail_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +129,51 @@ def get_history_list(
         )
 
 
+@router.delete(
+    "",
+    response_model=DeleteHistoryResponse,
+    responses={
+        200: {"description": "删除成功"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="删除历史分析记录",
+    description="按历史记录主键 ID 批量删除分析历史"
+)
+def delete_history_records(
+    request: DeleteHistoryRequest = Body(...),
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> DeleteHistoryResponse:
+    """
+    按主键 ID 批量删除历史分析记录。
+    """
+    record_ids = sorted({record_id for record_id in request.record_ids if record_id is not None})
+    if not record_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_request",
+                "message": "record_ids 不能为空"
+            }
+        )
+
+    try:
+        service = HistoryService(db_manager)
+        deleted = service.delete_history_records(record_ids)
+        return DeleteHistoryResponse(deleted=deleted)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除历史记录失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"删除历史记录失败: {str(e)}"
+            }
+        )
+
+
 @router.get(
     "/{record_id}",
     response_model=AnalysisReport,
@@ -177,24 +237,54 @@ def get_history_detail(
                 current_price = realtime_quote_raw.get("price")
                 change_pct = change_pct or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
         
+        raw_result = result.get("raw_result")
+        if not isinstance(raw_result, dict):
+            raw_result = {}
+        report_language = normalize_report_language(
+            result.get("report_language")
+            or raw_result.get("report_language")
+            or (
+                context_snapshot.get("report_language")
+                if isinstance(context_snapshot, dict)
+                else None
+            )
+        )
+        stock_name = get_localized_stock_name(
+            result.get("stock_name"),
+            result.get("stock_code", ""),
+            report_language,
+        )
+
         # 构建响应模型
         meta = ReportMeta(
             id=result.get("id"),
             query_id=result.get("query_id", ""),
             stock_code=result.get("stock_code", ""),
-            stock_name=result.get("stock_name"),
+            stock_name=stock_name,
             report_type=result.get("report_type"),
+            report_language=report_language,
             created_at=result.get("created_at"),
             current_price=current_price,
-            change_pct=change_pct
+            change_pct=change_pct,
+            model_used=normalize_model_used(result.get("model_used"))
         )
         
         summary = ReportSummary(
             analysis_summary=result.get("analysis_summary"),
-            operation_advice=result.get("operation_advice"),
-            trend_prediction=result.get("trend_prediction"),
+            operation_advice=localize_operation_advice(
+                result.get("operation_advice"),
+                report_language,
+            ),
+            trend_prediction=localize_trend_prediction(
+                result.get("trend_prediction"),
+                report_language,
+            ),
             sentiment_score=result.get("sentiment_score"),
-            sentiment_label=result.get("sentiment_label")
+            sentiment_label=(
+                get_sentiment_label(result.get("sentiment_score"), report_language)
+                if result.get("sentiment_score") is not None
+                else result.get("sentiment_label")
+            )
         )
         
         strategy = ReportStrategy(
@@ -204,10 +294,27 @@ def get_history_detail(
             take_profit=result.get("take_profit")
         )
         
+        fallback_fundamental = db_manager.get_latest_fundamental_snapshot(
+            query_id=result.get("query_id", ""),
+            code=result.get("stock_code", ""),
+        )
+        extracted_fundamental = extract_fundamental_detail_fields(
+            context_snapshot=result.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+        )
+        extracted_boards = extract_board_detail_fields(
+            context_snapshot=result.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+        )
+
         details = ReportDetails(
             news_content=result.get("news_content"),
             raw_result=result.get("raw_result"),
-            context_snapshot=result.get("context_snapshot")
+            context_snapshot=result.get("context_snapshot"),
+            financial_report=extracted_fundamental.get("financial_report"),
+            dividend_metrics=extracted_fundamental.get("dividend_metrics"),
+            belong_boards=extracted_boards.get("belong_boards"),
+            sector_rankings=extracted_boards.get("sector_rankings"),
         )
         
         return AnalysisReport(
@@ -286,3 +393,69 @@ def get_history_news(
                 "message": f"查询新闻情报失败: {str(e)}"
             }
         )
+
+
+@router.get(
+    "/{record_id}/markdown",
+    response_model=MarkdownReportResponse,
+    responses={
+        200: {"description": "Markdown 格式报告"},
+        404: {"description": "报告不存在", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取历史报告 Markdown 格式",
+    description="根据分析历史记录 ID 获取 Markdown 格式的完整分析报告"
+)
+def get_history_markdown(
+    record_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager)
+) -> MarkdownReportResponse:
+    """
+    获取历史报告的 Markdown 格式内容
+
+    根据分析历史记录 ID 或 query_id 生成与推送通知格式一致的 Markdown 报告。
+
+    Args:
+        record_id: 分析历史记录主键 ID（整数）或 query_id（字符串）
+        db_manager: 数据库管理器依赖
+
+    Returns:
+        MarkdownReportResponse: Markdown 格式的完整报告
+
+    Raises:
+        HTTPException: 404 - 报告不存在
+        HTTPException: 500 - 报告生成失败（服务器内部错误）
+    """
+    service = HistoryService(db_manager)
+
+    try:
+        markdown_content = service.get_markdown_report(record_id)
+    except MarkdownReportGenerationError as e:
+        logger.error(f"Markdown report generation failed for {record_id}: {e.message}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "generation_failed",
+                "message": f"生成 Markdown 报告失败: {e.message}"
+            }
+        )
+    except Exception as e:
+        logger.error(f"获取 Markdown 报告失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"获取 Markdown 报告失败: {str(e)}"
+            }
+        )
+
+    if markdown_content is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": f"未找到 id/query_id={record_id} 的分析记录"
+            }
+        )
+
+    return MarkdownReportResponse(content=markdown_content)

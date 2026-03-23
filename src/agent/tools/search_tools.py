@@ -16,17 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_search_service():
-    """Lazy-init SearchService with config keys."""
-    from src.search_service import SearchService
-    from src.config import get_config
-    config = get_config()
-    return SearchService(
-        bocha_keys=config.bocha_api_keys,
-        tavily_keys=config.tavily_api_keys,
-        brave_keys=config.brave_api_keys,
-        serpapi_keys=config.serpapi_keys,
-        news_max_age_days=config.news_max_age_days,
-    )
+    """Return shared SearchService singleton."""
+    from src.search_service import get_search_service
+    return get_search_service()
 
 
 def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:

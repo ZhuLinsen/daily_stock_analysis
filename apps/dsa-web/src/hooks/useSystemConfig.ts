@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi, SystemConfigConflictError, SystemConfigValidationError } from '../api/systemConfig';
 import type {
   ConfigValidationIssue,
@@ -8,8 +9,11 @@ import type {
 } from '../types/systemConfig';
 
 type ToastState = {
-  type: 'success' | 'error';
+  type: 'success';
   message: string;
+} | {
+  type: 'error';
+  error: ParsedApiError;
 } | null;
 
 type RetryAction = 'load' | 'save' | null;
@@ -40,13 +44,6 @@ function sortItemsByOrder(items: SystemConfigItem[]): SystemConfigItem[] {
     }
     return a.key.localeCompare(b.key);
   });
-}
-
-function getReadableError(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return fallback;
 }
 
 function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boolean {
@@ -81,9 +78,10 @@ export function useSystemConfig() {
   // Request state
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
+  const [saveError, setSaveError] = useState<ParsedApiError | null>(null);
   const [retryAction, setRetryAction] = useState<RetryAction>(null);
+  const serverItemByKeyRef = useRef<Record<string, SystemConfigItem>>({});
 
   const mergedItems = useMemo(() => {
     return sortItemsByOrder(
@@ -99,6 +97,7 @@ export function useSystemConfig() {
     for (const item of serverItems) {
       map[item.key] = item;
     }
+    serverItemByKeyRef.current = map;
     return map;
   }, [serverItems]);
 
@@ -169,17 +168,41 @@ export function useSystemConfig() {
   }, [validationIssues]);
 
   const applyServerPayload = useCallback(
-    (items: SystemConfigItem[], version: string, token: string) => {
+    (
+      items: SystemConfigItem[],
+      version: string,
+      token: string,
+      options?: { preserveDirty?: boolean; committedKeys?: string[] },
+    ) => {
       const sorted = sortItemsByOrder(items);
+      const previousServerMap = serverItemByKeyRef.current;
+      const committedKeys = new Set(options?.committedKeys ?? []);
+      const preserveDirty = options?.preserveDirty ?? false;
+
       setServerItems(sorted);
       setConfigVersion(version);
       setMaskToken(token || '******');
 
-      const draft: Record<string, string> = {};
-      for (const item of sorted) {
-        draft[item.key] = item.value;
-      }
-      setDraftValues(draft);
+      setDraftValues((prevDraft) => {
+        const nextDraft: Record<string, string> = {};
+        for (const item of sorted) {
+          if (committedKeys.has(item.key)) {
+            nextDraft[item.key] = item.value;
+            continue;
+          }
+
+          if (preserveDirty) {
+            const previousServerValue = previousServerMap[item.key]?.value;
+            const hasDraft = prevDraft[item.key] !== undefined;
+            const wasDirty = hasDraft && prevDraft[item.key] !== previousServerValue;
+            nextDraft[item.key] = wasDirty ? prevDraft[item.key] : item.value;
+            continue;
+          }
+
+          nextDraft[item.key] = item.value;
+        }
+        return nextDraft;
+      });
 
       const defaultCategory = sorted[0]?.schema?.category || 'base';
       setActiveCategory((current) => {
@@ -191,7 +214,7 @@ export function useSystemConfig() {
     [],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setIsLoading(true);
     setLoadError(null);
     setRetryAction(null);
@@ -200,9 +223,11 @@ export function useSystemConfig() {
       const config = await systemConfigApi.getConfig(true);
       applyServerPayload(config.items, config.configVersion, config.maskToken);
       setToast(null);
+      return true;
     } catch (error: unknown) {
-      setLoadError(getReadableError(error, '加载系统配置失败'));
+      setLoadError(getParsedApiError(error));
       setRetryAction('load');
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -217,6 +242,27 @@ export function useSystemConfig() {
     setValidationIssues([]);
     setSaveError(null);
   }, [serverItems]);
+
+  const applyPartialUpdate = useCallback((updatedItems: Array<{ key: string; value: string }>) => {
+    setDraftValues((prevDraft) => {
+      const nextDraft = { ...prevDraft };
+      for (const item of updatedItems) {
+        nextDraft[item.key] = item.value;
+      }
+      return nextDraft;
+    });
+  }, []);
+
+  const refreshAfterExternalSave = useCallback(
+    async (committedKeys: string[]) => {
+      const config = await systemConfigApi.getConfig(true);
+      applyServerPayload(config.items, config.configVersion, config.maskToken, {
+        preserveDirty: true,
+        committedKeys,
+      });
+    },
+    [applyServerPayload],
+  );
 
   const setDraftValue = useCallback((key: string, value: string) => {
     setDraftValues((previous) => ({
@@ -259,7 +305,12 @@ export function useSystemConfig() {
       setValidationIssues(validateResult.issues || []);
 
       if (!validateResult.valid) {
-        setSaveError('配置校验未通过，请先修正表单错误。');
+        setSaveError(createParsedApiError({
+          title: '配置校验未通过',
+          message: '请先修正表单错误后再保存。',
+          rawMessage: '配置校验未通过，请先修正表单错误。',
+          category: 'http_error',
+        }));
         setRetryAction('save');
         return {
           success: false,
@@ -286,14 +337,20 @@ export function useSystemConfig() {
     } catch (error: unknown) {
       if (error instanceof SystemConfigValidationError) {
         setValidationIssues(error.issues);
-        setSaveError(error.message || '配置校验失败');
+        setSaveError(error.parsedError);
       } else if (error instanceof SystemConfigConflictError) {
-        setSaveError(`${error.message}，请先重新加载配置。`);
+        setSaveError(createParsedApiError({
+          title: '配置版本冲突',
+          message: `${error.message}，请先重新加载配置。`,
+          rawMessage: error.parsedError.rawMessage,
+          status: error.parsedError.status,
+          category: error.parsedError.category,
+        }));
       } else {
-        setSaveError(getReadableError(error, '保存配置失败'));
+        setSaveError(getParsedApiError(error));
       }
 
-      setToast({ type: 'error', message: '配置保存失败。' });
+      setToast({ type: 'error', error: getParsedApiError(error) });
       setRetryAction('save');
       return { success: false, message: '保存失败' };
     } finally {
@@ -351,5 +408,7 @@ export function useSystemConfig() {
     save,
     resetDraft,
     setDraftValue,
+    applyPartialUpdate,
+    refreshAfterExternalSave,
   };
 }

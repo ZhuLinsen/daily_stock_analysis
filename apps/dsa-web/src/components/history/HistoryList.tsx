@@ -1,23 +1,29 @@
 import type React from 'react';
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, useId } from 'react';
 import type { HistoryItem } from '../../types/analysis';
-import { getSentimentColor } from '../../types/analysis';
-import { formatDateTime } from '../../utils/format';
+import { Badge, Button, ScrollArea } from '../common';
+import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
+import { HistoryListItem } from './HistoryListItem';
 
 interface HistoryListProps {
   items: HistoryItem[];
   isLoading: boolean;
   isLoadingMore: boolean;
   hasMore: boolean;
-  selectedId?: number;  // Selected history record ID
-  onItemClick: (recordId: number) => void;  // Callback with record ID
+  selectedId?: number;  // 当前选中的历史记录 ID
+  selectedIds: Set<number>;
+  isDeleting?: boolean;
+  onItemClick: (recordId: number) => void;  // 点击记录的回调
   onLoadMore: () => void;
+  onToggleItemSelection: (recordId: number) => void;
+  onToggleSelectAll: () => void;
+  onDeleteSelected: () => void;
   className?: string;
 }
 
 /**
- * 历史记录列表组件
- * 显示最近的股票分析历史，支持点击查看详情和滚动加载更多
+ * 历史记录列表组件 (升级版)
+ * 使用新设计系统组件实现，支持批量选择和滚动加载
  */
 export const HistoryList: React.FC<HistoryListProps> = ({
   items,
@@ -25,20 +31,29 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   isLoadingMore,
   hasMore,
   selectedId,
+  selectedIds,
+  isDeleting = false,
   onItemClick,
   onLoadMore,
+  onToggleItemSelection,
+  onToggleSelectAll,
+  onDeleteSelected,
   className = '',
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  const selectAllId = useId();
+
+  const selectedCount = items.filter((item) => selectedIds.has(item.id)).length;
+  const allVisibleSelected = items.length > 0 && selectedCount === items.length;
+  const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
 
   // 使用 IntersectionObserver 检测滚动到底部
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
       const target = entries[0];
-      // 只有当触发器真正可见且有更多数据时才加载
       if (target.isIntersecting && hasMore && !isLoading && !isLoadingMore) {
-        // 确保容器有滚动能力（内容超过容器高度）
         const container = scrollContainerRef.current;
         if (container && container.scrollHeight > container.clientHeight) {
           onLoadMore();
@@ -55,106 +70,126 @@ export const HistoryList: React.FC<HistoryListProps> = ({
 
     const observer = new IntersectionObserver(handleObserver, {
       root: container,
-      rootMargin: '20px', // 减小预加载距离
-      threshold: 0.1, // 触发器至少 10% 可见时才触发
+      rootMargin: '20px',
+      threshold: 0.1,
     });
 
     observer.observe(trigger);
-
-    return () => {
-      observer.disconnect();
-    };
+    return () => observer.disconnect();
   }, [handleObserver]);
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someVisibleSelected;
+    }
+  }, [someVisibleSelected]);
 
   return (
     <aside className={`glass-card overflow-hidden flex flex-col ${className}`}>
-      <div ref={scrollContainerRef} className="p-3 flex-1 overflow-y-auto">
-        <h2 className="text-xs font-medium text-purple uppercase tracking-wider mb-3 flex items-center gap-1.5">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          历史记录
-        </h2>
+      <ScrollArea
+        viewportRef={scrollContainerRef}
+        viewportClassName="p-4"
+        testId="home-history-list-scroll"
+      >
+        <div className="mb-4 space-y-3">
+          <DashboardPanelHeader
+            className="mb-1"
+            title="历史分析"
+            titleClassName="text-sm font-medium"
+            leading={(
+              <svg className="h-4 w-4 text-[var(--home-accent-text)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+            headingClassName="items-center"
+            actions={
+              selectedCount > 0 ? (
+                <Badge variant="info" size="sm" className="history-selection-badge animate-in fade-in zoom-in duration-200">
+                  已选 {selectedCount}
+                </Badge>
+              ) : undefined
+            }
+          />
+
+          {items.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label
+                className="flex flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 py-1"
+                htmlFor={selectAllId}
+              >
+                <input
+                  id={selectAllId}
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={onToggleSelectAll}
+                  disabled={isDeleting}
+                  aria-label="全选当前已加载历史记录"
+                  className="history-select-all-checkbox h-3.5 w-3.5 cursor-pointer bg-transparent text-[var(--home-accent-text)] focus:ring-[color:var(--home-accent-border-hover)] disabled:opacity-50"
+                />
+                <span className="text-[11px] text-muted-text select-none">全选当前</span>
+              </label>
+              <Button
+                variant="danger-subtle"
+                size="sm"
+                onClick={onDeleteSelected}
+                disabled={selectedCount === 0 || isDeleting}
+                isLoading={isDeleting}
+                className="history-batch-delete-button disabled:!border-transparent disabled:!bg-transparent"
+              >
+                {isDeleting ? '删除中' : '删除'}
+              </Button>
+            </div>
+          )}
+        </div>
 
         {isLoading ? (
-          <div className="flex justify-center py-6">
-            <div className="w-5 h-5 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-          </div>
+          <DashboardStateBlock
+            loading
+            compact
+            title="加载历史记录中..."
+          />
         ) : items.length === 0 ? (
-          <div className="text-center py-6 text-muted text-xs">
-            暂无历史记录
-          </div>
+          <DashboardStateBlock
+            title="暂无历史分析记录"
+            description="完成首次分析后，这里会保留最近结果。"
+            icon={(
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          />
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             {items.map((item) => (
-              <button
+              <HistoryListItem
                 key={item.id}
-                type="button"
-                onClick={() => onItemClick(item.id)}
-                className={`history-item w-full text-left ${selectedId === item.id ? 'active' : ''
-                  }`}
-              >
-                <div className="flex items-center gap-2 w-full">
-                  {/* 情感分数指示条 */}
-                  {item.sentimentScore !== undefined && (
-                    <span
-                      className="w-0.5 h-8 rounded-full flex-shrink-0"
-                      style={{
-                        backgroundColor: getSentimentColor(item.sentimentScore),
-                        boxShadow: `0 0 6px ${getSentimentColor(item.sentimentScore)}40`
-                      }}
-                    />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span className="font-medium text-white truncate text-xs">
-                        {item.stockName || item.stockCode}
-                      </span>
-                      {item.sentimentScore !== undefined && (
-                        <span
-                          className="text-xs font-mono font-semibold px-1 py-0.5 rounded"
-                          style={{
-                            color: getSentimentColor(item.sentimentScore),
-                            backgroundColor: `${getSentimentColor(item.sentimentScore)}15`
-                          }}
-                        >
-                          {item.sentimentScore}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="text-xs text-muted font-mono">
-                        {item.stockCode}
-                      </span>
-                      <span className="text-xs text-muted/50">·</span>
-                      <span className="text-xs text-muted">
-                        {formatDateTime(item.createdAt)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </button>
+                item={item}
+                isViewing={selectedId === item.id}
+                isChecked={selectedIds.has(item.id)}
+                isDeleting={isDeleting}
+                onToggleChecked={onToggleItemSelection}
+                onClick={onItemClick}
+              />
             ))}
 
-            {/* 加载更多触发器 */}
             <div ref={loadMoreTriggerRef} className="h-4" />
-
-            {/* 加载更多状态 */}
+            
             {isLoadingMore && (
-              <div className="flex justify-center py-3">
-                <div className="w-4 h-4 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
+              <div className="flex justify-center py-4">
+                <div className="home-spinner h-5 w-5 animate-spin border-2" />
               </div>
             )}
 
-            {/* 没有更多数据提示 */}
             {!hasMore && items.length > 0 && (
-              <div className="text-center py-2 text-muted/50 text-xs">
-                已加载全部
+              <div className="text-center py-5">
+                <div className="h-px bg-subtle w-full mb-3" />
+                <span className="text-[10px] text-muted-text/50 uppercase tracking-[0.2em]">已到底部</span>
               </div>
             )}
           </div>
         )}
-      </div>
+      </ScrollArea>
     </aside>
   );
 };

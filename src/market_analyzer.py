@@ -21,6 +21,7 @@ import pandas as pd
 from src.config import get_config
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
+from src.core.market_strategy import get_market_strategy_blueprint
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,7 @@ class MarketAnalyzer:
         self.data_manager = DataFetcherManager()
         self.region = region if region in ("cn", "us") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
+        self.strategy = get_market_strategy_blueprint(self.region)
 
     def get_market_overview(self) -> MarketOverview:
         """
@@ -246,8 +248,6 @@ class MarketAnalyzer:
             return []
         
         all_news = []
-        today = datetime.now()
-        date_str = today.strftime('%Y年%m月%d日')
 
         # 按 region 使用不同的新闻搜索词
         search_queries = self.profile.news_queries
@@ -293,36 +293,16 @@ class MarketAnalyzer:
         # 构建 Prompt
         prompt = self._build_review_prompt(overview, news)
         
-        try:
-            logger.info("[大盘] 调用大模型生成复盘报告...")
-            
-            generation_config = {
-                'temperature': 0.7,
-                'max_output_tokens': 2048,
-            }
-            
-            # 根据 analyzer 使用的 API 类型调用
-            if self.analyzer._use_openai:
-                # 使用 OpenAI 兼容 API
-                review = self.analyzer._call_openai_api(prompt, generation_config)
-            else:
-                # 使用 Gemini API
-                response = self.analyzer._model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                )
-                review = response.text.strip() if response and response.text else None
-            
-            if review:
-                logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")
-                # Inject structured data tables into LLM prose sections
-                return self._inject_data_into_review(review, overview)
-            else:
-                logger.warning("[大盘] 大模型返回为空")
-                return self._generate_template_review(overview, news)
-                
-        except Exception as e:
-            logger.error(f"[大盘] 大模型生成复盘报告失败: {e}")
+        logger.info("[大盘] 调用大模型生成复盘报告...")
+        # Use the public generate_text() entry point — never access private analyzer attributes.
+        review = self.analyzer.generate_text(prompt, max_tokens=2048, temperature=0.7)
+
+        if review:
+            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+            # Inject structured data tables into LLM prose sections
+            return self._inject_data_into_review(review, overview)
+        else:
+            logger.warning("[大盘] 大模型返回为空，使用模板报告")
             return self._generate_template_review(overview, news)
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
@@ -517,6 +497,8 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
 {data_no_indices_hint_en}
 
+{self.strategy.to_prompt_block()}
+
 ---
 
 # Output Template (follow this structure)
@@ -540,6 +522,9 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
 ### 6. Risk Alerts
 (Key risks to watch)
+
+### 7. Strategy Plan
+(Provide risk-on/neutral/risk-off stance, position sizing guideline, and one invalidation trigger.)
 
 ---
 
@@ -574,6 +559,8 @@ Output the report content directly, no extra commentary.
 
 {data_no_indices_hint}
 
+{self.strategy.to_prompt_block()}
+
 ---
 
 # 输出格式模板（请严格按此格式输出）
@@ -597,6 +584,9 @@ Output the report content directly, no extra commentary.
 
 ### 六、风险提示
 （需要关注的风险点）
+
+### 七、策略计划
+（给出进攻/均衡/防守结论，对应仓位建议，并给出一个触发失效条件；最后补充“建议仅供参考，不构成投资建议”。）
 
 ---
 
@@ -660,6 +650,7 @@ Output the report content directly, no extra commentary.
 - **领跌**: {bottom_text}
 """
         market_label = "A股" if self.region == "cn" else "美股"
+        strategy_summary = self.strategy.to_markdown_block()
         report = f"""## {overview.date} 大盘复盘
 
 ### 一、市场总结
@@ -671,6 +662,8 @@ Output the report content directly, no extra commentary.
 {sector_section}
 ### 五、风险提示
 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
+
+{strategy_summary}
 
 ---
 *复盘时间: {datetime.now().strftime('%H:%M')}*

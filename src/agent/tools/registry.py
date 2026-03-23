@@ -62,37 +62,6 @@ class ToolDefinition:
             schema["required"] = required
         return schema
 
-    def to_gemini_declaration(self) -> dict:
-        """
-        Convert to Gemini FunctionDeclaration dict (JSON Schema format).
-
-        Uses lowercase JSON Schema types ("object", "string", etc.) as required
-        by the google-genai SDK's ``parameters_json_schema`` field.
-        """
-        properties: Dict[str, Any] = {}
-        required: List[str] = []
-        for p in self.parameters:
-            prop: Dict[str, Any] = {
-                "type": p.type,
-                "description": p.description,
-            }
-            if p.enum:
-                prop["enum"] = p.enum
-            properties[p.name] = prop
-            if p.required:
-                required.append(p.name)
-        decl: Dict[str, Any] = {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-            },
-        }
-        if required:
-            decl["parameters"]["required"] = required
-        return decl
-
     def to_openai_tool(self) -> dict:
         """Convert to OpenAI ``tools`` list element format."""
         return {
@@ -102,14 +71,6 @@ class ToolDefinition:
                 "description": self.description,
                 "parameters": self._params_json_schema(),
             },
-        }
-
-    def to_anthropic_tool(self) -> dict:
-        """Convert to Anthropic ``tools`` list element format."""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self._params_json_schema(),
         }
 
 
@@ -166,19 +127,11 @@ class ToolRegistry:
     def __contains__(self, name: str) -> bool:
         return name in self._tools
 
-    # ----- Multi-provider schema generation -----
-
-    def to_gemini_declarations(self) -> List[dict]:
-        """Generate Gemini FunctionDeclaration list."""
-        return [t.to_gemini_declaration() for t in self._tools.values()]
+    # ----- Schema generation -----
 
     def to_openai_tools(self) -> List[dict]:
-        """Generate OpenAI tools list."""
+        """Generate OpenAI-format tools list (used by litellm for all providers)."""
         return [t.to_openai_tool() for t in self._tools.values()]
-
-    def to_anthropic_tools(self) -> List[dict]:
-        """Generate Anthropic tools list."""
-        return [t.to_anthropic_tool() for t in self._tools.values()]
 
     # ----- Execution -----
 

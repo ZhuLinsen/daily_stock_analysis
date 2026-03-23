@@ -197,6 +197,16 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertIn("price_change_ratio", enhanced)
         self.assertIn("volume_change_ratio", enhanced)
 
+    def test_enhance_context_injects_runtime_news_window_days(self) -> None:
+        context = {"code": "600519", "today": {"close": 15.0}}
+        enhanced = self.pipeline._enhance_context(
+            context, None, None, None, "贵州茅台"
+        )
+        self.assertEqual(
+            enhanced["news_window_days"],
+            self.pipeline.search_service.news_window_days,
+        )
+
     def test_today_not_overridden_when_trend_missing(self) -> None:
         context = {"code": "600519", "today": {"close": 15.0}}
         quote = _make_realtime_quote(price=15.72)

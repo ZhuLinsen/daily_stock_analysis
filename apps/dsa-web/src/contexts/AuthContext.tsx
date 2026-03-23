@@ -1,39 +1,41 @@
 import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi } from '../api/auth';
+import { useStockPoolStore } from '../stores';
 
 type AuthContextValue = {
   authEnabled: boolean;
   loggedIn: boolean;
   passwordSet: boolean;
   passwordChangeable: boolean;
+  setupState: 'enabled' | 'password_retained' | 'no_password';
   isLoading: boolean;
-  loadError: string | null;
-  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: string }>;
+  loadError: ParsedApiError | null;
+  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
   changePassword: (
     currentPassword: string,
     newPassword: string,
     newPasswordConfirm: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; error?: ParsedApiError }>;
   logout: () => Promise<void>;
   refreshStatus: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function extractLoginError(err: unknown): string {
-  const axiosErr =
-    err && typeof err === 'object' && 'response' in err
-      ? (err as { response?: { status?: number; data?: { message?: string } } })
-      : null;
-  if (axiosErr) {
-    if (axiosErr.response?.status === 429) {
-      return '尝试次数过多，请稍后再试';
-    }
-    const serverMsg = axiosErr.response?.data?.message;
-    return serverMsg || '密码错误';
+function extractLoginError(err: unknown): ParsedApiError {
+  const parsed = getParsedApiError(err);
+  if (parsed.status === 429) {
+    return createParsedApiError({
+      title: '登录尝试过于频繁',
+      message: '尝试次数过多，请稍后再试。',
+      rawMessage: parsed.rawMessage,
+      status: parsed.status,
+      category: parsed.category,
+    });
   }
-  return '登录失败';
+  return parsed;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -41,8 +43,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loggedIn, setLoggedIn] = useState(false);
   const [passwordSet, setPasswordSet] = useState(false);
   const [passwordChangeable, setPasswordChangeable] = useState(false);
+  const [setupState, setSetupState] = useState<'enabled' | 'password_retained' | 'no_password'>('no_password');
   const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
 
   const fetchStatus = useCallback(async () => {
     setIsLoading(true);
@@ -53,12 +56,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoggedIn(status.loggedIn);
       setPasswordSet(status.passwordSet ?? false);
       setPasswordChangeable(status.passwordChangeable ?? false);
+      setSetupState(status.setupState);
+      if (status.authEnabled && !status.loggedIn) {
+        useStockPoolStore.getState().resetDashboardState();
+      }
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load auth status');
+      setLoadError(getParsedApiError(err));
       setAuthEnabled(false);
       setLoggedIn(false);
       setPasswordSet(false);
       setPasswordChangeable(false);
+      setSetupState('no_password');
+      useStockPoolStore.getState().resetDashboardState();
     } finally {
       setIsLoading(false);
     }
@@ -72,16 +81,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (
       password: string,
       passwordConfirm?: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
         await authApi.login(password, passwordConfirm);
-        setLoggedIn(true);
+        await fetchStatus();
         return { success: true };
       } catch (err: unknown) {
         return { success: false, error: extractLoginError(err) };
       }
     },
-    []
+    [fetchStatus]
   );
 
   const changePassword = useCallback(
@@ -89,29 +98,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       currentPassword: string,
       newPassword: string,
       newPasswordConfirm: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
         await authApi.changePassword(currentPassword, newPassword, newPasswordConfirm);
         return { success: true };
       } catch (err: unknown) {
-        const axiosErr =
-          err && typeof err === 'object' && 'response' in err
-            ? (err as { response?: { data?: { message?: string } } })
-            : null;
-        const msg = axiosErr?.response?.data?.message || '修改失败';
-        return { success: false, error: msg };
+        return { success: false, error: getParsedApiError(err) };
       }
     },
     []
   );
 
   const logout = useCallback(async () => {
+    let logoutError: unknown = null;
     try {
       await authApi.logout();
+    } catch (err) {
+      logoutError = err;
     } finally {
-      setLoggedIn(false);
+      await fetchStatus();
     }
-  }, []);
+
+    if (logoutError && getParsedApiError(logoutError).status !== 401) {
+      throw logoutError;
+    }
+  }, [fetchStatus]);
 
   return (
     <AuthContext.Provider
@@ -120,6 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loggedIn,
         passwordSet,
         passwordChangeable,
+        setupState,
         isLoading,
         loadError,
         login,

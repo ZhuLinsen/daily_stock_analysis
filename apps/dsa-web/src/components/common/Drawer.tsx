@@ -1,5 +1,8 @@
 import type React from 'react';
 import { useEffect, useCallback } from 'react';
+import { cn } from '../../utils/cn';
+
+let activeDrawerCount = 0;
 
 interface DrawerProps {
   isOpen: boolean;
@@ -7,10 +10,12 @@ interface DrawerProps {
   title?: string;
   children: React.ReactNode;
   width?: string;
+  zIndex?: number;
+  side?: 'left' | 'right';
 }
 
 /**
- * 侧滑抽屉组件 - 终端风格
+ * Side drawer component with terminal-inspired styling.
  */
 export const Drawer: React.FC<DrawerProps> = ({
   isOpen,
@@ -18,8 +23,10 @@ export const Drawer: React.FC<DrawerProps> = ({
   title,
   children,
   width = 'max-w-2xl',
+  zIndex = 50,
+  side = 'right',
 }) => {
-  // ESC 键关闭
+  // Close the drawer when Escape is pressed.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -32,55 +39,65 @@ export const Drawer: React.FC<DrawerProps> = ({
   useEffect(() => {
     if (isOpen) {
       document.addEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = 'hidden';
+      activeDrawerCount++;
+      if (activeDrawerCount === 1) {
+        document.body.style.overflow = 'hidden';
+      }
+
+      return () => {
+        document.removeEventListener('keydown', handleKeyDown);
+        activeDrawerCount--;
+        if (activeDrawerCount === 0) {
+          document.body.style.overflow = '';
+        }
+      };
     }
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = '';
-    };
   }, [isOpen, handleKeyDown]);
 
   if (!isOpen) return null;
 
+  const titleId = title ? `drawer-title-${side}` : undefined;
+  const sidePositionClass = side === 'left' ? 'left-0 justify-start' : 'right-0 justify-end';
+  const borderClass = side === 'left' ? 'border-r' : 'border-l';
+
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden">
-      {/* 遮罩层 */}
+    <div className="fixed inset-0 overflow-hidden" style={{ zIndex }} role="presentation">
+      {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm transition-opacity duration-300"
+        className="absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300"
         onClick={onClose}
       />
 
-      {/* 抽屉内容 */}
-      <div className={`absolute inset-y-0 right-0 w-full ${width} flex`}>
+      <div className={cn('absolute inset-y-0 flex w-full', sidePositionClass, width)}>
         <div
-          className="relative w-full flex flex-col
-            bg-card border-l border-white/10
-            shadow-2xl
-            transform transition-transform duration-300 ease-out
-            animate-slide-in-right"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          className={cn(
+            'relative flex w-full flex-col bg-card',
+            borderClass,
+            side === 'right' ? 'border-border/80' : 'border-border/70 shadow-2xl',
+            side === 'left' ? 'animate-slide-in-left' : 'animate-slide-in-right'
+          )}
         >
-          {/* 头部 */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
-            {title && (
+          <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
+            {title ? (
               <div>
                 <span className="label-uppercase">DETAIL VIEW</span>
-                <h2 className="text-lg font-semibold text-white mt-1">
-                  {title}
-                </h2>
+                <h2 id={titleId} className="mt-1 text-lg font-semibold text-foreground">{title}</h2>
               </div>
-            )}
+            ) : <div />}
             <button
               type="button"
               onClick={onClose}
-              className="dock-item !w-10 !h-10"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/80 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
+              aria-label="关闭抽屉"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-
-          {/* 内容区 */}
           <div className="flex-1 overflow-y-auto p-6">
             {children}
           </div>

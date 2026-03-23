@@ -39,15 +39,8 @@ _SKILL_MANAGER_PROTOTYPE = None
 # on the very first call, forcing a build rather than accidentally skipping it.
 _SENTINEL = object()
 # Track which custom_dir the prototype was built with so we can invalidate
-# the cache if AGENT_STRATEGY_DIR changes at runtime (e.g. via config reload).
+# the cache if AGENT_SKILL_DIR changes at runtime (e.g. via config reload).
 _SKILL_MANAGER_CUSTOM_DIR: object = _SENTINEL
-
-DEFAULT_AGENT_SKILLS = [
-    "bull_trend",
-    "ma_golden_cross",
-    "volume_breakout",
-    "shrink_pullback",
-]
 
 
 def get_tool_registry():
@@ -61,9 +54,10 @@ def get_tool_registry():
     from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
     from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
     from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+    from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
 
     registry = ToolRegistry()
-    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS:
+    for tool_fn in ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS:
         registry.register(tool_fn)
 
     _TOOL_REGISTRY = registry
@@ -79,7 +73,7 @@ def get_skill_manager(config=None):
     YAML files.  Each clone is independent so ``.activate()`` calls do not
     bleed between requests.
 
-    Cache invalidation: if ``config.agent_strategy_dir`` changes at runtime
+    Cache invalidation: if ``config.agent_skill_dir`` changes at runtime
     (e.g. via the web settings reload), the prototype is rebuilt automatically.
     """
     global _SKILL_MANAGER_PROTOTYPE, _SKILL_MANAGER_CUSTOM_DIR
@@ -88,40 +82,44 @@ def get_skill_manager(config=None):
         from src.config import get_config
         config = get_config()
 
-    current_custom_dir = getattr(config, "agent_strategy_dir", None)
+    current_custom_dir = getattr(config, "agent_skill_dir", None)
     if _SKILL_MANAGER_PROTOTYPE is not None and current_custom_dir == _SKILL_MANAGER_CUSTOM_DIR:
         return copy.deepcopy(_SKILL_MANAGER_PROTOTYPE)
 
     from src.agent.skills.base import SkillManager
 
     if _SKILL_MANAGER_PROTOTYPE is not None:
-        logger.info("[AgentFactory] SkillManager prototype invalidated (agent_strategy_dir changed: %r → %r)",
+        logger.info("[AgentFactory] SkillManager prototype invalidated (agent_skill_dir changed: %r -> %r)",
                     _SKILL_MANAGER_CUSTOM_DIR, current_custom_dir)
 
     skill_manager = SkillManager()
-    skill_manager.load_builtin_strategies()
+    skill_manager.load_builtin_skills()
 
     if current_custom_dir:
         try:
-            skill_manager.load_custom_strategies(current_custom_dir)
+            skill_manager.load_custom_skills(current_custom_dir)
         except Exception as exc:
-            logger.warning("[AgentFactory] Failed to load custom strategies from %s: %s", current_custom_dir, exc)
+            logger.warning("[AgentFactory] Failed to load custom skills from %s: %s", current_custom_dir, exc)
 
     _SKILL_MANAGER_PROTOTYPE = skill_manager
     _SKILL_MANAGER_CUSTOM_DIR = current_custom_dir
-    logger.info("[AgentFactory] SkillManager prototype cached (%d strategies)", len(skill_manager._skills))
+    logger.info("[AgentFactory] SkillManager prototype cached (%d skills)", len(skill_manager._skills))
     return copy.deepcopy(_SKILL_MANAGER_PROTOTYPE)
 
 
 def build_agent_executor(config=None, skills: Optional[List[str]] = None):
-    """Build and return a configured AgentExecutor.
+    """Build and return a configured AgentExecutor (or future orchestrator).
+
+    When ``AGENT_ARCH=multi``, this returns an orchestrator that manages
+    multiple specialised agents. Otherwise it returns the legacy single-agent
+    executor.
 
     Args:
         config: Application config object.  When *None*, ``get_config()`` is
                 called automatically.
-        skills: Strategy ids to activate.  When *None* falls back to
+        skills: Skill ids to activate.  When *None* falls back to
                 ``config.agent_skills``; if that is also empty falls back to
-                ``DEFAULT_AGENT_SKILLS``.
+                the central default skill set.
 
     Returns:
         A ready-to-call :class:`src.agent.executor.AgentExecutor` instance.
@@ -130,22 +128,76 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         from src.config import get_config
         config = get_config()
 
-    from src.agent.executor import AgentExecutor
+    arch = getattr(config, "agent_arch", "single")
+
     from src.agent.llm_adapter import LLMToolAdapter
+    from src.agent.skills.defaults import (
+        get_default_active_skill_ids,
+        get_default_technical_skill_policy,
+        get_default_trading_skill_policy,
+    )
 
     registry = get_tool_registry()
     skill_manager = get_skill_manager(config)
 
-    skills_to_activate = skills if skills is not None else (getattr(config, "agent_skills", None) or DEFAULT_AGENT_SKILLS)
-    skill_manager.activate(skills_to_activate if skills_to_activate else ["all"])
-    logger.info("[AgentFactory] Activated strategies: %s", skills_to_activate)
+    configured_skills = getattr(config, "agent_skills", None) or None
+    explicit_skill_selection = bool(skills) or configured_skills is not None
+    default_skills = get_default_active_skill_ids(skill_manager.list_skills())
+    if skills is not None:
+        skills_to_activate = skills or default_skills
+    else:
+        skills_to_activate = configured_skills or default_skills
+    skill_manager.activate(skills_to_activate)
+    logger.info("[AgentFactory] Activated skills: %s (arch=%s)", skills_to_activate, arch)
 
     llm_adapter = LLMToolAdapter(config)
+    default_skill_policy = get_default_trading_skill_policy(
+        explicit_skill_selection=explicit_skill_selection,
+    )
+    technical_skill_policy = get_default_technical_skill_policy(
+        explicit_skill_selection=explicit_skill_selection,
+    )
+
+    if arch == "multi":
+        return _build_orchestrator(
+            config,
+            registry,
+            llm_adapter,
+            skill_manager,
+            technical_skill_policy=technical_skill_policy,
+        )
+
+    from src.agent.executor import AgentExecutor
     return AgentExecutor(
         tool_registry=registry,
         llm_adapter=llm_adapter,
         skill_instructions=skill_manager.get_skill_instructions(),
+        default_skill_policy=default_skill_policy,
         max_steps=getattr(config, "agent_max_steps", 10),
+        timeout_seconds=getattr(config, "agent_orchestrator_timeout_s", 0),
+    )
+
+
+def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technical_skill_policy: str = ""):
+    """Build and return an :class:`AgentOrchestrator` (multi-agent mode).
+
+    The orchestrator presents the same ``run()`` / ``chat()`` interface as
+    :class:`AgentExecutor` so callers need no changes.
+    """
+    from src.agent.orchestrator import AgentOrchestrator
+
+    mode = getattr(config, "agent_orchestrator_mode", "standard")
+    logger.info("[AgentFactory] Building AgentOrchestrator (mode=%s)", mode)
+
+    return AgentOrchestrator(
+        tool_registry=registry,
+        llm_adapter=llm_adapter,
+        skill_instructions=skill_manager.get_skill_instructions(),
+        technical_skill_policy=technical_skill_policy,
+        max_steps=getattr(config, "agent_max_steps", 10),
+        mode=mode,
+        skill_manager=skill_manager,
+        config=config,
     )
 
 

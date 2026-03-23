@@ -2,11 +2,10 @@
 """
 Multi-provider LLM Tool-Calling Adapter.
 
-Normalizes function-calling / tool-use across Gemini, OpenAI, and Anthropic
-into a unified interface consumed by the AgentExecutor.
+Normalizes function-calling / tool-use across all providers into a unified
+interface consumed by the AgentExecutor, via LiteLLM.
 """
 
-import base64
 import json
 import logging
 import time
@@ -14,7 +13,17 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from src.config import get_config
+import litellm
+from litellm import Router
+
+from src.config import (
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+    get_configured_llm_models,
+    get_effective_agent_models_to_try,
+    get_effective_agent_primary_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +49,7 @@ class LLMResponse:
     reasoning_content: Optional[str] = None  # Chain-of-thought (CoT) from DeepSeek thinking mode; must be passed back in multi-turn assistant messages; None for other providers
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
+    model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
 
 
@@ -95,90 +105,99 @@ def get_thinking_extra_body(model: str) -> Optional[dict]:
 # ============================================================
 
 class LLMToolAdapter:
-    """Unified adapter for tool-calling across Gemini / OpenAI / Anthropic.
+    """Unified adapter for tool-calling via LiteLLM.
 
-    Initialization follows the priority order from GeminiAnalyzer:
-    Gemini > Anthropic > OpenAI, but all available providers are
-    initialized for failover.
+    Supports all providers (Gemini, Anthropic, OpenAI, DeepSeek, etc.) through
+    a single litellm.completion() interface with optional Router for multi-key
+    load balancing.
     """
 
     def __init__(self, config=None):
         config = config or get_config()
-
-        # Provider clients (lazy-initialized)
-        self._gemini_client = None
-        self._anthropic_client = None
-        self._openai_client = None
-
-        # Provider availability flags
-        self._gemini_available = False
-        self._anthropic_available = False
-        self._openai_available = False
-
-        # Config
         self._config = config
+        self._router = None          # litellm Router (multi-key primary model)
+        self._litellm_available = False
+        self._init_litellm()
 
-        # Initialize providers
-        self._init_providers()
+    def _has_channel_config(self) -> bool:
+        """Check if multi-channel config (channels / YAML) is active."""
+        return bool(self._config.llm_model_list) and not all(
+            e.get('model_name', '').startswith('__legacy_') for e in self._config.llm_model_list
+        )
 
-    def _init_providers(self):
-        """Initialize all available LLM providers."""
+    def _init_litellm(self) -> None:
+        """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._config
+        litellm_model = get_effective_agent_primary_model(config)
+        if not litellm_model:
+            logger.warning("Agent LLM: no effective primary model configured")
+            return
 
-        # Gemini
-        gemini_key = config.gemini_api_key
-        if gemini_key and not gemini_key.startswith("your_") and len(gemini_key) > 10:
-            try:
-                from google import genai as google_genai
-                self._gemini_client = google_genai.Client(api_key=gemini_key)
-                self._gemini_available = True
-                model_name = config.gemini_model or "gemini-2.5-flash"
-                logger.info(f"Agent LLM: Gemini initialized (model={model_name})")
-            except Exception as e:
-                logger.warning(f"Agent LLM: Gemini init failed: {e}")
+        self._litellm_available = True
 
-        # Anthropic
-        anthropic_key = config.anthropic_api_key
-        if anthropic_key and not anthropic_key.startswith("your_") and len(anthropic_key) > 10:
-            try:
-                from anthropic import Anthropic
-                self._anthropic_client = Anthropic(api_key=anthropic_key)
-                self._anthropic_available = True
-                logger.info("Agent LLM: Anthropic initialized")
-            except Exception as e:
-                logger.warning(f"Agent LLM: Anthropic init failed: {e}")
+        # --- Channel / YAML path ---
+        if self._has_channel_config():
+            model_list = config.llm_model_list
+            self._router = Router(
+                model_list=model_list,
+                routing_strategy="simple-shuffle",
+                num_retries=2,
+            )
+            unique_models = list(dict.fromkeys(
+                e['litellm_params']['model'] for e in model_list
+            ))
+            logger.info(
+                f"Agent LLM: Router initialized from channels/YAML — "
+                f"{len(model_list)} deployment(s), models: {unique_models}"
+            )
+            return
 
-        # OpenAI
-        openai_key = config.openai_api_key
-        if openai_key and not openai_key.startswith("your_") and len(openai_key) >= 8:
-            try:
-                from openai import OpenAI
-                client_kwargs = {"api_key": openai_key}
-                if config.openai_base_url:
-                    client_kwargs["base_url"] = config.openai_base_url
-                if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
-                    client_kwargs["default_headers"] = {"APP-Code": "GPIJ3886"}
-                self._openai_client = OpenAI(**client_kwargs)
-                self._openai_available = True
-                logger.info("Agent LLM: OpenAI initialized")
-            except Exception as e:
-                logger.warning(f"Agent LLM: OpenAI init failed: {e}")
+        # --- Legacy path ---
+        keys = get_api_keys_for_model(litellm_model, config)
+        if not keys:
+            logger.info(
+                f"Agent LLM: litellm initialized (model={litellm_model}, "
+                f"API key from environment)"
+            )
+            return
+
+        if len(keys) > 1:
+            ep = extra_litellm_params(litellm_model, config)
+            legacy_model_list = [
+                {
+                    "model_name": litellm_model,
+                    "litellm_params": {
+                        "model": litellm_model,
+                        "api_key": k,
+                        **ep,
+                    },
+                }
+                for k in keys
+            ]
+            self._router = Router(
+                model_list=legacy_model_list,
+                routing_strategy="simple-shuffle",
+                num_retries=2,
+            )
+            logger.info(
+                f"Agent LLM: Legacy Router initialized with {len(keys)} keys "
+                f"for {litellm_model}"
+            )
+        else:
+            logger.info(f"Agent LLM: litellm initialized (model={litellm_model})")
 
     @property
     def is_available(self) -> bool:
-        """True if at least one provider is ready."""
-        return self._gemini_available or self._anthropic_available or self._openai_available
+        """True if litellm is configured and at least one API key is present."""
+        return self._router is not None or self._litellm_available
 
     @property
     def primary_provider(self) -> str:
-        """Name of the highest-priority available provider."""
-        if self._gemini_available:
-            return "gemini"
-        if self._anthropic_available:
-            return "anthropic"
-        if self._openai_available:
-            return "openai"
-        return "none"
+        """Provider name extracted from litellm_model prefix."""
+        model = get_effective_agent_primary_model(self._config)
+        if "/" in model:
+            return model.split("/")[0]
+        return model or "none"
 
     # ============================================================
     # Unified call
@@ -187,195 +206,147 @@ class LLMToolAdapter:
     def call_with_tools(
         self,
         messages: List[Dict[str, Any]],
-        tool_declarations: Dict[str, Any],
+        tools: List[dict],
         provider: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Send messages + tool declarations to LLM, return normalized response.
 
         Args:
-            messages: Conversation messages in a provider-neutral format:
+            messages: Conversation history in provider-neutral format:
                       [{"role": "system"/"user"/"assistant"/"tool", "content": ...}, ...]
-            tool_declarations: Dict with keys "gemini", "openai", "anthropic"
-                               containing provider-specific tool schemas.
-            provider: Force a specific provider. If None, use priority order.
+            tools: OpenAI-format tool declarations; litellm converts to each provider's format.
+            provider: Ignored (kept for backward compatibility).
 
         Returns:
             LLMResponse with either content (final answer) or tool_calls.
         """
-        providers_to_try = self._get_provider_order(provider)
+        return self.call_completion(messages, tools=tools, provider=provider, timeout=timeout)
+
+    def call_text(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Send a text-only completion through the shared routing stack."""
+        return self.call_completion(
+            messages,
+            tools=None,
+            provider=provider,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def call_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[dict]] = None,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Shared completion path for both tool and text-only calls."""
+        config = self._config
+        models_to_try = get_effective_agent_models_to_try(config)
+        started_at = time.time()
 
         last_error = None
-        for p in providers_to_try:
+        for model in models_to_try:
+            remaining_timeout = timeout
+            if timeout is not None and timeout > 0:
+                remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
+                if remaining_timeout <= 0:
+                    last_error = TimeoutError(
+                        f"LLM completion timed out before trying fallback model {model}"
+                    )
+                    break
             try:
-                if p == "gemini" and self._gemini_available:
-                    return self._call_gemini(messages, tool_declarations.get("gemini", []))
-                elif p == "anthropic" and self._anthropic_available:
-                    return self._call_anthropic(messages, tool_declarations.get("anthropic", []))
-                elif p == "openai" and self._openai_available:
-                    return self._call_openai(messages, tool_declarations.get("openai", []))
+                return self._call_litellm_model(
+                    messages,
+                    tools or [],
+                    model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=remaining_timeout,
+                )
             except Exception as e:
-                logger.warning(f"Agent LLM call failed with {p}: {e}")
+                logger.warning(f"Agent LLM call failed with {model}: {e}")
                 last_error = e
                 continue
 
-        error_msg = f"All LLM providers failed. Last error: {last_error}"
+        error_msg = f"All LLM models failed. Last error: {last_error}"
         logger.error(error_msg)
         return LLMResponse(content=error_msg, provider="error")
 
-    def _get_provider_order(self, forced: Optional[str] = None) -> List[str]:
-        """Get provider try order."""
-        if forced:
-            return [forced]
-        order = []
-        if self._gemini_available:
-            order.append("gemini")
-        if self._anthropic_available:
-            order.append("anthropic")
-        if self._openai_available:
-            order.append("openai")
-        return order
-
-    # ============================================================
-    # Gemini
-    # ============================================================
-
-    def _call_gemini(
+    def _call_litellm_model(
         self,
         messages: List[Dict[str, Any]],
         tools: List[dict],
+        model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
-        """Call Gemini with function-calling support using google-genai SDK.
+        """Call a specific litellm model with OpenAI-format messages and tools."""
+        openai_messages = self._convert_messages(messages)
 
-        Uses the new google-genai SDK (google.genai) which supports thought_signature
-        at the Part level, required for Gemini 3 multi-turn tool calls.
-        """
-        from google.genai import types as genai_types
+        # Use short model name (without provider prefix) for thinking model lookup
+        model_short = model.split("/")[-1] if "/" in model else model
 
-        config = self._config
-        model_name = config.gemini_model or "gemini-2.5-flash"
+        call_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": openai_messages,
+            "temperature": self._get_temperature(model) if temperature is None else temperature,
+        }
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            call_kwargs["timeout"] = timeout
 
-        # Build contents and extract system instruction
-        system_instruction = None
-        contents = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_instruction = msg["content"]
-            elif msg["role"] == "user":
-                contents.append(genai_types.Content(
-                    role="user",
-                    parts=[genai_types.Part.from_text(text=msg["content"])],
-                ))
-            elif msg["role"] == "assistant":
-                parts = []
-                if msg.get("content"):
-                    parts.append(genai_types.Part.from_text(text=msg["content"]))
-                if msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        sig_str = tc.get("thought_signature")
-                        sig_bytes = None
-                        if sig_str and isinstance(sig_str, str):
-                            try:
-                                sig_bytes = base64.b64decode(sig_str) or None
-                            except Exception:
-                                logger.debug("thought_signature base64 decode failed for '%s'; omitting", tc["name"])
-                        if sig_bytes:
-                            # Gemini 3 requires thought_signature (bytes) at Part level
-                            parts.append(genai_types.Part(
-                                function_call=genai_types.FunctionCall(
-                                    name=tc["name"],
-                                    args=tc["arguments"],
-                                ),
-                                thought_signature=sig_bytes,
-                            ))
-                        else:
-                            parts.append(genai_types.Part.from_function_call(
-                                name=tc["name"],
-                                args=tc["arguments"],
-                            ))
-                if parts:
-                    contents.append(genai_types.Content(role="model", parts=parts))
-            elif msg["role"] == "tool":
-                contents.append(genai_types.Content(
-                    role="tool",
-                    parts=[genai_types.Part.from_function_response(
-                        name=msg["name"],
-                        response={"result": msg["content"]},
-                    )],
-                ))
+        extra = get_thinking_extra_body(model_short)
+        if extra:
+            call_kwargs["extra_body"] = extra
 
-        # Build generation config (tools + system instruction + temperature)
-        gen_config_kwargs: Dict[str, Any] = {"temperature": config.gemini_temperature}
         if tools:
-            function_declarations = [
-                genai_types.FunctionDeclaration(
-                    name=t["name"],
-                    description=t["description"],
-                    parameters_json_schema=t.get("parameters"),
-                )
-                for t in tools
-            ]
-            gen_config_kwargs["tools"] = [genai_types.Tool(function_declarations=function_declarations)]
-        if system_instruction:
-            gen_config_kwargs["system_instruction"] = system_instruction
+            call_kwargs["tools"] = tools
 
-        response = self._gemini_client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=genai_types.GenerateContentConfig(**gen_config_kwargs),
-        )
+        # Use Router for primary model (multi-key), direct litellm for others
+        use_channel_router = self._has_channel_config()
+        _router_model_names = set(get_configured_llm_models(self._config.llm_model_list))
+        agent_primary_model = get_effective_agent_primary_model(self._config)
+        if use_channel_router and self._router and model in _router_model_names:
+            # Channel / YAML path: Router manages all models in its model_list
+            response = self._router.completion(**call_kwargs)
+        elif self._router and model == agent_primary_model and not use_channel_router:
+            # Legacy path: Router for primary model multi-key
+            response = self._router.completion(**call_kwargs)
+        else:
+            # Legacy/direct-env path: direct call (also handles direct-env
+            # providers like groq/ or bedrock/ that are not in the Router
+            # model_list even when channel mode is active)
+            keys = get_api_keys_for_model(model, self._config)
+            if keys:
+                call_kwargs["api_key"] = keys[0]
+            call_kwargs.update(extra_litellm_params(model, self._config))
+            response = litellm.completion(**call_kwargs)
 
-        # Parse response
-        tool_calls = []
-        text_content = None
+        return self._parse_litellm_response(response, model)
 
-        if response.candidates and response.candidates[0].content.parts:
-            for part in response.candidates[0].content.parts:
-                if part.function_call:
-                    fc = part.function_call
-                    args = dict(fc.args) if fc.args else {}
-                    # Gemini 3 returns thought_signature as bytes; base64-encode for JSON-safe transport
-                    sig_bytes = part.thought_signature
-                    sig_str = base64.b64encode(sig_bytes).decode("ascii") if sig_bytes else None
-                    tool_calls.append(ToolCall(
-                        id=str(uuid.uuid4())[:8],
-                        name=fc.name,
-                        arguments=args,
-                        thought_signature=sig_str,
-                    ))
-                elif part.text:
-                    text_content = (text_content or "") + part.text
+    def _get_temperature(self, model: str) -> float:
+        """Return unified temperature from config."""
+        return self._config.llm_temperature
 
-        # Extract usage
-        usage = {}
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            usage = {
-                "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0),
-                "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0),
-                "total_tokens": getattr(response.usage_metadata, "total_token_count", 0),
-            }
-
-        return LLMResponse(
-            content=text_content,
-            tool_calls=tool_calls,
-            usage=usage,
-            provider="gemini",
-            raw=response,
-        )
-
-    # ============================================================
-    # OpenAI
-    # ============================================================
-
-    def _call_openai(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: List[dict],
-    ) -> LLMResponse:
-        """Call OpenAI-compatible API with function-calling support."""
-        config = self._config
-
-        # Convert messages to OpenAI format
-        openai_messages = []
+    def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert internal message format to OpenAI-compatible format for litellm."""
+        openai_messages: List[Dict[str, Any]] = []
         for msg in messages:
             if msg["role"] == "tool":
                 openai_messages.append({
@@ -384,22 +355,21 @@ class LLMToolAdapter:
                     "content": msg["content"] if isinstance(msg["content"], str) else json.dumps(msg["content"]),
                 })
             elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                # Reconstruct assistant message with tool_calls
                 openai_tc = []
                 for tc in msg["tool_calls"]:
-                    tc_dict = {
+                    tc_dict: Dict[str, Any] = {
                         "id": tc.get("id", str(uuid.uuid4())[:8]),
                         "type": "function",
                         "function": {
                             "name": tc["name"],
                             "arguments": json.dumps(tc["arguments"]),
-                        }
+                        },
                     }
                     sig = tc.get("thought_signature")
                     if sig is not None:
                         tc_dict["provider_specific_fields"] = {"thought_signature": sig}
                     openai_tc.append(tc_dict)
-                openai_msg = {
+                openai_msg: Dict[str, Any] = {
                     "role": "assistant",
                     "content": msg.get("content"),
                     "tool_calls": openai_tc,
@@ -412,52 +382,36 @@ class LLMToolAdapter:
                     "role": msg["role"],
                     "content": msg["content"],
                 })
+        return openai_messages
 
-        model_name = config.openai_model or "gpt-4o-mini"
-        call_kwargs = {
-            "model": model_name,
-            "messages": openai_messages,
-            "temperature": config.openai_temperature,
-        }
-        payload = get_thinking_extra_body(model_name)
-        if payload:
-            call_kwargs["extra_body"] = payload
-        if tools:
-            call_kwargs["tools"] = tools
-
-        response = self._openai_client.chat.completions.create(**call_kwargs)
-
-        # Parse response — guard against None/empty choices (non-standard API response)
-        if not response.choices:
-            raise ValueError(
-                f"OpenAI-compatible API returned empty choices. "
-                f"Model: {model_name}, finish_reason: N/A. "
-                f"This may indicate the provider rejected the request or returned a malformed response."
-            )
+    def _parse_litellm_response(self, response: Any, model: str) -> LLMResponse:
+        """Parse litellm OpenAI-compatible response into LLMResponse."""
         choice = response.choices[0]
-        tool_calls = []
+        tool_calls: List[ToolCall] = []
         text_content = choice.message.content
-        # DeepSeek-specific extension field; not in openai SDK type, accessed via getattr for safety
-        reasoning_content = getattr(choice.message, 'reasoning_content', None)
+        # DeepSeek/Qwen thinking mode; not in standard OpenAI type, accessed via getattr
+        reasoning_content = getattr(choice.message, "reasoning_content", None)
 
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
-                args = {}
+                args: Dict[str, Any] = {}
                 if tc.function.arguments:
                     try:
                         args = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         args = {"raw": tc.function.arguments}
-                # Extract thought_signature: stored in __pydantic_extra__ as provider_specific_fields
-                psf = getattr(tc, 'provider_specific_fields', None)
+
+                # Extract thought_signature: stored in provider_specific_fields (Gemini 3 via LiteLLM proxy)
+                psf = getattr(tc, "provider_specific_fields", None)
                 if psf is not None:
-                    sig = psf.get('thought_signature') if isinstance(psf, dict) else getattr(psf, 'thought_signature', None)
+                    sig = psf.get("thought_signature") if isinstance(psf, dict) else getattr(psf, "thought_signature", None)
                 else:
-                    func_psf = getattr(tc.function, 'provider_specific_fields', None)
+                    func_psf = getattr(tc.function, "provider_specific_fields", None)
                     if func_psf is not None:
-                        sig = func_psf.get('thought_signature') if isinstance(func_psf, dict) else getattr(func_psf, 'thought_signature', None)
+                        sig = func_psf.get("thought_signature") if isinstance(func_psf, dict) else getattr(func_psf, "thought_signature", None)
                     else:
-                        sig = getattr(tc, 'thought_signature', None)
+                        sig = getattr(tc, "thought_signature", None)
+
                 tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
@@ -465,7 +419,7 @@ class LLMToolAdapter:
                     thought_signature=sig,
                 ))
 
-        usage = {}
+        usage: Dict[str, Any] = {}
         if response.usage:
             usage = {
                 "prompt_tokens": response.usage.prompt_tokens,
@@ -473,96 +427,13 @@ class LLMToolAdapter:
                 "total_tokens": response.usage.total_tokens,
             }
 
+        provider_name = model.split("/")[0] if "/" in model else model
         return LLMResponse(
             content=text_content,
             tool_calls=tool_calls,
             reasoning_content=reasoning_content,
             usage=usage,
-            provider="openai",
-            raw=response,
-        )
-
-    # ============================================================
-    # Anthropic
-    # ============================================================
-
-    def _call_anthropic(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: List[dict],
-    ) -> LLMResponse:
-        """Call Anthropic Claude with tool-use support."""
-        config = self._config
-
-        # Extract system
-        system_text = ""
-        anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_text = msg["content"]
-            elif msg["role"] == "user":
-                anthropic_messages.append({"role": "user", "content": msg["content"]})
-            elif msg["role"] == "assistant":
-                content_blocks = []
-                if msg.get("content"):
-                    content_blocks.append({"type": "text", "text": msg["content"]})
-                if msg.get("tool_calls"):
-                    for tc in msg["tool_calls"]:
-                        content_blocks.append({
-                            "type": "tool_use",
-                            "id": tc.get("id", str(uuid.uuid4())[:8]),
-                            "name": tc["name"],
-                            "input": tc["arguments"],
-                        })
-                anthropic_messages.append({"role": "assistant", "content": content_blocks})
-            elif msg["role"] == "tool":
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.get("tool_call_id", ""),
-                        "content": msg["content"] if isinstance(msg["content"], str) else json.dumps(msg["content"]),
-                    }],
-                })
-
-        call_kwargs = {
-            "model": config.anthropic_model or "claude-sonnet-4-20250514",
-            "max_tokens": config.anthropic_max_tokens or 8192,
-            "messages": anthropic_messages,
-            "temperature": config.anthropic_temperature,
-        }
-        if system_text:
-            call_kwargs["system"] = system_text
-        if tools:
-            call_kwargs["tools"] = tools
-
-        response = self._anthropic_client.messages.create(**call_kwargs)
-
-        # Parse response
-        tool_calls = []
-        text_content = None
-
-        for block in response.content:
-            if block.type == "text":
-                text_content = (text_content or "") + block.text
-            elif block.type == "tool_use":
-                tool_calls.append(ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    arguments=block.input if isinstance(block.input, dict) else {},
-                ))
-
-        usage = {}
-        if hasattr(response, 'usage') and response.usage:
-            usage = {
-                "prompt_tokens": getattr(response.usage, 'input_tokens', 0),
-                "completion_tokens": getattr(response.usage, 'output_tokens', 0),
-            }
-
-        return LLMResponse(
-            content=text_content,
-            tool_calls=tool_calls,
-            usage=usage,
-            provider="anthropic",
+            provider=provider_name,
+            model=model,
             raw=response,
         )

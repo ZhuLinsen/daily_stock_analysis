@@ -76,10 +76,19 @@ class KLineData(BaseModel):
         }
 
 
+class ExtractItem(BaseModel):
+    """单条提取结果（代码、名称、置信度）"""
+
+    code: Optional[str] = Field(None, description="股票代码，None 表示解析失败")
+    name: Optional[str] = Field(None, description="股票名称（如有）")
+    confidence: str = Field("medium", description="置信度：high/medium/low")
+
+
 class ExtractFromImageResponse(BaseModel):
     """图片股票代码提取响应"""
 
-    codes: List[str] = Field(..., description="提取的股票代码（已去重）")
+    codes: List[str] = Field(..., description="提取的股票代码（已去重，向后兼容）")
+    items: List[ExtractItem] = Field(default_factory=list, description="提取结果明细（代码+名称+置信度）")
     raw_text: Optional[str] = Field(None, description="原始 LLM 响应（调试用）")
 
 

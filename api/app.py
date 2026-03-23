@@ -15,6 +15,7 @@ FastAPI 应用工厂模块
     app = create_app()
 """
 
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -24,7 +25,7 @@ from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
@@ -68,7 +69,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             "- 历史记录：查询历史分析报告\n"
             "- 股票数据：获取行情数据\n\n"
             "## 认证方式\n"
-            "当前版本暂无认证要求"
+            "支持可选的运行时认证（通过 WebUI 设置页面启用/关闭）"
         ),
         version="1.0.0",
         lifespan=app_lifespan,
@@ -91,13 +92,15 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
     
     # 允许所有来源（开发/演示用）
-    if os.environ.get("CORS_ALLOW_ALL", "").lower() == "true":
+    allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
+    allow_credentials = not allow_all_origins
+    if allow_all_origins:
         allowed_origins = ["*"]
     
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -183,12 +186,18 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         @app.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(request: Request, full_path: str):
             """SPA 路由回退 - 非 API 路由返回 index.html"""
-            if full_path.startswith("api/"):
-                return None
+            if full_path == "api" or full_path.startswith("api/"):
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
+                )
             
             file_path = static_dir / full_path
             if file_path.exists() and file_path.is_file():
-                return FileResponse(file_path)
+                # Issue #520: Explicitly resolve MIME type to avoid
+                # browsers rejecting JS modules served as text/plain.
+                content_type, _ = mimetypes.guess_type(str(file_path))
+                return FileResponse(file_path, media_type=content_type)
             
             return FileResponse(static_dir / "index.html")
     

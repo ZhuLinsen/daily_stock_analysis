@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { API_BASE_URL } from '../utils/constants';
+import { attachParsedApiError } from './error';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -20,6 +21,7 @@ apiClient.interceptors.response.use(
         window.location.assign(`/login?redirect=${redirect}`);
       }
     }
+    attachParsedApiError(error);
     return Promise.reject(error);
   }
 );
