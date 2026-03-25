@@ -215,6 +215,14 @@ OPENAI_MODEL=deepseek-chat
 
 ---
 
+### Q12b: 如何使用 Ollama 本地模型？
+
+**配置方法**：使用 `OLLAMA_API_BASE` + `LITELLM_MODEL`，或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`）。
+
+**避坑**：不要使用 `OPENAI_BASE_URL` 配置 Ollama，否则会触发 LiteLLM 的 URL 拼接 bug（如 404、`api/generate/api/show`）。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 示例 4 与渠道示例。
+
+---
+
 ## 🐳 Docker 相关
 
 ### Q13: Docker 容器启动后立即退出？

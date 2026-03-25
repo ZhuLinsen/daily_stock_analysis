@@ -137,3 +137,9 @@ class TestResolveNameToCode:
         mock_akshare.return_value = {}
         result = resolve_name_to_code("不存在的股票名称xyz")
         assert result is None
+
+    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
+    def test_skips_akshare_for_non_cjk_garbage_input(self, mock_akshare):
+        result = resolve_name_to_code("aaaaaaa")
+        assert result is None
+        mock_akshare.assert_not_called()

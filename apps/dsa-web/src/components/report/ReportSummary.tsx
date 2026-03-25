@@ -4,6 +4,7 @@ import { ReportOverview } from './ReportOverview';
 import { ReportStrategy } from './ReportStrategy';
 import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
+import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
 interface ReportSummaryProps {
   data: AnalysisResult | AnalysisReport;
@@ -24,33 +25,36 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
   const recordId = report.meta.id;
 
   const { meta, summary, strategy, details } = report;
+  const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
+  const text = getReportText(reportLanguage);
   const modelUsed = (meta.modelUsed || '').trim();
   const shouldShowModel = Boolean(
     modelUsed && !['unknown', 'error', 'none', 'null', 'n/a'].includes(modelUsed.toLowerCase()),
   );
 
   return (
-    <div className="space-y-3 animate-fade-in">
+    <div className="space-y-5 pb-8 animate-fade-in">
       {/* 概览区（首屏） */}
       <ReportOverview
         meta={meta}
         summary={summary}
+        details={details}
         isHistory={isHistory}
       />
 
       {/* 策略点位区 */}
-      <ReportStrategy strategy={strategy} />
+      <ReportStrategy strategy={strategy} language={reportLanguage} />
 
       {/* 资讯区 */}
-      <ReportNews recordId={recordId} />
+      <ReportNews recordId={recordId} limit={8} language={reportLanguage} />
 
       {/* 透明度与追溯区 */}
-      <ReportDetails details={details} recordId={recordId} />
+      <ReportDetails details={details} recordId={recordId} language={reportLanguage} />
 
       {/* 分析模型标记（Issue #528）— 报告末尾 */}
       {shouldShowModel && (
-        <p className="text-xs text-gray-500 mt-3">
-          分析模型: {modelUsed}
+        <p className="px-1 text-xs text-muted-text">
+          {text.analysisModel}: {modelUsed}
         </p>
       )}
     </div>

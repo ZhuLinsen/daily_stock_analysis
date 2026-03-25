@@ -965,6 +965,49 @@ class DatabaseManager:
                 )
                 return 0
 
+    def get_latest_fundamental_snapshot(
+        self,
+        query_id: str,
+        code: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        获取指定 query_id + code 的最新基本面快照 payload。
+
+        读取失败或不存在时返回 None（fail-open）。
+        """
+        if not query_id or not code:
+            return None
+
+        with self.get_session() as session:
+            try:
+                row = session.execute(
+                    select(FundamentalSnapshot)
+                    .where(
+                        and_(
+                            FundamentalSnapshot.query_id == query_id,
+                            FundamentalSnapshot.code == code,
+                        )
+                    )
+                    .order_by(desc(FundamentalSnapshot.created_at))
+                    .limit(1)
+                ).scalar_one_or_none()
+            except Exception as e:
+                logger.debug(
+                    "基本面快照读取失败（fail-open）: query_id=%s code=%s err=%s",
+                    query_id,
+                    code,
+                    e,
+                )
+                return None
+
+            if row is None:
+                return None
+            try:
+                payload = json.loads(row.payload or "{}")
+                return payload if isinstance(payload, dict) else None
+            except Exception:
+                return None
+
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:
         """
         获取指定股票最近 N 天的新闻情报

@@ -19,6 +19,7 @@ from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.memory import AgentMemory
 from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
 from src.agent.runner import RunLoopResult, run_agent_loop
+from src.agent.skills.defaults import extract_skill_id
 from src.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,10 +49,12 @@ class BaseAgent(ABC):
         tool_registry: ToolRegistry,
         llm_adapter: LLMToolAdapter,
         skill_instructions: str = "",
+        technical_skill_policy: str = "",
     ):
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
         self.skill_instructions = skill_instructions
+        self.technical_skill_policy = technical_skill_policy
         self.memory = AgentMemory.from_config()
 
     # -----------------------------------------------------------------
@@ -87,6 +90,7 @@ class BaseAgent(ABC):
         self,
         ctx: AgentContext,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> StageResult:
         """Execute this agent and return a :class:`StageResult`.
 
@@ -112,6 +116,7 @@ class BaseAgent(ABC):
                 llm_adapter=self.llm_adapter,
                 max_steps=self.max_steps,
                 progress_callback=progress_callback,
+                max_wall_clock_seconds=timeout_seconds,
             )
 
             result.tokens_used = loop_result.total_tokens
@@ -247,11 +252,11 @@ class BaseAgent(ABC):
         if not self.memory.enabled:
             return
 
-        strategy_id = self.agent_name.replace("strategy_", "") if self.agent_name.startswith("strategy_") else None
+        skill_id = extract_skill_id(self.agent_name)
         calibration = self.memory.get_calibration(
             agent_name=self.agent_name,
             stock_code=ctx.stock_code or None,
-            strategy_id=strategy_id,
+            skill_id=skill_id,
         )
         if not calibration.calibrated:
             return

@@ -4,28 +4,36 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { historyApi } from '../../api/history';
 import { Drawer } from '../common/Drawer';
+import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+import type { ReportLanguage } from '../../types/analysis';
+import { markdownToPlainText } from '../../utils/markdown';
 
 interface ReportMarkdownProps {
   recordId: number;
   stockName: string;
   stockCode: string;
   onClose: () => void;
+  reportLanguage?: ReportLanguage;
 }
 
 /**
- * Markdown 报告抽屉组件
- * 使用通用 Drawer 组件，展示完整的 Markdown 格式分析报告
+ * Markdown report drawer component
+ * Uses common Drawer component to display full Markdown format analysis report
  */
 export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
   recordId,
   stockName,
   stockCode,
   onClose,
+  reportLanguage = 'zh',
 }) => {
+  const text = getReportText(normalizeReportLanguage(reportLanguage));
+  const loadReportFailedText = text.loadReportFailed;
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(true);
+  const [copiedType, setCopiedType] = useState<'markdown' | 'text' | null>(null);
 
   // Handle close with animation
   const handleClose = useCallback(() => {
@@ -33,6 +41,31 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
     // Delay actual close to allow animation to complete
     setTimeout(onClose, 300);
   }, [onClose]);
+
+  // Handle copy markdown source
+  const handleCopyMarkdown = useCallback(async () => {
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedType('markdown');
+      setTimeout(() => setCopiedType(null), 2000);
+    } catch (error) {
+      console.error('Copy failed:', error);
+    }
+  }, [content]);
+
+  // Handle copy plain text
+  const handleCopyPlainText = useCallback(async () => {
+    if (!content) return;
+    try {
+      const plainText = markdownToPlainText(content);
+      await navigator.clipboard.writeText(plainText);
+      setCopiedType('text');
+      setTimeout(() => setCopiedType(null), 2000);
+    } catch (error) {
+      console.error('Copy failed:', error);
+    }
+  }, [content]);
 
   useEffect(() => {
     let isMounted = true;
@@ -47,7 +80,7 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
         }
       } catch (err) {
         if (isMounted) {
-          setError(err instanceof Error ? err.message : '加载报告失败');
+          setError(err instanceof Error ? err.message : loadReportFailedText);
         }
       } finally {
         if (isMounted) {
@@ -61,28 +94,74 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [recordId]);
+  }, [recordId, loadReportFailedText]);
 
   return (
     <Drawer isOpen={isOpen} onClose={handleClose} width="max-w-3xl" zIndex={100}>
       {/* Custom Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-8 h-8 rounded-lg bg-purple/20 flex items-center justify-center">
-          <svg className="w-4 h-4 text-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        {/* Left: Icon + Title */}
+        <div className="flex items-center gap-3 flex-1">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--home-action-report-bg)] text-[var(--home-action-report-text)]">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-base font-semibold text-foreground">{stockName || stockCode}</h2>
+            <p className="text-xs text-muted-text">{text.fullReport}</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-base font-semibold text-white">{stockName || stockCode}</h2>
-          <p className="text-xs text-muted-text">完整分析报告</p>
+
+        {/* Right: Toolbar */}
+        <div className="flex items-center gap-2">
+          {/* Copy Markdown button */}
+          <button
+            type="button"
+            onClick={handleCopyMarkdown}
+            disabled={isLoading || !content || copiedType !== null}
+            className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+            title={text.copyMarkdownSource}
+            aria-label={text.copyMarkdownSource}
+          >
+            {copiedType === 'markdown' ? (
+              <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+              </svg>
+            )}
+          </button>
+
+          {/* Copy plain text button */}
+          <button
+            type="button"
+            onClick={handleCopyPlainText}
+            disabled={isLoading || !content || copiedType !== null}
+            className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+            title={text.copyPlainText}
+            aria-label={text.copyPlainText}
+          >
+            {copiedType === 'text' ? (
+              <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Content */}
       {isLoading ? (
         <div className="flex flex-col items-center justify-center h-64">
-          <div className="w-10 h-10 border-3 border-purple/20 border-t-purple rounded-full animate-spin" />
-          <p className="mt-4 text-secondary-text text-sm">加载报告中...</p>
+          <div className="home-spinner h-10 w-10 animate-spin border-[3px]" />
+          <p className="mt-4 text-secondary-text text-sm">{text.loadingReport}</p>
         </div>
       ) : error ? (
         <div className="flex flex-col items-center justify-center h-64">
@@ -95,29 +174,26 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
           <button
             type="button"
             onClick={handleClose}
-            className="mt-4 px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm text-secondary-text transition-colors"
+            className="home-surface-button mt-4 rounded-lg px-4 py-2 text-sm text-secondary-text"
           >
-            关闭
+            {text.dismiss}
           </button>
         </div>
       ) : (
         <div
-          className="prose prose-invert prose-sm max-w-none
-            prose-headings:text-white prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
-            prose-h1:text-xl prose-h1:border-b prose-h1:border-white/10 prose-h1:pb-2
-            prose-h2:text-lg prose-h2:text-purple
+          className="home-markdown-prose prose prose-invert prose-sm max-w-none
+            prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-2
+            prose-h1:text-xl
+            prose-h2:text-lg
             prose-h3:text-base
             prose-p:leading-relaxed prose-p:mb-3 prose-p:last:mb-0
-            prose-strong:text-white prose-strong:font-semibold
+            prose-strong:text-foreground prose-strong:font-semibold
             prose-ul:my-2 prose-ol:my-2 prose-li:my-1
-            prose-code:text-cyan prose-code:bg-cyan/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
-            prose-pre:bg-elevated prose-pre:border prose-pre:border-white/10
+            prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+            prose-pre:border
             prose-table:border-collapse
-            prose-th:border prose-th:border-white/20 prose-th:px-3 prose-th:py-2 prose-th:text-white prose-th:bg-elevated
-            prose-td:border prose-td:border-white/20 prose-td:px-3 prose-td:py-2
-            prose-hr:border-white/10 prose-hr:my-4
-            prose-a:text-cyan prose-a:no-underline hover:prose-a:underline
-            prose-blockquote:border-purple/30 prose-blockquote:bg-purple/5 prose-blockquote:py-2 prose-blockquote:px-4 prose-blockquote:rounded-r-lg
+            prose-hr:my-4
+            prose-a:no-underline hover:prose-a:underline
             prose-blockquote:text-secondary-text
             whitespace-pre-line break-words
           "
@@ -129,13 +205,13 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
       )}
 
       {/* Footer */}
-      <div className="flex justify-end mt-6 pt-4 border-t border-white/10">
+      <div className="home-divider mt-6 flex justify-end border-t pt-4">
         <button
           type="button"
           onClick={handleClose}
-          className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-sm text-secondary-text hover:text-white transition-colors"
+          className="home-surface-button rounded-lg px-4 py-2 text-sm text-secondary-text hover:text-foreground"
         >
-          关闭
+          {text.dismiss}
         </button>
       </div>
     </Drawer>

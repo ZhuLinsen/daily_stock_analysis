@@ -213,6 +213,14 @@ Supported model services:
 
 ---
 
+### Q12b: How to use Ollama local models?
+
+**Configuration**: Use `OLLAMA_API_BASE` + `LITELLM_MODEL`, or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`).
+
+**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or LiteLLM will incorrectly concatenate URLs (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
+
+---
+
 ## Docker Related
 
 ### Q13: Docker container exits immediately after starting?

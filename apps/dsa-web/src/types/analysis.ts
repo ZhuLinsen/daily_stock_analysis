@@ -1,9 +1,9 @@
 /**
- * 股票分析相关类型定义
- * 与 API 规范 (api_spec.json) 对齐
+ * Analysis-related type definitions.
+ * Aligned with the API schema.
  */
 
-// ============ 请求类型 ============
+// ============ Request Types ============
 
 export interface AnalysisRequest {
   stockCode?: string;
@@ -11,27 +11,44 @@ export interface AnalysisRequest {
   reportType?: 'simple' | 'detailed' | 'full' | 'brief';
   forceRefresh?: boolean;
   asyncMode?: boolean;
+  stockName?: string;
+  originalQuery?: string;
+  selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
+  notify?: boolean;
 }
 
-// ============ 报告类型 ============
+// ============ Report Types ============
 
-/** 报告元信息 */
+export type ReportLanguage = 'zh' | 'en';
+
+/** Report metadata */
 export interface ReportMeta {
-  id?: number;  // 分析历史记录主键 ID（历史报告时有此字段）
+  id?: number;  // Analysis history record ID, present for persisted reports
   queryId: string;
   stockCode: string;
   stockName: string;
   reportType: 'simple' | 'detailed' | 'full' | 'brief';
+  reportLanguage?: ReportLanguage;
   createdAt: string;
   currentPrice?: number;
   changePct?: number;
-  modelUsed?: string;  // 分析使用的 LLM 模型（Issue #528）
+  modelUsed?: string;  // LLM model used for analysis
 }
 
-/** 情绪标签 */
-export type SentimentLabel = '极度悲观' | '悲观' | '中性' | '乐观' | '极度乐观';
+/** Sentiment label */
+export type SentimentLabel =
+  | '极度悲观'
+  | '悲观'
+  | '中性'
+  | '乐观'
+  | '极度乐观'
+  | 'Very Bearish'
+  | 'Bearish'
+  | 'Neutral'
+  | 'Bullish'
+  | 'Very Bullish';
 
-/** 报告概览区 */
+/** Report summary section */
 export interface ReportSummary {
   analysisSummary: string;
   operationAdvice: string;
@@ -40,7 +57,7 @@ export interface ReportSummary {
   sentimentLabel?: SentimentLabel;
 }
 
-/** 策略点位区 */
+/** Strategy section */
 export interface ReportStrategy {
   idealBuy?: string;
   secondaryBuy?: string;
@@ -48,14 +65,34 @@ export interface ReportStrategy {
   takeProfit?: string;
 }
 
-/** 详情区（可折叠） */
+export interface RelatedBoard {
+  name: string;
+  code?: string;
+  type?: string;
+}
+
+export interface SectorRankingItem {
+  name: string;
+  changePct?: number;
+}
+
+export interface SectorRankings {
+  top?: SectorRankingItem[];
+  bottom?: SectorRankingItem[];
+}
+
+/** Details section */
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown>;
+  financialReport?: Record<string, unknown>;
+  dividendMetrics?: Record<string, unknown>;
+  belongBoards?: RelatedBoard[];
+  sectorRankings?: SectorRankings;
 }
 
-/** 完整分析报告 */
+/** Full analysis report */
 export interface AnalysisReport {
   meta: ReportMeta;
   summary: ReportSummary;
@@ -63,9 +100,9 @@ export interface AnalysisReport {
   details?: ReportDetails;
 }
 
-// ============ 分析结果类型 ============
+// ============ Analysis Result Types ============
 
-/** 同步分析返回结果 */
+/** Sync analysis response */
 export interface AnalysisResult {
   queryId: string;
   stockCode: string;
@@ -74,7 +111,7 @@ export interface AnalysisResult {
   createdAt: string;
 }
 
-/** 异步任务接受响应 */
+/** Async task accepted response */
 export interface TaskAccepted {
   taskId: string;
   status: 'pending' | 'processing';
@@ -104,16 +141,19 @@ export type AnalyzeAsyncResponse = TaskAccepted | BatchTaskAcceptedResponse;
 
 export type AnalyzeResponse = AnalysisResult | AnalyzeAsyncResponse;
 
-/** 任务状态 */
+/** Task status */
 export interface TaskStatus {
   taskId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
   result?: AnalysisResult;
   error?: string;
+  stockName?: string;
+  originalQuery?: string;
+  selectionSource?: string;
 }
 
-/** 任务详情（用于任务列表和 SSE 事件） */
+/** Task details used by task list and SSE events */
 export interface TaskInfo {
   taskId: string;
   stockCode: string;
@@ -126,9 +166,11 @@ export interface TaskInfo {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  originalQuery?: string;
+  selectionSource?: string;
 }
 
-/** 任务列表响应 */
+/** Task list response */
 export interface TaskListResponse {
   total: number;
   pending: number;
@@ -136,7 +178,7 @@ export interface TaskListResponse {
   tasks: TaskInfo[];
 }
 
-/** 重复任务错误响应 */
+/** Duplicate task error response */
 export interface DuplicateTaskError {
   error: 'duplicate_task';
   message: string;
@@ -144,12 +186,12 @@ export interface DuplicateTaskError {
   existingTaskId: string;
 }
 
-// ============ 历史记录类型 ============
+// ============ History Types ============
 
-/** 历史记录摘要（列表展示用） */
+/** History item summary */
 export interface HistoryItem {
   id: number;  // Record primary key ID, always present for persisted history items
-  queryId: string;  // 分析记录关联 query_id（批量分析时重复）
+  queryId: string;  // Linked analysis query ID
   stockCode: string;
   stockName?: string;
   reportType?: string;
@@ -158,7 +200,7 @@ export interface HistoryItem {
   createdAt: string;
 }
 
-/** 历史记录列表响应 */
+/** History list response */
 export interface HistoryListResponse {
   total: number;
   page: number;
@@ -166,33 +208,33 @@ export interface HistoryListResponse {
   items: HistoryItem[];
 }
 
-/** 新闻情报条目 */
+/** News item */
 export interface NewsIntelItem {
   title: string;
   snippet: string;
   url: string;
 }
 
-/** 新闻情报响应 */
+/** News response */
 export interface NewsIntelResponse {
   total: number;
   items: NewsIntelItem[];
 }
 
-/** 历史列表筛选参数 */
+/** History filter parameters */
 export interface HistoryFilters {
   stockCode?: string;
   startDate?: string;
   endDate?: string;
 }
 
-/** 历史列表分页参数 */
+/** History pagination parameters */
 export interface HistoryPagination {
   page: number;
   limit: number;
 }
 
-// ============ 错误类型 ============
+// ============ Error Types ============
 
 export interface ApiError {
   error: string;
@@ -200,10 +242,17 @@ export interface ApiError {
   detail?: Record<string, unknown>;
 }
 
-// ============ 辅助函数 ============
+// ============ Helper Functions ============
 
-/** 根据情绪评分获取情绪标签 */
-export const getSentimentLabel = (score: number): SentimentLabel => {
+/** Get sentiment label by score */
+export const getSentimentLabel = (score: number, language: ReportLanguage = 'zh'): SentimentLabel => {
+  if (language === 'en') {
+    if (score <= 20) return 'Very Bearish';
+    if (score <= 40) return 'Bearish';
+    if (score <= 60) return 'Neutral';
+    if (score <= 80) return 'Bullish';
+    return 'Very Bullish';
+  }
   if (score <= 20) return '极度悲观';
   if (score <= 40) return '悲观';
   if (score <= 60) return '中性';
@@ -211,7 +260,7 @@ export const getSentimentLabel = (score: number): SentimentLabel => {
   return '极度乐观';
 };
 
-/** 根据情绪评分获取颜色 */
+/** Get sentiment color by score */
 export const getSentimentColor = (score: number): string => {
   if (score <= 20) return '#ef4444'; // red-500
   if (score <= 40) return '#f97316'; // orange-500

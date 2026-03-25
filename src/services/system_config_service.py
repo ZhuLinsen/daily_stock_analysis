@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import time
@@ -17,8 +18,11 @@ from src.config import (
     canonicalize_llm_channel_protocol,
     channel_allows_empty_api_key,
     get_configured_llm_models,
+    normalize_agent_litellm_model,
+    normalize_news_strategy_profile,
     normalize_llm_channel_model,
     parse_env_bool,
+    resolve_news_window_days,
     resolve_llm_channel_protocol,
     setup_env,
 )
@@ -49,8 +53,28 @@ class ConfigConflictError(Exception):
         self.current_version = current_version
 
 
+class ConfigImportError(Exception):
+    """Raised when an imported `.env` payload is invalid."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
+
+    _DISPLAY_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
+        "AGENT_SKILL_DIR": ("AGENT_SKILL_DIR", "AGENT_STRATEGY_DIR"),
+        "AGENT_SKILL_AUTOWEIGHT": ("AGENT_SKILL_AUTOWEIGHT", "AGENT_STRATEGY_AUTOWEIGHT"),
+        "AGENT_SKILL_ROUTING": ("AGENT_SKILL_ROUTING", "AGENT_STRATEGY_ROUTING"),
+    }
+    _DISPLAY_VALUE_ALIASES: Dict[str, Dict[str, str]] = {
+        "AGENT_ORCHESTRATOR_MODE": {
+            "strategy": "specialist",
+            "skill": "specialist",
+        }
+    }
 
     def __init__(self, manager: Optional[ConfigManager] = None):
         self._manager = manager or ConfigManager()
@@ -59,9 +83,74 @@ class SystemConfigService:
         """Return grouped schema metadata for UI rendering."""
         return build_schema_response()
 
+    @staticmethod
+    def _reload_runtime_singletons() -> None:
+        """Reset runtime singleton services after config reload."""
+        from src.agent.tools.data_tools import reset_fetcher_manager
+        from src.search_service import reset_search_service
+
+        reset_fetcher_manager()
+        reset_search_service()
+
+    @classmethod
+    def _normalize_display_value(cls, key: str, value: str) -> str:
+        alias_map = cls._DISPLAY_VALUE_ALIASES.get(key.upper())
+        if not alias_map:
+            return value
+        return alias_map.get(value.strip().lower(), value)
+
+    @classmethod
+    def _build_display_config_map(cls, raw_config_map: Dict[str, str]) -> Dict[str, str]:
+        raw_upper = {key.upper(): value for key, value in raw_config_map.items()}
+        aliased_keys = {
+            alias
+            for candidates in cls._DISPLAY_KEY_ALIASES.values()
+            for alias in candidates
+        }
+        display_map: Dict[str, str] = {}
+
+        for key, value in raw_upper.items():
+            if key in aliased_keys:
+                continue
+            display_map[key] = cls._normalize_display_value(key, value)
+
+        for canonical_key, candidates in cls._DISPLAY_KEY_ALIASES.items():
+            canonical_env_key = candidates[0]
+            if canonical_env_key in raw_upper:
+                display_map[canonical_key] = cls._normalize_display_value(
+                    canonical_key,
+                    raw_upper[canonical_env_key],
+                )
+                continue
+
+            selected_value: Optional[str] = None
+            candidate_seen = False
+            for candidate_key in candidates[1:]:
+                if candidate_key not in raw_upper:
+                    continue
+                candidate_seen = True
+                candidate_value = raw_upper[candidate_key]
+                if candidate_value:
+                    selected_value = candidate_value
+                    break
+            if candidate_seen:
+                if selected_value is None:
+                    for candidate_key in candidates[1:]:
+                        if candidate_key in raw_upper:
+                            selected_value = raw_upper[candidate_key]
+                            break
+                if selected_value is None:
+                    selected_value = ""
+                display_map[canonical_key] = cls._normalize_display_value(
+                    canonical_key,
+                    selected_value,
+                )
+
+        return display_map
+
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
         """Return current config values without server-side secret masking."""
-        config_map = self._manager.read_config_map()
+        config_map = self._build_display_config_map(self._manager.read_config_map())
         registered_keys = set(get_registered_field_keys())
         all_keys = set(config_map.keys()) | registered_keys
 
@@ -112,6 +201,39 @@ class SystemConfigService:
             "valid": valid,
             "issues": issues,
         }
+
+    def export_desktop_env(self) -> Dict[str, Any]:
+        """Return the raw active `.env` content for desktop-only backup."""
+        if self._manager.env_path.exists():
+            content = self._manager.env_path.read_text(encoding="utf-8")
+        else:
+            content = ""
+
+        return {
+            "content": content,
+            "config_version": self._manager.get_config_version(),
+            "updated_at": self._manager.get_updated_at(),
+        }
+
+    def import_desktop_env(
+        self,
+        *,
+        config_version: str,
+        content: str,
+        reload_now: bool = True,
+    ) -> Dict[str, Any]:
+        """Merge imported `.env` assignments into the active config."""
+        current_version = self._manager.get_config_version()
+        if current_version != config_version:
+            raise ConfigConflictError(current_version=current_version)
+
+        updates = self._parse_imported_env_content(content)
+        return self.update(
+            config_version=config_version,
+            items=updates,
+            mask_token="__DSA_IMPORT_LITERAL_MASK__",
+            reload_now=reload_now,
+        )
 
     def test_llm_channel(
         self,
@@ -222,11 +344,13 @@ class SystemConfigService:
         if errors:
             raise ConfigValidationError(issues=errors)
 
+        submitted_keys: Set[str] = set()
         updates: List[Tuple[str, str]] = []
         sensitive_keys: Set[str] = set()
         for item in items:
             key = item["key"].upper()
             value = item["value"]
+            submitted_keys.add(key)
             updates.append((key, value))
             field_schema = get_field_definition(key)
             if bool(field_schema.get("is_sensitive", False)):
@@ -243,18 +367,21 @@ class SystemConfigService:
         if reload_now:
             try:
                 Config.reset_instance()
-                from src.agent.tools.data_tools import reset_fetcher_manager
-                from src.search_service import reset_search_service
-
-                reset_fetcher_manager()
-                reset_search_service()
+                self._reload_runtime_singletons()
                 setup_env(override=True)
                 config = Config.get_instance()
-                warnings = config.validate()
+                warnings.extend(config.validate())
                 reload_triggered = True
             except Exception as exc:  # pragma: no cover - defensive branch
                 logger.error("Configuration reload failed: %s", exc, exc_info=True)
                 warnings.append("Configuration updated but reload failed")
+
+        warnings.extend(
+            self._build_explainability_warnings(
+                submitted_keys=submitted_keys,
+                reload_now=reload_now,
+            )
+        )
 
         return {
             "success": True,
@@ -265,6 +392,62 @@ class SystemConfigService:
             "updated_keys": updated_keys,
             "warnings": warnings,
         }
+
+    def _build_explainability_warnings(
+        self,
+        *,
+        submitted_keys: Set[str],
+        reload_now: bool,
+    ) -> List[str]:
+        """Append user-facing runtime explainability warnings for key settings."""
+        warnings: List[str] = []
+        if not submitted_keys:
+            return warnings
+
+        current_map = self._manager.read_config_map()
+
+        if submitted_keys & {"NEWS_MAX_AGE_DAYS", "NEWS_STRATEGY_PROFILE"}:
+            raw_profile = current_map.get("NEWS_STRATEGY_PROFILE", "short")
+            profile = normalize_news_strategy_profile(raw_profile)
+            try:
+                max_age = max(1, int(current_map.get("NEWS_MAX_AGE_DAYS", "3") or "3"))
+            except (TypeError, ValueError):
+                max_age = 3
+            effective_days = resolve_news_window_days(
+                news_max_age_days=max_age,
+                news_strategy_profile=profile,
+            )
+            warnings.append(
+                (
+                    "新闻窗口已按策略计算："
+                    f"NEWS_STRATEGY_PROFILE={profile}, "
+                    f"NEWS_MAX_AGE_DAYS={max_age}, "
+                    f"effective_days={effective_days} "
+                    "(effective_days=min(profile_days, NEWS_MAX_AGE_DAYS))."
+                )
+            )
+
+        if "MAX_WORKERS" in submitted_keys:
+            try:
+                max_workers = max(1, int(current_map.get("MAX_WORKERS", "3") or "3"))
+            except (TypeError, ValueError):
+                max_workers = 3
+            if reload_now:
+                warnings.append(
+                    (
+                        f"MAX_WORKERS={max_workers} 已保存。任务队列空闲时会自动应用；"
+                        "若当前存在运行中任务，将在队列空闲后生效。"
+                    )
+                )
+            else:
+                warnings.append(
+                    (
+                        f"MAX_WORKERS={max_workers} 已写入 .env，但本次未触发运行时重载"
+                        "（reload_now=false）；重载后才会应用。"
+                    )
+                )
+
+        return warnings
 
     def apply_simple_updates(
         self,
@@ -277,6 +460,32 @@ class SystemConfigService:
             sensitive_keys=set(),
             mask_token=mask_token,
         )
+
+    @staticmethod
+    def _parse_imported_env_content(content: str) -> List[Dict[str, str]]:
+        """Parse raw `.env` text into update items using current dotenv semantics."""
+        normalized_content = content.replace("\ufeff", "")
+        if not normalized_content.strip():
+            raise ConfigImportError("未识别到有效 .env 配置")
+
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(stream=io.StringIO(normalized_content))
+        updates: List[Dict[str, str]] = []
+        for key, value in parsed.items():
+            if key is None:
+                continue
+            updates.append(
+                {
+                    "key": str(key).upper(),
+                    "value": "" if value is None else str(value),
+                }
+            )
+
+        if not updates:
+            raise ConfigImportError("未识别到有效 .env 配置")
+
+        return updates
 
     def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
@@ -695,6 +904,11 @@ class SystemConfigService:
             if not raw_channels:
                 return issues
 
+            configured_agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
+            configured_agent_model = normalize_agent_litellm_model(
+                configured_agent_model_raw,
+                configured_models=available_model_set,
+            )
             primary_model = (effective_map.get("LITELLM_MODEL") or "").strip()
             if primary_model and not SystemConfigService._has_runtime_source_for_model(primary_model, effective_map):
                 issues.append(
@@ -708,6 +922,28 @@ class SystemConfigService:
                         "severity": "error",
                         "expected": "enabled channel model or matching legacy API key",
                         "actual": primary_model,
+                    }
+                )
+
+            if (
+                configured_agent_model_raw
+                and configured_agent_model
+                and not SystemConfigService._has_runtime_source_for_model(
+                    configured_agent_model,
+                    effective_map,
+                )
+            ):
+                issues.append(
+                    {
+                        "key": "AGENT_LITELLM_MODEL",
+                        "code": "missing_runtime_source",
+                        "message": (
+                            "AGENT_LITELLM_MODEL is set, but there are no enabled channel models "
+                            "or matching legacy API keys for it"
+                        ),
+                        "severity": "error",
+                        "expected": "enabled channel model or matching legacy API key",
+                        "actual": configured_agent_model,
                     }
                 )
 
@@ -766,6 +1002,31 @@ class SystemConfigService:
                     "severity": "error",
                     "expected": "one configured channel model",
                     "actual": primary_model,
+                }
+            )
+
+        configured_agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
+        configured_agent_model = normalize_agent_litellm_model(
+            configured_agent_model_raw,
+            configured_models=available_model_set,
+        )
+        if (
+            configured_agent_model_raw
+            and configured_agent_model
+            and configured_agent_model not in available_model_set
+            and not _uses_direct_env_provider(configured_agent_model)
+        ):
+            issues.append(
+                {
+                    "key": "AGENT_LITELLM_MODEL",
+                    "code": "unknown_model",
+                    "message": (
+                        "AGENT_LITELLM_MODEL is not declared by the current enabled channels. "
+                        f"Available models: {', '.join(available_models[:6])}"
+                    ),
+                    "severity": "error",
+                    "expected": "one configured channel model",
+                    "actual": configured_agent_model,
                 }
             )
 

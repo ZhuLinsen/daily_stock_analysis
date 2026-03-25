@@ -3,13 +3,13 @@
 AgentOrchestrator — multi-agent pipeline coordinator.
 
 Manages the lifecycle of specialised agents (Technical → Intel → Risk →
-Strategy → Decision) for a single stock analysis run.
+Specialist → Decision) for a single stock analysis run.
 
 Modes:
 - ``quick``   : Technical only → Decision (fastest, ~2 LLM calls)
 - ``standard``: Technical → Intel → Decision (default)
 - ``full``    : Technical → Intel → Risk → Decision
-- ``strategy``: Technical → Intel → Risk → Strategy evaluation → Decision
+- ``specialist``: Technical → Intel → Risk → specialist evaluation → Decision
 
 The orchestrator:
 1. Seeds an :class:`AgentContext` with the user query and stock code
@@ -25,6 +25,7 @@ can be a drop-in replacement via the factory.
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import re
 import time
@@ -41,6 +42,7 @@ from src.agent.protocols import (
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
+from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
@@ -48,7 +50,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid orchestrator modes (ordered by cost/depth)
-VALID_MODES = ("quick", "standard", "full", "strategy")
+VALID_MODES = ("quick", "standard", "full", "specialist")
 
 
 @dataclass
@@ -80,6 +82,7 @@ class AgentOrchestrator:
         tool_registry: ToolRegistry,
         llm_adapter: LLMToolAdapter,
         skill_instructions: str = "",
+        technical_skill_policy: str = "",
         max_steps: int = 10,
         mode: str = "standard",
         skill_manager=None,
@@ -88,8 +91,10 @@ class AgentOrchestrator:
         self.tool_registry = tool_registry
         self.llm_adapter = llm_adapter
         self.skill_instructions = skill_instructions
+        self.technical_skill_policy = technical_skill_policy
         self.max_steps = max_steps
-        self.mode = mode if mode in VALID_MODES else "standard"
+        normalized_mode = "specialist" if mode in {"strategy", "skill"} else mode
+        self.mode = normalized_mode if normalized_mode in VALID_MODES else "standard"
         self.skill_manager = skill_manager
         self.config = config
 
@@ -152,6 +157,52 @@ class AgentOrchestrator:
         if hasattr(agent, "max_steps"):
             agent.max_steps = self.max_steps
         return agent
+
+    def _callable_accepts_timeout_kwarg(self, func: Any) -> Optional[bool]:
+        """Return whether a callable accepts ``timeout_seconds`` when inspectable."""
+        if not callable(func):
+            return None
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return None
+
+        if "timeout_seconds" in signature.parameters:
+            return True
+        return any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+
+    def _agent_run_accepts_timeout(self, run_callable: Any) -> bool:
+        """Best-effort compatibility check for legacy test doubles / custom agents."""
+        side_effect = getattr(run_callable, "side_effect", None)
+        accepts_timeout = self._callable_accepts_timeout_kwarg(side_effect)
+        if accepts_timeout is not None:
+            return accepts_timeout
+
+        accepts_timeout = self._callable_accepts_timeout_kwarg(run_callable)
+        if accepts_timeout is not None:
+            return accepts_timeout
+
+        return True
+
+    def _run_stage_agent(
+        self,
+        agent: Any,
+        ctx: AgentContext,
+        progress_callback: Optional[Callable] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> StageResult:
+        """Run a stage agent while preserving compatibility with older call signatures."""
+        run_kwargs = {"progress_callback": progress_callback}
+        if (
+            timeout_seconds is not None
+            and timeout_seconds > 0
+            and self._agent_run_accepts_timeout(agent.run)
+        ):
+            run_kwargs["timeout_seconds"] = timeout_seconds
+        return agent.run(ctx, **run_kwargs)
 
     # -----------------------------------------------------------------
     # Public interface (mirrors AgentExecutor)
@@ -253,7 +304,7 @@ class AgentOrchestrator:
         timeout_s = self._get_timeout_seconds()
 
         agents = self._build_agent_chain(ctx)
-        strategy_agents_inserted = False
+        specialist_agents_inserted = False
         index = 0
 
         while index < len(agents):
@@ -279,20 +330,20 @@ class AgentOrchestrator:
                 )
 
             if (
-                self.mode == "strategy"
+                self.mode == "specialist"
                 and agent.agent_name == "decision"
-                and not strategy_agents_inserted
+                and not specialist_agents_inserted
             ):
-                strategy_agents = self._build_strategy_agents(ctx)
-                self._strategy_agent_names = {a.agent_name for a in strategy_agents}
-                strategy_agents_inserted = True
-                if strategy_agents:
-                    agents[index:index] = strategy_agents
+                specialist_agents = self._build_specialist_agents(ctx)
+                self._skill_agent_names = {a.agent_name for a in specialist_agents}
+                specialist_agents_inserted = True
+                if specialist_agents:
+                    agents[index:index] = specialist_agents
                     continue
 
-            # Aggregate strategy opinions before the decision agent
-            if agent.agent_name == "decision" and getattr(self, "_strategy_agent_names", None):
-                self._aggregate_strategy_opinions(ctx)
+            # Aggregate skill opinions before the decision agent
+            if agent.agent_name == "decision" and getattr(self, "_skill_agent_names", None):
+                self._aggregate_skill_opinions(ctx)
 
             if progress_callback:
                 progress_callback({
@@ -301,7 +352,17 @@ class AgentOrchestrator:
                     "message": f"Starting {agent.agent_name} analysis...",
                 })
 
-            result: StageResult = agent.run(ctx, progress_callback=progress_callback)
+            remaining_timeout_s = (
+                max(0.0, timeout_s - elapsed_s)
+                if timeout_s
+                else None
+            )
+            result: StageResult = self._run_stage_agent(
+                agent,
+                ctx,
+                progress_callback=progress_callback,
+                timeout_seconds=remaining_timeout_s,
+            )
             stats.record_stage(result)
             all_tool_calls.extend(
                 tc for tc in (result.meta.get("tool_calls_log") or [])
@@ -407,12 +468,13 @@ class AgentOrchestrator:
         from src.agent.agents.decision_agent import DecisionAgent
         from src.agent.agents.risk_agent import RiskAgent
 
-        self._strategy_agent_names = set()
+        self._skill_agent_names = set()
 
         common_kwargs = dict(
             tool_registry=self.tool_registry,
             llm_adapter=self.llm_adapter,
             skill_instructions=self.skill_instructions,
+            technical_skill_policy=self.technical_skill_policy,
         )
 
         technical = self._prepare_agent(TechnicalAgent(**common_kwargs))
@@ -426,73 +488,86 @@ class AgentOrchestrator:
             return [technical, intel, decision]
         elif self.mode == "full":
             return [technical, intel, risk, decision]
-        elif self.mode == "strategy":
-            # Strategy agents are inserted lazily right before the decision
+        elif self.mode == "specialist":
+            # Specialist agents are inserted lazily right before the decision
             # stage so the router can see the finished technical opinion.
             return [technical, intel, risk, decision]
         else:
             return [technical, intel, decision]
 
-    def _build_strategy_agents(self, ctx: AgentContext) -> list:
-        """Build strategy-specific sub-agents based on requested strategies.
+    def _build_specialist_agents(self, ctx: AgentContext) -> list:
+        """Build specialist sub-agents based on requested skills.
 
-        Uses the strategy router to select applicable strategies, then
-        creates lightweight agent wrappers for each.
+        Uses the skill router to select applicable skills, then creates
+        lightweight agent wrappers for each.
         """
         try:
-            from src.agent.strategies.router import StrategyRouter
+            from src.agent.skills.router import SkillRouter
             common_kwargs = dict(
                 tool_registry=self.tool_registry,
                 llm_adapter=self.llm_adapter,
                 skill_instructions=self.skill_instructions,
+                technical_skill_policy=self.technical_skill_policy,
             )
-            router = StrategyRouter()
-            selected = router.select_strategies(ctx)
+            router = SkillRouter()
+            selected = router.select_skills(ctx)
             if not selected:
                 return []
 
-            from src.agent.strategies.strategy_agent import StrategyAgent
+            from src.agent.skills.skill_agent import SkillAgent
             agents = []
-            for strategy_id in selected[:3]:  # cap at 3 concurrent strategies
-                agent = self._prepare_agent(StrategyAgent(
-                    strategy_id=strategy_id,
+            for skill_id in selected[:3]:  # cap at 3 concurrent skills
+                agent = self._prepare_agent(SkillAgent(
+                    skill_id=skill_id,
                     **common_kwargs,
                 ))
                 agents.append(agent)
             return agents
         except Exception as exc:
-            logger.warning("[Orchestrator] failed to build strategy agents: %s", exc)
+            logger.warning("[Orchestrator] failed to build skill agents: %s", exc)
             return []
 
+    def _build_skill_agents(self, ctx: AgentContext) -> list:
+        """Compatibility wrapper for legacy imports."""
+        return self._build_specialist_agents(ctx)
+
+    def _build_strategy_agents(self, ctx: AgentContext) -> list:
+        """Compatibility wrapper for legacy tests/imports."""
+        return self._build_specialist_agents(ctx)
+
     # -----------------------------------------------------------------
-    # Strategy aggregation
+    # Skill aggregation
     # -----------------------------------------------------------------
 
-    def _aggregate_strategy_opinions(self, ctx: AgentContext) -> None:
-        """Run StrategyAggregator to produce a consensus opinion.
+    def _aggregate_skill_opinions(self, ctx: AgentContext) -> None:
+        """Run SkillAggregator to produce a consensus opinion.
 
-        Merges individual ``strategy_*`` opinions into a single weighted
+        Merges individual skill-agent opinions into a single weighted
         consensus and stores it in context so the decision agent can use it.
         """
         try:
-            from src.agent.strategies.aggregator import StrategyAggregator
-            aggregator = StrategyAggregator()
+            from src.agent.skills.aggregator import SkillAggregator
+            aggregator = SkillAggregator()
             consensus = aggregator.aggregate(ctx)
             if consensus:
                 ctx.opinions.append(consensus)
-                ctx.set_data("strategy_consensus", {
+                ctx.set_data("skill_consensus", {
                     "signal": consensus.signal,
                     "confidence": consensus.confidence,
                     "reasoning": consensus.reasoning,
                 })
                 logger.info(
-                    "[Orchestrator] strategy consensus: signal=%s confidence=%.2f",
+                    "[Orchestrator] skill consensus: signal=%s confidence=%.2f",
                     consensus.signal, consensus.confidence,
                 )
             else:
-                logger.info("[Orchestrator] no strategy opinions to aggregate")
+                logger.info("[Orchestrator] no skill opinions to aggregate")
         except Exception as exc:
-            logger.warning("[Orchestrator] strategy aggregation failed: %s", exc)
+            logger.warning("[Orchestrator] skill aggregation failed: %s", exc)
+
+    def _aggregate_strategy_opinions(self, ctx: AgentContext) -> None:
+        """Compatibility wrapper for legacy tests/imports."""
+        self._aggregate_skill_opinions(ctx)
 
     # -----------------------------------------------------------------
     # Helpers
@@ -505,7 +580,12 @@ class AgentOrchestrator:
         if context:
             ctx.stock_code = context.get("stock_code", "")
             ctx.stock_name = context.get("stock_name", "")
-            ctx.meta["strategies_requested"] = context.get("strategies", [])
+            requested_skills = context.get("skills")
+            if requested_skills is None:
+                requested_skills = context.get("strategies", [])
+            ctx.meta["skills_requested"] = requested_skills or []
+            ctx.meta["strategies_requested"] = requested_skills or []
+            ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
 
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",
@@ -516,6 +596,9 @@ class AgentOrchestrator:
         # Try to extract stock code from the query text
         if not ctx.stock_code:
             ctx.stock_code = _extract_stock_code(task)
+
+        if "report_language" not in ctx.meta:
+            ctx.meta["report_language"] = "zh"
 
         return ctx
 
@@ -982,7 +1065,7 @@ class AgentOrchestrator:
     def _select_base_opinion(self, ctx: AgentContext) -> Optional[Any]:
         preferred_groups = (
             {"decision"},
-            {"strategy_consensus"},
+            {"skill_consensus", "strategy_consensus"},
             {"technical"},
             {"intel"},
             {"risk"},

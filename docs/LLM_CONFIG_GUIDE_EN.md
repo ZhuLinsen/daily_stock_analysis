@@ -11,7 +11,8 @@ Our LLM integration is powered by the robust and universal [LiteLLM](https://doc
 1. **[Beginners]** "I just want to get the system running ASAP, keep it as simple as possible!" -> [Go to Method 1: Simple Model Config](#method-1-simple-model-config-for-beginners)
 2. **[Advanced Users]** "I have several Keys, want to configure fallback models, and define custom Base URLs." -> [Go to Method 2: Channels Mode Config](#method-2-channels-mode-config-advancedmulti-model)
 3. **[Veterans]** "I want complex load balancing, request routing, and enterprise-level high availability!" -> [Go to Method 3: Advanced YAML Config](#method-3-advanced-yaml-config-expert-setup)
-4. **[Vision Models]** "I want to extract stock codes from images!" -> [Go to Vision Model Config](#advanced-feature-vision-model-config)
+4. **[Local Models]** "I want to use Ollama local models!" -> [Go to Example 4: Using Ollama Local Models](#example-4-using-ollama-local-models)
+5. **[Vision Models]** "I want to extract stock codes from images!" -> [Go to Vision Model Config](#advanced-feature-vision-model-config)
 
 ---
 
@@ -47,6 +48,15 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 GEMINI_API_KEY=AIzac...
 ```
 
+### Example 4: Using Ollama Local Models
+```env
+# Ollama requires no API Key; works after running ollama serve locally
+OLLAMA_API_BASE=http://localhost:11434
+LITELLM_MODEL=ollama/qwen3:8b
+```
+
+> **Important**: Ollama must be configured with `OLLAMA_API_BASE`. **Do not** use `OPENAI_BASE_URL`, or LiteLLM will incorrectly concatenate URLs (e.g. 404, `api/generate/api/show`). For remote Ollama, set `OLLAMA_API_BASE` to the actual address (e.g. `http://192.168.1.100:11434`). Requires LiteLLM ≥1.80.10 (matches requirements.txt).
+
 > **Congratulations! If you're a beginner, you can stop reading here and run the program!**
 > Want to test the connection? Open your terminal in the root directory and run: `python test_env.py --llm`
 
@@ -81,8 +91,23 @@ LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 # 4. [Key Step] Specify the primary model and fallback list
 # Set your primary model:
 LITELLM_MODEL=deepseek/deepseek-chat
+# Optional: set an Agent-only primary model (empty = inherit LITELLM_MODEL)
+AGENT_LITELLM_MODEL=deepseek/deepseek-reasoner
 # If the primary model crashes, try these fallbacks sequentially:
 LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
+```
+
+### Example: Ollama Channel Mode (Local Models, No API Key)
+```env
+# 1. Enable channel mode, declare ollama channel
+LLM_CHANNELS=ollama
+
+# 2. Configure Ollama address (default local port 11434)
+LLM_OLLAMA_BASE_URL=http://localhost:11434
+LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
+
+# 3. Specify primary model
+LITELLM_MODEL=ollama/qwen3:8b
 ```
 
 > **Critical Warning**: If you enable `LLM_CHANNELS`, any standard `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` declared independently will be **completely ignored**. **Use only one mode** to prevent configuration conflicts.
@@ -109,6 +134,12 @@ model_list:
       model: openai/deepseek-chat
       api_base: https://api.deepseek.com/v1
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # Fetch from environment vars for security
+
+  # Ollama local model (no api_key needed)
+  - model_name: ollama/qwen3:8b
+    litellm_params:
+      model: ollama/qwen3:8b
+      api_base: http://localhost:11434
 ```
 
 > **Priority Rule**: YAML is king! If YAML is configured, both **Channels Mode** and **Simple Mode** are entirely ignored. Hierarchy: `YAML > Channels > Simple`.
@@ -149,5 +180,6 @@ Afraid you got the config wrong? Type the following commands in your terminal to
 | **I added multiple provider Keys, why is only one working?** | You mixed the **Simple Mode** and **Channels Mode**! | Choose one path. For simple setups, delete anything starting with `LLM_CHANNELS`. To use multi-model fallbacks, migrate all your Keys into the `LLM_CHANNELS` setup. |
 | **Returns 400, 401, or Invalid API Key** | The API Key is wrong, copied incompletely, account lacks credits, or you mistyped the model name (extremely common). | 1. Ensure there are no spaces at the start/end of your Key.<br> 2. Ensure your Base URL ends with `/v1`.<br> 3. Check if you forgot the `openai/` prefix on the model name! |
 | **Spins endlessly, eventually hits Timeout/ConnectionRefused** | You are using restricted APIs (like Google/OpenAI) in a blocked region without a proxy, or your cloud server lacks external internet access. | Highly recommend using **official regional APIs** (like DeepSeek) or **OpenAI-compatible relay platforms**. Third-party platforms bypass these network constraints. |
+| **Ollama returns 404, `Could not get model info`, or `api/generate/api/show`** | Using `OPENAI_BASE_URL` for Ollama; LiteLLM incorrectly concatenates URLs | Use `OLLAMA_API_BASE=http://localhost:11434` or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) instead |
 
 *Veteran's Tip: If you enable **Agent Mode (Deep-thinking & web-search)**, experience shows you should use an advanced reasoning model like `deepseek-reasoner`. Trying to save money by using weak mini-models for agents will likely result in infinite loops or missed objectives.*

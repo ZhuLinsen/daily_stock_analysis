@@ -104,6 +104,28 @@ class EmailSender:
                 seen.add(e)
                 result.append(e)
         return result
+
+    def _format_sender_address(self, sender: str) -> str:
+        """Encode display name safely so non-ASCII sender names work across SMTP providers."""
+        sender_name = self._email_config.get('sender_name') or '股票分析助手'
+        return formataddr((str(Header(str(sender_name), 'utf-8')), sender))
+
+    @staticmethod
+    def _close_server(server: Optional[smtplib.SMTP]) -> None:
+        """Best-effort SMTP cleanup to avoid leaving sockets open on header/build errors.
+
+        Exceptions from quit()/close() are intentionally silenced — connection may already
+        be in a broken state, and there is nothing useful to do at this point.
+        """
+        if server is None:
+            return
+        try:
+            server.quit()
+        except Exception:
+            try:
+                server.close()
+            except Exception:
+                pass
     
     def send_to_email(
         self, content: str, subject: Optional[str] = None, receivers: Optional[List[str]] = None
@@ -126,6 +148,7 @@ class EmailSender:
         sender = self._email_config['sender']
         password = self._email_config['password']
         receivers = receivers or self._email_config['receivers']
+        server: Optional[smtplib.SMTP] = None
         
         try:
             # 生成主题
@@ -139,7 +162,7 @@ class EmailSender:
             # 构建邮件
             msg = MIMEMultipart('alternative')
             msg['Subject'] = Header(subject, 'utf-8')
-            msg['From'] = formataddr((self._email_config.get('sender_name', '股票分析助手'), sender))
+            msg['From'] = self._format_sender_address(sender)
             msg['To'] = ', '.join(receivers)
             
             # 添加纯文本和 HTML 两个版本
@@ -175,7 +198,6 @@ class EmailSender:
             
             server.login(sender, password)
             server.send_message(msg)
-            server.quit()
             
             logger.info(f"邮件发送成功，收件人: {receivers}")
             return True
@@ -189,6 +211,8 @@ class EmailSender:
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
             return False
+        finally:
+            self._close_server(server)
 
     def _send_email_with_inline_image(
         self, image_bytes: bytes, receivers: Optional[List[str]] = None
@@ -199,14 +223,13 @@ class EmailSender:
         sender = self._email_config['sender']
         password = self._email_config['password']
         receivers = receivers or self._email_config['receivers']
+        server: Optional[smtplib.SMTP] = None
         try:
             date_str = datetime.now().strftime('%Y-%m-%d')
             subject = f"📈 股票智能分析报告 - {date_str}"
             msg = MIMEMultipart('related')
             msg['Subject'] = Header(subject, 'utf-8')
-            msg['From'] = formataddr(
-                (self._email_config.get('sender_name', '股票分析助手'), sender)
-            )
+            msg['From'] = self._format_sender_address(sender)
             msg['To'] = ', '.join(receivers)
 
             alt = MIMEMultipart('alternative')
@@ -239,9 +262,10 @@ class EmailSender:
                 server.starttls()
             server.login(sender, password)
             server.send_message(msg)
-            server.quit()
             logger.info("邮件（内联图片）发送成功，收件人: %s", receivers)
             return True
         except Exception as e:
             logger.error("邮件（内联图片）发送失败: %s", e)
             return False
+        finally:
+            self._close_server(server)

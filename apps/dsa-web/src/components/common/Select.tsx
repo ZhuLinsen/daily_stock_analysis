@@ -7,6 +7,7 @@ interface SelectOption {
 }
 
 interface SelectProps {
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   options: SelectOption[];
@@ -23,6 +24,7 @@ interface SelectProps {
  * Select component with terminal-inspired styling.
  */
 export const Select: React.FC<SelectProps> = ({
+  id,
   value,
   onChange,
   options,
@@ -32,20 +34,21 @@ export const Select: React.FC<SelectProps> = ({
   className = '',
 }) => {
   const selectId = useId();
+  const resolvedId = id ?? selectId;
 
   return (
     <div className={cn('flex flex-col', className)}>
-      {label ? <label htmlFor={selectId} className="mb-2 text-sm font-medium text-foreground">{label}</label> : null}
+      {label ? <label htmlFor={resolvedId} className="mb-2 text-sm font-medium text-foreground">{label}</label> : null}
       <div className="relative">
         <select
-          id={selectId}
+          id={resolvedId}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className={cn(
-            'h-11 w-full appearance-none rounded-xl border border-white/10 bg-card px-4 py-2.5 pr-10 text-sm text-foreground',
+            'h-11 w-full appearance-none rounded-xl border border-subtle bg-card px-4 py-2.5 pr-10 text-sm text-foreground',
             'shadow-soft-card transition-all duration-200 focus:outline-none focus:ring-4 focus:ring-cyan/15 focus:border-cyan/40',
-            'hover:border-white/18',
+            'hover:border-subtle-hover',
             disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
           )}
         >

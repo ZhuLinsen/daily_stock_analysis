@@ -17,7 +17,7 @@ interface StatCardProps {
 }
 
 const toneStyles = {
-  default: 'border-white/8',
+  default: 'border-subtle',
   primary: 'border-cyan/18',
   success: 'border-success/18',
   warning: 'border-warning/18',
@@ -37,7 +37,7 @@ export const StatCard: React.FC<StatCardProps> = ({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-secondary-text">{label}</p>
-          <div className="mt-2 text-2xl font-semibold text-white">{value}</div>
+          <div className="mt-2 text-2xl font-semibold text-foreground">{value}</div>
           {hint ? <div className="mt-2 text-sm text-secondary-text">{hint}</div> : null}
         </div>
         {icon ? <div className="text-cyan">{icon}</div> : null}

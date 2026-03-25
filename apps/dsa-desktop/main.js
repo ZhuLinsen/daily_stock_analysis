@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -9,6 +9,10 @@ let mainWindow = null;
 let backendProcess = null;
 let logFilePath = null;
 let backendStartError = null;
+
+function resolveWindowBackgroundColor() {
+  return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
+}
 
 const isWindows = process.platform === 'win32';
 const appRootDev = path.resolve(__dirname, '..', '..');
@@ -399,7 +403,7 @@ async function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: '#0f172a',
+    backgroundColor: resolveWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -412,6 +416,17 @@ async function createWindow() {
   const loadingPageStartedAt = Date.now();
   await mainWindow.loadFile(loadingPath);
   logStartup(`Loading page rendered in ${Date.now() - loadingPageStartedAt}ms`);
+
+  const applyThemeBackground = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    mainWindow.setBackgroundColor(resolveWindowBackgroundColor());
+  };
+  nativeTheme.on('updated', applyThemeBackground);
+  mainWindow.once('closed', () => {
+    nativeTheme.removeListener('updated', applyThemeBackground);
+  });
 
   const webViewStartedAt = Date.now();
   mainWindow.webContents.on('did-start-loading', () => {

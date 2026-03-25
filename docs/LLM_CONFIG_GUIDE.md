@@ -11,7 +11,8 @@
 1. **【新手小白】** "我只想赶紧把系统跑起来，越简单越好！" -> [指路【方式一：极简单模型配置】](#方式一极简单模型配置适合新手)
 2. **【进阶用户】** "我有好几个 Key，想配置备用模型，还要改自定义网址(Base URL)。" -> [指路【方式二：渠道(Channels)模式配置】](#方式二渠道channels模式配置适合进阶多模型)
 3. **【高玩老手】** "我要做复杂的负载均衡、请求路由、甚至多异构平台高可用！" -> [指路【方式三：YAML 高级配置】](#方式三yaml高级配置适合老手自定义)
-4. **【视觉模型】** "我想用图片识别股票代码！" -> [指路【扩展功能：看图模型(Vision)配置】](#扩展功能看图模型vision配置)
+4. **【本地模型】** "我想用 Ollama 本地模型！" -> [指路【示例 4：使用 Ollama 本地模型】](#示例-4使用-ollama-本地模型)
+5. **【视觉模型】** "我想用图片识别股票代码！" -> [指路【扩展功能：看图模型(Vision)配置】](#扩展功能看图模型vision配置)
 
 ---
 
@@ -47,6 +48,15 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 GEMINI_API_KEY=AIzac...
 ```
 
+### 示例 4：使用 Ollama 本地模型
+```env
+# Ollama 无需 API Key，本地运行 ollama serve 后即可使用
+OLLAMA_API_BASE=http://localhost:11434
+LITELLM_MODEL=ollama/qwen3:8b
+```
+
+> **重要**：Ollama 必须使用 `OLLAMA_API_BASE` 配置，**不要**使用 `OPENAI_BASE_URL`，否则会触发 LiteLLM 的 URL 拼接错误（如 404、`api/generate/api/show`）。远程 Ollama 时，将 `OLLAMA_API_BASE` 设为实际地址（如 `http://192.168.1.100:11434`）。需 LiteLLM ≥1.80.10（与 requirements.txt 一致）。
+
 > **恭喜！小白读到这里就可以去运行程序了！**
 > 想测测看通没通？在主目录打开命令行输入：`python test_env.py --llm`
 
@@ -81,8 +91,23 @@ LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 # 4. 【关键】指定主模型和备用模型列表
 # 平时首选用 deepseek 这款模型：
 LITELLM_MODEL=deepseek/deepseek-chat
+# 可选：Agent 问股单独指定主模型（留空则继承 LITELLM_MODEL）
+AGENT_LITELLM_MODEL=deepseek/deepseek-reasoner
 # 主模型崩了立刻挨个尝试下面这俩备用模型：
 LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
+```
+
+### 示例：Ollama 渠道模式（本地模型，无需 API Key）
+```env
+# 1. 开启渠道模式，声明 ollama 渠道
+LLM_CHANNELS=ollama
+
+# 2. 配置 Ollama 地址（本地默认 11434 端口）
+LLM_OLLAMA_BASE_URL=http://localhost:11434
+LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
+
+# 3. 指定主模型
+LITELLM_MODEL=ollama/qwen3:8b
 ```
 
 > **致命避坑说明**：如果你启用了 `LLM_CHANNELS`，那么你直接写在外面的 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 将**全部失效（系统一律无视）**！二者**选其一即可**，千万不要既写了新手模式又写了渠道模式结果产生冲突。
@@ -111,6 +136,12 @@ model_list:
       model: openai/deepseek-chat
       api_base: https://api.deepseek.com/v1
       api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # 从环境变量读取 Key，安全防泄漏
+
+  # Ollama 本地模型（无需 api_key）
+  - model_name: ollama/qwen3:8b
+    litellm_params:
+      model: ollama/qwen3:8b
+      api_base: http://localhost:11434
 ```
 
 ### GitHub Actions配置说明
@@ -167,5 +198,6 @@ VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
 | **我写了好几家的Key，为什么死活只有一个生效？修改还没用？** | 你把 **极简模式** 和 **渠道模式** 混着写了！ | 想好一条路走到黑——只要简单就删掉 `LLM_CHANNELS` 开头的；想要丰富备用切换就要全部转投到 `LLM_CHANNELS` 下的编制里。 |
 | **错误码报 400 或 401 或 Invalid API Key** | API Key 填错、少复制了一截、账号充值没到账、或者模型名字敲错（极度常见）。 | 1. 检查复制的 Key 前后是否有误填空格。<br> 2. 检查 Base URL 最后是不是少了一个 `/v1`。<br> 3. 检查模型名是否少写了 `openai/` 之类的前缀！ |
 | **转圈转不停，最后报 Timeout / ConnectionRefused 等** | 1. 在国内使用国外原版（像 Google、OpenAI），没开代理被墙了。<br>2. 你买的云服务器压根不能出境。 | 非常推荐使用**国内官方**（如DeepSeek、阿里）或者各种**兼容 OpenAI 的聚合中转接口**。因为中转站把网络问题帮你解决好了。 |
+| **Ollama 报 404、`Could not get model info` 或 `api/generate/api/show`** | 误用 `OPENAI_BASE_URL` 配置 Ollama，LiteLLM 会错误拼接 URL | 改用 `OLLAMA_API_BASE=http://localhost:11434` 或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`） |
 
 *进阶老手的叮嘱：如果你开启了 **Agent (深度思考网络搜索问股) 模式**，这里有个经验之谈，推荐选用如 `deepseek-reasoner` 这种自带强悍逻辑推导和思考机制的大模型。如果为了省钱用小微模型跑 Agent，它逻辑能力大概率跟不上，不仅达不到预期，还会白跑一堆空流程。*

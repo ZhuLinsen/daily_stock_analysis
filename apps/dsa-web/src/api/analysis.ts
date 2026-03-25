@@ -10,13 +10,13 @@ import type {
   TaskListResponse,
 } from '../types/analysis';
 
-// ============ API 接口 ============
+// ============ API Interfaces ============
 
 export const analysisApi = {
   /**
-   * 触发股票分析
-   * @param data 分析请求参数
-   * @returns 同步模式返回 AnalysisResult；异步模式返回单任务或批量任务接受响应
+   * Trigger stock analysis.
+   * @param data Analysis request payload
+   * @returns Sync mode returns AnalysisResult; async mode returns accepted task payloads
    */
   analyze: async (data: AnalysisRequest): Promise<AnalyzeResponse> => {
     const requestData = {
@@ -25,6 +25,10 @@ export const analysisApi = {
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: data.asyncMode || false,
+      stock_name: data.stockName,
+      original_query: data.originalQuery,
+      selection_source: data.selectionSource,
+      ...(data.notify !== undefined && { notify: data.notify }),
     };
 
     const response = await apiClient.post<Record<string, unknown>>(
@@ -34,7 +38,7 @@ export const analysisApi = {
 
     const result = toCamelCase<AnalyzeResponse>(response.data);
 
-    // 确保同步分析返回中的 report 字段正确转换
+    // Ensure the sync analysis report payload is converted recursively.
     if ('report' in result && result.report) {
       result.report = toCamelCase<AnalysisReport>(result.report);
     }
@@ -43,10 +47,9 @@ export const analysisApi = {
   },
 
   /**
-   * 异步模式触发分析
-   * 返回 task_id，通过 SSE 或轮询获取结果
-   * @param data 分析请求参数
-   * @returns 单任务或批量任务接受响应；409 时抛出重复任务错误
+   * Trigger analysis in async mode.
+   * @param data Analysis request payload
+   * @returns Accepted task payloads; throws DuplicateTaskError on 409
    */
   analyzeAsync: async (data: AnalysisRequest): Promise<AnalyzeAsyncResponse> => {
     const requestData = {
@@ -55,18 +58,22 @@ export const analysisApi = {
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: true,
+      stock_name: data.stockName,
+      original_query: data.originalQuery,
+      selection_source: data.selectionSource,
+      ...(data.notify !== undefined && { notify: data.notify }),
     };
 
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/analysis/analyze',
       requestData,
       {
-        // 允许 202 状态码
+        // Allow 202 accepted responses in addition to standard success codes.
         validateStatus: (status) => status === 200 || status === 202 || status === 409,
       }
     );
 
-    // 处理 409 重复提交错误
+    // Handle duplicate submission compatibility.
     if (response.status === 409) {
       const errorData = toCamelCase<{
         error: string;
@@ -81,8 +88,8 @@ export const analysisApi = {
   },
 
   /**
-   * 获取异步任务状态
-   * @param taskId 任务 ID
+   * Get async task status.
+   * @param taskId Task ID
    */
   getStatus: async (taskId: string): Promise<TaskStatus> => {
     const response = await apiClient.get<Record<string, unknown>>(
@@ -91,7 +98,7 @@ export const analysisApi = {
 
     const data = toCamelCase<TaskStatus>(response.data);
 
-    // 确保嵌套的 result 也被正确转换
+    // Ensure nested result payloads are converted recursively.
     if (data.result) {
       data.result = toCamelCase<AnalysisResult>(data.result);
       if (data.result.report) {
@@ -103,8 +110,8 @@ export const analysisApi = {
   },
 
   /**
-   * 获取任务列表
-   * @param params 筛选参数
+   * Get task list.
+   * @param params Filter parameters
    */
   getTasks: async (params?: {
     status?: string;
@@ -121,21 +128,19 @@ export const analysisApi = {
   },
 
   /**
-   * 获取 SSE 流 URL
-   * 用于 EventSource 连接
+   * Get the SSE stream URL.
    */
   getTaskStreamUrl: (): string => {
-    // 获取 API base URL
+    // Read API base URL from the shared client.
     const baseUrl = apiClient.defaults.baseURL || '';
     return `${baseUrl}/api/v1/analysis/tasks/stream`;
   },
 };
 
-// ============ 自定义错误类 ============
+// ============ Custom Error Classes ============
 
 /**
- * 重复任务错误
- * 当股票正在分析中时抛出
+ * Duplicate task error.
  */
 export class DuplicateTaskError extends Error {
   stockCode: string;

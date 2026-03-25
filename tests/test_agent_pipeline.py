@@ -10,10 +10,13 @@ Covers:
 """
 
 import json
+import importlib
+import types
 import unittest
 import sys
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
@@ -40,6 +43,7 @@ class TestAgentConfig(unittest.TestCase):
         from src.config import Config
         Config._instance = None
         config = Config._load_from_env()
+        self.assertEqual(config.agent_litellm_model, "")
         self.assertFalse(config.agent_mode)
         self.assertEqual(config.agent_max_steps, 10)
         self.assertEqual(config.agent_skills, [])
@@ -82,6 +86,232 @@ class TestAgentConfig(unittest.TestCase):
         config = Config._load_from_env()
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback'])
 
+    @patch.dict(os.environ, {'AGENT_LITELLM_MODEL': 'gpt-4o-mini'}, clear=True)
+    def test_agent_is_available_when_agent_primary_model_is_configured(self):
+        """Agent availability auto-detection should use effective Agent primary model."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_litellm_model, 'openai/gpt-4o-mini')
+        self.assertTrue(config.is_agent_available())
+
+
+class TestAgentFactorySkillBaseline(unittest.TestCase):
+    """Ensure explicit skill selection does not silently re-apply the default bull-trend baseline."""
+
+    @staticmethod
+    def _make_skill(
+        name: str,
+        *,
+        default_active: bool = False,
+        default_priority: int = 100,
+        source: str = "builtin",
+    ):
+        return SimpleNamespace(
+            name=name,
+            display_name=name,
+            description=f"{name} desc",
+            instructions=f"{name} instructions",
+            default_active=default_active,
+            default_router=default_active,
+            default_priority=default_priority,
+            user_invocable=True,
+            source=source,
+        )
+
+    def _run_factory_case(self, config, *, request_skills, skill_catalog, instructions):
+        skill_manager = MagicMock()
+        skill_manager.list_skills.return_value = skill_catalog
+        skill_manager.get_skill_instructions.return_value = instructions
+
+        fake_llm_module = types.ModuleType("src.agent.llm_adapter")
+        fake_llm_module.LLMToolAdapter = MagicMock(return_value=MagicMock())
+        fake_executor_module = types.ModuleType("src.agent.executor")
+        fake_executor_cls = MagicMock(return_value=MagicMock())
+        fake_executor_module.AgentExecutor = fake_executor_cls
+
+        with patch.dict(sys.modules, {
+            "litellm": MagicMock(),
+            "src.agent.llm_adapter": fake_llm_module,
+            "src.agent.executor": fake_executor_module,
+        }):
+            factory_module = importlib.import_module("src.agent.factory")
+
+            with patch.object(factory_module, "get_skill_manager", return_value=skill_manager), \
+                 patch.object(factory_module, "get_tool_registry", return_value=MagicMock()):
+                factory_module.build_agent_executor(config, skills=request_skills)
+
+        return fake_executor_cls.call_args.kwargs, skill_manager
+
+    def test_explicit_request_disables_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=["chan_theory"],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="chan_theory instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["chan_theory"])
+
+    def test_configured_skills_disable_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["wave_theory"],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("wave_theory", default_priority=20),
+            ],
+            instructions="wave_theory instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["wave_theory"])
+
+    def test_implicit_default_run_keeps_default_skill_policy(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[self._make_skill("bull_trend", default_active=True, default_priority=10)],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_explicit_empty_request_falls_back_to_primary_default_skill(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=[],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_explicit_primary_default_skill_uses_skill_aware_prompt_mode(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=["bull_trend"],
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_invalid_configured_skills_fall_back_to_primary_default_skill(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=["missing_skill"],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("bull_trend", default_active=True, default_priority=10),
+                self._make_skill("chan_theory", default_priority=20),
+            ],
+            instructions="bull_trend instructions",
+        )
+
+        self.assertIn("严进策略", kwargs["default_skill_policy"])
+        self.assertTrue(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
+    def test_custom_default_skill_does_not_use_legacy_bull_prompt(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill("custom_default", default_active=True, default_priority=10),
+                self._make_skill("bull_trend", default_priority=20),
+            ],
+            instructions="custom_default instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["custom_default"])
+
+    def test_custom_bull_trend_override_does_not_use_legacy_prompt(self):
+        config = SimpleNamespace(
+            agent_arch="single",
+            agent_skills=[],
+            agent_max_steps=10,
+            agent_orchestrator_timeout_s=600,
+        )
+        kwargs, skill_manager = self._run_factory_case(
+            config,
+            request_skills=None,
+            skill_catalog=[
+                self._make_skill(
+                    "bull_trend",
+                    default_active=True,
+                    default_priority=10,
+                    source="/tmp/custom-skills/bull_trend.yaml",
+                ),
+            ],
+            instructions="custom bull_trend instructions",
+        )
+
+        self.assertEqual(kwargs["default_skill_policy"], "")
+        self.assertFalse(kwargs["use_legacy_default_prompt"])
+        skill_manager.activate.assert_called_once_with(["bull_trend"])
+
 
 # ============================================================
 # AgentResult to AnalysisResult conversion
@@ -110,6 +340,7 @@ class TestAgentResultConversion(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -311,6 +542,7 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -356,6 +588,7 @@ class TestPipelineRouting(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -407,6 +640,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -555,6 +789,78 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertIsNotNone(executor.tool_registry)
         self.assertIsNotNone(executor.llm_adapter)
 
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_call_completion_uses_effective_agent_models_order(self, _mock_router):
+        """call_completion should use Agent effective model chain in order."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = "gemini/gemini-2.5-flash"
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        calls = []
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            calls.append(model)
+            if model == "openai/gpt-4o-mini":
+                raise RuntimeError("primary failed")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(calls, ["openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"])
+        self.assertEqual(result.content, "ok")
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_recomputes_timeout_for_each_fallback_attempt(self, _mock_router):
+        """Each fallback model attempt should receive only the remaining timeout budget."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        timeouts = []
+
+        def fake_call(_messages, _tools, model, **kwargs):
+            timeouts.append((model, kwargs.get("timeout")))
+            if model == "openai/gpt-4o-mini":
+                raise RuntimeError("primary failed")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.time.time", side_effect=[0.0, 0.0, 7.0, 7.0]):
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                timeout=10.0,
+            )
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
+        self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
+
 
 # ============================================================
 # _safe_int tests
@@ -582,6 +888,7 @@ class TestSafeInt(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True
@@ -689,20 +996,21 @@ class TestSkillActivation(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0].name, "dragon_head")
 
-    def test_empty_config_activates_all_in_pipeline(self):
-        """Empty agent_skills config should activate ALL strategies loaded from YAML."""
+    def test_empty_config_uses_primary_default_skill(self):
+        """Empty agent_skills config should activate the primary default skill only."""
         from src.agent.skills.base import SkillManager
+        from src.agent.skills.defaults import get_default_active_skill_ids
 
         skill_manager = SkillManager()
-        expected = _builtin_strategy_names()
         count = skill_manager.load_builtin_strategies()
-        self.assertEqual(count, len(expected), "Should load all built-in strategies from YAML")
+        self.assertEqual(count, len(_builtin_strategy_names()), "Should load all built-in strategies from YAML")
 
-        # Simulate pipeline logic: empty config -> activate all
-        skill_manager.activate(["all"])
+        default_ids = get_default_active_skill_ids(skill_manager.list_skills())
+        self.assertEqual(default_ids, ["bull_trend"])
+        skill_manager.activate(default_ids)
 
         active = skill_manager.list_active_skills()
-        self.assertEqual(len(active), len(expected))
+        self.assertEqual([skill.name for skill in active], ["bull_trend"])
 
     def test_sentiment_score_parsed_from_dashboard(self):
         """Verify _agent_result_to_analysis_result handles non-numeric sentiment_score."""
@@ -723,6 +1031,7 @@ class TestSkillActivation(unittest.TestCase):
             mock_cfg.brave_api_keys = []
             mock_cfg.serpapi_keys = []
             mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
             mock_cfg.news_max_age_days = 7
             mock_cfg.enable_realtime_quote = True
             mock_cfg.enable_chip_distribution = True

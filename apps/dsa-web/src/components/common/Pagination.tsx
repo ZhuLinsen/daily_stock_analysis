@@ -25,7 +25,7 @@ const PageButton: React.FC<PageButtonProps> = ({ page, isActive, disabled, onCli
         'inline-flex h-10 min-w-[2.5rem] items-center justify-center rounded-xl border px-3 text-sm font-medium transition-all duration-200',
         isActive
           ? 'border-cyan/30 bg-cyan text-slate-950 shadow-lg shadow-cyan/20'
-          : 'border-white/8 bg-elevated text-secondary-text hover:bg-hover hover:text-white',
+          : 'border-border/60 bg-elevated text-secondary-text hover:bg-hover hover:text-foreground',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
       )}
     >

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Strategy sub-system for multi-agent architecture.
+Compatibility re-exports for the legacy strategy namespace.
 
 Provides:
-- :class:`StrategyAgent` — per-strategy specialist agent
-- :class:`StrategyRouter` — rule-based strategy selection
-- :class:`StrategyAggregator` — weighted opinion aggregation
+- :class:`StrategyAgent` — legacy alias of :class:`SkillAgent`
+- :class:`StrategyRouter` — legacy alias of :class:`SkillRouter`
+- :class:`StrategyAggregator` — legacy alias of :class:`SkillAggregator`
 """
 
 from src.agent.strategies.strategy_agent import StrategyAgent

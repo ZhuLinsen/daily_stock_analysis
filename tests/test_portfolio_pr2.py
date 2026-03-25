@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -24,7 +25,7 @@ from api.app import create_app
 from src.config import Config
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
-from src.services.portfolio_service import PortfolioService
+from src.services.portfolio_service import PortfolioBusyError, PortfolioService
 from src.storage import DatabaseManager
 
 
@@ -235,6 +236,79 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertEqual(first_commit["duplicate_count"], 0)
         self.assertEqual(second_commit["inserted_count"], 0)
         self.assertEqual(second_commit["duplicate_count"], 2)
+
+    def test_import_oversell_counts_failed_not_duplicate(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+        result = self.import_service.commit_trade_records(
+            account_id=aid,
+            broker="huatai",
+            records=[
+                {
+                    "trade_date": "2026-01-02",
+                    "symbol": "600519",
+                    "side": "sell",
+                    "quantity": 20,
+                    "price": 90,
+                    "fee": 0.0,
+                    "tax": 0.0,
+                    "trade_uid": "HT-SELL-001",
+                    "dedup_hash": "oversell-hash-001",
+                    "market": "cn",
+                    "currency": "CNY",
+                }
+            ],
+        )
+
+        self.assertEqual(result["inserted_count"], 0)
+        self.assertEqual(result["duplicate_count"], 0)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+
+    def test_import_busy_counts_failed_not_duplicate(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+
+        with patch.object(
+            self.import_service.portfolio_service,
+            "record_trade",
+            side_effect=PortfolioBusyError("Portfolio ledger is busy; please retry shortly."),
+        ):
+            result = self.import_service.commit_trade_records(
+                account_id=aid,
+                broker="huatai",
+                records=[
+                    {
+                        "trade_date": "2026-01-02",
+                        "symbol": "600519",
+                        "side": "buy",
+                        "quantity": 10,
+                        "price": 90,
+                        "fee": 0.0,
+                        "tax": 0.0,
+                        "trade_uid": "HT-BUSY-001",
+                        "dedup_hash": "busy-hash-001",
+                        "market": "cn",
+                        "currency": "CNY",
+                    }
+                ],
+            )
+
+        self.assertEqual(result["inserted_count"], 0)
+        self.assertEqual(result["duplicate_count"], 0)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertIn("portfolio_busy", result["errors"][0])
 
     def test_risk_threshold_boundary(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
@@ -487,6 +561,119 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertIsNotNone(latest)
         self.assertTrue(bool(latest.is_stale))
         self.assertAlmostEqual(float(latest.rate), 7.0, places=6)
+
+    def test_fx_refresh_disabled_returns_real_pair_count_without_fetching(self) -> None:
+        account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=1000.0,
+            currency="USD",
+        )
+
+        disabled_config = SimpleNamespace(portfolio_fx_update_enabled=False)
+        with patch("src.services.portfolio_service.get_config", return_value=disabled_config) as get_config_mock, patch.object(
+            PortfolioService,
+            "_fetch_fx_rate_from_yfinance",
+            side_effect=AssertionError("should not call"),
+        ), patch.object(self.service.repo, "save_fx_rate", wraps=self.service.repo.save_fx_rate) as save_fx_rate_mock:
+            summary = self.service.refresh_fx_rates(account_id=aid, as_of=date(2026, 1, 2))
+
+        self.assertFalse(summary["refresh_enabled"])
+        self.assertEqual(summary["disabled_reason"], "portfolio_fx_update_disabled")
+        self.assertEqual(summary["pair_count"], 1)
+        self.assertEqual(summary["updated_count"], 0)
+        self.assertEqual(summary["stale_count"], 0)
+        self.assertEqual(summary["error_count"], 0)
+        get_config_mock.assert_called_once()
+        save_fx_rate_mock.assert_not_called()
+
+    def test_fx_refresh_disabled_skips_invalid_currency_rows(self) -> None:
+        account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")
+        aid = account["id"]
+
+        disabled_config = SimpleNamespace(portfolio_fx_update_enabled=False)
+        invalid_row = SimpleNamespace(currency="")
+        valid_row = SimpleNamespace(currency="USD")
+        with patch("src.services.portfolio_service.get_config", return_value=disabled_config), patch.object(
+            self.service.repo,
+            "list_trades",
+            return_value=[invalid_row, valid_row],
+        ), patch.object(
+            self.service.repo,
+            "list_cash_ledger",
+            return_value=[],
+        ), patch.object(
+            PortfolioService,
+            "_fetch_fx_rate_from_yfinance",
+            side_effect=AssertionError("should not call"),
+        ):
+            summary = self.service.refresh_fx_rates(account_id=aid, as_of=date(2026, 1, 2))
+
+        self.assertFalse(summary["refresh_enabled"])
+        self.assertEqual(summary["pair_count"], 1)
+        self.assertEqual(summary["updated_count"], 0)
+        self.assertEqual(summary["stale_count"], 0)
+        self.assertEqual(summary["error_count"], 0)
+
+    def test_fx_refresh_endpoint_returns_disabled_status_fields(self) -> None:
+        account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")
+        account_id = account["id"]
+        self.service.record_cash_ledger(
+            account_id=account_id,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=1000.0,
+            currency="USD",
+        )
+
+        disabled_config = SimpleNamespace(portfolio_fx_update_enabled=False)
+        with patch("src.services.portfolio_service.get_config", return_value=disabled_config), patch.object(
+            PortfolioService,
+            "_fetch_fx_rate_from_yfinance",
+            side_effect=AssertionError("should not call"),
+        ):
+            response = self.client.post(
+                "/api/v1/portfolio/fx/refresh",
+                params={"account_id": account_id, "as_of": "2026-01-02"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["refresh_enabled"])
+        self.assertEqual(payload["disabled_reason"], "portfolio_fx_update_disabled")
+        self.assertEqual(payload["pair_count"], 1)
+        self.assertEqual(payload["updated_count"], 0)
+        self.assertEqual(payload["stale_count"], 0)
+        self.assertEqual(payload["error_count"], 0)
+
+    def test_fx_refresh_endpoint_returns_enabled_status_fields(self) -> None:
+        account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")
+        account_id = account["id"]
+        self.service.record_cash_ledger(
+            account_id=account_id,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=1000.0,
+            currency="USD",
+        )
+
+        with patch.object(PortfolioService, "_fetch_fx_rate_from_yfinance", return_value=None):
+            response = self.client.post(
+                "/api/v1/portfolio/fx/refresh",
+                params={"account_id": account_id, "as_of": "2026-01-02"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["refresh_enabled"])
+        self.assertIsNone(payload["disabled_reason"])
+        self.assertEqual(payload["pair_count"], 1)
+        self.assertEqual(payload["updated_count"], 0)
+        self.assertEqual(payload["stale_count"], 0)
+        self.assertEqual(payload["error_count"], 1)
 
     def test_import_and_risk_endpoints(self) -> None:
         create_resp = self.client.post(

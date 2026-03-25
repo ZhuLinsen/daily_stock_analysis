@@ -15,39 +15,17 @@ from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
 from src.config import get_config
+from src.report_language import (
+    get_localized_stock_name,
+    get_report_labels,
+    get_signal_level,
+    localize_chip_health,
+    localize_operation_advice,
+    localize_trend_prediction,
+    normalize_report_language,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _get_signal_level(result: AnalysisResult) -> tuple:
-    """Return (signal_text, emoji, color_tag) for a result."""
-    advice = result.operation_advice
-    score = result.sentiment_score
-    advice_map = {
-        "强烈买入": ("强烈买入", "💚", "强买"),
-        "买入": ("买入", "🟢", "买入"),
-        "加仓": ("买入", "🟢", "买入"),
-        "持有": ("持有", "🟡", "持有"),
-        "观望": ("观望", "⚪", "观望"),
-        "减仓": ("减仓", "🟠", "减仓"),
-        "卖出": ("卖出", "🔴", "卖出"),
-        "强烈卖出": ("卖出", "🔴", "卖出"),
-    }
-    if advice in advice_map:
-        return advice_map[advice]
-    if score >= 80:
-        return ("强烈买入", "💚", "强买")
-    elif score >= 65:
-        return ("买入", "🟢", "买入")
-    elif score >= 55:
-        return ("持有", "🟡", "持有")
-    elif score >= 45:
-        return ("观望", "⚪", "观望")
-    elif score >= 35:
-        return ("减仓", "🟠", "减仓")
-    elif score < 35:
-        return ("卖出", "🔴", "卖出")
-    return ("观望", "⚪", "观望")
 
 
 def _escape_md(text: str) -> str:
@@ -69,6 +47,7 @@ def _clean_sniper_value(val: Any) -> str:
     prefixes = [
         "理想买入点：", "次优买入点：", "止损位：", "目标位：",
         "理想买入点:", "次优买入点:", "止损位:", "目标位:",
+        "Ideal Entry:", "Secondary Entry:", "Stop Loss:", "Target:",
     ]
     for prefix in prefixes:
         if s.startswith(prefix):
@@ -124,17 +103,29 @@ def render(
         logger.debug("Report template not found: %s", template_path)
         return None
 
+    report_language = normalize_report_language(
+        (extra_context or {}).get("report_language")
+        or next(
+            (getattr(result, "report_language", None) for result in results if getattr(result, "report_language", None)),
+            None,
+        )
+        or getattr(get_config(), "report_language", "zh")
+    )
+    labels = get_report_labels(report_language)
+
     # Build template context with pre-computed signal levels (sorted by score)
     sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
     sorted_enriched = []
     for r in sorted_results:
-        st, se, _ = _get_signal_level(r)
-        rn = r.name if r.name and not r.name.startswith("股票") else f"股票{r.code}"
+        st, se, _ = get_signal_level(r.operation_advice, r.sentiment_score, report_language)
+        rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
             "signal_text": st,
             "signal_emoji": se,
             "stock_name": _escape_md(rn),
+            "localized_operation_advice": localize_operation_advice(r.operation_advice, report_language),
+            "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
         })
 
     buy_count = sum(1 for r in results if getattr(r, "decision_type", "") == "buy")
@@ -155,13 +146,21 @@ def render(
         "buy_count": buy_count,
         "sell_count": sell_count,
         "hold_count": hold_count,
+        "labels": labels,
+        "report_language": report_language,
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,
         "history_by_code": {},
+        "localize_operation_advice": localize_operation_advice,
+        "localize_trend_prediction": localize_trend_prediction,
+        "localize_chip_health": localize_chip_health,
     }
     if extra_context:
-        context.update(extra_context)
+        safe_extra_context = dict(extra_context)
+        safe_extra_context.pop("labels", None)
+        safe_extra_context.pop("report_language", None)
+        context.update(safe_extra_context)
 
     try:
         env = Environment(

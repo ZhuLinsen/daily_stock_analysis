@@ -3,7 +3,8 @@
 Backtest tools — read-only tools exposing backtest summaries to the agent.
 
 Tools:
-- get_strategy_backtest_summary: overall strategy performance stats
+- get_skill_backtest_summary: skill-scoped stats when available, otherwise an explicit unsupported/info response
+- get_strategy_backtest_summary: legacy alias of the overall summary tool
 - get_stock_backtest_summary: backtest results for a specific stock
 """
 
@@ -26,44 +27,109 @@ def _get_backtest_service():
 
 
 # ============================================================
-# get_strategy_backtest_summary
+# get_skill_backtest_summary / get_strategy_backtest_summary
 # ============================================================
 
-def _handle_get_strategy_backtest_summary(eval_window_days: int = 30) -> dict:
-    """Get overall strategy backtest summary.
+def _serialize_overall_backtest_summary(summary: dict, eval_window_days: int) -> dict:
+    """Return the public overall-summary payload exposed to the agent."""
+    return {
+        "scope": summary.get("scope", "overall"),
+        "eval_window_days": summary.get("eval_window_days", eval_window_days),
+        "total_evaluations": summary.get("total_evaluations", 0),
+        "completed_count": summary.get("completed_count", 0),
+        "win_rate_pct": summary.get("win_rate_pct"),
+        "direction_accuracy_pct": summary.get("direction_accuracy_pct"),
+        "avg_stock_return_pct": summary.get("avg_stock_return_pct"),
+        "avg_simulated_return_pct": summary.get("avg_simulated_return_pct"),
+        "stop_loss_trigger_rate": summary.get("stop_loss_trigger_rate"),
+        "take_profit_trigger_rate": summary.get("take_profit_trigger_rate"),
+        "advice_breakdown": summary.get("advice_breakdown"),
+        "computed_at": summary.get("computed_at"),
+    }
 
-    Returns aggregated stats: win_rate, direction_accuracy, avg_return, etc.
-    """
+
+def _handle_get_overall_backtest_summary(eval_window_days: int = 30) -> dict:
+    """Get the overall backtest summary for the full analysis corpus."""
     try:
         svc = _get_backtest_service()
         summary = svc.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
         if summary is None:
             return {"info": "No backtest summary available. Backtest may not have been run yet."}
-        # Return the key metrics, drop internal fields
+        return _serialize_overall_backtest_summary(summary, eval_window_days)
+    except Exception:
+        logger.warning("[backtest_tools] get_overall_backtest_summary error", exc_info=True)
+        return {"error": "Failed to retrieve backtest summary."}
+
+
+def _handle_get_skill_backtest_summary(skill_id: str = "", eval_window_days: int = 30) -> dict:
+    """Get a skill-scoped backtest summary when real per-skill stats exist."""
+    if not skill_id:
         return {
-            "scope": summary.get("scope", "overall"),
+            "supported": False,
+            "error": "skill_id is required. Use get_strategy_backtest_summary for overall metrics.",
+        }
+
+    try:
+        svc = _get_backtest_service()
+        summary = svc.get_skill_summary(skill_id, eval_window_days=eval_window_days)
+        if summary is None:
+            return {
+                "skill_id": skill_id,
+                "supported": False,
+                "info": "Skill-scoped backtest summaries are not available yet.",
+            }
+        return {
+            "scope": "skill",
+            "skill_id": skill_id,
+            "supported": True,
             "eval_window_days": summary.get("eval_window_days", eval_window_days),
             "total_evaluations": summary.get("total_evaluations", 0),
             "completed_count": summary.get("completed_count", 0),
+            "win_rate": summary.get("win_rate"),
+            "direction_accuracy": summary.get("direction_accuracy"),
+            "avg_return": summary.get("avg_return"),
             "win_rate_pct": summary.get("win_rate_pct"),
             "direction_accuracy_pct": summary.get("direction_accuracy_pct"),
             "avg_stock_return_pct": summary.get("avg_stock_return_pct"),
             "avg_simulated_return_pct": summary.get("avg_simulated_return_pct"),
-            "stop_loss_trigger_rate": summary.get("stop_loss_trigger_rate"),
-            "take_profit_trigger_rate": summary.get("take_profit_trigger_rate"),
-            "advice_breakdown": summary.get("advice_breakdown"),
             "computed_at": summary.get("computed_at"),
         }
-    except Exception as exc:
-        logger.warning("[backtest_tools] get_strategy_backtest_summary error: %s", exc)
-        return {"error": f"Failed to retrieve backtest summary: {exc}"}
+    except Exception:
+        logger.warning("[backtest_tools] get_skill_backtest_summary error", exc_info=True)
+        return {"error": "Failed to retrieve backtest summary."}
+
+
+get_skill_backtest_summary_tool = ToolDefinition(
+    name="get_skill_backtest_summary",
+    description=(
+        "Inspect backtest data for a specific skill when skill-scoped stats exist. "
+        "Provide skill_id for a targeted lookup; use get_strategy_backtest_summary for overall metrics. "
+        "When skill-scoped rollups are unavailable, returns an informational response instead of fabricating metrics."
+    ),
+    parameters=[
+        ToolParameter(
+            name="skill_id",
+            type="string",
+            description="Skill identifier, e.g. 'bull_trend'.",
+            required=True,
+        ),
+        ToolParameter(
+            name="eval_window_days",
+            type="integer",
+            description="Evaluation window in days (default: 30). How many trading days after signal to evaluate.",
+            required=False,
+            default=30,
+        ),
+    ],
+    handler=_handle_get_skill_backtest_summary,
+    category="data",
+)
 
 
 get_strategy_backtest_summary_tool = ToolDefinition(
     name="get_strategy_backtest_summary",
     description=(
-        "Get overall strategy backtest performance summary (win rate, direction accuracy, "
-        "avg return, stop-loss/take-profit trigger rates). Read-only, does not trigger new backtests."
+        "Legacy alias returning the overall backtest performance summary without triggering new backtests."
     ),
     parameters=[
         ToolParameter(
@@ -74,7 +140,7 @@ get_strategy_backtest_summary_tool = ToolDefinition(
             default=30,
         ),
     ],
-    handler=_handle_get_strategy_backtest_summary,
+    handler=_handle_get_overall_backtest_summary,
     category="data",
 )
 
@@ -131,9 +197,9 @@ def _handle_get_stock_backtest_summary(stock_code: str, eval_window_days: int = 
             return {"info": f"No backtest data available for {stock_code}. Backtest may not have been run yet."}
 
         return result
-    except Exception as exc:
-        logger.warning("[backtest_tools] get_stock_backtest_summary error: %s", exc)
-        return {"error": f"Failed to retrieve backtest data for {stock_code}: {exc}"}
+    except Exception:
+        logger.warning("[backtest_tools] get_stock_backtest_summary error", exc_info=True)
+        return {"error": "Failed to retrieve backtest data."}
 
 
 get_stock_backtest_summary_tool = ToolDefinition(
@@ -173,6 +239,7 @@ get_stock_backtest_summary_tool = ToolDefinition(
 # ============================================================
 
 ALL_BACKTEST_TOOLS = [
+    get_skill_backtest_summary_tool,
     get_strategy_backtest_summary_tool,
     get_stock_backtest_summary_tool,
 ]

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Ask command - analyze a stock using a specific Agent strategy.
+Ask command - analyze a stock using a specific Agent skill.
 
 Usage:
-    /ask 600519                        -> Analyze with default strategy
-    /ask 600519 用缠论分析              -> Parse strategy from message
-    /ask 600519 chan_theory             -> Specify strategy id directly
+    /ask 600519                        -> Analyze with default skill
+    /ask 600519 用缠论分析              -> Parse skill from message
+    /ask 600519 chan_theory             -> Specify skill id directly
 """
 
 import re
@@ -20,40 +20,15 @@ from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
-# Strategy name to id mapping (CN name -> strategy id)
-STRATEGY_NAME_MAP = {
-    "缠论": "chan_theory",
-    "缠论分析": "chan_theory",
-    "波浪": "wave_theory",
-    "波浪理论": "wave_theory",
-    "艾略特": "wave_theory",
-    "箱体": "box_oscillation",
-    "箱体震荡": "box_oscillation",
-    "情绪": "emotion_cycle",
-    "情绪周期": "emotion_cycle",
-    "趋势": "bull_trend",
-    "多头趋势": "bull_trend",
-    "均线金叉": "ma_golden_cross",
-    "金叉": "ma_golden_cross",
-    "缩量回踩": "shrink_pullback",
-    "回踩": "shrink_pullback",
-    "放量突破": "volume_breakout",
-    "突破": "volume_breakout",
-    "地量见底": "bottom_volume",
-    "龙头": "dragon_head",
-    "龙头战法": "dragon_head",
-    "一阳穿三阴": "one_yang_three_yin",
-}
-
 
 class AskCommand(BotCommand):
     """
-    Ask command handler - invoke Agent with a specific strategy to analyze a stock.
+    Ask command handler - invoke Agent with a specific skill to analyze a stock.
 
     Usage:
-        /ask 600519                    -> Analyze with default strategy (bull_trend)
-        /ask 600519 用缠论分析          -> Automatically selects chan_theory strategy
-        /ask 600519 chan_theory         -> Directly specify strategy id
+        /ask 600519                    -> Analyze with default skill
+        /ask 600519 用缠论分析          -> Automatically selects chan_theory
+        /ask 600519 chan_theory         -> Directly specify skill id
         /ask hk00700 波浪理论看看       -> HK stock with wave_theory
     """
 
@@ -67,16 +42,16 @@ class AskCommand(BotCommand):
 
     @property
     def description(self) -> str:
-        return "使用 Agent 策略分析股票"
+        return "使用 Agent 技能分析股票"
 
     @property
     def usage(self) -> str:
-        return "/ask <股票代码> [策略名称]"
+        return "/ask <股票代码> [技能名称]"
 
     def validate_args(self, args: List[str]) -> Optional[str]:
         """Validate arguments."""
         if not args:
-            return "请输入股票代码。用法: /ask <股票代码> [策略名称]\n示例: /ask 600519 用缠论分析"
+            return "请输入股票代码。用法: /ask <股票代码> [技能名称]\n示例: /ask 600519 用缠论分析"
 
         code = args[0].upper()
         is_a_stock = re.match(r"^\d{6}$", code)
@@ -88,31 +63,57 @@ class AskCommand(BotCommand):
 
         return None
 
-    def _parse_strategy(self, args: List[str]) -> str:
-        """Parse strategy from arguments, returning strategy id."""
-        if len(args) < 2:
-            return "bull_trend"
-
-        # Join remaining args as the strategy text
-        strategy_text = " ".join(args[1:]).strip()
-
-        # Try direct strategy id match first
+    @staticmethod
+    def _load_skills() -> List[object]:
         try:
             from src.agent.factory import get_skill_manager
+
             sm = get_skill_manager()
-            available_ids = [s.name for s in sm.list_skills()]
-            if strategy_text in available_ids:
-                return strategy_text
+            return list(sm.list_skills())
         except Exception:
-            pass
+            return []
 
-        # Try CN name mapping
-        for cn_name, strategy_id in STRATEGY_NAME_MAP.items():
-            if cn_name in strategy_text:
-                return strategy_id
+    @classmethod
+    def _get_default_skill_id(cls) -> str:
+        try:
+            from src.agent.skills.defaults import get_primary_default_skill_id
 
-        # Default
-        return "bull_trend"
+            return get_primary_default_skill_id(cls._load_skills())
+        except Exception:
+            return ""
+
+    @classmethod
+    def _build_skill_alias_pairs(cls) -> List[tuple[str, str]]:
+        alias_pairs: List[tuple[str, str]] = []
+        for skill in cls._load_skills():
+            skill_id = str(getattr(skill, "name", "")).strip()
+            if not skill_id:
+                continue
+            aliases = [skill_id, getattr(skill, "display_name", "")] + list(getattr(skill, "aliases", []) or [])
+            for alias in aliases:
+                alias_text = str(alias).strip()
+                if alias_text:
+                    alias_pairs.append((alias_text, skill_id))
+
+        alias_pairs.sort(key=lambda item: (len(item[0]), item[0]), reverse=True)
+        return alias_pairs
+
+    def _parse_skill(self, args: List[str]) -> str:
+        """Parse skill from arguments, returning the resolved skill id."""
+        default_skill_id = self._get_default_skill_id()
+        if len(args) < 2:
+            return default_skill_id
+
+        skill_text = " ".join(args[1:]).strip()
+        available_ids = {str(getattr(skill, "name", "")).strip() for skill in self._load_skills()}
+        if skill_text in available_ids:
+            return skill_text
+
+        for alias_text, skill_id in self._build_skill_alias_pairs():
+            if alias_text in skill_text:
+                return skill_id
+
+        return default_skill_id
 
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """Execute the ask command via Agent pipeline."""
@@ -124,19 +125,21 @@ class AskCommand(BotCommand):
             )
 
         code = canonical_stock_code(args[0])
-        strategy_id = self._parse_strategy(args)
-        strategy_text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+        skill_id = self._parse_skill(args)
+        skill_text = " ".join(args[1:]).strip() if len(args) > 1 else ""
 
-        logger.info(f"[AskCommand] Stock: {code}, Strategy: {strategy_id}, Extra: {strategy_text}")
+        logger.info(f"[AskCommand] Stock: {code}, Skill: {skill_id}, Extra: {skill_text}")
 
         try:
             from src.agent.factory import build_agent_executor
-            executor = build_agent_executor(config, skills=[strategy_id] if strategy_id else None)
+            executor = build_agent_executor(config, skills=[skill_id] if skill_id else None)
 
             # Build message
-            user_msg = f"请使用 {strategy_id} 策略分析股票 {code}"
-            if strategy_text:
-                user_msg = f"请分析股票 {code}，{strategy_text}"
+            user_msg = f"请分析股票 {code}"
+            if skill_id:
+                user_msg = f"请使用 {skill_id} 技能分析股票 {code}"
+            if skill_text:
+                user_msg = f"请分析股票 {code}，{skill_text}"
 
             # Each /ask invocation is a self-contained single-shot analysis; isolate
             # sessions per request so that different stocks or retry attempts never
@@ -145,19 +148,15 @@ class AskCommand(BotCommand):
             result = executor.chat(message=user_msg, session_id=session_id)
 
             if result.success:
-                # Prepend strategy tag
-                strategy_name = strategy_id
-                try:
-                    from src.agent.factory import get_skill_manager
-                    sm2 = get_skill_manager()
-                    for s in sm2.list_skills():
-                        if s.name == strategy_id:
-                            strategy_name = s.display_name
-                            break
-                except Exception:
-                    pass
+                skill_name = skill_id
+                for skill in self._load_skills():
+                    if str(getattr(skill, "name", "")).strip() == skill_id:
+                        skill_name = str(getattr(skill, "display_name", skill_id)).strip() or skill_id
+                        break
 
-                header = f"📊 {code} | 策略: {strategy_name}\n{'─' * 30}\n"
+                header = f"📊 {code}\n{'─' * 30}\n"
+                if skill_name:
+                    header = f"📊 {code} | 技能: {skill_name}\n{'─' * 30}\n"
                 return BotResponse.text_response(header + result.content)
             else:
                 return BotResponse.text_response(f"⚠️ 分析失败: {result.error}")

@@ -3,7 +3,7 @@
 DecisionAgent — final synthesis and decision-making specialist.
 
 Responsible for:
-- Aggregating opinions from technical + intel + risk + strategy agents
+- Aggregating opinions from technical + intel + risk + skill agents
 - Producing the final Decision Dashboard JSON
 - Generating actionable buy/hold/sell recommendations with price levels
 """
@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from src.agent.agents.base_agent import BaseAgent
 from src.agent.protocols import AgentContext, AgentOpinion, normalize_decision_signal
+from src.report_language import normalize_report_language
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +33,14 @@ class DecisionAgent(BaseAgent):
         return ctx.meta.get("response_mode") == "chat"
 
     def system_prompt(self, ctx: AgentContext) -> str:
+        report_language = normalize_report_language(ctx.meta.get("report_language", "zh"))
         if self._is_chat_mode(ctx):
-            return """\
+            prompt = """\
 You are a **Decision Synthesis Agent** replying directly to the user's latest
 stock-analysis question.
 
 You will receive structured opinions from the technical, intelligence, risk,
-and strategy stages. Synthesize them into a concise, natural-language answer.
+and skill stages. Synthesize them into a concise, natural-language answer.
 
 Requirements:
 - Answer the user's actual question directly
@@ -47,19 +49,22 @@ Requirements:
 - Highlight the main signal, key reasoning, and major risks
 - Do NOT output JSON or code fences unless the user explicitly asks for them
 """
+            if report_language == "en":
+                return prompt + "\nAlways answer in English.\n"
+            return prompt + "\n默认使用中文回答。\n"
 
         skills = ""
         if self.skill_instructions:
-            skills = f"\n## Active Trading Strategies\n\n{self.skill_instructions}\n"
+            skills = f"\n## Active Trading Skills\n\n{self.skill_instructions}\n"
 
-        return f"""\
+        prompt = f"""\
 You are a **Decision Synthesis Agent** that produces the final investment \
 Decision Dashboard.
 
 You will receive:
 1. Structured opinions from a Technical Agent and an Intel Agent
 2. Any risk flags raised by a Risk Agent
-3. Strategy evaluation results (if applicable)
+        3. Skill evaluation results (if applicable)
 
 Your task: synthesise all inputs into a single, actionable Decision Dashboard.
 {skills}
@@ -75,7 +80,7 @@ Your task: synthesise all inputs into a single, actionable Decision Dashboard.
 - Technical opinion weight: ~40%
 - Intel / sentiment weight: ~30%
 - Risk flags weight: ~30% (negative override: any high-severity risk caps signal at "hold")
-- If a strategy opinion is present, blend it at 20% weight (reducing others proportionally)
+- If a skill opinion is present, blend it at 20% weight (reducing others proportionally)
 
 ## Scoring
 - 80-100: buy (all conditions met, high conviction)
@@ -95,6 +100,21 @@ Important: ``decision_type`` must stay within the existing enum
 ``buy|hold|sell``. Express stronger conviction via ``confidence_level``,
 ``sentiment_score``, and the natural-language fields instead of inventing
 new decision_type values.
+"""
+        if report_language == "en":
+            return prompt + """
+
+## Output Language
+- Keep every JSON key unchanged.
+- `decision_type` must remain `buy|hold|sell`.
+- Write all human-readable JSON values in English.
+"""
+        return prompt + """
+
+## 输出语言
+- 所有 JSON 键名保持不变。
+- `decision_type` 必须保持为 `buy|hold|sell`。
+- 所有面向用户的人类可读文本值必须使用中文。
 """
 
     def build_user_message(self, ctx: AgentContext) -> str:
@@ -136,9 +156,10 @@ new decision_type values.
                 parts.append(f"- [{rf.get('severity', 'medium')}] {rf.get('category', '')}: {rf.get('description', '')}")
             parts.append("")
 
-        # Strategy meta
-        if ctx.meta.get("strategies_requested"):
-            parts.append(f"## Strategies: {', '.join(ctx.meta['strategies_requested'])}")
+        # Skill meta
+        requested_skills = ctx.meta.get("skills_requested") or ctx.meta.get("strategies_requested")
+        if requested_skills:
+            parts.append(f"## Skills: {', '.join(requested_skills)}")
             parts.append("")
 
         if self._is_chat_mode(ctx):

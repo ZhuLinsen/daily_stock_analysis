@@ -154,24 +154,42 @@ def _set_session_cookie(response: Response, session_value: str, request: Request
     )
 
 
+def _get_auth_status_dict(request: Request | None = None) -> dict:
+    """Helper to build consistent auth status response body."""
+    auth_enabled = is_auth_enabled()
+    logged_in = False
+    if auth_enabled and request:
+        cookie_val = request.cookies.get(COOKIE_NAME)
+        logged_in = verify_session(cookie_val) if cookie_val else False
+
+    # setupState determination:
+    # - enabled: auth is active
+    # - password_retained: auth disabled but password exists
+    # - no_password: auth disabled and no password exists
+    if auth_enabled:
+        setup_state = "enabled"
+    elif has_stored_password():
+        setup_state = "password_retained"
+    else:
+        setup_state = "no_password"
+
+    return {
+        "authEnabled": auth_enabled,
+        "loggedIn": logged_in,
+        "passwordSet": _password_set_for_response(auth_enabled),
+        "passwordChangeable": is_password_changeable() if auth_enabled else False,
+        "setupState": setup_state,
+    }
+
+
 @router.get(
     "/status",
     summary="Get auth status",
     description="Returns whether auth is enabled and if the current request is logged in.",
 )
 async def auth_status(request: Request):
-    """Return authEnabled, loggedIn, passwordSet, passwordChangeable without requiring auth."""
-    auth_enabled = is_auth_enabled()
-    logged_in = False
-    if auth_enabled:
-        cookie_val = request.cookies.get(COOKIE_NAME)
-        logged_in = verify_session(cookie_val) if cookie_val else False
-    return {
-        "authEnabled": auth_enabled,
-        "loggedIn": logged_in,
-        "passwordSet": _password_set_for_response(auth_enabled),
-        "passwordChangeable": is_password_changeable() if auth_enabled else False,
-    }
+    """Return authEnabled, loggedIn, passwordSet, passwordChangeable, setupState without requiring auth."""
+    return _get_auth_status_dict(request)
 
 
 @router.post(
@@ -322,27 +340,18 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
                 status_code=500,
                 content={"error": "internal_error", "message": "Failed to create session"},
             )
-        resp = JSONResponse(
-            content={
-                "authEnabled": True,
-                "loggedIn": True,
-                "passwordSet": _password_set_for_response(True),
-                "passwordChangeable": True,
-            }
-        )
+        # We manually set loggedIn=True because the cookie is being set in this response
+        # and won't be visible in request.cookies until the NEXT request.
+        content = _get_auth_status_dict(request)
+        content["loggedIn"] = True
+        resp = JSONResponse(content=content)
         _set_session_cookie(resp, session_val, request)
         return resp
 
-    resp = JSONResponse(
-        content={
-            "authEnabled": False,
-            "loggedIn": False,
-            "passwordSet": _password_set_for_response(False),
-            "passwordChangeable": False,
-        }
-    )
+    resp = JSONResponse(content=_get_auth_status_dict(request))
     resp.delete_cookie(key=COOKIE_NAME, path="/")
     return resp
+
 
 
 @router.post(
@@ -458,6 +467,11 @@ async def auth_change_password(body: ChangePasswordRequest):
 )
 async def auth_logout(request: Request):
     """Clear session cookie."""
+    if is_auth_enabled() and not rotate_session_secret():
+        return JSONResponse(
+            status_code=500,
+            content={"error": "internal_error", "message": "Failed to invalidate session"},
+        )
     resp = Response(status_code=204)
     resp.delete_cookie(key=COOKIE_NAME, path="/")
     return resp

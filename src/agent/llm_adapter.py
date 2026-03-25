@@ -8,6 +8,7 @@ interface consumed by the AgentExecutor, via LiteLLM.
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -15,7 +16,14 @@ from typing import Any, Dict, List, Optional
 import litellm
 from litellm import Router
 
-from src.config import get_config, get_api_keys_for_model, extra_litellm_params, get_configured_llm_models
+from src.config import (
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+    get_configured_llm_models,
+    get_effective_agent_models_to_try,
+    get_effective_agent_primary_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,9 +128,9 @@ class LLMToolAdapter:
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._config
-        litellm_model = config.litellm_model
+        litellm_model = get_effective_agent_primary_model(config)
         if not litellm_model:
-            logger.warning("Agent LLM: LITELLM_MODEL not configured")
+            logger.warning("Agent LLM: no effective primary model configured")
             return
 
         self._litellm_available = True
@@ -186,7 +194,7 @@ class LLMToolAdapter:
     @property
     def primary_provider(self) -> str:
         """Provider name extracted from litellm_model prefix."""
-        model = self._config.litellm_model or ""
+        model = get_effective_agent_primary_model(self._config)
         if "/" in model:
             return model.split("/")[0]
         return model or "none"
@@ -200,6 +208,7 @@ class LLMToolAdapter:
         messages: List[Dict[str, Any]],
         tools: List[dict],
         provider: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Send messages + tool declarations to LLM, return normalized response.
 
@@ -212,7 +221,7 @@ class LLMToolAdapter:
         Returns:
             LLMResponse with either content (final answer) or tool_calls.
         """
-        return self.call_completion(messages, tools=tools, provider=provider)
+        return self.call_completion(messages, tools=tools, provider=provider, timeout=timeout)
 
     def call_text(
         self,
@@ -245,11 +254,19 @@ class LLMToolAdapter:
     ) -> LLMResponse:
         """Shared completion path for both tool and text-only calls."""
         config = self._config
-        models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
-        models_to_try = [m for m in models_to_try if m]
+        models_to_try = get_effective_agent_models_to_try(config)
+        started_at = time.time()
 
         last_error = None
         for model in models_to_try:
+            remaining_timeout = timeout
+            if timeout is not None and timeout > 0:
+                remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
+                if remaining_timeout <= 0:
+                    last_error = TimeoutError(
+                        f"LLM completion timed out before trying fallback model {model}"
+                    )
+                    break
             try:
                 return self._call_litellm_model(
                     messages,
@@ -257,7 +274,7 @@ class LLMToolAdapter:
                     model,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    timeout=timeout,
+                    timeout=remaining_timeout,
                 )
             except Exception as e:
                 logger.warning(f"Agent LLM call failed with {model}: {e}")
@@ -304,10 +321,11 @@ class LLMToolAdapter:
         # Use Router for primary model (multi-key), direct litellm for others
         use_channel_router = self._has_channel_config()
         _router_model_names = set(get_configured_llm_models(self._config.llm_model_list))
+        agent_primary_model = get_effective_agent_primary_model(self._config)
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
             response = self._router.completion(**call_kwargs)
-        elif self._router and model == self._config.litellm_model and not use_channel_router:
+        elif self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = self._router.completion(**call_kwargs)
         else:

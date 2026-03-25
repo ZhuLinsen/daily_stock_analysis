@@ -7,11 +7,12 @@ Provides DB access helpers for portfolio account/events/snapshot tables.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.storage import (
     DatabaseManager,
@@ -35,6 +36,10 @@ class DuplicateTradeUidError(Exception):
 
 class DuplicateTradeDedupHashError(Exception):
     """Raised when dedup hash conflicts with existing record in one account."""
+
+
+class PortfolioBusyError(Exception):
+    """Raised when SQLite write serialization cannot acquire the ledger lock."""
 
 
 class PortfolioRepository:
@@ -71,12 +76,11 @@ class PortfolioRepository:
 
     def get_account(self, account_id: int, include_inactive: bool = False) -> Optional[PortfolioAccount]:
         with self.db.get_session() as session:
-            conditions = [PortfolioAccount.id == account_id]
-            if not include_inactive:
-                conditions.append(PortfolioAccount.is_active.is_(True))
-            return session.execute(
-                select(PortfolioAccount).where(and_(*conditions)).limit(1)
-            ).scalar_one_or_none()
+            return self.get_account_in_session(
+                session=session,
+                account_id=account_id,
+                include_inactive=include_inactive,
+            )
 
     def list_accounts(self, include_inactive: bool = False) -> List[PortfolioAccount]:
         with self.db.get_session() as session:
@@ -85,6 +89,20 @@ class PortfolioRepository:
                 query = query.where(PortfolioAccount.is_active.is_(True))
             rows = session.execute(query.order_by(PortfolioAccount.id.asc())).scalars().all()
             return list(rows)
+
+    def get_account_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        include_inactive: bool = False,
+    ) -> Optional[PortfolioAccount]:
+        conditions = [PortfolioAccount.id == account_id]
+        if not include_inactive:
+            conditions.append(PortfolioAccount.is_active.is_(True))
+        return session.execute(
+            select(PortfolioAccount).where(and_(*conditions)).limit(1)
+        ).scalar_one_or_none()
 
     def update_account(self, account_id: int, fields: Dict[str, Any]) -> Optional[PortfolioAccount]:
         with self.db.get_session() as session:
@@ -115,6 +133,31 @@ class PortfolioRepository:
     # ------------------------------------------------------------------
     # Event writes
     # ------------------------------------------------------------------
+    @contextmanager
+    def portfolio_write_session(self):
+        session = self.db.get_session()
+        try:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        except OperationalError as exc:
+            session.close()
+            if self._is_sqlite_locked_error(exc):
+                raise PortfolioBusyError("Portfolio ledger is busy; please retry shortly.") from exc
+            raise
+
+        try:
+            yield session
+            session.commit()
+        except OperationalError as exc:
+            session.rollback()
+            if self._is_sqlite_locked_error(exc):
+                raise PortfolioBusyError("Portfolio ledger is busy; please retry shortly.") from exc
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def add_trade(
         self,
         *,
@@ -132,8 +175,9 @@ class PortfolioRepository:
         note: Optional[str] = None,
         dedup_hash: Optional[str] = None,
     ) -> PortfolioTrade:
-        with self.db.get_session() as session:
-            row = PortfolioTrade(
+        with self.portfolio_write_session() as session:
+            row = self.add_trade_in_session(
+                session=session,
                 account_id=account_id,
                 trade_uid=trade_uid,
                 symbol=symbol,
@@ -148,26 +192,7 @@ class PortfolioRepository:
                 note=note,
                 dedup_hash=dedup_hash,
             )
-            session.add(row)
-            try:
-                session.commit()
-            except IntegrityError as exc:
-                session.rollback()
-                err_text = str(getattr(exc, "orig", exc)).lower()
-                if trade_uid and ("uix_portfolio_trade_uid" in err_text or "unique" in err_text):
-                    raise DuplicateTradeUidError(
-                        f"Duplicate trade_uid for account_id={account_id}: {trade_uid}"
-                    ) from exc
-                if dedup_hash and (
-                    "uix_portfolio_trade_dedup_hash" in err_text
-                    or "portfolio_trades.account_id, portfolio_trades.dedup_hash" in err_text
-                    or ("unique" in err_text and "dedup_hash" in err_text)
-                ):
-                    raise DuplicateTradeDedupHashError(
-                        f"Duplicate dedup_hash for account_id={account_id}: {dedup_hash}"
-                    ) from exc
-                raise
-            session.refresh(row)
+            session.expunge(row)
             return row
 
     def add_cash_ledger(
@@ -180,8 +205,9 @@ class PortfolioRepository:
         currency: str,
         note: Optional[str] = None,
     ) -> PortfolioCashLedger:
-        with self.db.get_session() as session:
-            row = PortfolioCashLedger(
+        with self.portfolio_write_session() as session:
+            row = self.add_cash_ledger_in_session(
+                session=session,
                 account_id=account_id,
                 event_date=event_date,
                 direction=direction,
@@ -189,9 +215,7 @@ class PortfolioRepository:
                 currency=currency,
                 note=note,
             )
-            session.add(row)
-            session.commit()
-            session.refresh(row)
+            session.expunge(row)
             return row
 
     def add_corporate_action(
@@ -207,8 +231,9 @@ class PortfolioRepository:
         split_ratio: Optional[float] = None,
         note: Optional[str] = None,
     ) -> PortfolioCorporateAction:
-        with self.db.get_session() as session:
-            row = PortfolioCorporateAction(
+        with self.portfolio_write_session() as session:
+            row = self.add_corporate_action_in_session(
+                session=session,
                 account_id=account_id,
                 symbol=symbol,
                 market=market,
@@ -219,10 +244,20 @@ class PortfolioRepository:
                 split_ratio=split_ratio,
                 note=note,
             )
-            session.add(row)
-            session.commit()
-            session.refresh(row)
+            session.expunge(row)
             return row
+
+    def delete_trade(self, trade_id: int) -> bool:
+        with self.portfolio_write_session() as session:
+            return self.delete_trade_in_session(session=session, trade_id=trade_id)
+
+    def delete_cash_ledger(self, entry_id: int) -> bool:
+        with self.portfolio_write_session() as session:
+            return self.delete_cash_ledger_in_session(session=session, entry_id=entry_id)
+
+    def delete_corporate_action(self, action_id: int) -> bool:
+        with self.portfolio_write_session() as session:
+            return self.delete_corporate_action_in_session(session=session, action_id=action_id)
 
     def has_trade_uid(self, account_id: int, trade_uid: Optional[str]) -> bool:
         """Return True when trade_uid already exists in the account."""
@@ -230,15 +265,7 @@ class PortfolioRepository:
         if not uid:
             return False
         with self.db.get_session() as session:
-            row = session.execute(
-                select(PortfolioTrade.id).where(
-                    and_(
-                        PortfolioTrade.account_id == account_id,
-                        PortfolioTrade.trade_uid == uid,
-                    )
-                ).limit(1)
-            ).scalar_one_or_none()
-            return row is not None
+            return self.has_trade_uid_in_session(session=session, account_id=account_id, trade_uid=uid)
 
     def has_trade_dedup_hash(self, account_id: int, dedup_hash: Optional[str]) -> bool:
         """Return True when dedup hash already exists in the account."""
@@ -246,60 +273,265 @@ class PortfolioRepository:
         if not hash_value:
             return False
         with self.db.get_session() as session:
-            row = session.execute(
-                select(PortfolioTrade.id).where(
-                    and_(
-                        PortfolioTrade.account_id == account_id,
-                        PortfolioTrade.dedup_hash == hash_value,
-                    )
-                ).limit(1)
-            ).scalar_one_or_none()
-            return row is not None
+            return self.has_trade_dedup_hash_in_session(
+                session=session,
+                account_id=account_id,
+                dedup_hash=hash_value,
+            )
+
+    def has_trade_uid_in_session(self, *, session: Any, account_id: int, trade_uid: str) -> bool:
+        row = session.execute(
+            select(PortfolioTrade.id).where(
+                and_(
+                    PortfolioTrade.account_id == account_id,
+                    PortfolioTrade.trade_uid == trade_uid,
+                )
+            ).limit(1)
+        ).scalar_one_or_none()
+        return row is not None
+
+    def has_trade_dedup_hash_in_session(self, *, session: Any, account_id: int, dedup_hash: str) -> bool:
+        row = session.execute(
+            select(PortfolioTrade.id).where(
+                and_(
+                    PortfolioTrade.account_id == account_id,
+                    PortfolioTrade.dedup_hash == dedup_hash,
+                )
+            ).limit(1)
+        ).scalar_one_or_none()
+        return row is not None
+
+    def add_trade_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        trade_uid: Optional[str],
+        symbol: str,
+        market: str,
+        currency: str,
+        trade_date: date,
+        side: str,
+        quantity: float,
+        price: float,
+        fee: float,
+        tax: float,
+        note: Optional[str] = None,
+        dedup_hash: Optional[str] = None,
+    ) -> PortfolioTrade:
+        row = PortfolioTrade(
+            account_id=account_id,
+            trade_uid=trade_uid,
+            symbol=symbol,
+            market=market,
+            currency=currency,
+            trade_date=trade_date,
+            side=side,
+            quantity=quantity,
+            price=price,
+            fee=fee,
+            tax=tax,
+            note=note,
+            dedup_hash=dedup_hash,
+        )
+        session.add(row)
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=account_id,
+            from_date=trade_date,
+        )
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            raise self._translate_trade_integrity_error(
+                exc=exc,
+                account_id=account_id,
+                trade_uid=trade_uid,
+                dedup_hash=dedup_hash,
+            ) from exc
+        session.refresh(row)
+        return row
+
+    def add_cash_ledger_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        event_date: date,
+        direction: str,
+        amount: float,
+        currency: str,
+        note: Optional[str] = None,
+    ) -> PortfolioCashLedger:
+        row = PortfolioCashLedger(
+            account_id=account_id,
+            event_date=event_date,
+            direction=direction,
+            amount=amount,
+            currency=currency,
+            note=note,
+        )
+        session.add(row)
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=account_id,
+            from_date=event_date,
+        )
+        session.flush()
+        session.refresh(row)
+        return row
+
+    def add_corporate_action_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        symbol: str,
+        market: str,
+        currency: str,
+        effective_date: date,
+        action_type: str,
+        cash_dividend_per_share: Optional[float] = None,
+        split_ratio: Optional[float] = None,
+        note: Optional[str] = None,
+    ) -> PortfolioCorporateAction:
+        row = PortfolioCorporateAction(
+            account_id=account_id,
+            symbol=symbol,
+            market=market,
+            currency=currency,
+            effective_date=effective_date,
+            action_type=action_type,
+            cash_dividend_per_share=cash_dividend_per_share,
+            split_ratio=split_ratio,
+            note=note,
+        )
+        session.add(row)
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=account_id,
+            from_date=effective_date,
+        )
+        session.flush()
+        session.refresh(row)
+        return row
+
+    def delete_trade_in_session(self, *, session: Any, trade_id: int) -> bool:
+        row = session.execute(
+            select(PortfolioTrade).where(PortfolioTrade.id == trade_id).limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=int(row.account_id),
+            from_date=row.trade_date,
+        )
+        session.delete(row)
+        session.flush()
+        return True
+
+    def delete_cash_ledger_in_session(self, *, session: Any, entry_id: int) -> bool:
+        row = session.execute(
+            select(PortfolioCashLedger).where(PortfolioCashLedger.id == entry_id).limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=int(row.account_id),
+            from_date=row.event_date,
+        )
+        session.delete(row)
+        session.flush()
+        return True
+
+    def delete_corporate_action_in_session(self, *, session: Any, action_id: int) -> bool:
+        row = session.execute(
+            select(PortfolioCorporateAction).where(PortfolioCorporateAction.id == action_id).limit(1)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        self._invalidate_account_cache_in_session(
+            session=session,
+            account_id=int(row.account_id),
+            from_date=row.effective_date,
+        )
+        session.delete(row)
+        session.flush()
+        return True
 
     # ------------------------------------------------------------------
     # Event reads
     # ------------------------------------------------------------------
     def list_trades(self, account_id: int, as_of: date) -> List[PortfolioTrade]:
         with self.db.get_session() as session:
-            rows = session.execute(
-                select(PortfolioTrade)
-                .where(
-                    and_(
-                        PortfolioTrade.account_id == account_id,
-                        PortfolioTrade.trade_date <= as_of,
-                    )
+            return self.list_trades_in_session(session=session, account_id=account_id, as_of=as_of)
+
+    def list_trades_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        as_of: date,
+    ) -> List[PortfolioTrade]:
+        rows = session.execute(
+            select(PortfolioTrade)
+            .where(
+                and_(
+                    PortfolioTrade.account_id == account_id,
+                    PortfolioTrade.trade_date <= as_of,
                 )
-                .order_by(PortfolioTrade.trade_date.asc(), PortfolioTrade.id.asc())
-            ).scalars().all()
-            return list(rows)
+            )
+            .order_by(PortfolioTrade.trade_date.asc(), PortfolioTrade.id.asc())
+        ).scalars().all()
+        return list(rows)
 
     def list_cash_ledger(self, account_id: int, as_of: date) -> List[PortfolioCashLedger]:
         with self.db.get_session() as session:
-            rows = session.execute(
-                select(PortfolioCashLedger)
-                .where(
-                    and_(
-                        PortfolioCashLedger.account_id == account_id,
-                        PortfolioCashLedger.event_date <= as_of,
-                    )
+            return self.list_cash_ledger_in_session(session=session, account_id=account_id, as_of=as_of)
+
+    def list_cash_ledger_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        as_of: date,
+    ) -> List[PortfolioCashLedger]:
+        rows = session.execute(
+            select(PortfolioCashLedger)
+            .where(
+                and_(
+                    PortfolioCashLedger.account_id == account_id,
+                    PortfolioCashLedger.event_date <= as_of,
                 )
-                .order_by(PortfolioCashLedger.event_date.asc(), PortfolioCashLedger.id.asc())
-            ).scalars().all()
-            return list(rows)
+            )
+            .order_by(PortfolioCashLedger.event_date.asc(), PortfolioCashLedger.id.asc())
+        ).scalars().all()
+        return list(rows)
 
     def list_corporate_actions(self, account_id: int, as_of: date) -> List[PortfolioCorporateAction]:
         with self.db.get_session() as session:
-            rows = session.execute(
-                select(PortfolioCorporateAction)
-                .where(
-                    and_(
-                        PortfolioCorporateAction.account_id == account_id,
-                        PortfolioCorporateAction.effective_date <= as_of,
-                    )
+            return self.list_corporate_actions_in_session(session=session, account_id=account_id, as_of=as_of)
+
+    def list_corporate_actions_in_session(
+        self,
+        *,
+        session: Any,
+        account_id: int,
+        as_of: date,
+    ) -> List[PortfolioCorporateAction]:
+        rows = session.execute(
+            select(PortfolioCorporateAction)
+            .where(
+                and_(
+                    PortfolioCorporateAction.account_id == account_id,
+                    PortfolioCorporateAction.effective_date <= as_of,
                 )
-                .order_by(PortfolioCorporateAction.effective_date.asc(), PortfolioCorporateAction.id.asc())
-            ).scalars().all()
-            return list(rows)
+            )
+            .order_by(PortfolioCorporateAction.effective_date.asc(), PortfolioCorporateAction.id.asc())
+        ).scalars().all()
+        return list(rows)
 
     def get_first_activity_date(self, *, account_id: int, as_of: date) -> Optional[date]:
         """Return earliest event date (trade/cash/corporate action) for one account."""
@@ -625,6 +857,57 @@ class PortfolioRepository:
                 )
 
             session.commit()
+
+    def _invalidate_account_cache_in_session(self, *, session: Any, account_id: int, from_date: date) -> None:
+        session.execute(
+            delete(PortfolioPositionLot).where(PortfolioPositionLot.account_id == account_id)
+        )
+        session.execute(
+            delete(PortfolioPosition).where(PortfolioPosition.account_id == account_id)
+        )
+        session.execute(
+            delete(PortfolioDailySnapshot).where(
+                and_(
+                    PortfolioDailySnapshot.account_id == account_id,
+                    PortfolioDailySnapshot.snapshot_date >= from_date,
+                )
+            )
+        )
+
+    @staticmethod
+    def _is_sqlite_locked_error(exc: OperationalError) -> bool:
+        err_text = str(getattr(exc, "orig", exc)).lower()
+        return any(
+            token in err_text
+            for token in (
+                "database is locked",
+                "database schema is locked",
+                "database table is locked",
+            )
+        )
+
+    @staticmethod
+    def _translate_trade_integrity_error(
+        *,
+        exc: IntegrityError,
+        account_id: int,
+        trade_uid: Optional[str],
+        dedup_hash: Optional[str],
+    ) -> Exception:
+        err_text = str(getattr(exc, "orig", exc)).lower()
+        if trade_uid and ("uix_portfolio_trade_uid" in err_text or "unique" in err_text):
+            return DuplicateTradeUidError(
+                f"Duplicate trade_uid for account_id={account_id}: {trade_uid}"
+            )
+        if dedup_hash and (
+            "uix_portfolio_trade_dedup_hash" in err_text
+            or "portfolio_trades.account_id, portfolio_trades.dedup_hash" in err_text
+            or ("unique" in err_text and "dedup_hash" in err_text)
+        ):
+            return DuplicateTradeDedupHashError(
+                f"Duplicate dedup_hash for account_id={account_id}: {dedup_hash}"
+            )
+        return exc
 
     def upsert_daily_snapshot(
         self,

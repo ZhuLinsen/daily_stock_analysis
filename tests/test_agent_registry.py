@@ -14,6 +14,11 @@ import unittest
 import sys
 import os
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from tests.litellm_stub import ensure_litellm_stub
+
+ensure_litellm_stub()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -308,7 +313,7 @@ class TestSkillManager(unittest.TestCase):
         instructions = self.manager.get_skill_instructions()
         self.assertIn("Test Skill (demo)", instructions)
         self.assertIn("Instructions for demo", instructions)
-        self.assertIn("策略 1:", instructions)
+        self.assertIn("技能 1:", instructions)
 
     def test_get_required_tools(self):
         s1 = _make_skill("s1")
@@ -330,6 +335,15 @@ class TestSkillManager(unittest.TestCase):
         required = self.manager.get_required_tools()
         self.assertIn("tool_a", required)
         self.assertNotIn("tool_b", required)
+
+    def test_get_required_tools_ignores_allowed_tools_metadata(self):
+        s1 = _make_skill("s1", enabled=True)
+        s1.required_tools = ["tool_a"]
+        s1.allowed_tools = ["Read", "Grep"]
+        self.manager.register(s1)
+
+        required = self.manager.get_required_tools()
+        self.assertEqual(required, ["tool_a"])
 
 
 # ============================================================
@@ -402,14 +416,115 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
             self.assertIsInstance(td, ToolDefinition)
             self.assertEqual(td.category, "market")
 
+    def test_import_backtest_tools(self):
+        from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
+
+        self.assertGreater(len(ALL_BACKTEST_TOOLS), 0, "ALL_BACKTEST_TOOLS must not be empty")
+        names = {td.name for td in ALL_BACKTEST_TOOLS}
+        self.assertIn("get_skill_backtest_summary", names)
+        self.assertIn("get_strategy_backtest_summary", names)
+        self.assertIn("get_stock_backtest_summary", names)
+        for td in ALL_BACKTEST_TOOLS:
+            self.assertIsInstance(td, ToolDefinition)
+            self.assertEqual(td.category, "data")
+
+    def test_skill_backtest_tool_reports_specific_skill_as_unsupported_until_persisted(self):
+        from src.agent.tools.backtest_tools import _handle_get_skill_backtest_summary
+
+        svc = MagicMock()
+        svc.get_skill_summary.return_value = None
+
+        with patch("src.agent.tools.backtest_tools._get_backtest_service", return_value=svc):
+            payload = _handle_get_skill_backtest_summary(skill_id="bull_trend", eval_window_days=20)
+
+        svc.get_skill_summary.assert_called_once_with("bull_trend", eval_window_days=20)
+        self.assertEqual(payload["skill_id"], "bull_trend")
+        self.assertFalse(payload["supported"])
+        self.assertIn("not available", payload["info"])
+
+    def test_skill_backtest_tool_requires_skill_id(self):
+        from src.agent.tools.backtest_tools import (
+            _handle_get_skill_backtest_summary,
+            get_skill_backtest_summary_tool,
+        )
+
+        payload = _handle_get_skill_backtest_summary(skill_id="")
+        schema = get_skill_backtest_summary_tool.to_openai_tool()["function"]["parameters"]
+
+        self.assertEqual(
+            payload,
+            {
+                "supported": False,
+                "error": "skill_id is required. Use get_strategy_backtest_summary for overall metrics.",
+            },
+        )
+        self.assertIn("skill_id", schema["required"])
+
+    def test_skill_backtest_tool_success_payload_keeps_normalized_metrics_and_pct_aliases(self):
+        from src.agent.tools.backtest_tools import _handle_get_skill_backtest_summary
+
+        svc = MagicMock()
+        svc.get_skill_summary.return_value = {
+            "scope": "skill",
+            "eval_window_days": 20,
+            "total_evaluations": 7,
+            "completed_count": 6,
+            "win_rate": 0.64,
+            "direction_accuracy": 0.71,
+            "avg_return": 0.083,
+            "win_rate_pct": 64.0,
+            "direction_accuracy_pct": 71.0,
+            "avg_stock_return_pct": 6.8,
+            "avg_simulated_return_pct": 8.3,
+            "computed_at": "2026-03-20T07:00:00+00:00",
+        }
+
+        with patch("src.agent.tools.backtest_tools._get_backtest_service", return_value=svc):
+            payload = _handle_get_skill_backtest_summary(skill_id="bull_trend", eval_window_days=20)
+
+        self.assertEqual(
+            payload,
+            {
+                "scope": "skill",
+                "skill_id": "bull_trend",
+                "supported": True,
+                "eval_window_days": 20,
+                "total_evaluations": 7,
+                "completed_count": 6,
+                "win_rate": 0.64,
+                "direction_accuracy": 0.71,
+                "avg_return": 0.083,
+                "win_rate_pct": 64.0,
+                "direction_accuracy_pct": 71.0,
+                "avg_stock_return_pct": 6.8,
+                "avg_simulated_return_pct": 8.3,
+                "computed_at": "2026-03-20T07:00:00+00:00",
+            },
+        )
+
+    def test_backtest_tool_errors_do_not_expose_raw_exception_text(self):
+        from src.agent.tools.backtest_tools import _handle_get_skill_backtest_summary, _handle_get_stock_backtest_summary
+
+        svc = MagicMock()
+        svc.get_skill_summary.side_effect = RuntimeError("db path: /tmp/secret.db")
+        svc.get_summary.side_effect = RuntimeError("db path: /tmp/secret.db")
+
+        with patch("src.agent.tools.backtest_tools._get_backtest_service", return_value=svc):
+            skill_payload = _handle_get_skill_backtest_summary(skill_id="bull_trend")
+            stock_payload = _handle_get_stock_backtest_summary(stock_code="600519")
+
+        self.assertEqual(skill_payload, {"error": "Failed to retrieve backtest summary."})
+        self.assertEqual(stock_payload, {"error": "Failed to retrieve backtest data."})
+
     def test_all_tools_have_valid_schemas(self):
         """All tools should generate valid OpenAI-format schemas (used by litellm)."""
         from src.agent.tools.data_tools import ALL_DATA_TOOLS
         from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
         from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
         from src.agent.tools.market_tools import ALL_MARKET_TOOLS
+        from src.agent.tools.backtest_tools import ALL_BACKTEST_TOOLS
 
-        all_tools = ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS
+        all_tools = ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS + ALL_BACKTEST_TOOLS
         for td in all_tools:
             oai = td.to_openai_tool()
             self.assertEqual(oai["type"], "function")
@@ -488,6 +603,37 @@ instructions: 用自然语言描述的策略内容
         finally:
             os.unlink(tmp_path)
 
+    def test_load_yaml_metadata_fields(self):
+        """YAML metadata should populate aliases/default flags/router tags."""
+        import tempfile, os
+        from src.agent.skills.base import load_skill_from_yaml
+
+        yaml_content = """
+name: metadata_skill
+display_name: 元数据技能
+description: 带有默认元数据的技能
+aliases: [别名一, 别名二]
+default_active: true
+default_router: true
+default_priority: 15
+market_regimes: [trending_up, volatile]
+instructions: |
+  这是一个测试技能。
+"""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+
+        try:
+            skill = load_skill_from_yaml(tmp_path)
+            self.assertEqual(skill.aliases, ["别名一", "别名二"])
+            self.assertTrue(skill.default_active)
+            self.assertTrue(skill.default_router)
+            self.assertEqual(skill.default_priority, 15)
+            self.assertEqual(skill.market_regimes, ["trending_up", "volatile"])
+        finally:
+            os.unlink(tmp_path)
+
     def test_load_yaml_missing_required_fields(self):
         """YAML missing required fields should raise ValueError."""
         import tempfile, os
@@ -547,6 +693,103 @@ instructions: 自然语言策略描述 {name}
             import shutil
             shutil.rmtree(tmpdir)
 
+    def test_load_skill_bundle_markdown(self):
+        """Load a Claude/Codex-style SKILL.md bundle."""
+        import shutil
+        import tempfile
+
+        from src.agent.skills.base import load_skill_from_markdown
+
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            skill_dir = tmpdir / "explain-code"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: explain-code
+description: Explain code with diagrams
+allowed-tools: Read, Grep
+required-tools: analyze_trend, get_daily_history
+context: fork
+agent: explorer
+---
+When explaining code, always include an ASCII diagram.
+""",
+                encoding="utf-8",
+            )
+            skill = load_skill_from_markdown(skill_dir / "SKILL.md")
+            self.assertEqual(skill.name, "explain-code")
+            self.assertEqual(skill.description, "Explain code with diagrams")
+            self.assertEqual(skill.allowed_tools, ["Read", "Grep"])
+            self.assertEqual(skill.required_tools, ["analyze_trend", "get_daily_history"])
+            self.assertEqual(skill.execution_context, "fork")
+            self.assertEqual(skill.subagent_type, "explorer")
+            self.assertEqual(skill.bundle_dir, str(skill_dir))
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_load_skill_bundle_metadata_defaults(self):
+        """SKILL.md frontmatter should populate metadata-driven default fields."""
+        import shutil
+        import tempfile
+
+        from src.agent.skills.base import load_skill_from_markdown
+
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            skill_dir = tmpdir / "rotation-scout"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+name: rotation-scout
+description: Track sector rotation leaders
+aliases: [轮动, 龙头侦察]
+default-active: true
+default-router: true
+default-priority: 12
+market-regimes: [sector_hot]
+---
+Track hot sectors and leading stocks.
+""",
+                encoding="utf-8",
+            )
+            skill = load_skill_from_markdown(skill_dir / "SKILL.md")
+            self.assertEqual(skill.aliases, ["轮动", "龙头侦察"])
+            self.assertTrue(skill.default_active)
+            self.assertTrue(skill.default_router)
+            self.assertEqual(skill.default_priority, 12)
+            self.assertEqual(skill.market_regimes, ["sector_hot"])
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_load_skill_bundle_defaults_name_and_description(self):
+        """SKILL.md should default name to directory and description to first paragraph."""
+        import shutil
+        import tempfile
+
+        from src.agent.skills.base import load_skill_from_markdown
+
+        tmpdir = Path(tempfile.mkdtemp())
+        try:
+            skill_dir = tmpdir / "api-conventions"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                """---
+allowed-tools: Read
+---
+API design patterns for this codebase.
+
+Use RESTful naming and consistent validation.
+""",
+                encoding="utf-8",
+            )
+            skill = load_skill_from_markdown(skill_dir / "SKILL.md")
+            self.assertEqual(skill.name, "api-conventions")
+            self.assertEqual(skill.description, "API design patterns for this codebase.")
+            self.assertEqual(skill.display_name, "api-conventions")
+        finally:
+            shutil.rmtree(tmpdir)
+
     def test_custom_overrides_builtin(self):
         """Custom strategy with same name should override built-in."""
         import tempfile, os
@@ -588,3 +831,62 @@ instructions: 按照我的规则分析龙头股
         for skill in manager.list_skills():
             self.assertEqual(skill.source, "builtin",
                              f"Strategy {skill.name} should have source='builtin'")
+
+
+class TestSkillDefaultResolution(unittest.TestCase):
+    """Test metadata-driven default skill resolution helpers."""
+
+    def test_default_helpers_follow_metadata(self):
+        from src.agent.skills.defaults import (
+            get_default_active_skill_ids,
+            get_default_router_skill_ids,
+            get_primary_default_skill_id,
+            get_regime_skill_ids,
+        )
+
+        skills = [
+            Skill(name="gamma", display_name="Gamma", description="g", instructions="i", default_priority=30),
+            Skill(name="alpha", display_name="Alpha", description="a", instructions="i", default_active=True, default_router=True, default_priority=10, market_regimes=["trending_up"]),
+            Skill(name="beta", display_name="Beta", description="b", instructions="i", default_active=True, default_priority=20, market_regimes=["volatile"]),
+        ]
+
+        self.assertEqual(get_default_active_skill_ids(skills), ["alpha"])
+        self.assertEqual(get_default_router_skill_ids(skills), ["alpha"])
+        self.assertEqual(get_primary_default_skill_id(skills), "alpha")
+        self.assertEqual(get_regime_skill_ids("volatile", skills), ["beta"])
+
+    def test_default_helpers_fall_back_to_sorted_user_invocable_skills(self):
+        from src.agent.skills.defaults import (
+            get_default_active_skill_ids,
+            get_default_router_skill_ids,
+            get_primary_default_skill_id,
+        )
+
+        skills = [
+            Skill(name="zeta", display_name="Zeta", description="z", instructions="i", default_priority=80),
+            Skill(name="eta", display_name="Eta", description="e", instructions="i", default_priority=20),
+        ]
+
+        self.assertEqual(get_default_active_skill_ids(skills), ["eta"])
+        self.assertEqual(get_default_router_skill_ids(skills), ["eta"])
+        self.assertEqual(get_primary_default_skill_id(skills), "eta")
+
+
+class TestSkillAgent(unittest.TestCase):
+    def test_skill_agent_uses_required_tools_only(self):
+        from src.agent.skills.skill_agent import SkillAgent
+
+        skill = Skill(
+            name="bundle_skill",
+            display_name="Bundle Skill",
+            description="desc",
+            instructions="do work",
+            required_tools=["analyze_trend"],
+            allowed_tools=["Read", "Grep"],
+        )
+
+        with patch("src.agent.factory.get_skill_manager") as mock_get_skill_manager:
+            mock_get_skill_manager.return_value.get.return_value = skill
+            agent = SkillAgent(skill_id="bundle_skill", tool_registry=MagicMock(), llm_adapter=MagicMock())
+
+        self.assertEqual(agent.tool_names, ["analyze_trend"])

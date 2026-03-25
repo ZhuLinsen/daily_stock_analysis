@@ -92,13 +92,15 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
     
     # 允许所有来源（开发/演示用）
-    if os.environ.get("CORS_ALLOW_ALL", "").lower() == "true":
+    allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
+    allow_credentials = not allow_all_origins
+    if allow_all_origins:
         allowed_origins = ["*"]
     
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

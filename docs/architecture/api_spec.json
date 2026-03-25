@@ -504,6 +504,147 @@
         }
       }
     },
+    "/api/v1/system/config/export": {
+      "get": {
+        "tags": [
+          "SystemConfig"
+        ],
+        "summary": "导出桌面端 `.env` 备份",
+        "description": "仅桌面模式可用。返回当前已保存 `.env` 的原始文本内容，用于桌面端备份。",
+        "operationId": "exportDesktopSystemConfig",
+        "responses": {
+          "200": {
+            "description": "导出成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportSystemConfigResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "仅桌面模式可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "导出失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/config/import": {
+      "post": {
+        "tags": [
+          "SystemConfig"
+        ],
+        "summary": "导入桌面端 `.env` 备份",
+        "description": "仅桌面模式可用。按键级覆盖方式把备份文本合并到当前 `.env`，并沿用现有配置版本冲突保护。",
+        "operationId": "importDesktopSystemConfig",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSystemConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "导入成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateSystemConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "导入文件无效或配置校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SystemConfigValidationErrorResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "仅桌面模式可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "配置版本冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemConfigConflictResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "导入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/config/validate": {
       "post": {
         "tags": [
@@ -1419,6 +1560,28 @@
           "items"
         ]
       },
+      "ExportSystemConfigResponse": {
+        "type": "object",
+        "description": "桌面端 `.env` 原文导出响应",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "当前已保存 `.env` 的原始文本内容"
+          },
+          "config_version": {
+            "type": "string",
+            "description": "导出时对应的配置版本"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "content",
+          "config_version"
+        ]
+      },
       "SystemConfigUpdateItem": {
         "type": "object",
         "description": "配置更新项",
@@ -1463,6 +1626,27 @@
         "required": [
           "config_version",
           "items"
+        ]
+      },
+      "ImportSystemConfigRequest": {
+        "type": "object",
+        "description": "桌面端 `.env` 导入请求",
+        "properties": {
+          "config_version": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string",
+            "description": "待导入的 `.env` 原始文本"
+          },
+          "reload_now": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "config_version",
+          "content"
         ]
       },
       "UpdateSystemConfigResponse": {

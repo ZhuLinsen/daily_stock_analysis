@@ -16,7 +16,7 @@ import sys
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -244,11 +244,11 @@ class TestAgentRunStats(unittest.TestCase):
 
 
 # ============================================================
-# StrategyRouter
+# Legacy StrategyRouter Compatibility
 # ============================================================
 
 class TestStrategyRouter(unittest.TestCase):
-    """Test StrategyRouter selection logic."""
+    """Test the legacy StrategyRouter alias for SkillRouter."""
 
     def test_user_requested_strategies_take_priority(self):
         from src.agent.strategies.router import StrategyRouter
@@ -266,8 +266,14 @@ class TestStrategyRouter(unittest.TestCase):
         result = router.select_strategies(ctx, max_count=2)
         self.assertEqual(len(result), 2)
 
-    @patch("src.agent.strategies.router.StrategyRouter._get_routing_mode", return_value="manual")
-    @patch("src.agent.strategies.router.StrategyRouter._get_available_ids", return_value={"chan_theory", "wave_theory"})
+    @patch("src.agent.skills.router.StrategyRouter._get_routing_mode", return_value="manual")
+    @patch(
+        "src.agent.skills.router.StrategyRouter._get_available_skills",
+        return_value=[
+            SimpleNamespace(name="chan_theory"),
+            SimpleNamespace(name="wave_theory"),
+        ],
+    )
     @patch("src.config.get_config", return_value=SimpleNamespace(agent_skills=["chan_theory", "wave_theory"]))
     def test_manual_mode_uses_configured_agent_skills(self, _mock_config, _mock_available, _mock):
         from src.agent.strategies.router import StrategyRouter
@@ -276,15 +282,21 @@ class TestStrategyRouter(unittest.TestCase):
         result = router.select_strategies(ctx)
         self.assertEqual(result, ["chan_theory", "wave_theory"])
 
-    @patch("src.agent.strategies.router.StrategyRouter._get_routing_mode", return_value="manual")
-    @patch("src.agent.strategies.router.StrategyRouter._get_available_ids", return_value={"bull_trend", "shrink_pullback"})
+    @patch("src.agent.skills.router.StrategyRouter._get_routing_mode", return_value="manual")
+    @patch(
+        "src.agent.skills.router.StrategyRouter._get_available_skills",
+        return_value=[
+            SimpleNamespace(name="bull_trend", default_router=True, default_priority=10),
+            SimpleNamespace(name="shrink_pullback", default_router=True, default_priority=40),
+        ],
+    )
     @patch("src.config.get_config", return_value=SimpleNamespace(agent_skills=[]))
     def test_manual_mode_falls_back_to_defaults_when_no_skills_configured(self, _mock_config, _mock_available, _mock):
         from src.agent.strategies.router import StrategyRouter, _DEFAULT_STRATEGIES
         router = StrategyRouter()
         ctx = AgentContext()
         result = router.select_strategies(ctx)
-        self.assertEqual(result, _DEFAULT_STRATEGIES[:3])
+        self.assertEqual(result, list(_DEFAULT_STRATEGIES[:3]))
 
     def test_detect_regime_bullish(self):
         from src.agent.strategies.router import StrategyRouter
@@ -342,7 +354,7 @@ class TestStrategyAggregator(unittest.TestCase):
         ctx.add_opinion(AgentOpinion(agent_name="strategy_bull_trend", signal="buy", confidence=0.7))
         result = agg.aggregate(ctx)
         self.assertIsNotNone(result)
-        self.assertEqual(result.agent_name, "strategy_consensus")
+        self.assertEqual(result.agent_name, "skill_consensus")
         self.assertEqual(result.signal, "buy")
 
     def test_mixed_signals_produce_hold(self):
@@ -499,11 +511,11 @@ class TestOrchestratorModes(unittest.TestCase):
         orch = self._make_orchestrator()
         ctx = orch._build_context(
             "Analyze 600519",
-            context={"stock_code": "600519", "stock_name": "贵州茅台", "strategies": ["bull_trend"]},
+            context={"stock_code": "600519", "stock_name": "贵州茅台", "skills": ["bull_trend"]},
         )
         self.assertEqual(ctx.stock_code, "600519")
         self.assertEqual(ctx.stock_name, "贵州茅台")
-        self.assertEqual(ctx.meta["strategies_requested"], ["bull_trend"])
+        self.assertEqual(ctx.meta["skills_requested"], ["bull_trend"])
 
     def test_build_context_extracts_code_from_query(self):
         orch = self._make_orchestrator()
@@ -764,7 +776,7 @@ class TestOrchestratorExecution(unittest.TestCase):
 
     def test_strategy_agents_are_selected_after_technical_stage(self):
         orch = self._make_orchestrator()
-        orch.mode = "strategy"
+        orch.mode = "specialist"
         ctx = AgentContext(query="分析600519", stock_code="600519")
         ctx.meta["response_mode"] = "chat"
 
@@ -804,17 +816,17 @@ class TestOrchestratorExecution(unittest.TestCase):
         decision = MagicMock(agent_name="decision")
         decision.run.return_value = self._stage_result("decision", raw_text="final answer")
 
-        def _build_strategy_agents(run_ctx):
+        def _build_specialist_agents(run_ctx):
             self.assertTrue(any(op.agent_name == "technical" for op in run_ctx.opinions))
             return [strategy]
 
         with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, risk, decision]):
-            with patch.object(orch, "_build_strategy_agents", side_effect=_build_strategy_agents) as build_strategy_agents:
+            with patch.object(orch, "_build_specialist_agents", side_effect=_build_specialist_agents) as build_specialist_agents:
                 result = orch._execute_pipeline(ctx, parse_dashboard=False)
 
         self.assertTrue(result.success)
         self.assertEqual(result.content, "final answer")
-        build_strategy_agents.assert_called_once()
+        build_specialist_agents.assert_called_once()
         strategy.run.assert_called_once()
 
 
@@ -835,6 +847,39 @@ class TestDecisionAgentChatMode(unittest.TestCase):
         self.assertEqual(ctx.get_data("final_response_text"), "建议继续观察量价配合，分批参与。")
         self.assertIsNone(ctx.get_data("final_dashboard"))
         self.assertEqual(opinion.signal, "buy")
+
+
+class TestTechnicalAgentSkillPolicy(unittest.TestCase):
+    """TechnicalAgent should only receive the legacy trend baseline for implicit/default runs."""
+
+    def test_prompt_omits_legacy_default_policy_when_explicit_skill_selected(self):
+        from src.agent.agents.technical_agent import TechnicalAgent
+
+        agent = TechnicalAgent(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            skill_instructions="### 技能 1: 缠论",
+            technical_skill_policy="",
+        )
+        prompt = agent.system_prompt(AgentContext(query="分析 600519", stock_code="600519"))
+
+        self.assertNotIn("Bias from MA5 < 2%", prompt)
+        self.assertIn("### 技能 1: 缠论", prompt)
+
+    def test_prompt_includes_legacy_default_policy_for_implicit_default_run(self):
+        from src.agent.agents.technical_agent import TechnicalAgent
+        from src.agent.skills.defaults import TECHNICAL_SKILL_RULES_EN
+
+        agent = TechnicalAgent(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            skill_instructions="### 技能 1: 默认多头趋势",
+            technical_skill_policy=TECHNICAL_SKILL_RULES_EN,
+        )
+        prompt = agent.system_prompt(AgentContext(query="分析 600519", stock_code="600519"))
+
+        self.assertIn("Bias from MA5 < 2%", prompt)
+        self.assertIn("### 技能 1: 默认多头趋势", prompt)
 
 
 class TestBaseAgentMessageAssembly(unittest.TestCase):
@@ -1027,7 +1072,7 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         memory.get_calibration.assert_called_once_with(
             agent_name="strategy_chan_theory",
             stock_code="600519",
-            strategy_id="chan_theory",
+            skill_id="chan_theory",
         )
 
 

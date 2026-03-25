@@ -27,13 +27,13 @@ export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  strategy?: string;
-  strategyName?: string;
+  skill?: string;
+  skillName?: string;
   thinkingSteps?: ProgressStep[];
 }
 
 export interface StreamMeta {
-  strategyName?: string;
+  skillName?: string;
 }
 
 interface AgentChatState {
@@ -180,14 +180,14 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     set({ abortController: ac });
 
     const streamSessionId = payload.session_id || storeSessionId;
-    const strategyName = meta?.strategyName ?? '通用';
+    const skillName = meta?.skillName ?? '通用';
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content: payload.message,
-      strategy: payload.strategies?.[0],
-      strategyName,
+      skill: payload.skills?.[0],
+      skillName,
     };
 
     set((s) => ({
@@ -216,6 +216,42 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let buf = '';
       let finalContent: string | null = null;
       const currentProgressSteps: ProgressStep[] = [];
+      const processLine = (line: string) => {
+        if (!line.startsWith('data: ')) return;
+
+        const event = JSON.parse(line.slice(6)) as ProgressStep;
+        if (event.type === 'done') {
+          const doneEvent = event as unknown as {
+            type: string;
+            success: boolean;
+            content?: string;
+            error?: string;
+          };
+          if (doneEvent.success === false) {
+            const parsedStreamError = getParsedApiError(
+              doneEvent.error ||
+                doneEvent.content ||
+                '大模型调用出错，请检查 API Key 配置',
+            );
+            throw createParsedApiError({
+              title: '问股执行失败',
+              message: parsedStreamError.message,
+              rawMessage: parsedStreamError.rawMessage,
+              status: parsedStreamError.status,
+              category: parsedStreamError.category,
+            });
+          }
+          finalContent = doneEvent.content ?? '';
+          return;
+        }
+
+        if (event.type === 'error') {
+          throw getParsedApiError(event.message || '分析出错');
+        }
+
+        currentProgressSteps.push(event);
+        set((s) => ({ progressSteps: [...s.progressSteps, event] }));
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -225,41 +261,22 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         buf = lines.pop() ?? '';
 
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
           try {
-            const event = JSON.parse(line.slice(6)) as ProgressStep;
-            if (event.type === 'done') {
-              const doneEvent = event as unknown as {
-                type: string;
-                success: boolean;
-                content?: string;
-                error?: string;
-              };
-              if (doneEvent.success === false) {
-                const parsedStreamError = getParsedApiError(
-                  doneEvent.error ||
-                    doneEvent.content ||
-                    '大模型调用出错，请检查 API Key 配置',
-                );
-                throw createParsedApiError({
-                  title: '问股执行失败',
-                  message: parsedStreamError.message,
-                  rawMessage: parsedStreamError.rawMessage,
-                  status: parsedStreamError.status,
-                  category: parsedStreamError.category,
-                });
-              }
-              finalContent = doneEvent.content ?? '';
-            } else if (event.type === 'error') {
-              throw getParsedApiError(event.message || '分析出错');
-            } else {
-              currentProgressSteps.push(event);
-              set((s) => ({ progressSteps: [...s.progressSteps, event] }));
-            }
+            processLine(line);
           } catch (parseErr: unknown) {
             if (isParsedApiError(parseErr) || isApiRequestError(parseErr)) {
               throw parseErr;
             }
+          }
+        }
+      }
+
+      if (buf.trim().startsWith('data: ')) {
+        try {
+          processLine(buf.trim());
+        } catch (parseErr: unknown) {
+          if (isParsedApiError(parseErr) || isApiRequestError(parseErr)) {
+            throw parseErr;
           }
         }
       }
@@ -276,8 +293,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
               id: (Date.now() + 1).toString(),
               role: 'assistant',
               content: finalContent || '（无内容）',
-              strategy: payload.strategies?.[0],
-              strategyName,
+              skill: payload.skills?.[0],
+              skillName,
               thinkingSteps: [...currentProgressSteps],
             },
           ],

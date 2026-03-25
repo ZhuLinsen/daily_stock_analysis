@@ -18,7 +18,7 @@ import json as _json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
@@ -31,8 +31,8 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
-from .realtime_types import UnifiedRealtimeQuote
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
+from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
@@ -103,6 +103,8 @@ class TushareFetcher(BaseFetcher):
         self._call_count = 0  # 当前分钟内的调用次数
         self._minute_start: Optional[float] = None  # 当前计数周期开始时间
         self._api: Optional[object] = None  # Tushare API 实例
+        self.date_list: Optional[List[str]] = None  # 交易日列表缓存（倒序，最新日期在前）
+        self._date_list_end: Optional[str] = None  # 缓存对应的截止日期，用于跨日刷新
 
         # 尝试初始化 API
         self._init_api()
@@ -249,6 +251,61 @@ class TushareFetcher(BaseFetcher):
         # 增加调用计数
         self._call_count += 1
         logger.debug(f"Tushare 当前分钟调用次数: {self._call_count}/{self.rate_limit_per_minute}")
+
+    def _call_api_with_rate_limit(self, method_name: str, **kwargs) -> pd.DataFrame:
+        """统一通过速率限制包装 Tushare API 调用。"""
+        if self._api is None:
+            raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
+
+        self._check_rate_limit()
+        method = getattr(self._api, method_name)
+        return method(**kwargs)
+
+    def _get_china_now(self) -> datetime:
+        """返回上海时区当前时间，方便测试覆盖跨日刷新逻辑。"""
+        return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+    def _get_trade_dates(self, end_date: Optional[str] = None) -> List[str]:
+        """按自然日刷新交易日历缓存，避免服务跨日后继续复用旧日历。"""
+        if self._api is None:
+            return []
+
+        china_now = self._get_china_now()
+        requested_end_date = end_date or china_now.strftime("%Y%m%d")
+
+        if self.date_list is not None and self._date_list_end == requested_end_date:
+            return self.date_list
+
+        start_date = (china_now - timedelta(days=20)).strftime("%Y%m%d")
+        df_cal = self._call_api_with_rate_limit(
+            "trade_cal",
+            exchange="SSE",
+            start_date=start_date,
+            end_date=requested_end_date,
+        )
+
+        if df_cal is None or df_cal.empty or "cal_date" not in df_cal.columns:
+            logger.warning("[Tushare] trade_cal 返回为空，无法更新交易日历缓存")
+            self.date_list = []
+            self._date_list_end = requested_end_date
+            return self.date_list
+
+        trade_dates = sorted(
+            df_cal[df_cal["is_open"] == 1]["cal_date"].astype(str).tolist(),
+            reverse=True,
+        )
+        self.date_list = trade_dates
+        self._date_list_end = requested_end_date
+        return trade_dates
+
+    @staticmethod
+    def _pick_trade_date(trade_dates: List[str], use_today: bool) -> Optional[str]:
+        """根据可用交易日列表选择当天或前一交易日。"""
+        if not trade_dates:
+            return None
+        if use_today or len(trade_dates) == 1:
+            return trade_dates[0]
+        return trade_dates[1]
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -717,22 +774,19 @@ class TushareFetcher(BaseFetcher):
             return None
 
         try:
-            self._check_rate_limit()
-            logger.info("[API调用] ts.pro_api() 获取市场统计...")
+            logger.info("[Tushare] ts.pro_api() 获取市场统计...")
             
             # 获取当前中国时间，判断是否在交易时间内
-            china_now = datetime.now(ZoneInfo("Asia/Shanghai"))
-            china_now_str = china_now.strftime("%H:%M")
+            china_now = self._get_china_now()
+            current_clock = china_now.strftime("%H:%M")
             current_date = china_now.strftime("%Y%m%d")
 
-            start_date = (datetime.now() - pd.Timedelta(days=20)).strftime('%Y%m%d')
-            df_cal = self._api.trade_cal(exchange='SSE', start_date=start_date, end_date=current_date)
+            trade_dates = self._get_trade_dates(current_date)
+            if not trade_dates:
+                return None
 
-            # 过滤出 is_open == 1 (开市) 的日期，并转换为列表
-            date_list = df_cal[df_cal['is_open'] == 1]['cal_date'].tolist()
-
-            if current_date in date_list:
-                if china_now_str < '09:30' or china_now_str > '16:30':
+            if current_date in trade_dates:
+                if current_clock < '09:30' or current_clock > '16:30':
                     use_realtime = False
                 else:
                     use_realtime = True
@@ -742,7 +796,7 @@ class TushareFetcher(BaseFetcher):
             # 若实盘的时候使用 则使用其他可以实盘获取的数据源 akshare、efinance
             if use_realtime:
                 try:
-                    df = self._api.rt_k(ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
+                    df = self._call_api_with_rate_limit("rt_k", ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ')
                     if df is not None and not df.empty:
                         return self._calc_market_stats(df)
                     
@@ -751,21 +805,29 @@ class TushareFetcher(BaseFetcher):
                     return None
             else:
 
-                if current_date not in date_list:
-                    last_date = date_list[0] # 拿最近的日期
+                if current_date not in trade_dates:
+                    last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿最近的日期
                 else:
-                    if china_now_str < '09:30': 
-                        last_date = date_list[1] # 拿取前一天的数据
+                    if current_clock < '09:30': 
+                        last_date = self._pick_trade_date(trade_dates, use_today=False)  # 拿取前一天的数据
                     else:  # 即 '> 16:30'                  
-                        last_date = date_list[0] # 拿取当天的数据
+                        last_date = self._pick_trade_date(trade_dates, use_today=True)  # 拿取当天的数据
+
+                if last_date is None:
+                    return None
 
                 try:
-                    df = self._api.daily(TS_CODE='3*.SZ,6*.SH,0*.SZ,92*.BJ',start_date=last_date, end_date=last_date)
+                    df = self._call_api_with_rate_limit(
+                        "daily",
+                        ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
+                        start_date=last_date,
+                        end_date=last_date,
+                    )
                     # 为防止不同接口返回的列名大小写不一致（例如 rt_k 返回小写，daily 返回大写），统一将列名转为小写
                     df.columns = [col.lower() for col in df.columns]
 
                     # 获取股票基础信息（包含代码和名称）
-                    df_basic = self._api.stock_basic(fields='ts_code,name')
+                    df_basic = self._call_api_with_rate_limit("stock_basic", fields='ts_code,name')
                     df = pd.merge(df, df_basic, on='ts_code', how='left')
                     # 将 daily的 amount 列的值乘以 1000 来和其他数据源保持一致
                     if 'amount' in df.columns:
@@ -872,12 +934,243 @@ class TushareFetcher(BaseFetcher):
                 
             return stats
 
+    def get_trade_time(self,early_time='09:30',late_time='16:30') -> Optional[str]:
+        '''
+        获取当前时间可以获得数据的开始时间日期
+
+        Args:
+                early_time: 默认 '09:30'
+                late_time: 默认 '16:30'
+                early_time-late_time 之间为使用上一个交易日数据的时间段，其他时间为使用当天数据的时间段
+        Returns:
+                start_date: 可以获得数据的开始日期
+        '''
+        china_now = self._get_china_now()
+        china_date = china_now.strftime("%Y%m%d")
+        china_clock = china_now.strftime("%H:%M")
+
+        trade_dates = self._get_trade_dates(china_date)
+        if not trade_dates:
+            return None
+
+        if china_date in trade_dates:
+            if  early_time < china_clock < late_time: # 使用上一个交易日数据的时间段
+                use_today = False
+            else:
+                use_today = True
+        else:
+            use_today = False
+
+        start_date = self._pick_trade_date(trade_dates, use_today=use_today)
+        if start_date is None:
+            return None
+
+        if not use_today:
+            logger.info(f"[Tushare] 当前时间 {china_clock} 可能无法获取当天筹码分布，尝试获取前一个交易日的数据 {start_date}")
+
+        return start_date
+    
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
         """
-        获取板块涨跌榜 (Tushare Pro)
+        获取行业板块涨跌榜 (Tushare Pro)
+        
+        数据源优先级：
+        1. 同花顺接口 (ts.pro_api().moneyflow_ind_ths)
+        2. 东财接口 (ts.pro_api().moneyflow_ind_dc)
+        注意：每个接口的行业分类和板块定义不同，会导致结果两者不一致
         """
-        # Tushare 获取板块数据较复杂，暂时返回 None，让 AkShare 处理
+        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
+            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+            df = df.dropna(subset=[change_col])
+
+            # 涨幅前n
+            top = df.nlargest(n, change_col)
+            top_sectors = [
+                {'name': row[industry_name], 'change_pct': row[change_col]}
+                for _, row in top.iterrows()
+            ]
+
+            bottom = df.nsmallest(n, change_col)
+            bottom_sectors = [
+                {'name': row[industry_name], 'change_pct': row[change_col]}
+                for _, row in bottom.iterrows()
+            ]
+            return top_sectors, bottom_sectors
+
+        # 15:30之后才有当天数据
+        start_date = self.get_trade_time(early_time='00:00', late_time='15:30')
+        if not start_date:
+            return None
+
+        # 优先同花顺接口
+        logger.info("[Tushare] ts.pro_api().moneyflow_ind_ths 获取板块排行(同花顺)...")
+        try:
+            df = self._call_api_with_rate_limit("moneyflow_ind_ths", trade_date=start_date)
+            if df is not None and not df.empty:
+                change_col = 'pct_change'
+                name = 'industry'
+                if change_col in df.columns:
+                    return _get_rank_top_n(df, change_col, name, n)
+        except Exception as e:
+            logger.warning(f"[Tushare] 获取同花顺行业板块涨跌榜失败: {e} 尝试东财接口")
+
+        # 同花顺接口失败，降级尝试东财接口
+        logger.info("[Tushare] ts.pro_api().moneyflow_ind_dc 获取板块排行(东财)...")
+        try:
+            df = self._call_api_with_rate_limit("moneyflow_ind_dc", trade_date=start_date)
+            if df is not None and not df.empty:
+                df = df[df['content_type'] == '行业']  # 过滤出行业板块
+                change_col = 'pct_change'
+                name = 'name'
+                if change_col in df.columns:
+                    return _get_rank_top_n(df, change_col, name, n)
+        except Exception as e:
+            logger.warning(f"[Tushare] 获取东财行业板块涨跌榜失败: {e}")
+            return None
+        
+        # 获取为空或者接口调用失败，返回 None
         return None
+    
+    
+
+    
+    def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
+        """
+        获取筹码分布数据
+        
+        数据来源：ts.pro_api().cyq_chips()
+        包含：获利比例、平均成本、筹码集中度
+        
+        注意：ETF/指数没有筹码分布数据，会直接返回 None
+        5000积分以下每天访问15次,每小时访问5次
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            ChipDistribution 对象（最新交易日的数据），获取失败返回 None
+
+        """
+        if _is_us_code(stock_code):
+            logger.warning(f"[Tushare] TushareFetcher 不支持美股 {stock_code} 的筹码分布")
+            return None
+        
+        if _is_etf_code(stock_code):
+            logger.warning(f"[Tushare] TushareFetcher 不支持 ETF {stock_code} 的筹码分布")
+            return None
+        
+        try:
+            # 19点之后才有当天数据
+            start_date = self.get_trade_time(early_time='00:00', late_time='19:00') 
+            if not start_date:
+                return None
+
+            ts_code = self._convert_stock_code(stock_code)
+
+            df = self._call_api_with_rate_limit(
+                "cyq_chips",
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=start_date,
+            )
+            if df is not None and not df.empty:
+                daily_df = self._call_api_with_rate_limit(
+                    "daily",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=start_date,
+                )
+                if daily_df is None or daily_df.empty:
+                    return None
+                current_price = daily_df.iloc[0]['close']
+                metrics = self.compute_cyq_metrics(df, current_price)
+
+                chip = ChipDistribution(
+                    code=stock_code,
+                    date=datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d'),
+                    profit_ratio=metrics['获利比例'],
+                    avg_cost=metrics['平均成本'],
+                    cost_90_low=metrics['90成本-低'],
+                    cost_90_high=metrics['90成本-高'],
+                    concentration_90=metrics['90集中度'],
+                    cost_70_low=metrics['70成本-低'],
+                    cost_70_high=metrics['70成本-高'],
+                    concentration_70=metrics['70集中度'],
+                )
+                
+                logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
+                        f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
+                        f"70%集中度={chip.concentration_70:.2%}")
+                return chip
+
+        except Exception as e:
+            logger.warning(f"[Tushare] 获取筹码分布失败 {stock_code}: {e}")
+            return None
+
+    def compute_cyq_metrics(self, df: pd.DataFrame, current_price: float) -> dict:
+        """
+        基于 Tushare 的筹码分布明细表 (cyq_chips) 计算常用筹码指标  
+        :param df: 包含 'price' 和 'percent' 列的 DataFrame  
+        :param current_price: 股票当天的当前价/收盘价 (用于计算获利比例)  
+        :return: 包含各项筹码指标的字典  
+        """
+        import numpy as np
+        # 1. 确保按价格从小到大排序 (Tushare 返回的数据往往是纯倒序的)
+        df_sorted = df.sort_values(by='price', ascending=True).reset_index(drop=True)
+
+        # 2. 防止原始数据 percent 总和产生浮点数误差，归一化到 100%
+        total_percent = df_sorted['percent'].sum()
+
+        df_sorted['norm_percent'] = df_sorted['percent'] / total_percent * 100
+
+        # 3. 计算筹码的累积分布
+        df_sorted['cumsum'] = df_sorted['norm_percent'].cumsum()
+
+        # --- 获利比例 ---
+        # 所有价格 <= 当前价的筹码之和
+        winner_rate = df_sorted[df_sorted['price'] <= current_price]['norm_percent'].sum()
+
+        # --- 平均成本 ---
+        # 价格的加权平均值
+        avg_cost = np.average(df_sorted['price'], weights=df_sorted['norm_percent'])
+
+        # --- 辅助函数：求指定累积比例处的价格 ---
+        def get_percentile_price(target_pct):
+            # 寻找累积求和第一次大于等于目标百分比的行索引
+            idx = df_sorted['cumsum'].searchsorted(target_pct)
+            idx = min(idx, len(df_sorted) - 1) # 防止越界
+            return df_sorted.loc[idx, 'price']
+
+        # --- 90% 成本区与集中度 ---
+        # 去头去尾各 5%
+        cost_90_low = get_percentile_price(5)
+        cost_90_high = get_percentile_price(95)
+        if (cost_90_high + cost_90_low) != 0:
+            concentration_90 = (cost_90_high - cost_90_low) / (cost_90_high + cost_90_low) * 100
+        else:
+            concentration_90 = 0.0
+            
+        # --- 70% 成本区与集中度 ---
+        # 去头去尾各 15%
+        cost_70_low = get_percentile_price(15)
+        cost_70_high = get_percentile_price(85)
+        if (cost_70_high + cost_70_low) != 0:
+            concentration_70 = (cost_70_high - cost_70_low) / (cost_70_high + cost_70_low) * 100
+        else:
+            concentration_70 = 0.0
+
+        # 返回格式化结果
+        return {
+            "获利比例": round(winner_rate/100, 4), # /100 与akshare保持一致，返回小数格式
+            "平均成本": round(avg_cost, 4),
+            "90成本-低": round(cost_90_low, 4),
+            "90成本-高": round(cost_90_high, 4),
+            "90集中度": round(concentration_90/100, 4),
+            "70成本-低": round(cost_70_low, 4),
+            "70成本-高": round(cost_70_high, 4),
+            "70集中度": round(concentration_70/100, 4)
+        }
+
 
 
 if __name__ == "__main__":
@@ -915,3 +1208,32 @@ if __name__ == "__main__":
             print("Failed to compute market stats.")
     except Exception as e:
         print(f"Failed to compute market stats: {e}")
+
+
+    # 测试筹码分布数据
+    print("\n" + "=" * 50)
+    print("测试筹码分布数据获取")
+    print("=" * 50)
+    try:
+        chip = fetcher.get_chip_distribution('600519')  # 茅台
+    except Exception as e:
+        print(f"[筹码分布] 获取失败: {e}")
+
+    # 测试行业板块排名
+    print("\n" + "=" * 50)
+    print("测试行业板块排名获取")
+    print("=" * 50)
+    try:
+        rankings = fetcher.get_sector_rankings(n=5)
+        if rankings:
+            top, bottom = rankings
+            print("涨幅榜 Top 5:")
+            for sector in top:
+                print(f"{sector['name']}: {sector['change_pct']}%")
+            print("\n跌幅榜 Top 5:")
+            for sector in bottom:
+                print(f"{sector['name']}: {sector['change_pct']}%")
+        else:
+            print("未获取到行业板块排名数据")
+    except Exception as e:
+        print(f"[行业板块排名] 获取失败: {e}")

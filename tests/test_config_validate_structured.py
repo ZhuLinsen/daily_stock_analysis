@@ -39,6 +39,7 @@ def _make_config(**kwargs) -> Config:
         brave_api_keys=[],
         serpapi_keys=[],
         searxng_base_urls=[],
+        searxng_public_instances_enabled=True,
         wechat_webhook_url="https://example.com/webhook",
         feishu_webhook_url=None,
         telegram_bot_token=None,
@@ -222,6 +223,36 @@ class TestValidateStructuredLLM:
         issues = cfg.validate_structured()
         assert any(i.severity == "error" and i.field == "LITELLM_MODEL" for i in issues)
 
+    def test_configured_agent_primary_model_missing_from_channels_is_error(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o-mini", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            agent_litellm_model="openai/gpt-4o",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "error" and i.field == "AGENT_LITELLM_MODEL" for i in issues)
+
+    def test_configured_agent_primary_model_without_runtime_source_is_error(self):
+        cfg = _make_config(
+            llm_model_list=[],
+            litellm_model="cohere/command-r-plus",
+            agent_litellm_model="openai/gpt-4o-mini",
+            openai_api_keys=[],
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "error" and i.field == "AGENT_LITELLM_MODEL" for i in issues)
+
+    def test_configured_agent_primary_model_matching_yaml_alias_is_allowed(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "gpt4o", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            agent_litellm_model="gpt4o",
+        )
+        issues = cfg.validate_structured()
+        assert not any(i.severity == "error" and i.field == "AGENT_LITELLM_MODEL" for i in issues)
+
     def test_configured_vision_model_missing_from_channels_is_warning(self):
         cfg = _make_config(
             llm_model_list=[
@@ -250,14 +281,23 @@ class TestValidateStructuredNotification:
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
 
     def test_no_search_engine_is_info(self):
-        cfg = _make_config()
+        cfg = _make_config(searxng_public_instances_enabled=False)
         issues = cfg.validate_structured()
         info = [i for i in issues if i.severity == "info"]
         assert any("搜索引擎" in i.message for i in info)
+        search_issue = next(i for i in info if "搜索引擎" in i.message)
+        assert search_issue.field == "BOCHA_API_KEYS"
 
     def test_searxng_configured_no_search_info(self):
         """When searxng_base_urls is configured, no 'unconfigured search engine' info."""
         cfg = _make_config(searxng_base_urls=["https://searx.example.org"])
+        issues = cfg.validate_structured()
+        info = [i for i in issues if i.severity == "info"]
+        assert not any("搜索引擎" in i.message and "未配置" in i.message for i in info)
+
+    def test_public_searxng_enabled_no_search_info(self):
+        """Public SearXNG mode also counts as search capability."""
+        cfg = _make_config(searxng_public_instances_enabled=True)
         issues = cfg.validate_structured()
         info = [i for i in issues if i.severity == "info"]
         assert not any("搜索引擎" in i.message and "未配置" in i.message for i in info)

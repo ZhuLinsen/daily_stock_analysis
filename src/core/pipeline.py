@@ -24,14 +24,22 @@ import pandas as pd
 from src.config import get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
+from data_provider.base import normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import GeminiAnalyzer, AnalysisResult, fill_chip_structure_if_needed, fill_price_position_if_needed
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
+from src.report_language import (
+    get_unknown_text,
+    localize_confidence_level,
+    normalize_report_language,
+)
 from src.search_service import SearchService
+from src.services.social_sentiment_service import SocialSentimentService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import get_market_for_stock, is_market_open
+from data_provider.us_index_mapping import is_us_stock_code
 from bot.models import BotMessage
 
 
@@ -77,8 +85,8 @@ class StockAnalysisPipeline:
         self.db = get_db()
         self.fetcher_manager = DataFetcherManager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
-        self.trend_analyzer = StockTrendAnalyzer()  # 趋势分析器
-        self.analyzer = GeminiAnalyzer()
+        self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
+        self.analyzer = GeminiAnalyzer(config=self.config)
         self.notifier = NotificationService(source_message=source_message)
         
         # 初始化搜索服务
@@ -88,11 +96,14 @@ class StockAnalysisPipeline:
             brave_keys=self.config.brave_api_keys,
             serpapi_keys=self.config.serpapi_keys,
             minimax_keys=self.config.minimax_api_keys,
+            searxng_base_urls=self.config.searxng_base_urls,
+            searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
             news_max_age_days=self.config.news_max_age_days,
+            news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
         )
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
-        logger.info("已启用趋势分析器 (MA5>MA10>MA20 多头判断)")
+        logger.info("已启用技术分析引擎（均线/趋势/量价指标）")
         # 打印实时行情/筹码配置状态
         if self.config.enable_realtime_quote:
             logger.info(f"实时行情已启用 (优先级: {self.config.realtime_source_priority})")
@@ -103,9 +114,17 @@ class StockAnalysisPipeline:
         else:
             logger.info("筹码分布分析已禁用")
         if self.search_service.is_available:
-            logger.info("搜索服务已启用 (Tavily/SerpAPI)")
+            logger.info("搜索服务已启用")
         else:
-            logger.warning("搜索服务未启用（未配置 API Key）")
+            logger.warning("搜索服务未启用（未配置搜索能力）")
+
+        # 初始化社交舆情服务（仅美股）
+        self.social_sentiment_service = SocialSentimentService(
+            api_key=self.config.social_sentiment_api_key,
+            api_url=self.config.social_sentiment_api_url,
+        )
+        if self.social_sentiment_service.is_available:
+            logger.info("Social sentiment service enabled (Reddit/X/Polymarket, US stocks only)")
 
     def fetch_and_save_stock_data(
         self, 
@@ -127,6 +146,7 @@ class StockAnalysisPipeline:
         Returns:
             Tuple[是否成功, 错误信息]
         """
+        stock_name = code
         try:
             # 首先获取股票名称
             stock_name = self.fetcher_manager.get_stock_name(code)
@@ -246,6 +266,11 @@ class StockAnalysisPipeline:
                 logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                 fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
+            fundamental_context = self._attach_belong_boards_to_fundamental_context(
+                code,
+                fundamental_context,
+            )
+
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:
                 self.db.save_fundamental_snapshot(
@@ -326,6 +351,19 @@ class StockAnalysisPipeline:
                         logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
             else:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
+
+            # Step 4.5: Social sentiment intelligence (US stocks only)
+            if self.social_sentiment_service.is_available and is_us_stock_code(code):
+                try:
+                    social_context = self.social_sentiment_service.get_social_context(code)
+                    if social_context:
+                        logger.info(f"{stock_name}({code}) Social sentiment data retrieved")
+                        if news_context:
+                            news_context = news_context + "\n\n" + social_context
+                        else:
+                            news_context = social_context
+                except Exception as e:
+                    logger.warning(f"{stock_name}({code}) Social sentiment fetch failed: {e}")
 
             # Step 5: 获取分析上下文（技术面数据）
             context = self.db.get_analysis_context(code)
@@ -421,12 +459,16 @@ class StockAnalysisPipeline:
             增强后的上下文
         """
         enhanced = context.copy()
+        enhanced["report_language"] = normalize_report_language(getattr(self.config, "report_language", "zh"))
         
         # 添加股票名称
         if stock_name:
             enhanced['stock_name'] = stock_name
         elif realtime_quote and getattr(realtime_quote, 'name', None):
             enhanced['stock_name'] = realtime_quote.name
+
+        # 将运行时搜索窗口透传给 analyzer，避免与全局配置重新读取产生窗口不一致
+        enhanced['news_window_days'] = getattr(self.search_service, "news_window_days", 3)
         
         # 添加实时行情（兼容不同数据源的字段差异）
         if realtime_quote:
@@ -556,6 +598,57 @@ class StockAnalysisPipeline:
 
         return enhanced
 
+    def _attach_belong_boards_to_fundamental_context(
+        self,
+        code: str,
+        fundamental_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Attach A-share board membership as a top-level supplemental field.
+
+        Keep this as a shallow copy so cached fundamental contexts are not
+        mutated in place after retrieval.
+        """
+        if isinstance(fundamental_context, dict):
+            enriched_context = dict(fundamental_context)
+        else:
+            enriched_context = self.fetcher_manager.build_failed_fundamental_context(
+                code,
+                "invalid fundamental context",
+            )
+
+        existing_boards = enriched_context.get("belong_boards")
+        if isinstance(existing_boards, list):
+            enriched_context["belong_boards"] = list(existing_boards)
+            return enriched_context
+
+        boards_block = enriched_context.get("boards")
+        boards_status = boards_block.get("status") if isinstance(boards_block, dict) else None
+        coverage = enriched_context.get("coverage")
+        boards_coverage = coverage.get("boards") if isinstance(coverage, dict) else None
+        market = enriched_context.get("market")
+        if not isinstance(market, str) or not market.strip():
+            market = get_market_for_stock(normalize_stock_code(code))
+
+        if (
+            market != "cn"
+            or boards_status == "not_supported"
+            or boards_coverage == "not_supported"
+        ):
+            enriched_context["belong_boards"] = []
+            return enriched_context
+
+        boards: List[Dict[str, Any]] = []
+        try:
+            raw_boards = self.fetcher_manager.get_belong_boards(code)
+            if isinstance(raw_boards, list):
+                boards = raw_boards
+        except Exception as e:
+            logger.debug("%s attach belong_boards failed (fail-open): %s", code, e)
+
+        enriched_context["belong_boards"] = boards
+        return enriched_context
+
     def _analyze_with_agent(
         self, 
         code: str, 
@@ -572,6 +665,7 @@ class StockAnalysisPipeline:
         """
         try:
             from src.agent.factory import build_agent_executor
+            report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
 
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
             executor = build_agent_executor(self.config, getattr(self.config, 'agent_skills', None) or None)
@@ -581,6 +675,7 @@ class StockAnalysisPipeline:
                 "stock_code": code,
                 "stock_name": stock_name,
                 "report_type": report_type.value,
+                "report_language": report_language,
                 "fundamental_context": fundamental_context,
             }
             
@@ -591,8 +686,27 @@ class StockAnalysisPipeline:
             if trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
 
+            # Agent path: inject social sentiment as news_context so both
+            # executor (_build_user_message) and orchestrator (ctx.set_data)
+            # can consume it through the existing news_context channel
+            if self.social_sentiment_service.is_available and is_us_stock_code(code):
+                try:
+                    social_context = self.social_sentiment_service.get_social_context(code)
+                    if social_context:
+                        existing = initial_context.get("news_context")
+                        if existing:
+                            initial_context["news_context"] = existing + "\n\n" + social_context
+                        else:
+                            initial_context["news_context"] = social_context
+                        logger.info(f"[{code}] Agent mode: social sentiment data injected into news_context")
+                except Exception as e:
+                    logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
+
             # 运行 Agent
-            message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
+            if report_language == "en":
+                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON in English."
+            else:
+                message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
             agent_result = executor.run(message, context=initial_context)
 
             # 转换为 AnalysisResult
@@ -671,12 +785,15 @@ class StockAnalysisPipeline:
         """
         将 AgentResult 转换为 AnalysisResult。
         """
+        report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
         result = AnalysisResult(
             code=code,
             name=stock_name,
             sentiment_score=50,
-            trend_prediction="未知",
-            operation_advice="观望",
+            trend_prediction="Unknown" if report_language == "en" else "未知",
+            operation_advice="Watch" if report_language == "en" else "观望",
+            confidence_level=localize_confidence_level("medium", report_language),
+            report_language=report_language,
             success=agent_result.success,
             error_message=agent_result.error or None,
             data_sources=f"agent:{agent_result.provider}",
@@ -689,25 +806,32 @@ class StockAnalysisPipeline:
             if ai_stock_name and self._is_placeholder_stock_name(stock_name, code):
                 result.name = ai_stock_name
             result.sentiment_score = self._safe_int(dash.get("sentiment_score"), 50)
-            result.trend_prediction = dash.get("trend_prediction", "未知")
-            raw_advice = dash.get("operation_advice", "观望")
+            result.trend_prediction = dash.get("trend_prediction", "Unknown" if report_language == "en" else "未知")
+            raw_advice = dash.get("operation_advice", "Watch" if report_language == "en" else "观望")
             if isinstance(raw_advice, dict):
                 # LLM may return {"no_position": "...", "has_position": "..."}
                 # Derive a short string from decision_type for the scalar field
                 _signal_to_advice = {
-                    "buy": "买入", "sell": "卖出", "hold": "持有",
-                    "strong_buy": "强烈买入", "strong_sell": "强烈卖出",
+                    "buy": "Buy" if report_language == "en" else "买入",
+                    "sell": "Sell" if report_language == "en" else "卖出",
+                    "hold": "Hold" if report_language == "en" else "持有",
+                    "strong_buy": "Strong Buy" if report_language == "en" else "强烈买入",
+                    "strong_sell": "Strong Sell" if report_language == "en" else "强烈卖出",
                 }
                 # Normalize decision_type (strip/lower) before lookup so
                 # variants like "BUY" or " Buy " map correctly.
                 raw_dt = str(dash.get("decision_type") or "hold").strip().lower()
-                result.operation_advice = _signal_to_advice.get(raw_dt, "观望")
+                result.operation_advice = _signal_to_advice.get(raw_dt, "Watch" if report_language == "en" else "观望")
             else:
-                result.operation_advice = str(raw_advice) if raw_advice else "观望"
+                result.operation_advice = str(raw_advice) if raw_advice else ("Watch" if report_language == "en" else "观望")
             from src.agent.protocols import normalize_decision_signal
 
             result.decision_type = normalize_decision_signal(
                 dash.get("decision_type", "hold")
+            )
+            result.confidence_level = localize_confidence_level(
+                dash.get("confidence_level", result.confidence_level),
+                report_language,
             )
             result.analysis_summary = dash.get("analysis_summary", "")
             # The AI returns a top-level dict that contains a nested 'dashboard' sub-key
@@ -717,9 +841,9 @@ class StockAnalysisPipeline:
             result.dashboard = dash.get("dashboard") or dash
         else:
             result.sentiment_score = 50
-            result.operation_advice = "观望"
+            result.operation_advice = "Watch" if report_language == "en" else "观望"
             if not result.error_message:
-                result.error_message = "Agent 未能生成有效的决策仪表盘"
+                result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
 
         return result
 
@@ -1367,6 +1491,17 @@ class StockAnalysisPipeline:
                         non_wechat_success = self.notifier.send_to_pushover(report) or non_wechat_success
                     elif channel == NotificationChannel.ASTRBOT:
                         non_wechat_success = self.notifier.send_to_astrbot(report) or non_wechat_success
+                    elif channel == NotificationChannel.SLACK:
+                        use_image = self.notifier._should_use_image_for_channel(
+                            channel, image_bytes
+                        )
+                        if use_image and self.notifier._slack_bot_token and self.notifier._slack_channel_id:
+                            result = self.notifier._send_slack_image(
+                                image_bytes, fallback_content=report
+                            )
+                        else:
+                            result = self.notifier.send_to_slack(report)
+                        non_wechat_success = result or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 

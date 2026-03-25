@@ -178,6 +178,10 @@ export interface PortfolioEventCreatedResponse {
   id: number;
 }
 
+export interface PortfolioDeleteResponse {
+  deleted: number;
+}
+
 export interface PortfolioTradeListItem {
   id: number;
   accountId: number;
@@ -281,4 +285,15 @@ export interface PortfolioImportBrokerItem {
 
 export interface PortfolioImportBrokerListResponse {
   brokers: PortfolioImportBrokerItem[];
+}
+
+export interface PortfolioFxRefreshResponse {
+  asOf: string;
+  accountCount: number;
+  refreshEnabled?: boolean;
+  disabledReason?: string | null;
+  pairCount: number;
+  updatedCount: number;
+  staleCount: number;
+  errorCount: number;
 }
