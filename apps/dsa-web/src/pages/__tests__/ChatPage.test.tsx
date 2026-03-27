@@ -179,6 +179,7 @@ describe('ChatPage', () => {
 
     fireEvent.click(sessionCard);
     expect(mockSwitchSession).toHaveBeenCalledWith('session-1');
+    expect(sessionCard).toHaveAttribute('aria-current', 'page');
   });
 
   it('renders a separate delete button for each session and opens confirmation without switching', async () => {
@@ -207,8 +208,8 @@ describe('ChatPage', () => {
 
     expect(await screen.findByRole('heading', { name: '问股' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '导出会话' })).not.toBeInTheDocument();
-    expect(screen.queryByTitle('发送到已配置的通知机器人/邮箱')).not.toBeInTheDocument();
-    expect(screen.getByTitle('历史对话')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '发送到已配置的通知机器人/邮箱' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '历史对话' })).toBeInTheDocument();
   });
 
   it('exports the current session from the header action', async () => {
@@ -223,10 +224,44 @@ describe('ChatPage', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: '导出会话' }));
+    fireEvent.click(await screen.findByRole('button', { name: '导出会话为 Markdown 文件' }));
 
     expect(mockDownloadSession).toHaveBeenCalledWith(mockStoreState.messages);
     expect(mockFormatSessionAsMarkdown).not.toHaveBeenCalled();
+  });
+
+  it('renders assistant skill labels with shared badge semantics', async () => {
+    mockStoreState.messages = [
+      { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const skillBadge = await screen.findByLabelText('技能 趋势分析');
+    expect(skillBadge).toBeInTheDocument();
+    expect(skillBadge).toHaveTextContent('趋势分析');
+  });
+
+  it('keeps assistant message actions directly activatable in the DOM', async () => {
+    mockStoreState.messages = [
+      { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const exportButton = await screen.findByRole('button', { name: '导出此条消息为 Markdown' });
+    const actionGroup = exportButton.parentElement;
+
+    expect(actionGroup).toHaveClass('chat-message-actions');
+    expect(actionGroup?.className).not.toMatch(/pointer-events-none|opacity-0/);
   });
 
   it('sends exported markdown to notification channel and shows success feedback', async () => {
@@ -242,7 +277,7 @@ describe('ChatPage', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(await screen.findByTitle('发送到已配置的通知机器人/邮箱'));
+    fireEvent.click(await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' }));
 
     await waitFor(() => {
       expect(mockFormatSessionAsMarkdown).toHaveBeenCalledWith(mockStoreState.messages);
@@ -271,7 +306,7 @@ describe('ChatPage', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(await screen.findByTitle('发送到已配置的通知机器人/邮箱'));
+    fireEvent.click(await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' }));
 
     expect(await screen.findByText('通知渠道不可用')).toBeInTheDocument();
   });
@@ -290,7 +325,7 @@ describe('ChatPage', () => {
       </MemoryRouter>
     );
 
-    const sendButton = await screen.findByTitle('发送到已配置的通知机器人/邮箱');
+    const sendButton = await screen.findByRole('button', { name: '发送到已配置的通知机器人/邮箱' });
     fireEvent.click(sendButton);
 
     await waitFor(() => {
@@ -577,5 +612,43 @@ describe('ChatPage', () => {
         }),
       );
     });
+  });
+
+  it('shows a jump-to-latest action when new content arrives while the user is away from bottom', async () => {
+    mockStoreState.messages = [
+      { id: 'user-1', role: 'user', content: '请分析 600519' },
+      { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
+    ];
+
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const viewport = await screen.findByTestId('chat-message-scroll');
+    Object.defineProperty(viewport, 'scrollTop', { configurable: true, value: 0 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 });
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1200 });
+
+    fireEvent.scroll(viewport);
+
+    mockStoreState.messages = [
+      ...mockStoreState.messages,
+      { id: 'assistant-2', role: 'assistant', content: '新的补充分析', skillName: '趋势分析' },
+    ];
+
+    rerender(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const jumpButton = await screen.findByRole('button', { name: '查看最新消息' });
+    expect(jumpButton).toBeInTheDocument();
+
+    fireEvent.click(jumpButton);
+
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
   });
 });

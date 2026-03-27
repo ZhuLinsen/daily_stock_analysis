@@ -66,6 +66,7 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
               type="button"
               onClick={() => void fetchNews()}
               className="home-accent-link text-xs"
+              aria-label={text.refresh}
             >
               {text.refresh}
             </button>
@@ -108,15 +109,15 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
           {items.map((item, index) => (
             <div
               key={`${item.title}-${index}`}
-              className="home-subpanel group p-4"
+              className="home-subpanel home-news-item group p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0 text-left">
-                  <p className="text-sm font-medium leading-6 text-foreground text-left">
+                  <p className="home-news-title text-sm font-medium leading-6 text-foreground text-left">
                     {item.title}
                   </p>
                   {item.snippet && (
-                    <p className="mt-2 text-sm leading-6 text-secondary-text text-left overflow-hidden [display:-webkit-box] [-webkit-line-clamp:3] [-webkit-box-orient:vertical]">
+                    <p className="home-news-snippet mt-2 text-sm leading-6 text-secondary-text text-left overflow-hidden [display:-webkit-box] [-webkit-line-clamp:3] [-webkit-box-orient:vertical]">
                       {item.snippet}
                     </p>
                   )}
@@ -127,6 +128,7 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
                     target="_blank"
                     rel="noopener noreferrer"
                     className="home-accent-pill-link shrink-0 whitespace-nowrap px-2.5 py-1 text-xs"
+                    aria-label={text.openLink}
                   >
                     {text.openLink}
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

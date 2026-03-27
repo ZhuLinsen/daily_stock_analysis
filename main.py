@@ -692,10 +692,33 @@ def main() -> int:
             def scheduled_task():
                 run_full_analysis(config, args, scheduled_stock_codes)
 
+            background_tasks = []
+            if getattr(config, 'agent_event_monitor_enabled', False):
+                from src.agent.events import build_event_monitor_from_config, run_event_monitor_once
+
+                monitor = build_event_monitor_from_config(config)
+                if monitor is not None:
+                    interval_minutes = max(1, getattr(config, 'agent_event_monitor_interval_minutes', 5))
+
+                    def event_monitor_task():
+                        triggered = run_event_monitor_once(monitor)
+                        if triggered:
+                            logger.info("[EventMonitor] 本轮触发 %d 条提醒", len(triggered))
+
+                    background_tasks.append({
+                        "task": event_monitor_task,
+                        "interval_seconds": interval_minutes * 60,
+                        "run_immediately": True,
+                        "name": "agent_event_monitor",
+                    })
+                else:
+                    logger.info("EventMonitor 已启用，但未加载到有效规则，跳过后台提醒任务")
+
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately
+                run_immediately=should_run_immediately,
+                background_tasks=background_tasks,
             )
             return 0
 

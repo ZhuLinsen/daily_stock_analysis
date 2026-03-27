@@ -254,7 +254,7 @@ def _handle_async_analysis_batch(
     selection_source = request.selection_source if (is_single or preserve_batch_metadata) else None
     notify = getattr(request, "notify", True)
 
-    accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(
+    submit_kwargs = dict(
         stock_codes=stock_codes,
         stock_name=stock_name,
         original_query=original_query,
@@ -263,6 +263,8 @@ def _handle_async_analysis_batch(
         force_refresh=request.force_refresh,
         notify=notify,
     )
+
+    accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(**submit_kwargs)
 
     accepted = [
         BatchTaskAcceptedItem(

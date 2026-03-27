@@ -6,6 +6,7 @@ interface CardProps {
   subtitle?: string;
   children: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
   variant?: 'default' | 'bordered' | 'gradient';
   hoverable?: boolean;
   padding?: 'none' | 'sm' | 'md' | 'lg';
@@ -19,6 +20,7 @@ export const Card: React.FC<CardProps> = ({
   subtitle,
   children,
   className = '',
+  style,
   variant = 'default',
   hoverable = false,
   padding = 'md',
@@ -40,7 +42,7 @@ export const Card: React.FC<CardProps> = ({
 
   if (variant === 'gradient') {
     return (
-      <div className={cn(variantStyles.gradient, className)}>
+      <div className={cn(variantStyles.gradient, className)} style={style}>
         <div className={cn('gradient-border-card-inner', paddingStyles[padding])}>
           {(title || subtitle) && (
             <div className="mb-3">
@@ -56,6 +58,7 @@ export const Card: React.FC<CardProps> = ({
 
   return (
     <div
+      style={style}
       className={cn('rounded-2xl', variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
     >
       {(title || subtitle) && (

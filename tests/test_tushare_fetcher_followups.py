@@ -106,3 +106,38 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
         self.assertAlmostEqual(chip.concentration_90, 0.1)
         self.assertAlmostEqual(chip.concentration_70, 0.1)
         self.assertEqual(rate_limit_mock.call_count, 3)
+
+    def test_convert_stock_code_accepts_exchange_prefixed_a_share(self) -> None:
+        fetcher = self._make_fetcher()
+
+        self.assertEqual(fetcher._convert_stock_code("SZ000001"), "000001.SZ")
+        self.assertEqual(fetcher._convert_stock_code("SH600519"), "600519.SH")
+        self.assertEqual(fetcher._convert_stock_code("600519.SS"), "600519.SH")
+
+    @patch.dict(sys.modules, {"tushare": MagicMock()})
+    def test_legacy_realtime_quote_keeps_sz_hint_as_stock_symbol(self) -> None:
+        fetcher = self._make_fetcher()
+        fetcher._api.quotation.side_effect = Exception("quota")
+
+        tushare_module = sys.modules["tushare"]
+        tushare_module.get_realtime_quotes.return_value = pd.DataFrame(
+            [
+                {
+                    "name": "平安银行",
+                    "price": "10.94",
+                    "pre_close": "10.88",
+                    "volume": "1000",
+                    "amount": "2000",
+                    "high": "11.00",
+                    "low": "10.80",
+                    "open": "10.90",
+                }
+            ]
+        )
+
+        quote = fetcher.get_realtime_quote("SZ000001")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote.code, "000001")
+        self.assertEqual(quote.name, "平安银行")
+        tushare_module.get_realtime_quotes.assert_called_once_with("000001")

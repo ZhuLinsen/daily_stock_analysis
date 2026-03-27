@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ApiErrorAlert, ConfirmDialog, Button } from '../components/common';
+import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
@@ -148,11 +148,11 @@ const HomePage: React.FC = () => {
     >
       <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
         <header className="flex min-w-0 flex-shrink-0 items-center overflow-hidden px-3 py-3 md:px-4 md:py-4">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5 md:flex-nowrap">
             <button
               onClick={() => setSidebarOpen(true)}
               className="md:hidden -ml-1 flex-shrink-0 rounded-lg p-1.5 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
-              title="历史记录"
+              aria-label="历史记录"
             >
               <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -169,14 +169,8 @@ const HomePage: React.FC = () => {
                 disabled={isAnalyzing}
                 className={inputError ? 'border-danger/50' : undefined}
               />
-              {inputError ? (
-                <p className="absolute -bottom-4 left-0 text-xs text-danger">{inputError}</p>
-              ) : null}
-              {duplicateError ? (
-                <p className="absolute -bottom-4 left-0 text-xs text-warning">{duplicateError}</p>
-              ) : null}
             </div>
-            <label className="flex flex-shrink-0 cursor-pointer items-center gap-1 text-xs text-secondary-text select-none">
+            <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground">
               <input
                 type="checkbox"
                 checked={notify}
@@ -189,7 +183,7 @@ const HomePage: React.FC = () => {
               type="button"
               onClick={() => handleSubmitAnalysis()}
               disabled={!query || isAnalyzing}
-              className="btn-primary flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap"
+              className="btn-primary flex h-10 flex-shrink-0 items-center gap-1.5 whitespace-nowrap"
             >
               {isAnalyzing ? (
                 <>
@@ -206,6 +200,27 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
+        {inputError || duplicateError ? (
+          <div className="px-3 pb-2 md:px-4">
+            {inputError ? (
+              <InlineAlert
+                variant="danger"
+                title="输入有误"
+                message={inputError}
+                className="rounded-xl px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+            {!inputError && duplicateError ? (
+              <InlineAlert
+                variant="warning"
+                title="任务已存在"
+                message={duplicateError}
+                className="rounded-xl px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="flex-1 flex min-h-0 overflow-hidden">
           <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
             {sidebarContent}
@@ -213,7 +228,7 @@ const HomePage: React.FC = () => {
 
           {sidebarOpen ? (
             <div className="fixed inset-0 z-40 md:hidden" onClick={() => setSidebarOpen(false)}>
-              <div className="absolute inset-0 home-mobile-overlay" />
+              <div className="page-drawer-overlay absolute inset-0" />
               <div
                 className="dashboard-card absolute bottom-0 left-0 top-0 flex w-72 flex-col overflow-hidden !rounded-none !rounded-r-xl p-3 shadow-2xl"
                 onClick={(event) => event.stopPropagation()}
@@ -236,8 +251,8 @@ const HomePage: React.FC = () => {
                 <DashboardStateBlock title="加载报告中..." loading />
               </div>
             ) : selectedReport ? (
-              <div className="max-w-4xl pb-8">
-                <div className="mb-3 flex items-center justify-end gap-2">
+              <div className="max-w-4xl space-y-4 pb-8">
+                <div className="flex flex-wrap items-center justify-end gap-2">
                   <Button
                     variant="home-action-ai"
                     size="sm"
@@ -250,7 +265,7 @@ const HomePage: React.FC = () => {
                     追问 AI
                   </Button>
                   <Button
-                    variant="home-action-report"
+                    variant="home-action-ai"
                     size="sm"
                     disabled={selectedReport.meta.id === undefined}
                     onClick={openMarkdownDrawer}
@@ -264,12 +279,11 @@ const HomePage: React.FC = () => {
                 <ReportSummary data={selectedReport} isHistory />
               </div>
             ) : (
-              <div className="flex h-full flex-col items-center justify-center text-center">
-                <DashboardStateBlock
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
                   title="开始分析"
-                  titleAs="h3"
-                  description="输入股票代码进行分析，或从左侧选择历史报告查看"
-                  titleClassName="text-base font-medium text-foreground"
+                  description="输入股票代码进行分析，或从左侧选择历史报告查看。"
+                  className="max-w-xl border-dashed"
                   icon={(
                     <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />

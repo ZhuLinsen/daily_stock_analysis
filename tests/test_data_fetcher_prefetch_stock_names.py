@@ -7,6 +7,7 @@ import os
 import sys
 import unittest
 from unittest.mock import MagicMock, call, patch
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -60,6 +61,16 @@ class TestPrefetchStockNames(unittest.TestCase):
         manager.get_realtime_quote.assert_not_called()
         remote_fetcher.get_stock_name.assert_not_called()
         self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+
+    def test_get_stock_name_preserves_raw_exchange_hint_for_realtime_lookup(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        manager._fetchers = []
+        manager.get_realtime_quote = MagicMock(return_value=SimpleNamespace(name="平安银行"))
+
+        name = DataFetcherManager.get_stock_name(manager, "000001.SZ")
+
+        self.assertEqual(name, "平安银行")
+        manager.get_realtime_quote.assert_called_once_with("000001.SZ")
 
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):
         fetcher = PytdxFetcher(hosts=[])

@@ -1,14 +1,20 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
+import { Check, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
-import { ApiErrorAlert, Card, Badge, Pagination } from '../components/common';
+import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
 import type {
   BacktestResultItem,
   BacktestRunResponse,
   PerformanceMetrics,
 } from '../types/backtest';
+
+const BACKTEST_INPUT_CLASS =
+  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const BACKTEST_COMPACT_INPUT_CLASS =
+  'input-surface input-focus-glow h-10 rounded-xl border bg-transparent px-3 py-2 text-xs transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
 // ============ Helpers ============
 
@@ -45,9 +51,39 @@ function statusBadge(status: string) {
 }
 
 function boolIcon(value?: boolean | null) {
-  if (value === true) return <span className="text-success">&#10003;</span>;
-  if (value === false) return <span className="text-danger">&#10007;</span>;
-  return <span className="text-muted-text">--</span>;
+  if (value === true) {
+    return (
+      <span
+        className="backtest-status-chip backtest-status-chip-success"
+        aria-label="yes"
+      >
+        <StatusDot tone="success" className="backtest-status-chip-dot" />
+        <Check className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+
+  if (value === false) {
+    return (
+      <span
+        className="backtest-status-chip backtest-status-chip-danger"
+        aria-label="no"
+      >
+        <StatusDot tone="danger" className="backtest-status-chip-dot" />
+        <X className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="backtest-status-chip backtest-status-chip-neutral"
+      aria-label="unknown"
+    >
+      <StatusDot tone="neutral" className="backtest-status-chip-dot" />
+      <Minus className="h-3.5 w-3.5" />
+    </span>
+  );
 }
 
 // ============ Metric Row ============
@@ -250,7 +286,7 @@ const BacktestPage: React.FC = () => {
               onKeyDown={handleKeyDown}
               placeholder="Filter by stock code (leave empty for all)"
               disabled={isRunning}
-              className="input-terminal w-full"
+              className={BACKTEST_INPUT_CLASS}
             />
           </div>
           <button
@@ -261,7 +297,7 @@ const BacktestPage: React.FC = () => {
           >
             Filter
           </button>
-          <div className="flex items-center gap-1 whitespace-nowrap">
+          <div className="flex items-center gap-2 whitespace-nowrap lg:w-40 lg:justify-between">
             <span className="text-xs text-muted-text">Window</span>
             <input
               type="number"
@@ -271,7 +307,7 @@ const BacktestPage: React.FC = () => {
               onChange={(e) => setEvalDays(e.target.value)}
               placeholder="10"
               disabled={isRunning}
-              className="input-terminal w-14 text-center text-xs py-2"
+              className={`${BACKTEST_COMPACT_INPUT_CLASS} w-24 text-center tabular-nums`}
             />
           </div>
           <button
@@ -323,11 +359,11 @@ const BacktestPage: React.FC = () => {
           ) : overallPerf ? (
             <PerformanceCard metrics={overallPerf} title="Overall Performance" />
           ) : (
-            <Card padding="md">
-              <p className="text-xs text-muted-text text-center py-4">
-                No backtest data yet. Run a backtest to see performance metrics.
-              </p>
-            </Card>
+            <EmptyState
+              title="No Metrics Yet"
+              description="Run a backtest to generate portfolio-level performance metrics."
+              className="h-full min-h-[12rem] border-dashed bg-card/45 shadow-none"
+            />
           )}
 
           {stockPerf && (
@@ -346,30 +382,41 @@ const BacktestPage: React.FC = () => {
               <p className="mt-3 text-secondary-text text-sm">Loading results...</p>
             </div>
           ) : results.length === 0 ? (
-            <div className="backtest-empty-state">
-              <div className="icon-wrap">
-                <svg className="w-6 h-6 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <EmptyState
+              title="No Results"
+              description="Run a backtest to evaluate historical analysis accuracy"
+              className="backtest-empty-state border-dashed"
+              icon={(
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                 </svg>
-              </div>
-              <h3 className="title">No Results</h3>
-              <p className="desc">Run a backtest to evaluate historical analysis accuracy</p>
-            </div>
+              )}
+            />
           ) : (
             <div className="animate-fade-in">
+              <div className="backtest-table-toolbar">
+                <div className="backtest-table-toolbar-meta">
+                  <span className="label-uppercase">Result Set</span>
+                  <span className="text-xs text-secondary-text">
+                    {codeFilter.trim() ? `Filtered by ${codeFilter.trim()}` : 'All stocks'}
+                    {evalDays ? ` · ${evalDays} day window` : ''}
+                  </span>
+                </div>
+                <span className="backtest-table-scroll-hint">Scroll horizontally on small screens</span>
+              </div>
               <div className="backtest-table-wrapper">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-elevated text-left">
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Code</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Date</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Advice</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Dir.</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Outcome</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-right">Return%</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">SL</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">TP</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Status</th>
+                <table className="backtest-table min-w-[760px] w-full text-sm">
+                  <thead className="backtest-table-head">
+                    <tr className="text-left">
+                      <th className="backtest-table-head-cell">Code</th>
+                      <th className="backtest-table-head-cell">Date</th>
+                      <th className="backtest-table-head-cell">Advice</th>
+                      <th className="backtest-table-head-cell">Dir.</th>
+                      <th className="backtest-table-head-cell">Outcome</th>
+                      <th className="backtest-table-head-cell text-right">Return%</th>
+                      <th className="backtest-table-head-cell text-center">SL</th>
+                      <th className="backtest-table-head-cell text-center">TP</th>
+                      <th className="backtest-table-head-cell">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -378,19 +425,23 @@ const BacktestPage: React.FC = () => {
                         key={row.analysisHistoryId}
                         className="backtest-table-row"
                       >
-                        <td className="px-3 py-2 font-mono text-primary text-xs">{row.code}</td>
-                        <td className="px-3 py-2 text-xs text-secondary-text">{row.analysisDate || '--'}</td>
-                        <td className="px-3 py-2 text-xs text-foreground truncate max-w-[140px]" title={row.operationAdvice || ''}>
-                          {row.operationAdvice || '--'}
+                        <td className="backtest-table-cell backtest-table-code">{row.code}</td>
+                        <td className="backtest-table-cell text-secondary-text">{row.analysisDate || '--'}</td>
+                        <td className="backtest-table-cell max-w-[140px] text-foreground">
+                          {row.operationAdvice ? (
+                            <Tooltip content={row.operationAdvice} focusable>
+                              <span className="block truncate">{row.operationAdvice}</span>
+                            </Tooltip>
+                          ) : '--'}
                         </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="flex items-center gap-1">
+                        <td className="backtest-table-cell">
+                          <span className="flex items-center gap-2">
                             {boolIcon(row.directionCorrect)}
                             <span className="text-muted-text">{row.directionExpected || ''}</span>
                           </span>
                         </td>
-                        <td className="px-3 py-2">{outcomeBadge(row.outcome)}</td>
-                        <td className="px-3 py-2 text-xs font-mono text-right">
+                        <td className="backtest-table-cell">{outcomeBadge(row.outcome)}</td>
+                        <td className="backtest-table-cell backtest-table-return text-right">
                           <span className={
                             row.simulatedReturnPct != null
                               ? row.simulatedReturnPct > 0 ? 'text-success' : row.simulatedReturnPct < 0 ? 'text-danger' : 'text-secondary-text'
@@ -399,9 +450,9 @@ const BacktestPage: React.FC = () => {
                             {pct(row.simulatedReturnPct)}
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitStopLoss)}</td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitTakeProfit)}</td>
-                        <td className="px-3 py-2">{statusBadge(row.evalStatus)}</td>
+                        <td className="backtest-table-cell text-center">{boolIcon(row.hitStopLoss)}</td>
+                        <td className="backtest-table-cell text-center">{boolIcon(row.hitTakeProfit)}</td>
+                        <td className="backtest-table-cell">{statusBadge(row.evalStatus)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -418,7 +469,7 @@ const BacktestPage: React.FC = () => {
               </div>
 
               <p className="text-xs text-muted-text text-center mt-2">
-                {totalResults} result{totalResults !== 1 ? 's' : ''} total
+                {totalResults} result{totalResults !== 1 ? 's' : ''} total · page {currentPage} of {Math.max(totalPages, 1)}
               </p>
             </div>
           )}

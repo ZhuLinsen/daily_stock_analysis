@@ -15,9 +15,6 @@ if ([string]::IsNullOrWhiteSpace($pythonBin)) {
 
 Write-Host "Using Python: $pythonBin"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$requirementsPath = Join-Path $repoRoot 'requirements.txt'
-
 function Test-PythonCode {
   param(
     [string]$Python,
@@ -32,79 +29,16 @@ function Test-PythonCode {
   }
 }
 
-function Install-PatchedLiteLLMFromGitHubSource {
-  param(
-    [string]$Python,
-    [string]$Tag
-  )
-
-  $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dsa-litellm-$Tag"
-  $archivePath = Join-Path ([System.IO.Path]::GetTempPath()) "dsa-litellm-$Tag.zip"
-  $extractRoot = Join-Path $tempRoot 'src'
-
-  if (Test-Path $tempRoot) {
-    Remove-Item -Recurse -Force $tempRoot
-  }
-  New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
-
-  $downloadUrl = "https://github.com/BerriAI/litellm/archive/refs/tags/$Tag.zip"
-  Write-Host "Downloading patched LiteLLM source: $downloadUrl"
-  Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
-
-  Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
-  $sourceDir = Get-ChildItem -Path $extractRoot -Directory | Select-Object -First 1
-  if (-not $sourceDir) {
-    throw "Unable to locate extracted LiteLLM source under $extractRoot."
-  }
-
-  $enterpriseDir = Join-Path $sourceDir.FullName 'enterprise'
-  if (Test-Path $enterpriseDir) {
-    # Work around Poetry wheel build failures on Windows when the upstream source archive
-    # includes LiteLLM's optional enterprise package tree.
-    Remove-Item -Recurse -Force $enterpriseDir
-  }
-
-  & $Python -m pip install $sourceDir.FullName
-  if ($LASTEXITCODE -ne 0) {
-    throw "Patched LiteLLM install failed with exit code $LASTEXITCODE."
-  }
-}
-
-function Install-BackendDependencies {
-  param(
-    [string]$Python,
-    [string]$RequirementsFile
-  )
-
-  $tempRequirements = Join-Path ([System.IO.Path]::GetTempPath()) 'dsa-desktop-backend-requirements.txt'
-  $litellmTag = $null
-  $filteredLines = foreach ($line in Get-Content $RequirementsFile) {
-    if ($line -match '^\s*litellm\s*@\s*https://github\.com/BerriAI/litellm/archive/refs/tags/([^/\s]+)\.tar\.gz') {
-      $litellmTag = $Matches[1]
-      continue
-    }
-    $line
-  }
-
-  Set-Content -Path $tempRequirements -Value $filteredLines
-
-  & $Python -m pip install -r $tempRequirements
-  if ($LASTEXITCODE -ne 0) {
-    throw "pip install -r $tempRequirements failed with exit code $LASTEXITCODE."
-  }
-
-  if ($litellmTag) {
-    Install-PatchedLiteLLMFromGitHubSource -Python $Python -Tag $litellmTag
-  }
-}
-
 Write-Host 'Building backend executable...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import PyInstaller")) {
   & $pythonBin -m pip install pyinstaller
 }
 
 Write-Host 'Installing backend dependencies...'
-Install-BackendDependencies -Python $pythonBin -RequirementsFile $requirementsPath
+& $pythonBin -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+  throw "pip install -r requirements.txt failed with exit code $LASTEXITCODE."
+}
 
 Write-Host 'Checking python-multipart availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import multipart, multipart.multipart")) {

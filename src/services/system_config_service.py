@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import logging
+import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -350,9 +351,10 @@ class SystemConfigService:
         for item in items:
             key = item["key"].upper()
             value = item["value"]
+            field_schema = get_field_definition(key, value)
+            normalized_value = self._normalize_value_for_storage(value, field_schema)
             submitted_keys.add(key)
-            updates.append((key, value))
-            field_schema = get_field_definition(key)
+            updates.append((key, normalized_value))
             if bool(field_schema.get("is_sensitive", False)):
                 sensitive_keys.add(key)
 
@@ -522,7 +524,7 @@ class SystemConfigService:
         if not value.strip() and not is_required:
             return issues
 
-        if "\n" in value:
+        if ("\n" in value or "\r" in value) and data_type != "json":
             issues.append(
                 {
                     "key": key,
@@ -594,6 +596,40 @@ class SystemConfigService:
                     }
                 )
 
+        elif data_type == "json":
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_json",
+                        "message": "Value must be valid JSON",
+                        "severity": "error",
+                        "expected": "valid JSON",
+                        "actual": value[:120],
+                    }
+                )
+            else:
+                if key == "AGENT_EVENT_ALERT_RULES_JSON":
+                    try:
+                        from src.agent.events import parse_event_alert_rules, validate_event_alert_rule
+
+                        rule_index = 0
+                        for rule_index, rule in enumerate(parse_event_alert_rules(parsed), start=1):
+                            validate_event_alert_rule(rule)
+                    except ValueError as exc:
+                        issues.append(
+                            {
+                                "key": key,
+                                "code": "invalid_event_rule",
+                                "message": f"Rule validation failed: {exc}",
+                                "severity": "error",
+                                "expected": "supported EventMonitor rule fields and enum values",
+                                "actual": f"rule #{rule_index or 1}",
+                            }
+                        )
+
         if "enum" in validation and value and value not in validation["enum"]:
             issues.append(
                 {
@@ -627,6 +663,22 @@ class SystemConfigService:
                 )
 
         return issues
+
+    @staticmethod
+    def _normalize_value_for_storage(value: str, field_schema: Dict[str, Any]) -> str:
+        """Normalize submitted values before persisting to the single-line .env file."""
+        if field_schema.get("data_type", "string") != "json":
+            return value
+
+        if not value.strip():
+            return value
+
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
     def _validate_numeric_range(key: str, numeric_value: float, validation: Dict[str, Any]) -> List[Dict[str, Any]]:

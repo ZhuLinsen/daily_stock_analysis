@@ -219,7 +219,7 @@
 - 📝 **配置管理** - 查看/修改自選股列表
 - 🚀 **快速分析** - 通過 API 接口觸發分析
 - 📊 **實時進度** - 分析任務狀態實時更新，支持多任務並行
-- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可在 `/chat` 進行多輪問答
+- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可使用 `/ask`、`/chat`、`/history`、`/strategies`、`/research` 進行問答、查歷史、查看策略與深度研究
 - 📈 **回測驗證** - 評估歷史分析準確率，查詢方向勝率與模擬收益
 
 ### API 接口
@@ -311,15 +311,9 @@ daily_stock_analysis/
 
 ## ☕ 支持項目
 
-<div align="center">
-  <a href="https://ko-fi.com/mumu157" target="_blank">
-    <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" style="height: 40px !important;">
-  </a>
-</div>
-
-| 支付寶 (Alipay) | 微信支付 (WeChat) | Ko-fi |
+| 支付寶 (Alipay) | 微信支付 (WeChat) | 小紅書 |
 | :---: | :---: | :---: |
-| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <a href="https://ko-fi.com/mumu157" target="_blank"><img src="../sources/ko-fi.png" width="200" alt="Ko-fi"></a> |
+| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <img src="../sources/xiaohongshu.png" width="200" alt="小紅書"> |
 
 ## 貢獻
 

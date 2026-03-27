@@ -7,6 +7,7 @@
 
 import type { CSSProperties } from 'react';
 import type { StockSuggestion } from '../../types/stockIndex';
+import { Badge } from '../common';
 import { cn } from '../../utils/cn';
 
 export interface SuggestionsListProps {
@@ -83,12 +84,12 @@ export function SuggestionsList({
 
 // Helper component: Market badge
 const MARKET_BADGE_CONFIG = {
-  CN: { label: 'A股', className: 'text-red-500 bg-red-500/10' },
-  HK: { label: '港股', className: 'text-green-500 bg-green-500/10' },
-  US: { label: '美股', className: 'text-blue-500 bg-blue-500/10' },
-  INDEX: { label: '指数', className: 'text-purple-500 bg-purple-500/10' },
-  ETF: { label: 'ETF', className: 'text-yellow-500 bg-yellow-500/10' },
-  BSE: { label: '北交所', className: 'text-orange-500 bg-orange-500/10' },
+  CN: { label: 'A股', className: 'border-danger/25 bg-danger/10 text-danger' },
+  HK: { label: '港股', className: 'border-success/25 bg-success/10 text-success' },
+  US: { label: '美股', className: 'border-cyan/25 bg-cyan/10 text-cyan' },
+  INDEX: { label: '指数', className: 'border-purple/25 bg-purple/10 text-purple' },
+  ETF: { label: 'ETF', className: 'border-warning/25 bg-warning/10 text-warning' },
+  BSE: { label: '北交所', className: 'border-orange-500/25 bg-orange-500/10 text-orange-500' },
 } as const;
 
 function MarketBadge({ market }: { market: string }) {
@@ -99,27 +100,27 @@ function MarketBadge({ market }: { market: string }) {
   }
 
   return (
-    <span className={cn("text-xs px-2 py-0.5 rounded", config.className)}>
+    <Badge variant="default" size="sm" className={cn("min-w-[3rem] justify-center shadow-none", config.className)}>
       {config.label}
-    </span>
+    </Badge>
   );
 }
 
 // Helper component: Match type badge
 function MatchTypeBadge({ matchType }: { matchType: string }) {
   const configMap = {
-    exact: { label: '精确', className: 'bg-cyan/10 text-cyan' },
-    prefix: { label: '前缀', className: 'bg-purple/10 text-purple' },
-    contains: { label: '包含', className: 'bg-yellow/10 text-yellow' },
-    fuzzy: { label: '模糊', className: 'bg-gray/10 text-gray' },
+    exact: { label: '精确', className: 'border-cyan/25 bg-cyan/10 text-cyan' },
+    prefix: { label: '前缀', className: 'border-purple/25 bg-purple/10 text-purple' },
+    contains: { label: '包含', className: 'border-warning/25 bg-warning/10 text-warning' },
+    fuzzy: { label: '模糊', className: 'border-border/55 bg-elevated/75 text-muted-text' },
   };
 
   const config = configMap[matchType as keyof typeof configMap] || configMap.fuzzy;
 
   return (
-    <span className={cn("text-xs px-1.5 py-0.5 rounded", config.className)}>
+    <Badge variant="default" size="sm" className={cn("shrink-0 shadow-none", config.className)}>
       {config.label}
-    </span>
+    </Badge>
   );
 }
 

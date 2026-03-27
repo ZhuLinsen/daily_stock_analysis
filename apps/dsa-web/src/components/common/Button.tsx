@@ -3,7 +3,7 @@ import { cn } from '../../utils/cn';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'gradient' | 'danger' | 'danger-subtle' | 'settings-primary' | 'settings-secondary' | 'action-primary' | 'action-secondary' | 'home-action-ai' | 'home-action-report';
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xsm' | 'sm' | 'md' | 'lg' | 'xl';
   isLoading?: boolean;
   /** Custom loading text. */
   loadingText?: string;
@@ -11,6 +11,7 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const BUTTON_SIZE_STYLES = {
+  xsm: 'h-6 rounded-lg px-2 text-sm',
   sm: 'h-9 rounded-lg px-3 text-sm',
   md: 'h-10 rounded-xl px-4 text-sm',
   lg: 'h-11 rounded-xl px-5 text-sm',

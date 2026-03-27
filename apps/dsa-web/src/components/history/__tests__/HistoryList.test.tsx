@@ -27,6 +27,16 @@ const items: HistoryItem[] = [
   },
 ];
 
+const longChineseNameItem: HistoryItem = {
+  id: 2,
+  queryId: 'q-2',
+  stockCode: '600519',
+  stockName: '贵州茅台股票股份有限公司',
+  sentimentScore: 75,
+  operationAdvice: '持有',
+  createdAt: '2026-03-16T08:00:00Z',
+};
+
 describe('HistoryList', () => {
   it('shows the empty state copy when no history exists', () => {
     const { container } = render(<HistoryList {...baseProps} items={[]} />);
@@ -82,6 +92,22 @@ describe('HistoryList', () => {
     render(<HistoryList {...baseProps} items={items} />);
 
     expect(screen.getByRole('button', { name: '删除' })).toBeDisabled();
+  });
+
+  it('truncates long stock names with trailing dot', () => {
+    render(
+      <HistoryList
+        {...baseProps}
+        items={[longChineseNameItem]}
+      />,
+    );
+
+    // '贵州茅台股票股份有限公司' (12 Chinese chars) should be truncated to '贵州茅台股票股份.' (8 chars + dot)
+    // The full name exists in a hidden span, visible on hover
+    expect(screen.getByText('贵州茅台股票股份.')).toBeInTheDocument();
+    const fullNameHidden = screen.queryByText('贵州茅台股票股份有限公司');
+    expect(fullNameHidden).toBeInTheDocument();
+    expect(fullNameHidden).toHaveClass('hidden');
   });
 
   it('generates unique select-all ids across multiple instances', () => {

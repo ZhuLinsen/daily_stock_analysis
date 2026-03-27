@@ -4,6 +4,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { historyApi } from '../../api/history';
 import { Drawer } from '../common/Drawer';
+import { Tooltip } from '../common/Tooltip';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import type { ReportLanguage } from '../../types/analysis';
 import { markdownToPlainText } from '../../utils/markdown';
@@ -97,7 +98,13 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
   }, [recordId, loadReportFailedText]);
 
   return (
-    <Drawer isOpen={isOpen} onClose={handleClose} width="max-w-3xl" zIndex={100}>
+    <Drawer
+      isOpen={isOpen}
+      onClose={handleClose}
+      width="max-w-3xl"
+      zIndex={100}
+      backdropClassName="bg-background/56 backdrop-blur-[2px]"
+    >
       {/* Custom Header */}
       <div className="flex items-center justify-between gap-3 mb-4">
         {/* Left: Icon + Title */}
@@ -116,44 +123,50 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
         {/* Right: Toolbar */}
         <div className="flex items-center gap-2">
           {/* Copy Markdown button */}
-          <button
-            type="button"
-            onClick={handleCopyMarkdown}
-            disabled={isLoading || !content || copiedType !== null}
-            className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-            title={text.copyMarkdownSource}
-            aria-label={text.copyMarkdownSource}
-          >
-            {copiedType === 'markdown' ? (
-              <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-              </svg>
-            )}
-          </button>
+          <Tooltip content={text.copyMarkdownSource}>
+            <span className="inline-flex">
+              <button
+                type="button"
+                onClick={handleCopyMarkdown}
+                disabled={isLoading || !content || copiedType !== null}
+                className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+                aria-label={text.copyMarkdownSource}
+              >
+                {copiedType === 'markdown' ? (
+                  <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                  </svg>
+                )}
+              </button>
+            </span>
+          </Tooltip>
 
           {/* Copy plain text button */}
-          <button
-            type="button"
-            onClick={handleCopyPlainText}
-            disabled={isLoading || !content || copiedType !== null}
-            className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
-            title={text.copyPlainText}
-            aria-label={text.copyPlainText}
-          >
-            {copiedType === 'text' ? (
-              <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            )}
-          </button>
+          <Tooltip content={text.copyPlainText}>
+            <span className="inline-flex">
+              <button
+                type="button"
+                onClick={handleCopyPlainText}
+                disabled={isLoading || !content || copiedType !== null}
+                className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground disabled:opacity-50"
+                aria-label={text.copyPlainText}
+              >
+                {copiedType === 'text' ? (
+                  <svg className="h-6 w-6 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                )}
+              </button>
+            </span>
+          </Tooltip>
         </div>
       </div>
 

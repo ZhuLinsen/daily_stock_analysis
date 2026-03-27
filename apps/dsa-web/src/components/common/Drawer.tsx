@@ -12,6 +12,7 @@ interface DrawerProps {
   width?: string;
   zIndex?: number;
   side?: 'left' | 'right';
+  backdropClassName?: string;
 }
 
 /**
@@ -25,6 +26,7 @@ export const Drawer: React.FC<DrawerProps> = ({
   width = 'max-w-2xl',
   zIndex = 50,
   side = 'right',
+  backdropClassName,
 }) => {
   // Close the drawer when Escape is pressed.
   const handleKeyDown = useCallback(
@@ -64,7 +66,10 @@ export const Drawer: React.FC<DrawerProps> = ({
     <div className="fixed inset-0 overflow-hidden" style={{ zIndex }} role="presentation">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300"
+        className={cn(
+          'absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300',
+          backdropClassName,
+        )}
         onClick={onClose}
       />
 

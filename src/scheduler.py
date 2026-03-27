@@ -19,7 +19,7 @@ import sys
 import time
 import threading
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ class Scheduler:
         self.schedule_time = schedule_time
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
+        self._background_tasks: List[Dict[str, Any]] = []
         self._running = False
         
     def set_daily_task(self, task: Callable, run_immediately: bool = True):
@@ -116,6 +117,89 @@ class Scheduler:
             
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def add_background_task(
+        self,
+        task: Callable,
+        interval_seconds: int,
+        run_immediately: bool = False,
+        name: Optional[str] = None,
+    ) -> None:
+        """Register a periodic background task executed inside the scheduler loop.
+
+        Note: The scheduler loop polls every 30 seconds, so *interval_seconds*
+        below 30 will be clamped to 30 to avoid promising unreachable precision.
+        """
+        clamped_interval = max(30, int(interval_seconds))
+        if int(interval_seconds) < 30:
+            logger.warning(
+                "后台任务 %s 请求间隔 %ds，但调度循环每 30s 轮询一次，已自动调整为 30s",
+                name or getattr(task, "__name__", "background_task"),
+                interval_seconds,
+            )
+        entry = {
+            "task": task,
+            "interval_seconds": clamped_interval,
+            "last_run": 0.0,
+            "name": name or getattr(task, "__name__", "background_task"),
+            "thread": None,
+            "running": False,
+        }
+        if not run_immediately:
+            entry["last_run"] = time.time()
+        self._background_tasks.append(entry)
+        logger.info(
+            "已注册后台任务: %s（间隔 %s 秒，立即执行=%s）",
+            entry["name"],
+            entry["interval_seconds"],
+            run_immediately,
+        )
+        if run_immediately:
+            self._start_background_task(entry)
+
+    def _start_background_task(self, entry: Dict[str, Any]) -> bool:
+        """Start one background task in a dedicated daemon thread."""
+        worker = entry.get("thread")
+        if worker is not None and worker.is_alive():
+            return False
+
+        def _runner() -> None:
+            try:
+                logger.info("后台任务开始执行: %s", entry["name"])
+                entry["task"]()
+            except Exception as exc:
+                logger.exception("后台任务执行失败 [%s]: %s", entry["name"], exc)
+            finally:
+                entry["running"] = False
+                entry["thread"] = None
+
+        entry["last_run"] = time.time()
+        entry["running"] = True
+        worker = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name=f"scheduler-bg-{entry['name']}",
+        )
+        entry["thread"] = worker
+        worker.start()
+        return True
+
+    def _run_background_tasks(self) -> None:
+        """Execute any background tasks whose interval has elapsed."""
+        if not self._background_tasks:
+            return
+
+        now = time.time()
+        for entry in self._background_tasks:
+            worker = entry.get("thread")
+            if worker is not None and worker.is_alive():
+                continue
+            if entry.get("running"):
+                entry["running"] = False
+                entry["thread"] = None
+            if now - entry["last_run"] < entry["interval_seconds"]:
+                continue
+            self._start_background_task(entry)
     
     def run(self):
         """
@@ -129,6 +213,7 @@ class Scheduler:
         
         while self._running and not self.shutdown_handler.should_shutdown:
             self.schedule.run_pending()
+            self._run_background_tasks()
             time.sleep(30)  # 每30秒检查一次
             
             # 每小时打印一次心跳
@@ -153,7 +238,8 @@ class Scheduler:
 def run_with_schedule(
     task: Callable,
     schedule_time: str = "18:00",
-    run_immediately: bool = True
+    run_immediately: bool = True,
+    background_tasks: Optional[List[Dict[str, Any]]] = None,
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -162,8 +248,18 @@ def run_with_schedule(
         task: 要执行的任务函数
         schedule_time: 每日执行时间
         run_immediately: 是否立即执行一次
+        background_tasks: 可选的后台任务定义列表。每项为一个字典，
+            需包含 `task` 与 `interval_seconds`，可选包含 `name`
+            和 `run_immediately`。`interval_seconds` 单位为秒。
     """
     scheduler = Scheduler(schedule_time=schedule_time)
+    for entry in background_tasks or []:
+        scheduler.add_background_task(
+            task=entry["task"],
+            interval_seconds=entry["interval_seconds"],
+            run_immediately=entry.get("run_immediately", False),
+            name=entry.get("name"),
+        )
     scheduler.set_daily_task(task, run_immediately=run_immediately)
     scheduler.run()
 

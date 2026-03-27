@@ -20,13 +20,10 @@ const StrategyItem: React.FC<StrategyItemProps> = ({
   value,
   tone,
 }) => (
-  <div className="home-subpanel p-3">
+  <div className="home-subpanel home-strategy-card p-3" style={{ ['--home-strategy-tone' as string]: `var(${tone})` }}>
     <div className="flex flex-col">
-      <span className="text-xs text-muted-text mb-0.5">{label}</span>
-      <span
-        className="text-lg font-bold font-mono"
-        style={{ color: value ? `var(${tone})` : 'var(--text-muted-text)' }}
-      >
+      <span className="home-strategy-label mb-0.5 text-xs">{label}</span>
+      <span className="home-strategy-value text-lg font-bold font-mono" style={!value ? { color: 'var(--text-muted-text)' } : undefined}>
         {value || '—'}
       </span>
     </div>

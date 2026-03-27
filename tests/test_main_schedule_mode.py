@@ -79,9 +79,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
         config = self._make_config(schedule_enabled=False)
         scheduled_call = {}
 
-        def fake_run_with_schedule(task, schedule_time, run_immediately):
+        def fake_run_with_schedule(task, schedule_time, run_immediately, background_tasks=None):
             scheduled_call["schedule_time"] = schedule_time
             scheduled_call["run_immediately"] = run_immediately
+            scheduled_call["background_tasks"] = background_tasks or []
             task()
 
         with patch("main.parse_arguments", return_value=args), \
@@ -93,7 +94,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(scheduled_call, {"schedule_time": "18:00", "run_immediately": True})
+        self.assertEqual(
+            scheduled_call,
+            {"schedule_time": "18:00", "run_immediately": True, "background_tasks": []},
+        )
         run_full_analysis.assert_called_once_with(config, args, None)
         warning_log.assert_any_call(
             "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"

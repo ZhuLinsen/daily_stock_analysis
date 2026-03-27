@@ -313,7 +313,7 @@ describe('SettingsPage', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  it('hides unavailable deep research and event monitor fields from the agent category', () => {
+  it('shows deep research and event monitor fields in the agent category when available', () => {
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'agent',
       itemsByCategory: {
@@ -349,7 +349,7 @@ describe('SettingsPage', () => {
               uiControl: 'number',
               isSensitive: false,
               isRequired: false,
-              isEditable: false,
+              isEditable: true,
               options: [],
               validation: {},
               displayOrder: 2,
@@ -367,7 +367,7 @@ describe('SettingsPage', () => {
               uiControl: 'switch',
               isSensitive: false,
               isRequired: false,
-              isEditable: false,
+              isEditable: true,
               options: [],
               validation: {},
               displayOrder: 3,
@@ -380,8 +380,8 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByText('AGENT_ORCHESTRATOR_TIMEOUT_S')).toBeInTheDocument();
-    expect(screen.queryByText('AGENT_DEEP_RESEARCH_BUDGET')).not.toBeInTheDocument();
-    expect(screen.queryByText('AGENT_EVENT_MONITOR_ENABLED')).not.toBeInTheDocument();
+    expect(screen.getByText('AGENT_DEEP_RESEARCH_BUDGET')).toBeInTheDocument();
+    expect(screen.getByText('AGENT_EVENT_MONITOR_ENABLED')).toBeInTheDocument();
   });
 
   it('reset button semantic: discards local changes without network request', () => {

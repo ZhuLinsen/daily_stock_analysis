@@ -795,22 +795,25 @@ class AgentOrchestrator:
         else:
             sniper = dict(sniper)
 
-        sniper.setdefault(
-            "ideal_buy",
-            key_levels.get("ideal_buy_if_valuation_improves")
-            or key_levels.get("ideal_buy")
-            or key_levels.get("support")
-            or key_levels.get("immediate_support")
-            or "N/A",
+        ideal_buy = _pick_first_level(
+            sniper.get("ideal_buy"),
+            key_levels.get("ideal_buy_if_valuation_improves"),
+            key_levels.get("ideal_buy"),
+            key_levels.get("support"),
+            key_levels.get("immediate_support"),
         )
-        sniper.setdefault(
-            "secondary_buy",
-            key_levels.get("secondary_buy")
-            or key_levels.get("support")
-            or key_levels.get("immediate_support")
-            or sniper.get("ideal_buy")
-            or "N/A",
-        )
+        sniper["ideal_buy"] = ideal_buy if ideal_buy is not None else "N/A"
+
+        secondary_buy = _coerce_level_value(sniper.get("secondary_buy"))
+        if secondary_buy is None:
+            secondary_buy = _pick_first_level(
+                key_levels.get("secondary_buy"),
+                key_levels.get("support"),
+                key_levels.get("immediate_support"),
+            )
+        if _level_values_equal(secondary_buy, sniper.get("ideal_buy")):
+            secondary_buy = None
+        sniper["secondary_buy"] = secondary_buy if secondary_buy is not None else "N/A"
         sniper.setdefault(
             "stop_loss",
             key_levels.get("stop_loss")
@@ -1415,8 +1418,31 @@ def _coerce_level_value(value: Any) -> Any:
         return None
     if isinstance(value, (int, float)):
         return round(float(value), 2)
-    text = str(value).strip()
-    return text or None
+    text = str(value).replace(",", "").replace("，", "").strip()
+    if not text or text.upper() == "N/A" or text in {"-", "—"}:
+        return None
+    try:
+        return round(float(text), 2)
+    except ValueError:
+        return text
+
+
+def _pick_first_level(*values: Any) -> Any:
+    for value in values:
+        normalized = _coerce_level_value(value)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _level_values_equal(left: Any, right: Any) -> bool:
+    left_normalized = _coerce_level_value(left)
+    right_normalized = _coerce_level_value(right)
+    return (
+        left_normalized is not None
+        and right_normalized is not None
+        and left_normalized == right_normalized
+    )
 
 
 def _first_non_empty_text(*values: Any) -> str:

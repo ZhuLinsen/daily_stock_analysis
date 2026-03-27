@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth, useSystemConfig } from '../hooks';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, ConfirmDialog } from '../components/common';
+import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
 import {
   AuthSettingsCard,
   ChangePasswordCard,
@@ -128,13 +128,7 @@ const SettingsPage: React.FC = () => {
   const SYSTEM_HIDDEN_KEYS = new Set([
     'ADMIN_AUTH_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set([
-    'AGENT_DEEP_RESEARCH_BUDGET',
-    'AGENT_DEEP_RESEARCH_TIMEOUT',
-    'AGENT_EVENT_MONITOR_ENABLED',
-    'AGENT_EVENT_MONITOR_INTERVAL_MINUTES',
-    'AGENT_EVENT_ALERT_RULES_JSON',
-  ]);
+  const AGENT_HIDDEN_KEYS = new Set<string>();
   const activeItems =
     activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
@@ -223,8 +217,8 @@ const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full px-4 pb-6 pt-4 md:px-6">
-      <div className="mb-5 rounded-xl bg-card/50 px-5 py-5 shadow-soft-card-strong">
+    <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
+      <div className="mb-5 rounded-[1.5rem] border settings-border bg-card/94 px-5 py-5 shadow-soft-card-strong backdrop-blur-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-foreground">系统设置</h1>
@@ -237,7 +231,6 @@ const SettingsPage: React.FC = () => {
             <Button
               type="button"
               variant="settings-secondary"
-              className="border-border/50 bg-muted/30 hover:border-border/70"
               onClick={resetDraft}
               disabled={isLoading || isSaving}
             >
@@ -397,9 +390,11 @@ const SettingsPage: React.FC = () => {
                 ))}
               </SettingsSectionCard>
             ) : (
-              <div className="settings-panel-muted rounded-[1.5rem] border p-5 text-sm text-secondary-text shadow-soft-card">
-                当前分类下暂无配置项。
-              </div>
+              <EmptyState
+                title="当前分类下暂无配置项"
+                description="当前分类没有可编辑字段；可切换左侧分类继续查看其它系统配置。"
+                className="settings-surface-panel settings-border-strong border-none bg-transparent shadow-none"
+              />
             )}
           </section>
         </div>
