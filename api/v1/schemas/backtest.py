@@ -27,18 +27,22 @@ class BacktestRunResponse(BaseModel):
 class BacktestResultItem(BaseModel):
     analysis_history_id: int
     code: str
+    stock_name: Optional[str] = None
     analysis_date: Optional[str] = None
     eval_window_days: int
     engine_version: str
     eval_status: str
     evaluated_at: Optional[str] = None
     operation_advice: Optional[str] = None
+    trend_prediction: Optional[str] = None
     position_recommendation: Optional[str] = None
     start_price: Optional[float] = None
     end_close: Optional[float] = None
     max_high: Optional[float] = None
     min_low: Optional[float] = None
     stock_return_pct: Optional[float] = None
+    actual_return_pct: Optional[float] = None
+    actual_movement: Optional[str] = None
     direction_expected: Optional[str] = None
     direction_correct: Optional[bool] = None
     outcome: Optional[str] = None
@@ -91,4 +95,3 @@ class PerformanceMetrics(BaseModel):
 
     advice_breakdown: Dict[str, Any] = Field(default_factory=dict)
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
-

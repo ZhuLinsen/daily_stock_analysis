@@ -252,15 +252,19 @@ def _handle_async_analysis_batch(
     stock_name = request.stock_name if is_single else None
     original_query = request.original_query if (is_single or preserve_batch_metadata) else None
     selection_source = request.selection_source if (is_single or preserve_batch_metadata) else None
+    notify = getattr(request, "notify", True)
 
-    accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(
+    submit_kwargs = dict(
         stock_codes=stock_codes,
         stock_name=stock_name,
         original_query=original_query,
         selection_source=selection_source,
         report_type=request.report_type,
         force_refresh=request.force_refresh,
+        notify=notify,
     )
+
+    accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(**submit_kwargs)
 
     accepted = [
         BatchTaskAcceptedItem(
@@ -338,15 +342,17 @@ def _handle_sync_analysis(
             stock_code=stock_code,
             report_type=request.report_type,
             force_refresh=request.force_refresh,
-            query_id=query_id
+            query_id=query_id,
+            send_notification=getattr(request, "notify", True),
         )
 
         if result is None:
+            error_message = service.last_error or f"分析股票 {stock_code} 失败"
             raise HTTPException(
                 status_code=500,
                 detail={
                     "error": "analysis_failed",
-                    "message": f"分析股票 {stock_code} 失败"
+                    "message": error_message,
                 }
             )
 
@@ -477,6 +483,7 @@ async def task_stream():
     - connected: 连接成功
     - task_created: 新任务创建
     - task_started: 任务开始执行
+    - task_progress: 任务阶段进度更新
     - task_completed: 任务完成
     - task_failed: 任务失败
     - heartbeat: 心跳（每 30 秒）
@@ -511,8 +518,8 @@ async def task_stream():
                         "timestamp": datetime.now().isoformat()
                     })
         except asyncio.CancelledError:
-            # 客户端断开连接
-            pass
+            logger.debug("SSE client disconnected, cancelling event generator")
+            raise
         finally:
             task_queue.unsubscribe(event_queue)
     
@@ -602,6 +609,24 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 (raw_result or {}).get("report_language") if isinstance(raw_result, dict) else None
             )
             stock_name = get_localized_stock_name(record.name, record.code, report_language)
+
+            # Extract current_price / change_pct from context_snapshot
+            current_price = None
+            change_pct = None
+            context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
+            if context_snapshot and isinstance(context_snapshot, dict):
+                enhanced_context = context_snapshot.get('enhanced_context') or {}
+                realtime = enhanced_context.get('realtime') or {}
+                current_price = realtime.get('price')
+                change_pct = realtime.get('change_pct')
+                realtime_quote_raw = context_snapshot.get('realtime_quote_raw') or {}
+                if current_price is None:
+                    current_price = realtime_quote_raw.get('price')
+                if change_pct is None:
+                    change_pct = realtime_quote_raw.get('change_pct')
+                if change_pct is None:
+                    change_pct = realtime_quote_raw.get('pct_chg')
+
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
                 meta=ReportMeta(
@@ -613,6 +638,8 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     report_language=report_language,
                     created_at=record.created_at.isoformat() if record.created_at else None,
                     model_used=model_used,
+                    current_price=current_price,
+                    change_pct=change_pct,
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,

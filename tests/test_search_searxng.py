@@ -23,6 +23,9 @@ class TestSearXNGSearchProvider(unittest.TestCase):
 
     def setUp(self) -> None:
         SearXNGSearchProvider.reset_public_instance_cache()
+        # Clear penalized-instance state if the provider implements it.
+        if hasattr(SearXNGSearchProvider, "_penalized_instances"):
+            SearXNGSearchProvider._penalized_instances.clear()
 
     def _create_provider(
         self,
@@ -308,26 +311,26 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         mock_retry_get.assert_not_called()
 
     @patch("src.search_service.requests.get")
-    def test_public_mode_limits_failover_to_three_instances(self, mock_get):
+    def test_public_mode_limits_failover_to_max_attempts_instances(self, mock_get):
         feed_urls = [
-            "https://public-1.example/",
-            "https://public-2.example/",
-            "https://public-3.example/",
-            "https://public-4.example/",
+            f"https://public-{i}.example/"
+            for i in range(1, SearXNGSearchProvider.PUBLIC_INSTANCES_MAX_ATTEMPTS + 2)
         ]
+        max_attempts = SearXNGSearchProvider.PUBLIC_INSTANCES_MAX_ATTEMPTS
         mock_get.side_effect = [
             self._response(json_payload=self._public_feed(feed_urls)),
-            self._response(status_code=500, text="bad-1", headers={"content-type": "text/plain"}),
-            self._response(status_code=500, text="bad-2", headers={"content-type": "text/plain"}),
-            self._response(status_code=500, text="bad-3", headers={"content-type": "text/plain"}),
+        ] + [
+            self._response(status_code=500, text=f"bad-{i}", headers={"content-type": "text/plain"})
+            for i in range(1, max_attempts + 1)
         ]
 
         provider = self._create_provider(use_public_instances=True)
         resp = provider.search("query", max_results=5)
 
         self.assertFalse(resp.success)
-        self.assertEqual(mock_get.call_count, 4)
-        self.assertIn("https://public-3.example/search", mock_get.call_args_list[3][0][0])
+        self.assertEqual(mock_get.call_count, 1 + max_attempts)
+        last_search_url = mock_get.call_args_list[-1][0][0]
+        self.assertIn(f"https://public-{max_attempts}.example/search", last_search_url)
 
     @patch("src.search_service.requests.get")
     def test_public_mode_rotates_start_instance_across_requests(self, mock_get):

@@ -69,6 +69,16 @@ const mockSuggestions = [
   },
 ];
 
+const hkSuggestion = {
+  canonicalCode: "00700.HK",
+  displayCode: "00700",
+  nameZh: "腾讯控股",
+  market: "HK" as const,
+  matchType: "exact" as const,
+  matchField: "code" as const,
+  score: 100,
+};
+
 describe('StockAutocomplete', () => {
   const mockOnChange = vi.fn();
   const mockOnSubmit = vi.fn();
@@ -371,6 +381,40 @@ describe('StockAutocomplete', () => {
 
       expect(mockOnChange).toHaveBeenCalledWith('600519');
       expect(mockOnSubmit).toHaveBeenCalledWith('600519.SH', '贵州茅台', 'autocomplete');
+    });
+
+    it('submits the highlighted HK suggestion using the canonical .HK code', () => {
+      autocompleteHookImpl = () => ({
+        query: '',
+        setQuery: vi.fn(),
+        suggestions: [hkSuggestion],
+        isOpen: true,
+        highlightedIndex: 0,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: vi.fn(),
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: false,
+        error: null,
+      });
+
+      render(
+        <StockAutocomplete
+          value="00700"
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+        />
+      );
+
+      const input = screen.getByDisplayValue('00700');
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(mockOnChange).toHaveBeenCalledWith('00700');
+      expect(mockOnSubmit).toHaveBeenCalledWith('00700.HK', '腾讯控股', 'autocomplete');
     });
   });
 

@@ -14,6 +14,9 @@ import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
 
+const AUTOCOMPLETE_INPUT_CLASS =
+  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+
 export interface StockAutocompleteProps {
   /** Input value */
   value: string;
@@ -49,7 +52,7 @@ function FallbackInput({
       }}
       placeholder={placeholder}
       disabled={disabled}
-      className={cn('input-terminal w-full', className)}
+      className={cn(AUTOCOMPLETE_INPUT_CLASS, className)}
       data-autocomplete-mode="fallback"
     />
   );
@@ -251,8 +254,7 @@ function StockAutocompleteInner({
         placeholder={placeholder}
         disabled={disabled}
         className={cn(
-          "input-terminal w-full",
-          "focus:outline-none",
+          AUTOCOMPLETE_INPUT_CLASS,
           isOpen && "rounded-b-none",
           className
         )}

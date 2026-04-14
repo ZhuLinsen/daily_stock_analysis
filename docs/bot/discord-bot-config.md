@@ -54,8 +54,11 @@ Discord机器人支持两种消息发送方式：
 DISCORD_BOT_TOKEN=your-discord-bot-token
 DISCORD_MAIN_CHANNEL_ID=your-channel-id
 DISCORD_WEBHOOK_URL=your-webhook-url (可选)
+DISCORD_INTERACTIONS_PUBLIC_KEY=your-public-key (仅接收入站 Interaction/Webhook 回调时需要)
 DISCORD_BOT_STATUS=A股智能分析 | /help
 ```
+
+如果你配置了 Discord Interaction / Webhook 入站回调，务必在 Discord Developer Portal 的 `General Information -> Public Key` 复制公钥并填入 `DISCORD_INTERACTIONS_PUBLIC_KEY`；系统会使用该公钥校验每个入站请求的 Ed25519 签名，验签失败会直接拒绝请求。
 
 ## Webhook模式配置（可选）
 

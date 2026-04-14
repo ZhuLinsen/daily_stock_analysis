@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type React from 'react';
-import { Badge, Select, Input } from '../common';
+import { Badge, Button, Select, Input, Tooltip } from '../common';
 import type { ConfigValidationIssue, SystemConfigFieldSchema, SystemConfigItem } from '../../types/systemConfig';
 import { getFieldDescriptionZh, getFieldTitleZh } from '../../utils/systemConfigI18n';
 import { cn } from '../../utils/cn';
@@ -55,7 +55,7 @@ function renderFieldControl(
   controlId: string,
 ) {
   const schema = item.schema;
-  const commonClass = 'input-terminal border-border/55 bg-card/94 hover:border-border/75';
+  const commonClass = 'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
   const controlType = schema?.uiControl ?? 'text';
   const isMultiValue = isMultiValueField(item);
 
@@ -63,7 +63,7 @@ function renderFieldControl(
     return (
       <textarea
         id={controlId}
-        className={`${commonClass} min-h-[92px] resize-y`}
+        className={`${commonClass} min-h-[92px] resize-y py-3`}
         value={value}
         disabled={disabled || !schema?.isEditable}
         onChange={(event) => onChange(event.target.value)}
@@ -127,9 +127,11 @@ function renderFieldControl(
                   }}
                 />
               </div>
-              <button
+              <Button
                 type="button"
-                className="inline-flex h-11 items-center justify-center rounded-xl border settings-border settings-surface-hover px-3 text-xs text-muted-text transition-colors hover:settings-surface-hover hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
+                variant="settings-secondary"
+                size="lg"
+                className="px-3 text-xs text-muted-text shadow-none hover:text-danger"
                 disabled={disabled || !schema?.isEditable || values.length <= 1}
                 onClick={() => {
                   const nextValues = values.filter((_, rowIndex) => rowIndex !== index);
@@ -137,19 +139,21 @@ function renderFieldControl(
                 }}
               >
                 删除
-              </button>
+              </Button>
             </div>
           ))}
 
           <div className="flex items-center gap-2">
-            <button
+            <Button
               type="button"
-              className="inline-flex items-center justify-center rounded-lg border settings-border settings-surface-hover px-3 py-1 text-xs text-secondary-text transition-colors hover:settings-surface-hover hover:text-foreground"
+              variant="settings-secondary"
+              size="sm"
+              className="text-xs shadow-none"
               disabled={disabled || !schema?.isEditable}
               onClick={() => onChange(serializeMultiValues([...values, '']))}
             >
               添加 Key
-            </button>
+            </Button>
           </div>
         </div>
       );
@@ -202,8 +206,9 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   return (
     <div
       className={cn(
-        'rounded-[1.15rem] border settings-surface p-4 shadow-soft-card transition-all duration-200 hover:settings-surface-hover',
-        hasError ? 'border-danger/40' : 'settings-border',
+        'rounded-[1.15rem] border bg-[var(--settings-surface)] p-4 shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200',
+        hasError ? 'border-danger/40 hover:border-danger/55' : 'border-[var(--settings-border)] hover:border-[var(--settings-border-strong)]',
+        'hover:bg-[var(--settings-surface-hover)]',
       )}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -223,9 +228,11 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
       </div>
 
       {description ? (
-        <p className="mb-3 text-xs leading-5 text-muted-text" title={description}>
-          {description}
-        </p>
+        <Tooltip content={description}>
+          <p className="mb-3 inline-flex max-w-full text-xs leading-5 text-muted-text">
+            {description}
+          </p>
+        </Tooltip>
       ) : null}
 
       <div>

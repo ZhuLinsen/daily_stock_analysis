@@ -57,6 +57,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 3. PyInstaller 打包后端
 4. electron-builder 打包桌面应用
 
+当前 Windows 安装包使用 NSIS 向导式安装流程，仅支持当前用户安装且已禁用管理员提权，安装时可手动选择目标目录（例如非 C 盘）。安装器通过 NSIS `.onVerifyInstDir` 回调在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录——选择这些路径时"下一步"按钮会被自动禁用。安装完成后，桌面端仍会按现有逻辑在安装目录旁生成/读取 `.env`、`data/stock_analysis.db` 和 `logs/desktop.log`。推荐使用默认的 per-user 安装目录。如果不想安装，仍可继续分发 `win-unpacked` 免安装包。
+
 ## GitHub CI 自动打包并发布 Release
 
 仓库已支持通过 GitHub Actions 自动构建桌面端并上传到 GitHub Releases：
@@ -66,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - 推送语义化 tag（如 `v3.2.12`）后自动触发
   - 在 Actions 页面手动触发并指定 `release_tag`
 - 产物：
-  - Windows 安装包：`daily-stock-analysis-windows-installer-<tag>.exe`
+  - Windows 安装包：Release 附件会整理为 `daily-stock-analysis-windows-installer-<tag>.exe`，本地 `apps/dsa-desktop/dist/` 中仍是 `*Setup*.exe`
   - Windows 免安装包：`daily-stock-analysis-windows-noinstall-<tag>.zip`
   - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
   - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
@@ -110,11 +112,13 @@ npm install
 npm run build
 ```
 
-打包产物位于 `apps/dsa-desktop/dist/`。
+打包产物位于 `apps/dsa-desktop/dist/`。Windows 安装器会生成 `*Setup*.exe`，安装向导中可选择安装目录。
 
 ## 目录结构
 
-打包后用户拿到的目录结构（便携模式）：
+Windows 安装包模式下，安装器仅支持当前用户安装且已禁用管理员提权，用户可在安装向导中选择安装目录；安装器会在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录（选择时"下一步"按钮自动禁用），安装完成后，应用会在安装目录旁生成/读取 `.env`、`data/stock_analysis.db` 和 `logs/desktop.log`。请保留默认的 per-user 安装位置或选择其他用户可写目录。
+
+`win-unpacked` 免安装模式下，目录结构如下：
 
 ```
 win-unpacked/
@@ -178,7 +182,12 @@ PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增
 
 ## 分发给用户
 
-将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包发给用户即可。用户只需：
+Windows 分发现在有两种方式：
+
+1. 安装包：分发 `apps/dsa-desktop/dist/` 下的 `*Setup*.exe`，用户安装时可自行选择目标目录
+2. 免安装包：将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包发给用户
+
+使用 `win-unpacked` 免安装包时，用户只需：
 
 1. 解压文件夹
 2. 编辑 `.env` 配置 API Key 和股票列表

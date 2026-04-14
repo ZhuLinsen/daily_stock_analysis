@@ -401,8 +401,8 @@ describe('PortfolioPage FX refresh', () => {
     const refreshButton = screen.getByRole('button', { name: '刷新汇率' });
     fireEvent.click(refreshButton);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('刷新失败');
-    expect(screen.getByRole('alert')).toHaveTextContent('汇率服务暂时不可用');
+    const fxAlertTitle = await screen.findByText('刷新失败');
+    expect(fxAlertTitle.closest('[role="alert"]')).toHaveTextContent('汇率服务暂时不可用');
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
   });
 
@@ -424,8 +424,8 @@ describe('PortfolioPage FX refresh', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('快照刷新失败');
-    expect(screen.getByRole('alert')).toHaveTextContent('无法加载最新持仓快照');
+    const fxAlertTitle = await screen.findByText('快照刷新失败');
+    expect(fxAlertTitle.closest('[role="alert"]')).toHaveTextContent('无法加载最新持仓快照');
     await waitFor(() => expect(screen.queryByText('汇率已刷新，共更新 1 对。')).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新汇率' })).not.toBeDisabled());
   });

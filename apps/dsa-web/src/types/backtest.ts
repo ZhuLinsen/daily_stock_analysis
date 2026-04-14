@@ -26,18 +26,22 @@ export interface BacktestRunResponse {
 export interface BacktestResultItem {
   analysisHistoryId: number;
   code: string;
+  stockName?: string;
   analysisDate?: string;
   evalWindowDays: number;
   engineVersion: string;
   evalStatus: string;
   evaluatedAt?: string;
   operationAdvice?: string;
+  trendPrediction?: string;
   positionRecommendation?: string;
   startPrice?: number;
   endClose?: number;
   maxHigh?: number;
   minLow?: number;
   stockReturnPct?: number;
+  actualReturnPct?: number;
+  actualMovement?: string;
   directionExpected?: string;
   directionCorrect?: boolean;
   outcome?: string;

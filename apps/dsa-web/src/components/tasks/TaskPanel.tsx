@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Card } from '../common';
+import { Badge, Card, StatusDot } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 
@@ -17,41 +17,18 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
   const isPending = task.status === 'pending';
   const isProcessing = task.status === 'processing';
   const statusLabel = isProcessing ? '分析中' : '等待中';
-  const statusClassName = isProcessing
-    ? 'border home-task-status-processing'
-    : 'bg-subtle text-muted-text border border-subtle';
+  const statusVariant = isProcessing ? 'info' : 'default';
+  const statusTone = isProcessing ? 'info' : 'neutral';
+  const progress = Math.max(0, Math.min(100, task.progress || 0));
 
   return (
     <div className="home-subpanel flex items-center gap-3 px-3 py-2.5">
       {/* 状态图标 */}
       <div className="shrink-0">
         {isProcessing ? (
-          // 加载动画
-          <svg className="w-4 h-4 text-cyan animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
+          <StatusDot tone="info" pulse className="h-2.5 w-2.5" aria-label="任务进行中" />
         ) : isPending ? (
-          // 等待图标
-          <svg className="w-4 h-4 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
+          <StatusDot tone="neutral" className="h-2.5 w-2.5" aria-label="任务等待中" />
         ) : null}
       </div>
 
@@ -70,16 +47,29 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
             {task.message}
           </p>
         )}
+        <div className="mt-2 flex items-center gap-2">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/8">
+            <div
+              className="h-full rounded-full bg-cyan transition-[width] duration-300 ease-out"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="shrink-0 text-[11px] text-muted-text tabular-nums">
+            {progress}%
+          </span>
+        </div>
       </div>
 
       {/* 状态标签 */}
       <div className="flex-shrink-0">
-        <span
-          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusClassName}`}
+        <Badge
+          variant={statusVariant}
+          className="min-w-[4.75rem] justify-center gap-1.5 shadow-none"
           aria-label={`任务状态：${statusLabel}`}
         >
+          <StatusDot tone={statusTone} pulse={isProcessing} className="h-1.5 w-1.5" />
           {statusLabel}
-        </span>
+        </Badge>
       </div>
     </div>
   );
@@ -148,11 +138,16 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
             <div className="flex items-center gap-2 text-xs text-muted-text">
               {processingCount > 0 && (
                 <span className="flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-cyan animate-pulse" />
+                  <StatusDot tone="info" pulse className="h-1.5 w-1.5" aria-label="进行中任务" />
                   {processingCount} 进行中
                 </span>
               )}
-              {pendingCount > 0 ? <span>{pendingCount} 等待中</span> : null}
+              {pendingCount > 0 ? (
+                <span className="flex items-center gap-1">
+                  <StatusDot tone="neutral" className="h-1.5 w-1.5" aria-label="等待中任务" />
+                  {pendingCount} 等待中
+                </span>
+              ) : null}
             </div>
           )}
         />

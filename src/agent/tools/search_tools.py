@@ -91,7 +91,7 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
     intel_results = service.search_comprehensive_intel(
         stock_code=stock_code,
         stock_name=stock_name,
-        max_searches=5,
+        max_searches=6,
     )
 
     if not intel_results:

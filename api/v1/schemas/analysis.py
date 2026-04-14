@@ -67,7 +67,11 @@ class AnalyzeRequest(BaseModel):
         pattern=SELECTION_SOURCE_PATTERN,
         example="autocomplete"
     )
-    
+    notify: bool = Field(
+        True,
+        description="是否发送推送通知（Telegram/企业微信等）"
+    )
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -77,7 +81,8 @@ class AnalyzeRequest(BaseModel):
                 "async_mode": False,
                 "stock_name": "贵州茅台",
                 "original_query": "茅台",
-                "selection_source": "autocomplete"
+                "selection_source": "autocomplete",
+                "notify": True
             }
         }
 

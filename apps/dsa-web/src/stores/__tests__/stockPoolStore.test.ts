@@ -174,6 +174,34 @@ describe('stockPoolStore', () => {
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();
   });
 
+  it('accepts HK suffix codes from autocomplete without local validation errors', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-hk-1',
+      stockCode: '00700.HK',
+      status: 'pending',
+      message: 'accepted',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: '00700.HK',
+      stockName: '腾讯控股',
+      originalQuery: '00700',
+      selectionSource: 'autocomplete',
+    });
+
+    const state = useStockPoolStore.getState();
+    expect(state.inputError).toBeUndefined();
+    expect(state.isAnalyzing).toBe(false);
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith({
+      stockCode: '00700.HK',
+      reportType: 'detailed',
+      stockName: '腾讯控股',
+      originalQuery: '00700',
+      selectionSource: 'autocomplete',
+      notify: true,
+    });
+  });
+
   it('merges newly discovered history items during silent refresh', async () => {
     useStockPoolStore.setState({
       historyItems: [historyItem],

@@ -14,6 +14,7 @@ export interface AnalysisRequest {
   stockName?: string;
   originalQuery?: string;
   selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
+  notify?: boolean;
 }
 
 // ============ Report Types ============

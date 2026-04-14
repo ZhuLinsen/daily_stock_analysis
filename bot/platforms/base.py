@@ -101,6 +101,22 @@ class BotPlatform(ABC):
         """
         pass
     
+    def send_followup(
+        self,
+        response: 'BotResponse',
+        message: 'BotMessage',
+    ) -> bool:
+        """Send a follow-up message after a deferred webhook response.
+
+        Override in platforms that return a deferred acknowledgement
+        (e.g. Discord type 5) so the final command result can be delivered
+        asynchronously.  The default implementation is a no-op.
+
+        Returns:
+            ``True`` if the follow-up was sent successfully.
+        """
+        return False
+
     def handle_challenge(self, data: Dict[str, Any]) -> Optional[WebhookResponse]:
         """
         处理平台验证请求

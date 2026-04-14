@@ -99,6 +99,8 @@ describe('HomePage', () => {
     expect(dashboard).toBeInTheDocument();
     expect(dashboard.className).toContain('h-[calc(100vh-5rem)]');
     expect(dashboard.className).toContain('lg:h-[calc(100vh-2rem)]');
+    expect(dashboard.firstElementChild?.className).toContain('min-h-0');
+    expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
     expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeInTheDocument();
     expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
     expect(
@@ -123,7 +125,8 @@ describe('HomePage', () => {
     );
 
     expect(await screen.findByText('开始分析')).toBeInTheDocument();
-    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
+    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
     expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
   });
 
@@ -151,6 +154,7 @@ describe('HomePage', () => {
     await waitFor(() => {
       expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
     });
+    expect(screen.getByText(/股票 600519 正在分析中/).closest('[role="alert"]')).toBeInTheDocument();
   });
 
   it('navigates to chat with report context when asking a follow-up question', async () => {
@@ -225,16 +229,16 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    const trigger = await screen.findByTitle('历史记录');
+    const trigger = await screen.findByRole('button', { name: '历史记录' });
     fireEvent.click(trigger);
 
-    expect(container.querySelector('.home-mobile-overlay')).toBeTruthy();
+    expect(container.querySelector('.page-drawer-overlay')).toBeTruthy();
     expect(container.querySelector('.dashboard-card')).toBeTruthy();
 
     fireEvent.click(container.querySelector('.fixed.inset-0.z-40') as HTMLElement);
 
     await waitFor(() => {
-      expect(container.querySelector('.home-mobile-overlay')).toBeFalsy();
+      expect(container.querySelector('.page-drawer-overlay')).toBeFalsy();
     });
   });
 

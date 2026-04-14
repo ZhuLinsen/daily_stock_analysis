@@ -50,6 +50,7 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+AGENT_MAX_STEPS_DEFAULT = 10
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
     "short": 3,
@@ -247,6 +248,7 @@ def normalize_llm_channel_model(model: str, protocol: Optional[str], base_url: O
         prefix = raw_prefix.lower()
         canonical_prefix = canonicalize_llm_channel_protocol(prefix)
         known_providers = _MANAGED_LITELLM_KEY_PROVIDERS | set(SUPPORTED_LLM_CHANNEL_PROTOCOLS) | {
+            "minimax",
             "cohere", "huggingface", "bedrock", "sagemaker", "azure",
             "replicate", "together_ai", "palm", "text-completion-openai",
             "command-r", "groq", "cerebras", "fireworks_ai", "friendliai",
@@ -405,6 +407,7 @@ def setup_env(override: bool = False):
                   Default is False to preserve behavior on initial load where
                   system environment variables take precedence.
     """
+    Config._capture_bootstrap_runtime_env_overrides()
     # src/config.py -> src/ -> root
     env_file = os.getenv("ENV_FILE")
     if env_file:
@@ -436,6 +439,9 @@ class Config:
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
     tickflow_api_key: Optional[str] = None
+    longbridge_app_key: Optional[str] = None
+    longbridge_app_secret: Optional[str] = None
+    longbridge_access_token: Optional[str] = None
 
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
@@ -493,6 +499,7 @@ class Config:
     vision_provider_priority: str = "gemini,anthropic,openai"
 
     # === 搜索引擎配置（支持多 Key 负载均衡）===
+    anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
@@ -514,7 +521,7 @@ class Config:
     agent_litellm_model: str = ""  # Optional Agent-only primary model; empty inherits LITELLM_MODEL
     agent_mode: bool = False
     _agent_mode_explicit: bool = False  # True when AGENT_MODE was explicitly set in env
-    agent_max_steps: int = 10
+    agent_max_steps: int = AGENT_MAX_STEPS_DEFAULT
     agent_skills: List[str] = field(default_factory=list)
     agent_skill_dir: Optional[str] = None
     agent_nl_routing: bool = False  # Enable natural language routing in bot dispatcher
@@ -538,6 +545,8 @@ class Config:
     
     # 飞书 Webhook
     feishu_webhook_url: Optional[str] = None
+    feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
+    feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
     
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
@@ -568,6 +577,7 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    discord_interactions_public_key: Optional[str] = None  # Discord Interaction 入站验签公钥
 
     # Slack 通知配置
     slack_webhook_url: Optional[str] = None  # Slack Incoming Webhook URL
@@ -624,6 +634,10 @@ class Config:
 
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
+    sqlite_wal_enabled: bool = True
+    sqlite_busy_timeout_ms: int = 5000
+    sqlite_write_retry_max: int = 3
+    sqlite_write_retry_base_delay: float = 0.1
 
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
@@ -755,6 +769,17 @@ class Config:
     _VALID_AGENT_ARCH = {"single", "multi"}
     _VALID_ORCHESTRATOR_MODES = {"quick", "standard", "full", "specialist"}
     _VALID_SKILL_ROUTING = {"auto", "manual"}
+    _WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS = frozenset(
+        {
+            "STOCK_LIST",
+            "RUN_IMMEDIATELY",
+            "SCHEDULE_ENABLED",
+            "SCHEDULE_TIME",
+            "SCHEDULE_RUN_IMMEDIATELY",
+        }
+    )
+    _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
+    _BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
 
     def __post_init__(self) -> None:
         _log = logging.getLogger(__name__)
@@ -806,10 +831,11 @@ class Config:
         从 .env 文件加载配置
         
         加载优先级：
-        1. 系统环境变量
-        2. .env 文件
+        1. 大多数配置保持系统环境变量优先
+        2. WebUI 可写的运行期关键键优先复用持久化 `.env`，但保留启动时显式进程环境变量的 override
         3. 代码中的默认值
         """
+        cls._capture_bootstrap_runtime_env_overrides()
         preexisting_report_language = os.environ.get("REPORT_LANGUAGE")
 
         # 确保环境变量已加载
@@ -858,7 +884,11 @@ class Config:
 
         
         # 解析自选股列表（逗号分隔，统一为大写 Issue #355）
-        stock_list_str = os.getenv('STOCK_LIST', '')
+        stock_list_str = cls._resolve_env_value(
+            'STOCK_LIST',
+            default='',
+            prefer_env_file=True,
+        )
         stock_list = [
             (c or "").strip().upper()
             for c in stock_list_str.split(',')
@@ -991,6 +1021,10 @@ class Config:
         )
 
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
+        # Anspire Search
+        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
+
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
@@ -1042,18 +1076,29 @@ class Config:
 
         # Preserve historical semantics for startup flags: only an explicit
         # literal "true" enables immediate execution; empty strings stay False.
-        legacy_run_immediately_env = os.getenv('RUN_IMMEDIATELY')
+        legacy_run_immediately_env = cls._resolve_env_value(
+            'RUN_IMMEDIATELY',
+            prefer_env_file=True,
+        )
         legacy_run_immediately = (
             legacy_run_immediately_env.lower() == 'true'
             if legacy_run_immediately_env is not None
             else True
         )
 
-        schedule_run_immediately_env = os.getenv('SCHEDULE_RUN_IMMEDIATELY')
+        schedule_run_immediately_env = cls._resolve_env_value(
+            'SCHEDULE_RUN_IMMEDIATELY',
+            prefer_env_file=True,
+        )
         schedule_run_immediately = (
             schedule_run_immediately_env.lower() == 'true'
             if schedule_run_immediately_env is not None
             else legacy_run_immediately
+        )
+        schedule_time_value = cls._resolve_env_value(
+            'SCHEDULE_TIME',
+            default='18:00',
+            prefer_env_file=True,
         )
 
         report_language_raw = cls._resolve_report_language_env_value(
@@ -1067,6 +1112,9 @@ class Config:
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
+            longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
+            longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
+            longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1109,6 +1157,7 @@ class Config:
                 or ""
             ),
             vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            anspire_api_keys=anspire_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
             tavily_api_keys=tavily_api_keys,
@@ -1126,7 +1175,12 @@ class Config:
             agent_litellm_model=agent_litellm_model,
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             _agent_mode_explicit=os.getenv('AGENT_MODE') is not None,
-            agent_max_steps=parse_env_int(os.getenv('AGENT_MAX_STEPS'), 10, field_name='AGENT_MAX_STEPS', minimum=1),
+            agent_max_steps=parse_env_int(
+                os.getenv('AGENT_MAX_STEPS'),
+                AGENT_MAX_STEPS_DEFAULT,
+                field_name='AGENT_MAX_STEPS',
+                minimum=1,
+            ),
             agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
             agent_skill_dir=os.getenv('AGENT_SKILL_DIR') or os.getenv('AGENT_STRATEGY_DIR'),
             agent_nl_routing=os.getenv('AGENT_NL_ROUTING', 'false').lower() == 'true',
@@ -1170,6 +1224,8 @@ class Config:
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
+            feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
+            feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -1192,6 +1248,7 @@ class Config:
                 or os.getenv('DISCORD_CHANNEL_ID')
             ),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            discord_interactions_public_key=os.getenv('DISCORD_INTERACTIONS_PUBLIC_KEY'),
             slack_webhook_url=os.getenv('SLACK_WEBHOOK_URL'),
             slack_bot_token=os.getenv('SLACK_BOT_TOKEN'),
             slack_channel_id=os.getenv('SLACK_CHANNEL_ID'),
@@ -1226,6 +1283,25 @@ class Config:
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
+            sqlite_busy_timeout_ms=parse_env_int(
+                os.getenv('SQLITE_BUSY_TIMEOUT_MS'),
+                5000,
+                field_name='SQLITE_BUSY_TIMEOUT_MS',
+                minimum=0,
+            ),
+            sqlite_write_retry_max=parse_env_int(
+                os.getenv('SQLITE_WRITE_RETRY_MAX'),
+                3,
+                field_name='SQLITE_WRITE_RETRY_MAX',
+                minimum=0,
+            ),
+            sqlite_write_retry_base_delay=parse_env_float(
+                os.getenv('SQLITE_WRITE_RETRY_BASE_DELAY'),
+                0.1,
+                field_name='SQLITE_WRITE_RETRY_BASE_DELAY',
+                minimum=0.0,
+            ),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
             backtest_eval_window_days=parse_env_int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS'), 10, field_name='BACKTEST_EVAL_WINDOW_DAYS', minimum=1),
@@ -1244,8 +1320,12 @@ class Config:
             config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
             http_proxy=os.getenv('HTTP_PROXY'),
             https_proxy=os.getenv('HTTPS_PROXY'),
-            schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
-            schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
+            schedule_enabled=cls._resolve_env_value(
+                'SCHEDULE_ENABLED',
+                default='false',
+                prefer_env_file=True,
+            ).lower() == 'true',
+            schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
@@ -1576,7 +1656,11 @@ class Config:
         """
         Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
         Returns [(stocks, emails), ...] ordered by group index.
+        Stock codes are canonicalized via normalize_stock_code so that
+        runtime routing matches the same equivalence used in validation.
         """
+        from data_provider.base import normalize_stock_code
+
         groups: dict = {}
         stock_re = re.compile(r'^STOCK_GROUP_(\d+)$', re.IGNORECASE)
         email_re = re.compile(r'^EMAIL_GROUP_(\d+)$', re.IGNORECASE)
@@ -1585,7 +1669,10 @@ class Config:
             if m:
                 idx = int(m.group(1))
                 val = os.environ[key].strip()
-                groups.setdefault(idx, {})['stocks'] = [c.strip() for c in val.split(',') if c.strip()]
+                groups.setdefault(idx, {})['stocks'] = [
+                    normalize_stock_code(c.strip())
+                    for c in val.split(',') if c.strip()
+                ]
             m = email_re.match(key)
             if m:
                 idx = int(m.group(1))
@@ -1633,6 +1720,67 @@ class Config:
         if value is None:
             return None
         return str(value)
+
+    @classmethod
+    def _resolve_env_value(
+        cls,
+        key: str,
+        *,
+        default: Optional[str] = None,
+        prefer_env_file: bool = False,
+    ) -> Optional[str]:
+        """Resolve one env value, optionally preferring the persisted `.env` copy."""
+        env_value = os.getenv(key)
+        file_value = cls._get_env_file_value(key)
+
+        should_prefer_file = prefer_env_file or key in cls._WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS
+        if should_prefer_file and file_value is not None:
+            if env_value is not None and cls._has_bootstrap_runtime_env_override(key):
+                return env_value
+            return file_value
+        if env_value is not None:
+            return env_value
+        if file_value is not None:
+            return file_value
+        return default
+
+    @classmethod
+    def _capture_bootstrap_runtime_env_overrides(cls) -> None:
+        """Remember process-provided runtime env overrides before dotenv mutates os.environ.
+
+        Called by ``setup_env()`` **before** ``load_dotenv()``, so ``os.environ``
+        only contains genuine process-level values (Docker ``environment:``,
+        Dockerfile ``ENV``, shell exports, etc.).
+
+        A key is treated as an explicit override when it is present in
+        ``os.environ`` and either:
+        * absent from the persisted ``.env`` file, **or**
+        * present with a **different** value.
+
+        When both values are identical, the distinction is irrelevant and we
+        do **not** flag the key, so that a later ``.env`` update by WebUI can
+        take effect on config reload without requiring a container restart.
+        """
+        if cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED:
+            return
+
+        explicit_overrides = set()
+        for key in cls._WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS:
+            env_value = os.environ.get(key)
+            if env_value is None:
+                continue
+
+            file_value = cls._get_env_file_value(key)
+            if file_value is None or env_value != file_value:
+                explicit_overrides.add(key)
+
+        cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset(explicit_overrides)
+        cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = True
+
+    @classmethod
+    def _has_bootstrap_runtime_env_override(cls, key: str) -> bool:
+        cls._capture_bootstrap_runtime_env_overrides()
+        return key in cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES
 
     @classmethod
     def _resolve_report_language_env_value(
@@ -1753,6 +1901,8 @@ class Config:
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""
         cls._instance = None
+        cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
+        cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
 
     def has_searxng_enabled(self) -> bool:
         """Whether SearXNG fallback is enabled via self-hosted or public mode."""
@@ -1761,7 +1911,8 @@ class Config:
     def has_search_capability_enabled(self) -> bool:
         """Whether any search provider is configured or SearXNG fallback is enabled."""
         return bool(
-            self.bocha_api_keys
+            self.anspire_api_keys
+            or self.bocha_api_keys
             or self.minimax_api_keys
             or self.tavily_api_keys
             or self.brave_api_keys
@@ -1849,6 +2000,37 @@ class Config:
                 message="未配置自选股列表 (STOCK_LIST)",
                 field="STOCK_LIST",
             ))
+        elif self.stock_email_groups:
+            from data_provider.base import normalize_stock_code
+            configured_stock_set = {
+                normalize_stock_code(code)
+                for code in self.stock_list
+                if (code or "").strip()
+            }
+            missing_group_stocks_dict: Dict[str, None] = {}
+            for stocks, _emails in self.stock_email_groups:
+                for stock in stocks:
+                    raw = (stock or "").strip()
+                    if not raw:
+                        continue
+                    normalized_stock = normalize_stock_code(stock)
+                    if normalized_stock in configured_stock_set:
+                        continue
+                    if normalized_stock in missing_group_stocks_dict:
+                        continue
+                    missing_group_stocks_dict[normalized_stock] = None
+            missing_group_stocks = list(missing_group_stocks_dict.keys())
+            if missing_group_stocks:
+                issues.append(ConfigIssue(
+                    severity="warning",
+                    message=(
+                        "检测到 STOCK_GROUP_N 中存在未包含在 STOCK_LIST 内的股票："
+                        f"{', '.join(missing_group_stocks[:6])}。"
+                        "STOCK_GROUP_N 仅用于邮件路由，不会扩大分析范围；"
+                        "请先将这些股票加入 STOCK_LIST。"
+                    ),
+                    field="STOCK_GROUP_N",
+                ))
 
         # --- Data sources (informational only) ---
         if not self.tushare_token:
@@ -1867,7 +2049,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS / *_API_KEY），"
+                    "未配置任何可用的 AI 模型接入（高级模型路由配置 / 渠道 / API Key），"
                     "AI 分析功能将不可用"
                 ),
                 field="LITELLM_CONFIG",
@@ -1876,8 +2058,8 @@ class Config:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(
-                    "LITELLM_MODEL 未配置，将自动从可用 API Key 推断模型。"
-                    "建议尽早配置 LITELLM_MODEL（格式如 gemini/gemini-2.5-flash）"
+                    "尚未明确指定主模型，系统将自动从可用 API Key 推断。"
+                    "建议尽早配置主模型（格式如 gemini/gemini-2.5-flash）"
                 ),
                 field="LITELLM_MODEL",
             ))
@@ -1911,7 +2093,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="LITELLM_MODEL",
@@ -1926,7 +2108,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="error",
                     message=(
-                        "AGENT_LITELLM_MODEL 已配置，但当前渠道/配置文件中不存在该模型。"
+                        "已配置的 Agent 主模型未出现在当前渠道或高级模型路由配置中。"
                         f" 当前可用模型：{', '.join(available_router_models[:6])}"
                     ),
                     field="AGENT_LITELLM_MODEL",
@@ -1941,7 +2123,7 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="warning",
                     message=(
-                        "LITELLM_FALLBACK_MODELS 中包含未在当前渠道声明的模型："
+                        "备选模型中包含未在当前渠道或高级模型路由配置中声明的模型："
                         f"{', '.join(invalid_fallbacks[:3])}"
                     ),
                     field="LITELLM_FALLBACK_MODELS",
@@ -1968,7 +2150,7 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_LITELLM_MODEL 已配置，但未找到可用的运行时来源"
+                    "已配置 Agent 主模型，但未找到可用的运行时来源"
                     "（启用渠道或匹配的 API Key）。"
                 ),
                 field="AGENT_LITELLM_MODEL",
@@ -2003,6 +2185,31 @@ class Config:
                 severity="warning",
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
+            ))
+
+        has_feishu_app_id = bool((self.feishu_app_id or "").strip())
+        has_feishu_app_secret = bool((self.feishu_app_secret or "").strip())
+        has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
+        has_feishu_doc_token = bool((self.feishu_folder_token or "").strip())
+        has_feishu_full_cloud_doc_credentials = (
+            has_feishu_app_id
+            and has_feishu_app_secret
+            and has_feishu_doc_token
+        )
+        if (
+            has_feishu_app_credentials
+            and not has_feishu_full_cloud_doc_credentials
+            and not self.feishu_webhook_url
+            and not (self.feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
+        ):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群 Webhook 推送；"
+                    "如需群消息通知，请配置 FEISHU_WEBHOOK_URL。若要使用应用机器人，请同时开启 "
+                    "FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。"
+                ),
+                field="FEISHU_WEBHOOK_URL",
             ))
 
         # --- Deprecated field migration hints ---

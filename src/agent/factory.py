@@ -26,7 +26,10 @@ Usage::
 
 import copy
 import logging
+from dataclasses import dataclass
 from typing import List, Optional
+
+from src.config import AGENT_MAX_STEPS_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,110 @@ _SENTINEL = object()
 # Track which custom_dir the prototype was built with so we can invalidate
 # the cache if AGENT_SKILL_DIR changes at runtime (e.g. via config reload).
 _SKILL_MANAGER_CUSTOM_DIR: object = _SENTINEL
+
+
+@dataclass
+class SkillPromptState:
+    """Resolved skill activation + prompt fragments for analysis entrypoints."""
+
+    skill_manager: object
+    skills_to_activate: List[str]
+    explicit_skill_selection: bool
+    use_legacy_default_prompt: bool
+    skill_instructions: str
+    default_skill_policy: str
+    technical_skill_policy: str
+
+
+def _normalize_skill_ids(
+    skill_ids: Optional[List[str]],
+    *,
+    available_skill_ids: set[str],
+) -> tuple[List[str], List[str]]:
+    """Return validated skill ids plus unknown ids, preserving input order."""
+    normalized: List[str] = []
+    unknown: List[str] = []
+
+    for skill_id in skill_ids or []:
+        if not isinstance(skill_id, str):
+            continue
+        cleaned = skill_id.strip()
+        if not cleaned:
+            continue
+        if cleaned == "all":
+            if "all" not in normalized:
+                normalized.append("all")
+            continue
+        if cleaned in available_skill_ids:
+            if cleaned not in normalized:
+                normalized.append(cleaned)
+            continue
+        if cleaned not in unknown:
+            unknown.append(cleaned)
+
+    return normalized, unknown
+
+
+def _resolve_selected_skill_ids(
+    *,
+    requested_skills: Optional[List[str]],
+    configured_skills: Optional[List[str]],
+    default_skills: List[str],
+    available_skill_ids: set[str],
+) -> tuple[List[str], bool]:
+    """Resolve active skill ids and whether they came from a valid explicit selection."""
+    selection_source = None
+    raw_skill_ids = None
+    if requested_skills is not None:
+        selection_source = "request"
+        raw_skill_ids = requested_skills
+    elif configured_skills is not None:
+        selection_source = "config"
+        raw_skill_ids = configured_skills
+    else:
+        return list(default_skills), False
+
+    selected_skill_ids, unknown_skill_ids = _normalize_skill_ids(
+        raw_skill_ids,
+        available_skill_ids=available_skill_ids,
+    )
+    if unknown_skill_ids:
+        logger.warning(
+            "[AgentFactory] Ignoring unknown %s skill ids: %s",
+            selection_source,
+            unknown_skill_ids,
+        )
+    if selected_skill_ids:
+        return selected_skill_ids, True
+
+    if raw_skill_ids:
+        logger.warning(
+            "[AgentFactory] No valid %s skills remain after validation; falling back to default skills: %s",
+            selection_source,
+            default_skills,
+        )
+    return list(default_skills), False
+
+
+def _should_use_legacy_default_prompt(
+    *,
+    skills_to_activate: List[str],
+    explicit_skill_selection: bool,
+    skill_catalog: List[object],
+) -> bool:
+    """Keep the legacy prompt only for the implicit built-in bull_trend fallback."""
+    if explicit_skill_selection or skills_to_activate != ["bull_trend"]:
+        return False
+
+    bull_trend_skill = next(
+        (
+            skill
+            for skill in skill_catalog
+            if str(getattr(skill, "name", "")).strip() == "bull_trend"
+        ),
+        None,
+    )
+    return getattr(bull_trend_skill, "source", None) == "builtin"
 
 
 def get_tool_registry():
@@ -107,6 +214,63 @@ def get_skill_manager(config=None):
     return copy.deepcopy(_SKILL_MANAGER_PROTOTYPE)
 
 
+def resolve_skill_prompt_state(config=None, skills: Optional[List[str]] = None) -> SkillPromptState:
+    """Resolve active skills and prompt fragments for analyzer / agent entrypoints."""
+    if config is None:
+        from src.config import get_config
+        config = get_config()
+
+    from src.agent.skills.defaults import (
+        get_default_active_skill_ids,
+        get_default_technical_skill_policy,
+        get_default_trading_skill_policy,
+    )
+
+    skill_manager = get_skill_manager(config)
+    skill_catalog = list(skill_manager.list_skills())
+    available_skill_ids = {
+        str(getattr(skill, "name", "")).strip()
+        for skill in skill_catalog
+        if str(getattr(skill, "name", "")).strip()
+    }
+    configured_skills = getattr(config, "agent_skills", None)
+    if configured_skills == []:
+        configured_skills = None
+    default_skills = get_default_active_skill_ids(
+        skill_catalog,
+        available_skill_ids=available_skill_ids or None,
+    )
+    skills_to_activate, explicit_skill_selection = _resolve_selected_skill_ids(
+        requested_skills=skills,
+        configured_skills=configured_skills,
+        default_skills=default_skills,
+        available_skill_ids=available_skill_ids,
+    )
+
+    use_legacy_default_prompt = _should_use_legacy_default_prompt(
+        skills_to_activate=skills_to_activate,
+        explicit_skill_selection=explicit_skill_selection,
+        skill_catalog=skill_catalog,
+    )
+
+    skill_manager.activate(skills_to_activate)
+    logger.info("[AgentFactory] Activated skills: %s", skills_to_activate)
+
+    return SkillPromptState(
+        skill_manager=skill_manager,
+        skills_to_activate=skills_to_activate,
+        explicit_skill_selection=explicit_skill_selection,
+        use_legacy_default_prompt=use_legacy_default_prompt,
+        skill_instructions=skill_manager.get_skill_instructions(),
+        default_skill_policy=get_default_trading_skill_policy(
+            explicit_skill_selection=not use_legacy_default_prompt,
+        ),
+        technical_skill_policy=get_default_technical_skill_policy(
+            explicit_skill_selection=not use_legacy_default_prompt,
+        ),
+    )
+
+
 def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     """Build and return a configured AgentExecutor (or future orchestrator).
 
@@ -131,32 +295,19 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
     arch = getattr(config, "agent_arch", "single")
 
     from src.agent.llm_adapter import LLMToolAdapter
-    from src.agent.skills.defaults import (
-        get_default_active_skill_ids,
-        get_default_technical_skill_policy,
-        get_default_trading_skill_policy,
-    )
 
     registry = get_tool_registry()
-    skill_manager = get_skill_manager(config)
-
-    configured_skills = getattr(config, "agent_skills", None) or None
-    explicit_skill_selection = bool(skills) or configured_skills is not None
-    default_skills = get_default_active_skill_ids(skill_manager.list_skills())
-    if skills is not None:
-        skills_to_activate = skills or default_skills
-    else:
-        skills_to_activate = configured_skills or default_skills
-    skill_manager.activate(skills_to_activate)
-    logger.info("[AgentFactory] Activated skills: %s (arch=%s)", skills_to_activate, arch)
+    prompt_state = resolve_skill_prompt_state(config, skills=skills)
+    skill_manager = prompt_state.skill_manager
+    logger.info(
+        "[AgentFactory] Resolved skill prompt state: skills=%s (arch=%s, explicit=%s, legacy_default_prompt=%s)",
+        prompt_state.skills_to_activate,
+        arch,
+        prompt_state.explicit_skill_selection,
+        prompt_state.use_legacy_default_prompt,
+    )
 
     llm_adapter = LLMToolAdapter(config)
-    default_skill_policy = get_default_trading_skill_policy(
-        explicit_skill_selection=explicit_skill_selection,
-    )
-    technical_skill_policy = get_default_technical_skill_policy(
-        explicit_skill_selection=explicit_skill_selection,
-    )
 
     if arch == "multi":
         return _build_orchestrator(
@@ -164,16 +315,17 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
             registry,
             llm_adapter,
             skill_manager,
-            technical_skill_policy=technical_skill_policy,
+            technical_skill_policy=prompt_state.technical_skill_policy,
         )
 
     from src.agent.executor import AgentExecutor
     return AgentExecutor(
         tool_registry=registry,
         llm_adapter=llm_adapter,
-        skill_instructions=skill_manager.get_skill_instructions(),
-        default_skill_policy=default_skill_policy,
-        max_steps=getattr(config, "agent_max_steps", 10),
+        skill_instructions=prompt_state.skill_instructions,
+        default_skill_policy=prompt_state.default_skill_policy,
+        use_legacy_default_prompt=prompt_state.use_legacy_default_prompt,
+        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
         timeout_seconds=getattr(config, "agent_orchestrator_timeout_s", 0),
     )
 
@@ -194,7 +346,7 @@ def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technic
         llm_adapter=llm_adapter,
         skill_instructions=skill_manager.get_skill_instructions(),
         technical_skill_policy=technical_skill_policy,
-        max_steps=getattr(config, "agent_max_steps", 10),
+        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
         mode=mode,
         skill_manager=skill_manager,
         config=config,

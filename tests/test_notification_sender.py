@@ -5,6 +5,9 @@ Unit tests for src.notification_sender module.
 Tests sender classes in isolation (config, request shape, error handling).
 Does not duplicate test_notification.py which tests NotificationService.send() flow.
 """
+import base64
+import hashlib
+import hmac
 import os
 import sys
 import unittest
@@ -170,6 +173,60 @@ class TestFeishuSender(unittest.TestCase):
         sender = FeishuSender(cfg)
         result = sender.send_to_feishu("hello")
         self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.feishu_sender.time.time", return_value=1700000000)
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_with_secret_and_keyword_builds_signed_payload(self, mock_post, _mock_time):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_webhook_secret="secret-token",
+            feishu_webhook_keyword="股票日报",
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["timestamp"], "1700000000")
+        expected_sign = base64.b64encode(
+            hmac.new(
+                b"1700000000\nsecret-token",
+                digestmod=hashlib.sha256,
+            ).digest()
+        ).decode("utf-8")
+        self.assertEqual(payload["sign"], expected_sign)
+        self.assertEqual(
+            payload["card"]["elements"][0]["text"]["content"],
+            "股票日报\nhello",
+        )
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_error_response_returns_false(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 19024, "msg": "keyword not found"})
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 2)
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_with_keyword_that_leaves_too_little_chunk_budget_returns_false(self, mock_post):
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_webhook_keyword="abcd",
+            feishu_max_bytes=60,
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("x" * 100)
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
 
 
 class TestEmailSender(unittest.TestCase):
@@ -529,6 +586,45 @@ class TestTelegramSender(unittest.TestCase):
         result = sender.send_to_telegram("hello")
         self.assertTrue(result)
         self.assertIn("sendMessage", mock_post.call_args[0][0])
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_retries_plain_text_when_markdown_http_400(self, mock_post):
+        markdown_error = _response(400)
+        markdown_error.text = (
+            '{"ok":false,"error_code":400,"description":"Bad Request: can\'t parse entities"}'
+        )
+        plain_text_success = _response(200, {"ok": True})
+        mock_post.side_effect = [markdown_error, plain_text_success]
+
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        result = sender.send_to_telegram("*ST宝实")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 2)
+        first_payload = mock_post.call_args_list[0][1]["json"]
+        second_payload = mock_post.call_args_list[1][1]["json"]
+        self.assertEqual(first_payload["parse_mode"], "Markdown")
+        self.assertNotIn("parse_mode", second_payload)
+        self.assertEqual(second_payload["text"], "*ST宝实")
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_plain_text_fallback_handles_non_json_200(self, mock_post):
+        markdown_error = _response(400)
+        markdown_error.text = (
+            '{"ok":false,"error_code":400,"description":"Bad Request: can\'t parse entities"}'
+        )
+        plain_text_non_json = _response(200)
+        plain_text_non_json.text = "upstream proxy error"
+        plain_text_non_json.json.side_effect = ValueError("invalid json")
+        mock_post.side_effect = [markdown_error, plain_text_non_json]
+
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        result = sender.send_to_telegram("*ST宝实")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 2)
 
 
 if __name__ == "__main__":

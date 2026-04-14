@@ -7,9 +7,15 @@ import removeMd from 'remove-markdown';
 export function markdownToPlainText(markdown: string): string {
   if (!markdown) return '';
 
-  return removeMd(markdown, {
+  const plainText = removeMd(markdown, {
     gfm: true,
     useImgAltText: true,
     stripListLeaders: true,
   });
+
+  // Additional post-processing to remove GFM table separator lines (e.g. |---|)
+  // that remove-markdown sometimes leaves behind.
+  return plainText
+    .replace(/\n\|?[\s|:-]+\|?\s*(?=\n|$)/g, '\n')
+    .trim();
 }

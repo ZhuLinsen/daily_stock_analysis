@@ -122,7 +122,48 @@ def _run_frontend_commands(commands: Sequence[Sequence[str]], frontend_dir: Path
 
 
 def _manual_build_command(frontend_dir: Path) -> str:
-    return f'cd "{frontend_dir}" && npm install && npm run build'
+    lock_file = frontend_dir / "package-lock.json"
+    install_cmd = "npm ci" if lock_file.exists() else "npm install"
+    return f'cd "{frontend_dir}" && {install_cmd} && npm run build'
+
+
+def _has_static_assets(static_dir: Path) -> bool:
+    """检查 static/assets/ 是否存在且包含 CSS/JS 文件。
+
+    index.html 存在但 assets/ 为空或缺失时，浏览器无法加载样式与脚本，
+    会导致页面元素异常放大、布局错乱（纯裸 HTML 渲染）。
+    """
+    assets_dir = static_dir / "assets"
+    if not assets_dir.is_dir():
+        return False
+    try:
+        return any(
+            f.suffix in (".js", ".css") and f.is_file()
+            for f in assets_dir.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
+    """当 index.html 存在但 assets/ 缺失时，发出页面显示异常警告。"""
+    static_dir = artifact_index.parent
+    assets_dir = static_dir / "assets"
+    if not _has_static_assets(static_dir):
+        logger.warning(
+            "检测到 %s 但 %s 目录不存在或无 CSS/JS 文件，"
+            "WebUI 将因缺少样式与脚本而显示异常（元素过大、布局错乱）",
+            artifact_index,
+            assets_dir,
+        )
+        logger.warning(
+            "请重新构建前端以修复此问题: %s",
+            _manual_build_command(frontend_dir),
+        )
+        logger.warning(
+            "Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache"
+        )
+
 
 def prepare_webui_frontend_assets() -> bool:
     """
@@ -143,12 +184,21 @@ def prepare_webui_frontend_assets() -> bool:
     if not auto_build_enabled:
         if artifact_index.exists():
             logger.info("WEBUI_AUTO_BUILD=false，检测到前端静态产物: %s", artifact_index)
+            _warn_if_assets_missing(artifact_index, frontend_dir)
             return True
         logger.warning("未检测到 WebUI 前端静态产物: %s", artifact_index)
         logger.warning("当前配置 WEBUI_AUTO_BUILD=false，不会在后端启动时自动编译前端")
         logger.warning("请先手动构建前端: %s", _manual_build_command(frontend_dir))
         logger.warning("如需启动时自动构建，可设置 WEBUI_AUTO_BUILD=true")
         return False
+
+    force_build = _is_truthy_env("WEBUI_FORCE_BUILD", "false")
+    needs_build, artifact_index = _needs_frontend_build(frontend_dir=frontend_dir, force_build=force_build)
+
+    if not needs_build:
+        logger.info("检测到可直接复用的前端静态产物，跳过运行时自动构建: %s", artifact_index)
+        _warn_if_assets_missing(artifact_index, frontend_dir)
+        return True
 
     package_json = frontend_dir / "package.json"
     if not package_json.exists():
@@ -162,8 +212,6 @@ def prepare_webui_frontend_assets() -> bool:
         logger.warning("请先手动构建前端静态资源: %s", _manual_build_command(frontend_dir))
         return False
 
-    force_build = _is_truthy_env("WEBUI_FORCE_BUILD", "false")
-
     lock_file = frontend_dir / "package-lock.json"
     needs_install = _needs_dependency_install(
         frontend_dir=frontend_dir,
@@ -171,12 +219,6 @@ def prepare_webui_frontend_assets() -> bool:
         lock_file=lock_file,
         force_build=force_build,
     )
-
-    needs_build, artifact_index = _needs_frontend_build(frontend_dir=frontend_dir, force_build=force_build)
-
-    if not needs_install and not needs_build:
-        logger.info("前端静态资源已是最新，跳过 npm install/build")
-        return True
 
     commands = []
     if needs_install:

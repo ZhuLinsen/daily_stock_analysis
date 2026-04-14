@@ -1,7 +1,9 @@
 import type React from 'react';
+import { Badge } from '../common';
 import type { HistoryItem } from '../../types/analysis';
 import { getSentimentColor } from '../../types/analysis';
 import { formatDateTime } from '../../utils/format';
+import { truncateStockName, isStockNameTruncated } from '../../utils/stockName';
 
 interface HistoryListItemProps {
   item: HistoryItem;
@@ -40,6 +42,10 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
   onToggleChecked,
   onClick,
 }) => {
+  const sentimentColor = item.sentimentScore !== undefined ? getSentimentColor(item.sentimentScore) : null;
+  const stockName = item.stockName || item.stockCode;
+  const isTruncated = isStockNameTruncated(stockName);
+
   return (
     <div className="flex items-start gap-2 group">
       <div className="pt-5">
@@ -48,7 +54,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
           checked={isChecked}
           onChange={() => onToggleChecked(item.id)}
           disabled={isDeleting}
-          className="h-3.5 w-3.5 cursor-pointer rounded border-subtle-hover bg-transparent text-[var(--home-accent-text)] focus:ring-[color:var(--home-accent-border-hover)] disabled:opacity-50"
+          className="h-3.5 w-3.5 cursor-pointer rounded border-subtle-hover bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
         />
       </div>
       <button
@@ -58,13 +64,13 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
           isViewing ? 'home-history-item-selected' : ''
         }`}
       >
-        <div className="flex items-center gap-2.5 relative z-10">
-          {item.sentimentScore !== undefined && (
+        <div className={`flex items-center gap-2.5 relative z-10${isTruncated ? ' group-hover/item:z-20' : ''}`}>
+          {sentimentColor && (
             <div
               className="w-1 h-8 rounded-full flex-shrink-0"
               style={{
-                backgroundColor: getSentimentColor(item.sentimentScore),
-                boxShadow: `0 0 10px ${getSentimentColor(item.sentimentScore)}40`,
+                backgroundColor: sentimentColor,
+                boxShadow: `0 0 10px ${sentimentColor}40`,
               }}
             />
           )}
@@ -72,20 +78,27 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
                 <span className="truncate text-sm font-semibold text-foreground tracking-tight">
-                  {item.stockName || item.stockCode}
+                  <span className="group-hover/item:hidden">
+                    {truncateStockName(stockName)}
+                  </span>
+                  <span className="hidden group-hover/item:inline">
+                    {stockName}
+                  </span>
                 </span>
               </div>
-              {item.sentimentScore !== undefined && (
-                <span
-                  className="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-none"
+              {sentimentColor && (
+                <Badge
+                  variant="default"
+                  size="sm"
+                  className={`home-history-sentiment-badge shrink-0 shadow-none text-[11px] font-semibold leading-none transition-opacity duration-200${isTruncated ? ' group-hover/item:opacity-80' : ''}`}
                   style={{
-                    color: getSentimentColor(item.sentimentScore),
-                    borderColor: `${getSentimentColor(item.sentimentScore)}30`,
-                    backgroundColor: `${getSentimentColor(item.sentimentScore)}10`,
+                    color: sentimentColor,
+                    borderColor: `${sentimentColor}30`,
+                    backgroundColor: `${sentimentColor}10`,
                   }}
                 >
                   {getOperationBadgeLabel(item.operationAdvice)} {item.sentimentScore}
-                </span>
+                </Badge>
               )}
             </div>
             <div className="flex items-center gap-2 mt-1">

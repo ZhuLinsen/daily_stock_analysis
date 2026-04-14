@@ -12,7 +12,7 @@ from __future__ import annotations
 import difflib
 import logging
 import time
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.services.stock_code_utils import is_code_like, normalize_code
@@ -55,6 +55,37 @@ def _build_reverse_map_no_duplicates(
         name_to_codes[name].add(code)
     # Only include names with exactly one code
     return {name: next(iter(codes)) for name, codes in name_to_codes.items() if len(codes) == 1}
+
+
+def _build_local_name_indexes(code_to_name: Dict[str, str]) -> Tuple[Dict[str, str], Set[str]]:
+    """
+    Build cached local lookup structures:
+    - unique name -> code
+    - ambiguous names that should fail fast
+    """
+    name_to_codes: Dict[str, Set[str]] = {}
+    for code, name in code_to_name.items():
+        if not name or not code:
+            continue
+        normalized_name = name.strip()
+        if not normalized_name:
+            continue
+        name_to_codes.setdefault(normalized_name, set()).add(code)
+
+    unique_names = {
+        name: next(iter(codes))
+        for name, codes in name_to_codes.items()
+        if len(codes) == 1
+    }
+    ambiguous_names = {
+        name
+        for name, codes in name_to_codes.items()
+        if len(codes) > 1
+    }
+    return unique_names, ambiguous_names
+
+
+_LOCAL_REVERSE_MAP, _LOCAL_AMBIGUOUS_NAMES = _build_local_name_indexes(STOCK_NAME_MAP)
 
 
 def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
@@ -133,9 +164,12 @@ def resolve_name_to_code(name: str) -> Optional[str]:
         return _normalize_code(s)
 
     # 2. Local reverse map (no duplicates)
-    local_reverse = _build_reverse_map_no_duplicates(STOCK_NAME_MAP)
+    local_reverse = _LOCAL_REVERSE_MAP
     if s in local_reverse:
         return local_reverse[s]
+    if s in _LOCAL_AMBIGUOUS_NAMES:
+        logger.debug(f"[NameResolver] 命中本地歧义名称，快速返回 None: {s}")
+        return None
 
     # 3. Pinyin match (exact)
     try:

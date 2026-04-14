@@ -97,7 +97,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
             title="历史分析"
             titleClassName="text-sm font-medium"
             leading={(
-              <svg className="h-4 w-4 text-[var(--home-accent-text)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="h-4 w-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             )}
@@ -125,13 +125,13 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                   onChange={onToggleSelectAll}
                   disabled={isDeleting}
                   aria-label="全选当前已加载历史记录"
-                  className="history-select-all-checkbox h-3.5 w-3.5 cursor-pointer bg-transparent text-[var(--home-accent-text)] focus:ring-[color:var(--home-accent-border-hover)] disabled:opacity-50"
+                  className="history-select-all-checkbox h-3.5 w-3.5 cursor-pointer bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
                 />
                 <span className="text-[11px] text-muted-text select-none">全选当前</span>
               </label>
               <Button
                 variant="danger-subtle"
-                size="sm"
+                size="xsm"
                 onClick={onDeleteSelected}
                 disabled={selectedCount === 0 || isDeleting}
                 isLoading={isDeleting}
@@ -184,7 +184,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
             {!hasMore && items.length > 0 && (
               <div className="text-center py-5">
                 <div className="h-px bg-subtle w-full mb-3" />
-                <span className="text-[10px] text-muted-text/50 uppercase tracking-[0.2em]">已到底部</span>
+                <span className="text-[10px] text-secondary-text uppercase tracking-[0.2em]">已到底部</span>
               </div>
             )}
           </div>

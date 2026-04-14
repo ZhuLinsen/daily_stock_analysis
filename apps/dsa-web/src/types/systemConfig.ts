@@ -146,6 +146,24 @@ export interface TestLLMChannelResponse {
   latencyMs?: number | null;
 }
 
+export interface DiscoverLLMChannelModelsRequest {
+  name: string;
+  protocol: string;
+  baseUrl?: string;
+  apiKey?: string;
+  models?: string[];
+  timeoutSeconds?: number;
+}
+
+export interface DiscoverLLMChannelModelsResponse {
+  success: boolean;
+  message: string;
+  error?: string | null;
+  resolvedProtocol?: string | null;
+  models: string[];
+  latencyMs?: number | null;
+}
+
 export interface SystemConfigValidationErrorResponse {
   error: string;
   message: string;

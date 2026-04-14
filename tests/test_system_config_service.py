@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -177,6 +177,70 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_type" for issue in validation["issues"]))
 
+    def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
+        validation = self.service.validate(
+            items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}]
+        )
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
+
+    def test_validate_warns_when_feishu_app_credentials_are_used_without_webhook(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_no_warning_when_feishu_cloud_doc_credentials_without_webhook(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                {"key": "FEISHU_FOLDER_TOKEN", "value": "folder_xxx"},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertFalse(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_validate_warns_when_only_folder_token_cleared_with_app_credentials(self) -> None:
+        """Clearing FEISHU_FOLDER_TOKEN while app credentials remain should trigger mismatch."""
+        old_version = self.manager.get_config_version()
+        self.service.update(
+            config_version=old_version,
+            items=[
+                {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+            ],
+        )
+        validation = self.service.validate(
+            items=[
+                {"key": "FEISHU_FOLDER_TOKEN", "value": ""},
+            ]
+        )
+        self.assertTrue(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["code"] == "feishu_mode_mismatch"
+                and issue["severity"] == "warning"
+                for issue in validation["issues"]
+            )
+        )
+
     def test_update_persists_public_searxng_toggle(self) -> None:
         old_version = self.manager.get_config_version()
         response = self.service.update(
@@ -201,6 +265,18 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "missing_api_key" for issue in validation["issues"]))
+
+    def test_validate_preserves_model_based_protocol_inference_for_ollama_channel(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "lab"},
+                {"key": "LLM_LAB_MODELS", "value": "ollama/llama3"},
+                {"key": "LLM_LAB_API_KEY", "value": ""},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
+        self.assertEqual(validation["issues"], [])
 
     def test_validate_reports_unknown_primary_model_for_channels(self) -> None:
         validation = self.service.validate(
@@ -298,8 +374,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(report_language_schema["options"][1]["value"], "en")
 
         self.assertEqual(items["AGENT_ORCHESTRATOR_TIMEOUT_S"]["schema"]["default_value"], "600")
-        self.assertFalse(items["AGENT_DEEP_RESEARCH_BUDGET"]["schema"]["is_editable"])
-        self.assertFalse(items["AGENT_EVENT_MONITOR_ENABLED"]["schema"]["is_editable"])
+        self.assertTrue(items["AGENT_DEEP_RESEARCH_BUDGET"]["schema"]["is_editable"])
+        self.assertTrue(items["AGENT_EVENT_MONITOR_ENABLED"]["schema"]["is_editable"])
 
     def test_validate_reports_invalid_select_option(self) -> None:
         validation = self.service.validate(items=[{"key": "AGENT_ARCH", "value": "invalid-mode"}])
@@ -312,6 +388,52 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["issues"], [])
+
+    def test_validate_reports_invalid_json(self) -> None:
+        validation = self.service.validate(items=[{"key": "AGENT_EVENT_ALERT_RULES_JSON", "value": "[invalid"}])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_json" for issue in validation["issues"]))
+
+    def test_validate_accepts_blank_optional_json(self) -> None:
+        validation = self.service.validate(items=[{"key": "AGENT_EVENT_ALERT_RULES_JSON", "value": ""}])
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
+
+    def test_validate_accepts_multiline_json(self) -> None:
+        validation = self.service.validate(items=[{
+            "key": "AGENT_EVENT_ALERT_RULES_JSON",
+            "value": (
+                "[\n"
+                '  {"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800}\n'
+                "]"
+            ),
+        }])
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
+
+    def test_update_minifies_multiline_json_before_storage(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{
+                "key": "AGENT_EVENT_ALERT_RULES_JSON",
+                "value": (
+                    "[\n"
+                    '  {"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800}\n'
+                    "]"
+                ),
+            }],
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        current_map = self.manager.read_config_map()
+        self.assertEqual(
+            current_map["AGENT_EVENT_ALERT_RULES_JSON"],
+            '[{"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800}]',
+        )
 
     def test_validate_accepts_legacy_agent_orchestrator_mode_alias(self) -> None:
         validation = self.service.validate(items=[{"key": "AGENT_ORCHESTRATOR_MODE", "value": "strategy"}])
@@ -405,6 +527,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["key"] == "LITELLM_MODEL" and issue["code"] == "missing_runtime_source" for issue in validation["issues"]))
 
+    def test_validate_accepts_minimax_model_as_direct_env_provider(self) -> None:
+        """minimax is NOT a managed key provider; it uses LiteLLM direct-env routing."""
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "minimax/MiniMax-M1"},
+                {"key": "LLM_PRIMARY_ENABLED", "value": "false"},
+                {"key": "LITELLM_MODEL", "value": "minimax/MiniMax-M1"},
+            ]
+        )
+
+        self.assertFalse(any(issue.get("key") == "LITELLM_MODEL" and issue["code"] == "missing_runtime_source" for issue in validation.get("issues", [])))
+
     def test_validate_reports_stale_agent_primary_model_when_all_channels_disabled(self) -> None:
         validation = self.service.validate(
             items=[
@@ -458,6 +595,131 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["resolved_protocol"], "openai")
         self.assertEqual(payload["resolved_model"], "openai/deepseek-chat")
 
+    @patch("litellm.completion")
+    def test_test_llm_channel_allows_ollama_prefix_without_explicit_protocol(self, mock_completion) -> None:
+        mock_completion.return_value = type(
+            "MockResponse",
+            (),
+            {
+                "choices": [type("Choice", (), {"message": type("Message", (), {"content": "OK"})()})()],
+            },
+        )()
+
+        payload = self.service.test_llm_channel(
+            name="lab",
+            protocol="",
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            models=["ollama/llama3"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "ollama")
+        self.assertEqual(payload["resolved_model"], "ollama/llama3")
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_returns_deduped_ids(self, mock_get) -> None:
+        mock_response = Mock()
+        mock_response.ok = True
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {"id": "qwen-plus"},
+                {"id": "qwen-plus"},
+                {"id": "qwen-turbo"},
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        payload = self.service.discover_llm_channel_models(
+            name="dashscope",
+            protocol="openai",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "openai")
+        self.assertEqual(payload["models"], ["qwen-plus", "qwen-turbo"])
+        mock_get.assert_called_once()
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        )
+        self.assertEqual(
+            mock_get.call_args.kwargs["headers"]["Authorization"],
+            "Bearer sk-test-value",
+        )
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+    @patch("src.services.system_config_service.requests.get")
+    def test_discover_llm_channel_models_rejects_redirect_responses(self, mock_get) -> None:
+        mock_response = Mock()
+        mock_response.ok = True
+        mock_response.status_code = 302
+        mock_get.return_value = mock_response
+
+        payload = self.service.discover_llm_channel_models(
+            name="dashscope",
+            protocol="openai",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["message"], "Model discovery request was redirected")
+        self.assertIn("Redirect responses are not allowed", payload["error"])
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+
+    def test_discover_llm_channel_models_requires_base_url(self) -> None:
+        payload = self.service.discover_llm_channel_models(
+            name="primary",
+            protocol="openai",
+            base_url="",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertIn("base URL", payload["error"])
+        self.assertEqual(payload["models"], [])
+
+    def test_discover_llm_channel_models_rejects_unsupported_protocol(self) -> None:
+        payload = self.service.discover_llm_channel_models(
+            name="gemini",
+            protocol="gemini",
+            base_url="https://example.com/v1",
+            api_key="sk-test-value",
+        )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["resolved_protocol"], "gemini")
+        self.assertIn("does not support /models discovery yet", payload["error"])
+
+    def test_build_llm_models_url_strips_query_and_fragment(self) -> None:
+        models_url = SystemConfigService._build_llm_models_url(
+            "https://example.com/v1/chat/completions?api-version=1#frag"
+        )
+
+        self.assertEqual(models_url, "https://example.com/v1/models")
+
+    def test_validate_reports_invalid_event_rule_semantics(self) -> None:
+        validation = self.service.validate(items=[{
+            "key": "AGENT_EVENT_ALERT_RULES_JSON",
+            "value": '[{"stock_code":"600519","alert_type":"price_cross","status":"bad","direction":"above","price":1800}]',
+        }])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_event_rule" for issue in validation["issues"]))
+
+    def test_validate_rejects_unsupported_event_rule_type(self) -> None:
+        validation = self.service.validate(items=[{
+            "key": "AGENT_EVENT_ALERT_RULES_JSON",
+            "value": '[{"stock_code":"600519","alert_type":"sentiment_shift"}]',
+        }])
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(any(issue["code"] == "invalid_event_rule" for issue in validation["issues"]))
+
     @patch.object(SystemConfigService, "_reload_runtime_singletons")
     def test_update_with_reload_resets_runtime_singletons(
         self,
@@ -471,6 +733,18 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         mock_reload_runtime_singletons.assert_called_once()
+
+    def test_update_with_reload_applies_updated_env_file_when_process_env_is_stale(self) -> None:
+        os.environ["STOCK_LIST"] = "600519,000001"
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "STOCK_LIST", "value": "300750,TSLA"}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertEqual(Config.get_instance().stock_list, ["300750", "TSLA"])
 
     def test_update_raises_conflict_for_stale_version(self) -> None:
         with self.assertRaises(ConfigConflictError):
@@ -506,6 +780,36 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         joined = " | ".join(response["warnings"])
         self.assertIn("MAX_WORKERS=1", joined)
         self.assertIn("reload_now=false", joined)
+
+    def test_update_appends_mode_specific_startup_warnings(self) -> None:
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[
+                {"key": "RUN_IMMEDIATELY", "value": "false"},
+                {"key": "SCHEDULE_ENABLED", "value": "true"},
+                {"key": "SCHEDULE_RUN_IMMEDIATELY", "value": "true"},
+            ],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        run_warning = next(
+            warning
+            for warning in response["warnings"]
+            if "RUN_IMMEDIATELY 已写入 .env" in warning
+        )
+        schedule_warning = next(
+            warning
+            for warning in response["warnings"]
+            if "SCHEDULE_ENABLED" in warning
+        )
+
+        self.assertIn("非 schedule 模式", run_warning)
+        self.assertNotIn("以 schedule 模式", run_warning)
+        self.assertIn("SCHEDULE_RUN_IMMEDIATELY", schedule_warning)
+        self.assertIn("不会自动重建 scheduler", schedule_warning)
+        self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
+        self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
 
 
     def test_validate_rejects_comma_only_api_key(self) -> None:

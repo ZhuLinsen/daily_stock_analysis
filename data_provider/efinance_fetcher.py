@@ -607,7 +607,7 @@ class EfinanceFetcher(BaseFetcher):
         
         # 检查熔断器状态
         if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
             return None
         
         try:
@@ -646,7 +646,7 @@ class EfinanceFetcher(BaseFetcher):
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
             row = df[df[code_col] == stock_code]
             if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
+                logger.info(f"[API返回] 未找到股票 {stock_code} 的实时行情")
                 return None
             
             row = row.iloc[0]
@@ -695,11 +695,11 @@ class EfinanceFetcher(BaseFetcher):
             return quote
             
         except FuturesTimeoutError:
-            logger.warning(f"[超时] ef.stock.get_realtime_quotes() 超过 {_EF_CALL_TIMEOUT}s，跳过 {stock_code}")
+            logger.info(f"[超时] ef.stock.get_realtime_quotes() 超过 {_EF_CALL_TIMEOUT}s，跳过 {stock_code}")
             circuit_breaker.record_failure(source_key, "timeout")
             return None
         except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情(efinance)失败: {e}")
+            logger.info(f"[API错误] 获取 {stock_code} 实时行情(efinance)失败: {e}")
             circuit_breaker.record_failure(source_key, str(e))
             return None
 
@@ -714,7 +714,7 @@ class EfinanceFetcher(BaseFetcher):
         source_key = "efinance_etf"
 
         if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
             return None
 
         try:
@@ -740,14 +740,14 @@ class EfinanceFetcher(BaseFetcher):
                     logger.info(f"[API返回] ETF 实时行情成功: {len(df)} 条, 耗时 {api_elapsed:.2f}s")
                     circuit_breaker.record_success(source_key)
                 else:
-                    logger.warning(f"[API返回] ETF 实时行情为空, 耗时 {api_elapsed:.2f}s")
+                    logger.info(f"[API返回] ETF 实时行情为空, 耗时 {api_elapsed:.2f}s")
                     df = pd.DataFrame()
 
                 _etf_realtime_cache['data'] = df
                 _etf_realtime_cache['timestamp'] = current_time
 
             if df is None or df.empty:
-                logger.warning(f"[实时行情] ETF实时行情数据为空(efinance)，跳过 {stock_code}")
+                logger.info(f"[实时行情] ETF实时行情数据为空(efinance)，跳过 {stock_code}")
                 return None
 
             code_col = '股票代码' if '股票代码' in df.columns else 'code'
@@ -755,7 +755,7 @@ class EfinanceFetcher(BaseFetcher):
             target_code = str(stock_code).strip().zfill(6)
             row = df[code_series == target_code]
             if row.empty:
-                logger.warning(f"[API返回] 未找到 ETF {stock_code} 的实时行情(efinance)")
+                logger.info(f"[API返回] 未找到 ETF {stock_code} 的实时行情(efinance)")
                 return None
 
             row = row.iloc[0]
@@ -793,7 +793,7 @@ class EfinanceFetcher(BaseFetcher):
             )
             return quote
         except Exception as e:
-            logger.error(f"[API错误] 获取 ETF {stock_code} 实时行情(efinance)失败: {e}")
+            logger.info(f"[API错误] 获取 ETF {stock_code} 实时行情(efinance)失败: {e}")
             circuit_breaker.record_failure(source_key, str(e))
             return None
 

@@ -2,8 +2,8 @@ import React from 'react';
 import { cn } from '../../utils/cn';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'gradient' | 'danger' | 'danger-subtle' | 'settings-primary' | 'settings-secondary' | 'home-action-ai' | 'home-action-report';
-  size?: 'sm' | 'md' | 'lg' | 'xl';
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'gradient' | 'danger' | 'danger-subtle' | 'settings-primary' | 'settings-secondary' | 'action-primary' | 'action-secondary' | 'home-action-ai' | 'home-action-report';
+  size?: 'xsm' | 'sm' | 'md' | 'lg' | 'xl';
   isLoading?: boolean;
   /** Custom loading text. */
   loadingText?: string;
@@ -11,11 +11,15 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const BUTTON_SIZE_STYLES = {
+  xsm: 'h-6 rounded-lg px-2 text-sm',
   sm: 'h-9 rounded-lg px-3 text-sm',
   md: 'h-10 rounded-xl px-4 text-sm',
   lg: 'h-11 rounded-xl px-5 text-sm',
   xl: 'h-12 rounded-xl px-6 text-sm',
 } as const;
+
+const ACTION_AI_STYLES = 'bg-[var(--home-action-ai-bg)] border border-[var(--home-action-ai-border)] text-[var(--home-action-ai-text)] hover:bg-[var(--home-action-ai-hover-bg)]';
+const ACTION_REPORT_STYLES = 'bg-[var(--home-action-report-bg)] border border-[var(--home-action-report-border)] text-[var(--home-action-report-text)] hover:bg-[var(--home-action-report-hover-bg)]';
 
 const BUTTON_VARIANT_STYLES = {
   primary: 'border border-cyan/30 bg-primary-gradient text-primary-foreground shadow-lg shadow-cyan/20 hover:brightness-105',
@@ -27,8 +31,10 @@ const BUTTON_VARIANT_STYLES = {
   gradient: 'border border-cyan/20 bg-gradient-to-r from-cyan to-purple text-primary-foreground shadow-lg shadow-cyan/20 hover:brightness-105',
   danger: 'border border-danger/40 bg-danger text-destructive-foreground shadow-lg shadow-danger/20 hover:brightness-105',
   'danger-subtle': 'border border-danger/60 bg-danger/10 text-danger hover:bg-danger/15',
-  'home-action-ai': 'bg-[var(--home-action-ai-bg)] border border-[var(--home-action-ai-border)] text-[var(--home-action-ai-text)] hover:bg-[var(--home-action-ai-hover-bg)]',
-  'home-action-report': 'bg-[var(--home-action-report-bg)] border border-[var(--home-action-report-border)] text-[var(--home-action-report-text)] hover:bg-[var(--home-action-report-hover-bg)]',
+  'action-primary': ACTION_AI_STYLES,
+  'action-secondary': ACTION_REPORT_STYLES,
+  'home-action-ai': ACTION_AI_STYLES,
+  'home-action-report': ACTION_REPORT_STYLES,
 } as const;
 
 /**

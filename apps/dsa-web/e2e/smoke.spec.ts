@@ -5,18 +5,24 @@ const smokePassword = process.env.DSA_WEB_SMOKE_PASSWORD;
 async function login(page: Page) {
   test.skip(!smokePassword, 'Set DSA_WEB_SMOKE_PASSWORD to run authenticated smoke tests.');
 
-  // Navigate to login page
   await page.goto('/login');
   await page.waitForLoadState('domcontentloaded');
 
-  // Wait for password input to be visible
-  await expect(page.locator('#password')).toBeVisible({ timeout: 10_000 });
-
-  // Fill password and submit
-  await page.locator('#password').fill(smokePassword!);
-
-  // Wait for and click the submit button
+  const passwordInput = page.locator('#password');
   const submitButton = page.getByRole('button', { name: /授权进入工作台|完成设置并登录/ });
+  const homeLink = page.getByRole('link', { name: '首页' });
+
+  const isAlreadyAuthenticated =
+    page.url().endsWith('/') ||
+    await homeLink.isVisible({ timeout: 2_000 }).catch(() => false);
+
+  if (isAlreadyAuthenticated) {
+    await page.waitForLoadState('domcontentloaded');
+    return;
+  }
+
+  await expect(passwordInput).toBeVisible({ timeout: 10_000 });
+  await passwordInput.fill(smokePassword!);
   await expect(submitButton).toBeVisible();
 
   await Promise.all([
@@ -27,7 +33,6 @@ async function login(page: Page) {
     submitButton.click(),
   ]);
 
-  // Wait for navigation to home page after login
   await page.waitForURL('/', { timeout: 15_000 });
   await page.waitForLoadState('domcontentloaded');
   await page.waitForTimeout(1000);
@@ -84,6 +89,23 @@ test.describe('web smoke', () => {
     await page.getByRole('button', { name: '发送' }).click();
 
     await expect(page.locator('p').filter({ hasText: prompt }).last()).toBeVisible({ timeout: 5000 });
+  });
+
+  test('chat page uses accessible labels instead of native title attributes for key actions', async ({ page }) => {
+    await login(page);
+
+    await page.getByRole('link', { name: '问股' }).click();
+    await page.waitForLoadState('domcontentloaded');
+
+    const sendButton = page.getByRole('button', { name: '发送' });
+    const composer = page.getByPlaceholder(/分析 600519/);
+
+    await expect(page.getByTestId('chat-workspace')).toBeVisible({ timeout: 10_000 });
+    await expect(sendButton).toBeVisible({ timeout: 10_000 });
+    await expect(composer).toBeVisible({ timeout: 10_000 });
+
+    await expect(sendButton).not.toHaveAttribute('title', /.+/);
+    await expect(composer).not.toHaveAttribute('title', /.+/);
   });
 
   test('mobile shell opens navigation drawer after login', async ({ page }) => {

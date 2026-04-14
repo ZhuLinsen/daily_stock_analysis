@@ -299,6 +299,36 @@ deploy:
       memory: 1G
 ```
 
+### 5. WebUI 打开后 UI 元素异常变大 / 布局错乱
+
+**症状**：能访问 8000 端口，但页面上的文字、按钮、卡片异常放大，没有正常布局。
+
+**根因**：`static/index.html` 存在，但 CSS/JS 资源文件缺失（`static/assets/` 为空或不存在），浏览器无法加载样式与脚本，导致裸 HTML 渲染。
+
+**解决方法**：
+
+- **Docker 部署**：执行以下命令重新构建镜像（确保前端已正确打包进镜像）：
+  ```bash
+  docker-compose -f ./docker/docker-compose.yml down
+  docker-compose -f ./docker/docker-compose.yml build --no-cache
+  docker-compose -f ./docker/docker-compose.yml up -d
+  ```
+  构建完成后刷新浏览器缓存（`Ctrl+Shift+R`）再访问。
+
+- **直接部署（pip + python）**：先构建前端，再启动服务：
+  ```bash
+  # 安装 Node.js 18+（推荐 20+，如尚未安装）
+  # 构建前端
+  cd apps/dsa-web
+  npm ci
+  npm run build
+  cd ../..
+  # 启动服务
+  python main.py --webui-only
+  ```
+
+**验证**：用浏览器开发者工具（F12 → Network）检查是否有 `/assets/index-*.js` 和 `/assets/index-*.css` 的 404 错误；如有，说明资源缺失，按上述步骤重新构建即可。
+
 ---
 
 ## 🔄 快速迁移

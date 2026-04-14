@@ -68,4 +68,16 @@ describe('Input', () => {
     fireEvent.click(screen.getByRole('button', { name: '隐藏内容' }));
     expect(onPasswordVisibleChange).toHaveBeenCalledWith(false);
   });
+
+  it('supports the login appearance without affecting password toggle behavior', () => {
+    render(<Input label="登录密码" type="password" allowTogglePassword appearance="login" />);
+
+    const input = screen.getByLabelText('登录密码');
+    expect(input).toHaveAttribute('data-appearance', 'login');
+    expect(input).toHaveClass('input-appearance-login');
+    expect(input).toHaveAttribute('type', 'password');
+
+    fireEvent.click(screen.getByRole('button', { name: '显示内容' }));
+    expect(input).toHaveAttribute('type', 'text');
+  });
 });

@@ -1,5 +1,6 @@
 import type { AnalysisReport } from '../types/analysis';
 import { historyApi } from '../api/history';
+import { validateStockCode } from './validation';
 
 export interface ChatFollowUpContext {
   stock_code: string;
@@ -15,6 +16,53 @@ type ResolveChatFollowUpContextParams = {
   stockName: string | null;
   recordId?: number;
 };
+
+const MAX_FOLLOW_UP_NAME_LENGTH = 80;
+
+function hasInvalidFollowUpNameCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
+}
+
+export function sanitizeFollowUpStockCode(stockCode: string | null): string | null {
+  if (!stockCode) {
+    return null;
+  }
+
+  const { valid, normalized } = validateStockCode(stockCode);
+  return valid ? normalized : null;
+}
+
+export function sanitizeFollowUpStockName(stockName: string | null): string | null {
+  const normalized = stockName?.trim().replace(/\s+/g, ' ') ?? '';
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.length > MAX_FOLLOW_UP_NAME_LENGTH
+    || hasInvalidFollowUpNameCharacter(normalized)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+export function parseFollowUpRecordId(recordId: string | null): number | undefined {
+  if (!recordId || !/^\d+$/.test(recordId)) {
+    return undefined;
+  }
+
+  const parsed = Number(recordId);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
 
 export function buildFollowUpPrompt(stockCode: string, stockName: string | null): string {
   const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;

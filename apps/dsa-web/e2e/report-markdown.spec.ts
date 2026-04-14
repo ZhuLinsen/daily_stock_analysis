@@ -31,7 +31,7 @@ async function login(page: Page) {
   await page.waitForURL('/', { timeout: 15_000 });
   await page.waitForLoadState('domcontentloaded');
   // Wait for page to stabilize by checking for stock input
-  const stockInput = page.getByPlaceholder('输入股票代码，如 600519、HK00700、AAPL');
+  const stockInput = page.getByPlaceholder('输入股票代码或名称，如 600519、贵州茅台、AAPL');
   await expect(stockInput).toBeVisible({ timeout: 10_000 });
 }
 
@@ -144,7 +144,7 @@ test.describe('ReportMarkdown component', () => {
 
     // On mobile, a report should already be selected (showing in main content)
     // Wait for main content to load
-    await expect(page.getByPlaceholder('输入股票代码，如 600519、HK00700、AAPL')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByPlaceholder('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeVisible({ timeout: 10_000 });
 
     // Click the "完整分析报告" button to open the markdown drawer
     const detailedReportButton = page.getByRole('button', { name: '完整分析报告' });

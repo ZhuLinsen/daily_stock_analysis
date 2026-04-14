@@ -15,7 +15,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 
 import litellm
 from json_repair import repair_json
@@ -47,6 +47,14 @@ from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
 
 logger = logging.getLogger(__name__)
+
+
+class _LiteLLMStreamError(RuntimeError):
+    """Internal error wrapper that records whether any text was streamed."""
+
+    def __init__(self, message: str, *, partial_received: bool = False):
+        super().__init__(message)
+        self.partial_received = partial_received
 
 
 def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
@@ -501,7 +509,7 @@ class GeminiAnalyzer:
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
 
-    SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
 {guidelines_placeholder}
 
@@ -650,28 +658,254 @@ class GeminiAnalyzer:
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
-    def __init__(self, api_key: Optional[str] = None):
+    SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+
+{guidelines_placeholder}
+
+{default_skill_policy_section}
+{skills_section}
+
+## 输出格式：决策仪表盘 JSON
+
+请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
+
+```json
+{
+    "stock_name": "股票中文名称",
+    "sentiment_score": 0-100整数,
+    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
+    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
+    "decision_type": "buy/hold/sell",
+    "confidence_level": "高/中/低",
+
+    "dashboard": {
+        "core_conclusion": {
+            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
+            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
+            "time_sensitivity": "立即行动/今日内/本周内/不急",
+            "position_advice": {
+                "no_position": "空仓者建议：具体操作指引",
+                "has_position": "持仓者建议：具体操作指引"
+            }
+        },
+
+        "data_perspective": {
+            "trend_status": {
+                "ma_alignment": "均线排列状态描述",
+                "is_bullish": true/false,
+                "trend_score": 0-100
+            },
+            "price_position": {
+                "current_price": 当前价格数值,
+                "ma5": MA5数值,
+                "ma10": MA10数值,
+                "ma20": MA20数值,
+                "bias_ma5": 乖离率百分比数值,
+                "bias_status": "安全/警戒/危险",
+                "support_level": 支撑位价格,
+                "resistance_level": 压力位价格
+            },
+            "volume_analysis": {
+                "volume_ratio": 量比数值,
+                "volume_status": "放量/缩量/平量",
+                "turnover_rate": 换手率百分比,
+                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
+            },
+            "chip_structure": {
+                "profit_ratio": 获利比例,
+                "avg_cost": 平均成本,
+                "concentration": 筹码集中度,
+                "chip_health": "健康/一般/警惕"
+            }
+        },
+
+        "intelligence": {
+            "latest_news": "【最新消息】近期重要新闻摘要",
+            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
+            "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
+            "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
+            "sentiment_summary": "舆情情绪一句话总结"
+        },
+
+        "battle_plan": {
+            "sniper_points": {
+                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
+                "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
+                "stop_loss": "止损位：XX元（失效条件或X%风险）",
+                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
+            },
+            "position_strategy": {
+                "suggested_position": "建议仓位：X成",
+                "entry_plan": "分批建仓策略描述",
+                "risk_control": "风控策略描述"
+            },
+            "action_checklist": [
+                "✅/⚠️/❌ 检查项1：当前结构是否满足激活技能条件",
+                "✅/⚠️/❌ 检查项2：入场位置与风险回报是否合理",
+                "✅/⚠️/❌ 检查项3：量价/波动/筹码是否支持判断",
+                "✅/⚠️/❌ 检查项4：无重大利空",
+                "✅/⚠️/❌ 检查项5：仓位与止损计划明确",
+                "✅/⚠️/❌ 检查项6：估值/业绩/催化与结论匹配"
+            ]
+        }
+    },
+
+    "analysis_summary": "100字综合分析摘要",
+    "key_points": "3-5个核心看点，逗号分隔",
+    "risk_warning": "风险提示",
+    "buy_reason": "操作理由，引用激活技能或风险框架",
+
+    "trend_analysis": "走势形态分析",
+    "short_term_outlook": "短期1-3日展望",
+    "medium_term_outlook": "中期1-2周展望",
+    "technical_analysis": "技术面综合分析",
+    "ma_analysis": "均线系统分析",
+    "volume_analysis": "量能分析",
+    "pattern_analysis": "K线形态分析",
+    "fundamental_analysis": "基本面分析",
+    "sector_position": "板块行业分析",
+    "company_highlights": "公司亮点/风险",
+    "news_summary": "新闻摘要",
+    "market_sentiment": "市场情绪",
+    "hot_topics": "相关热点",
+
+    "search_performed": true/false,
+    "data_sources": "数据来源说明"
+}
+```
+
+## 评分标准
+
+### 强烈买入（80-100分）：
+- ✅ 多个激活技能同时支持积极结论
+- ✅ 上行空间、触发条件与风险回报清晰
+- ✅ 关键风险已排查，仓位与止损计划明确
+- ✅ 重要数据和情报结论彼此一致
+
+### 买入（60-79分）：
+- ✅ 主信号偏积极，但仍有少量待确认项
+- ✅ 允许存在可控风险或次优入场点
+- ✅ 需要在报告中明确补充观察条件
+
+### 观望（40-59分）：
+- ⚠️ 信号分歧较大，或缺乏足够确认
+- ⚠️ 风险与机会大致均衡
+- ⚠️ 更适合等待触发条件或回避不确定性
+
+### 卖出/减仓（0-39分）：
+- ❌ 主要结论转弱，风险明显高于收益
+- ❌ 触发了止损/失效条件或重大利空
+- ❌ 现有仓位更需要保护而不是进攻
+
+## 决策仪表盘核心原则
+
+1. **核心结论先行**：一句话说清该买该卖
+2. **分持仓建议**：空仓者和持仓者给不同建议
+3. **精确狙击点**：必须给出具体价格，不说模糊的话
+4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
+5. **风险优先级**：舆情中的风险点要醒目标出"""
+
+    TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
+
+- 回答必须基于用户提供的数据与上下文
+- 若信息不足，要明确指出不确定性
+- 不要编造价格、财报或新闻事实
+"""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        config: Optional[Config] = None,
+        skills: Optional[List[str]] = None,
+        skill_instructions: Optional[str] = None,
+        default_skill_policy: Optional[str] = None,
+        use_legacy_default_prompt: Optional[bool] = None,
+    ):
         """Initialize LLM Analyzer via LiteLLM.
 
         Args:
             api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
         """
+        self._config_override = config
+        self._requested_skills = list(skills) if skills is not None else None
+        self._skill_instructions_override = skill_instructions
+        self._default_skill_policy_override = default_skill_policy
+        self._use_legacy_default_prompt_override = use_legacy_default_prompt
+        self._resolved_prompt_state: Optional[Dict[str, Any]] = None
         self._router = None
         self._litellm_available = False
         self._init_litellm()
         if not self._litellm_available:
             logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
 
+    def _get_runtime_config(self) -> Config:
+        """Return the runtime config, honoring injected overrides for tests/pipeline."""
+        return getattr(self, "_config_override", None) or get_config()
+
+    def _get_skill_prompt_sections(self) -> tuple[str, str, bool]:
+        """Resolve skill instructions + default baseline + prompt mode."""
+        skill_instructions = getattr(self, "_skill_instructions_override", None)
+        default_skill_policy = getattr(self, "_default_skill_policy_override", None)
+        use_legacy_default_prompt = getattr(self, "_use_legacy_default_prompt_override", None)
+
+        if skill_instructions is not None and default_skill_policy is not None:
+            return (
+                skill_instructions,
+                default_skill_policy,
+                bool(use_legacy_default_prompt) if use_legacy_default_prompt is not None else False,
+            )
+
+        resolved_state = getattr(self, "_resolved_prompt_state", None)
+        if resolved_state is None:
+            from src.agent.factory import resolve_skill_prompt_state
+
+            prompt_state = resolve_skill_prompt_state(
+                self._get_runtime_config(),
+                skills=getattr(self, "_requested_skills", None),
+            )
+            resolved_state = {
+                "skill_instructions": prompt_state.skill_instructions,
+                "default_skill_policy": prompt_state.default_skill_policy,
+                "use_legacy_default_prompt": bool(getattr(prompt_state, "use_legacy_default_prompt", False)),
+            }
+            self._resolved_prompt_state = resolved_state
+
+        return (
+            skill_instructions if skill_instructions is not None else resolved_state.get("skill_instructions", ""),
+            default_skill_policy if default_skill_policy is not None else resolved_state.get("default_skill_policy", ""),
+            (
+                use_legacy_default_prompt
+                if use_legacy_default_prompt is not None
+                else bool(resolved_state.get("use_legacy_default_prompt", False))
+            ),
+        )
+
     def _get_analysis_system_prompt(self, report_language: str, stock_code: str = "") -> str:
         """Build the analyzer system prompt with output-language guidance."""
         lang = normalize_report_language(report_language)
         market_role = get_market_role(stock_code, lang)
         market_guidelines = get_market_guidelines(stock_code, lang)
-        base_prompt = self.SYSTEM_PROMPT.replace(
-            "{market_placeholder}", market_role
-        ).replace(
-            "{guidelines_placeholder}", market_guidelines
-        )
+        skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
+        if use_legacy_default_prompt:
+            base_prompt = self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace(
+                "{market_placeholder}", market_role
+            ).replace(
+                "{guidelines_placeholder}", market_guidelines
+            )
+        else:
+            skills_section = ""
+            if skill_instructions:
+                skills_section = f"## 激活的交易技能\n\n{skill_instructions}\n"
+            default_skill_policy_section = ""
+            if default_skill_policy:
+                default_skill_policy_section = f"{default_skill_policy}\n"
+            base_prompt = (
+                self.SYSTEM_PROMPT.replace("{market_placeholder}", market_role)
+                .replace("{guidelines_placeholder}", market_guidelines)
+                .replace("{default_skill_policy_section}", default_skill_policy_section)
+                .replace("{skills_section}", skills_section)
+            )
         if lang == "en":
             return base_prompt + """
 
@@ -700,7 +934,7 @@ class GeminiAnalyzer:
 
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
-        config = get_config()
+        config = self._get_runtime_config()
         litellm_model = config.litellm_model
         if not litellm_model:
             logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
@@ -763,12 +997,136 @@ class GeminiAnalyzer:
         """Check if LiteLLM is properly configured with at least one API key."""
         return self._router is not None or self._litellm_available
 
+    def _dispatch_litellm_completion(
+        self,
+        model: str,
+        call_kwargs: Dict[str, Any],
+        *,
+        config: Config,
+        use_channel_router: bool,
+        router_model_names: set[str],
+    ) -> Any:
+        """Dispatch a LiteLLM completion through router or direct fallback."""
+        effective_kwargs = dict(call_kwargs)
+        if use_channel_router and self._router and model in router_model_names:
+            return self._router.completion(**effective_kwargs)
+        if self._router and model == config.litellm_model and not use_channel_router:
+            return self._router.completion(**effective_kwargs)
+
+        keys = get_api_keys_for_model(model, config)
+        if keys:
+            effective_kwargs["api_key"] = keys[0]
+        effective_kwargs.update(extra_litellm_params(model, config))
+        return litellm.completion(**effective_kwargs)
+
+    def _normalize_usage(self, usage_obj: Any) -> Dict[str, Any]:
+        """Normalize usage objects from LiteLLM responses/chunks."""
+        if not usage_obj:
+            return {}
+
+        def _get_value(key: str) -> int:
+            if isinstance(usage_obj, dict):
+                return int(usage_obj.get(key) or 0)
+            return int(getattr(usage_obj, key, 0) or 0)
+
+        return {
+            "prompt_tokens": _get_value("prompt_tokens"),
+            "completion_tokens": _get_value("completion_tokens"),
+            "total_tokens": _get_value("total_tokens"),
+        }
+
+    def _extract_stream_text(self, chunk: Any) -> str:
+        """Extract provider-agnostic text delta from a LiteLLM streaming chunk."""
+        choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+
+        content: Any = None
+        if isinstance(delta, dict):
+            content = delta.get("content")
+        elif isinstance(delta, str):
+            content = delta
+        elif delta is not None:
+            content = getattr(delta, "content", None)
+
+        if content is None:
+            if isinstance(message, dict):
+                content = message.get("content")
+            elif message is not None:
+                content = getattr(message, "content", None)
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+
+        return content if isinstance(content, str) else ""
+
+    def _consume_litellm_stream(
+        self,
+        stream_response: Any,
+        *,
+        model: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Consume a LiteLLM stream into a single text payload."""
+        chunks: List[str] = []
+        usage: Dict[str, Any] = {}
+        chars_received = 0
+        next_emit_at = 1
+
+        try:
+            for chunk in stream_response:
+                chunk_usage = chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+                normalized_usage = self._normalize_usage(chunk_usage)
+                if normalized_usage:
+                    usage = normalized_usage
+
+                delta_text = self._extract_stream_text(chunk)
+                if not delta_text:
+                    continue
+
+                chunks.append(delta_text)
+                chars_received += len(delta_text)
+                if progress_callback and chars_received >= next_emit_at:
+                    progress_callback(chars_received)
+                    next_emit_at = chars_received + 160
+        except Exception as exc:
+            raise _LiteLLMStreamError(
+                f"{model} stream interrupted: {exc}",
+                partial_received=chars_received > 0,
+            ) from exc
+
+        response_text = "".join(chunks).strip()
+        if not response_text:
+            raise _LiteLLMStreamError(
+                f"{model} stream returned empty response",
+                partial_received=False,
+            )
+
+        if progress_callback and chars_received > 0:
+            progress_callback(chars_received)
+
+        return response_text, usage
+
     def _call_litellm(
         self,
         prompt: str,
         generation_config: dict,
         *,
         system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
@@ -785,7 +1143,7 @@ class GeminiAnalyzer:
             Tuple of (response text, model_used, usage). On success model_used is the full model
             name and usage is a dict with prompt_tokens, completion_tokens, total_tokens.
         """
-        config = get_config()
+        config = self._get_runtime_config()
         max_tokens = (
             generation_config.get('max_output_tokens')
             or generation_config.get('max_tokens')
@@ -799,7 +1157,8 @@ class GeminiAnalyzer:
         use_channel_router = self._has_channel_config(config)
 
         last_error = None
-        effective_system_prompt = system_prompt or self.SYSTEM_PROMPT
+        effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
+        router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
@@ -816,31 +1175,52 @@ class GeminiAnalyzer:
                 if extra:
                     call_kwargs["extra_body"] = extra
 
-                _router_model_names = set(get_configured_llm_models(config.llm_model_list))
-                if use_channel_router and self._router and model in _router_model_names:
-                    # Channel / YAML path: Router manages key + base_url per model
-                    response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model and not use_channel_router:
-                    # Legacy path: Router only for primary model multi-key
-                    response = self._router.completion(**call_kwargs)
-                else:
-                    # Legacy/direct-env path: direct call (also handles direct-env
-                    # providers like groq/ or bedrock/ that are not in the Router
-                    # model_list even when channel mode is active)
-                    keys = get_api_keys_for_model(model, config)
-                    if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+                if stream:
+                    try:
+                        stream_response = self._dispatch_litellm_completion(
+                            model,
+                            {**call_kwargs, "stream": True},
+                            config=config,
+                            use_channel_router=use_channel_router,
+                            router_model_names=router_model_names,
+                        )
+                        response_text, usage = self._consume_litellm_stream(
+                            stream_response,
+                            model=model,
+                            progress_callback=stream_progress_callback,
+                        )
+                        return response_text, model, usage
+                    except _LiteLLMStreamError as exc:
+                        if exc.partial_received:
+                            logger.warning(
+                                "[LiteLLM] %s stream failed after partial output, retrying non-stream for same model: %s",
+                                model,
+                                exc,
+                            )
+                        else:
+                            logger.warning(
+                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                                model,
+                                exc,
+                            )
+                        last_error = exc
+                    except Exception as exc:
+                        logger.warning(
+                            "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
+                            model,
+                            exc,
+                        )
+
+                response = self._dispatch_litellm_completion(
+                    model,
+                    call_kwargs,
+                    config=config,
+                    use_channel_router=use_channel_router,
+                    router_model_names=router_model_names,
+                )
 
                 if response and response.choices and response.choices[0].message.content:
-                    usage: Dict[str, Any] = {}
-                    if response.usage:
-                        usage = {
-                            "prompt_tokens": response.usage.prompt_tokens or 0,
-                            "completion_tokens": response.usage.completion_tokens or 0,
-                            "total_tokens": response.usage.total_tokens or 0,
-                        }
+                    usage = self._normalize_usage(getattr(response, "usage", None))
                     return (response.choices[0].message.content, model, usage)
                 raise ValueError("LLM returned empty response")
 
@@ -888,7 +1268,9 @@ class GeminiAnalyzer:
     def analyze(
         self, 
         context: Dict[str, Any],
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -906,8 +1288,16 @@ class GeminiAnalyzer:
         Returns:
             AnalysisResult 对象
         """
+        def _emit_progress(progress: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(progress, message)
+            except Exception as exc:
+                logger.debug("[analyzer] progress callback skipped: %s", exc)
+
         code = context.get('code', 'Unknown')
-        config = get_config()
+        config = self._get_runtime_config()
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
         
@@ -915,6 +1305,7 @@ class GeminiAnalyzer:
         request_delay = config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
+            _emit_progress(65, f"{code}：LLM 请求前等待 {request_delay:.1f} 秒")
             time.sleep(request_delay)
         
         # 优先从上下文获取股票名称（由 main.py 传入）
@@ -948,7 +1339,7 @@ class GeminiAnalyzer:
             # 格式化输入（包含技术面数据和新闻）
             prompt = self._format_prompt(context, name, news_context, report_language=report_language)
             
-            config = get_config()
+            config = self._get_runtime_config()
             model_name = config.litellm_model or "unknown"
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
@@ -967,6 +1358,7 @@ class GeminiAnalyzer:
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
+            _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
 
             # 使用 litellm 调用（支持完整性校验重试）
             current_prompt = prompt
@@ -979,6 +1371,8 @@ class GeminiAnalyzer:
                     current_prompt,
                     generation_config,
                     system_prompt=system_prompt,
+                    stream=True,
+                    stream_progress_callback=stream_progress_callback,
                 )
                 elapsed = time.time() - start_time
 
@@ -991,6 +1385,9 @@ class GeminiAnalyzer:
                 logger.debug(
                     f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
                 )
+                # Keep parser/retry progress monotonic so task progress/message never "goes backward".
+                parse_progress = min(99, 93 + retry_count * 2)
+                _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
 
                 # 解析响应
                 result = self._parse_response(response_text, code, name)
@@ -1018,6 +1415,11 @@ class GeminiAnalyzer:
                         "[LLM完整性] 必填字段缺失 %s，第 %d 次补全重试",
                         missing_fields,
                         retry_count,
+                    )
+                    retry_progress = min(99, 92 + retry_count * 2)
+                    _emit_progress(
+                        retry_progress,
+                        f"{name}：报告字段不完整，正在补全重试（{retry_count}/{max_retries}）",
                     )
                 else:
                     self._apply_placeholder_fill(result, missing_fields)
@@ -1069,6 +1471,7 @@ class GeminiAnalyzer:
         """
         code = context.get('code', 'Unknown')
         report_language = normalize_report_language(report_language)
+        _, _, use_legacy_default_prompt = self._get_skill_prompt_sections()
         
         # 优先使用上下文中的股票名称（从 realtime_quote 获取）
         stock_name = context.get('stock_name', name)
@@ -1190,11 +1593,12 @@ class GeminiAnalyzer:
 | 筹码状态 | {chip.get('chip_status', unknown_text)} | |
 """
         
-        # 添加趋势分析结果（基于交易理念的预判）
+        # 添加趋势分析结果（仅隐式内建 bull_trend 默认回退保留旧口径）
         if 'trend_analysis' in context:
             trend = context['trend_analysis']
-            bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
-            prompt += f"""
+            if use_legacy_default_prompt:
+                bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
+                prompt += f"""
 ### 趋势分析预判（基于交易理念）
 | 指标 | 数值 | 判定 |
 |------|------|------|
@@ -1209,6 +1613,32 @@ class GeminiAnalyzer:
 
 #### 系统分析理由
 **买入理由**：
+{chr(10).join('- ' + r for r in trend.get('signal_reasons', ['无'])) if trend.get('signal_reasons') else '- 无'}
+
+**风险因素**：
+{chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
+"""
+            else:
+                bias_warning = (
+                    "🚨 偏离较大，需谨慎评估追高风险"
+                    if trend.get('bias_ma5', 0) > 5
+                    else "✅ 位置相对可控"
+                )
+                prompt += f"""
+### 技术与结构分析（供激活技能判断参考）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 趋势状态 | {trend.get('trend_status', unknown_text)} | |
+| 均线排列 | {trend.get('ma_alignment', unknown_text)} | 结合激活技能判断结构强弱 |
+| 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
+| **价格位置(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
+| 价格位置(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
+| 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
+| 系统信号 | {trend.get('buy_signal', unknown_text)} | |
+| 系统评分 | {trend.get('signal_score', 0)}/100 | |
+
+#### 系统分析理由
+**支持因素**：
 {chr(10).join('- ' + r for r in trend.get('signal_reasons', ['无'])) if trend.get('signal_reasons') else '- 无'}
 
 **风险因素**：
@@ -1236,7 +1666,7 @@ class GeminiAnalyzer:
             news_window_days = None
 
         if news_window_days is None:
-            prompt_config = get_config()
+            prompt_config = self._get_runtime_config()
             news_window_days = resolve_news_window_days(
                 news_max_age_days=getattr(prompt_config, "news_max_age_days", 3),
                 news_strategy_profile=getattr(prompt_config, "news_strategy_profile", "short"),
@@ -1296,6 +1726,9 @@ class GeminiAnalyzer:
 ### ⚠️ 重要：输出正确的股票名称格式
 正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
+"""
+        if use_legacy_default_prompt:
+            prompt += f"""
 
 ### 重点关注（必须明确回答）：
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
@@ -1303,6 +1736,18 @@ class GeminiAnalyzer:
 3. ❓ 量能是否配合（缩量回调/放量突破）？
 4. ❓ 筹码结构是否健康？
 5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
+"""
+        else:
+            prompt += f"""
+
+### 重点关注（必须明确回答）：
+1. ❓ 当前结构是否满足激活技能的关键触发条件？
+2. ❓ 当前入场位置与风险回报是否合理？若偏离过大，请明确说明等待条件
+3. ❓ 量能、波动与筹码结构是否支持当前结论？
+4. ❓ 消息面有无重大利空或与技能结论冲突的信息？
+5. ❓ 若结论成立，具体触发条件、止损位、观察点分别是什么？
+"""
+        prompt += f"""
 
 ### 决策仪表盘要求：
 - **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
@@ -1503,7 +1948,9 @@ class GeminiAnalyzer:
         如果解析失败，尝试智能提取或返回默认结果
         """
         try:
-            report_language = normalize_report_language(getattr(get_config(), "report_language", "zh"))
+            report_language = normalize_report_language(
+                getattr(self._get_runtime_config(), "report_language", "zh")
+            )
             # 清理响应文本：移除 markdown 代码块标记
             cleaned_text = response_text
             if '```json' in cleaned_text:
@@ -1590,12 +2037,12 @@ class GeminiAnalyzer:
                     success=True,
                 )
             else:
-                # 没有找到 JSON，尝试从纯文本中提取信息
-                logger.warning(f"无法从响应中提取 JSON，使用原始文本分析")
+                # 没有找到 JSON，标记为失败
+                logger.warning(f"无法从响应中提取 JSON，标记为解析失败")
                 return self._parse_text_response(response_text, code, name)
                 
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}，尝试从文本提取")
+            logger.warning(f"JSON 解析失败: {e}，标记为解析失败")
             return self._parse_text_response(response_text, code, name)
     
     def _fix_json_string(self, json_str: str) -> str:
@@ -1625,7 +2072,9 @@ class GeminiAnalyzer:
         name: str
     ) -> AnalysisResult:
         """从纯文本响应中尽可能提取分析信息"""
-        report_language = normalize_report_language(getattr(get_config(), "report_language", "zh"))
+        report_language = normalize_report_language(
+            getattr(self._get_runtime_config(), "report_language", "zh")
+        )
         # 尝试识别关键词来判断情绪
         sentiment_score = 50
         trend = 'Sideways' if report_language == "en" else '震荡'
@@ -1668,7 +2117,8 @@ class GeminiAnalyzer:
             key_points='JSON parsing failed; treat this as best-effort output.' if report_language == "en" else 'JSON解析失败，仅供参考',
             risk_warning='The result may be inaccurate. Cross-check with other information.' if report_language == "en" else '分析结果可能不准确，建议结合其他信息判断',
             raw_response=response_text,
-            success=True,
+            success=False,
+            error_message='LLM response is not valid JSON; analysis result will not be persisted',
             report_language=report_language,
         )
     

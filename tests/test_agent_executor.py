@@ -17,7 +17,7 @@ import unittest
 import sys
 import os
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -86,6 +86,60 @@ SAMPLE_DASHBOARD = {
 
 class TestAgentExecutor(unittest.TestCase):
     """Test the ReAct loop logic."""
+
+    def test_prompt_omits_hardcoded_trend_baseline_when_default_policy_is_empty(self):
+        """Explicit skill runs should not silently keep the legacy trend baseline."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            tool_calls=[],
+            usage={"total_tokens": 50},
+            provider="openai",
+        )
+
+        executor = AgentExecutor(
+            registry,
+            adapter,
+            skill_instructions="### 技能 1: 缠论\n- 关注中枢与背驰",
+            default_skill_policy="",
+            max_steps=2,
+        )
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        prompt = adapter.call_with_tools.call_args.args[0][0]["content"]
+        self.assertIn("### 技能 1: 缠论", prompt)
+        self.assertNotIn("专注于趋势交易", prompt)
+        self.assertNotIn("多头排列：MA5 > MA10 > MA20", prompt)
+
+    def test_prompt_keeps_injected_default_policy_for_implicit_default_run(self):
+        """Implicit default runs can still inject the default bull-trend baseline explicitly."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            tool_calls=[],
+            usage={"total_tokens": 50},
+            provider="openai",
+        )
+
+        executor = AgentExecutor(
+            registry,
+            adapter,
+            skill_instructions="### 技能 1: 默认多头趋势",
+            default_skill_policy="## 默认技能基线（必须严格遵守）\n- **多头排列必须条件**：MA5 > MA10 > MA20",
+            use_legacy_default_prompt=True,
+            max_steps=2,
+        )
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        prompt = adapter.call_with_tools.call_args.args[0][0]["content"]
+        self.assertIn("### 技能 1: 默认多头趋势", prompt)
+        self.assertIn("专注于趋势交易", prompt)
+        self.assertIn("多头排列必须条件", prompt)
+        self.assertIn("多头排列：MA5 > MA10 > MA20", prompt)
 
     def test_simple_text_response(self):
         """Agent returns text immediately (no tool calls) with JSON dashboard."""
@@ -518,13 +572,45 @@ class TestAgentExecutor(unittest.TestCase):
 
         adapter.call_with_tools.side_effect = _capture_timeout
 
-        executor = AgentExecutor(registry, adapter, max_steps=2, timeout_seconds=0.2)
+        executor = AgentExecutor(registry, adapter, max_steps=2, timeout_seconds=1.0)
         result = executor.run("Analyze 600519")
 
         self.assertTrue(result.success)
         self.assertIsNotNone(captured.get("timeout"))
         self.assertGreater(captured["timeout"], 0.0)
-        self.assertLessEqual(captured["timeout"], 0.2)
+        self.assertLessEqual(captured["timeout"], 1.0)
+
+    def test_min_step_budget_skips_followup_llm_call(self):
+        """When step>0 and remaining budget is too small, no extra LLM call should be made."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Need one tool first.",
+            tool_calls=[ToolCall(id="echo_1", name="echo", arguments={"message": "hello"})],
+            usage={"total_tokens": 10},
+            provider="openai",
+        )
+
+        with patch(
+            "src.agent.runner._remaining_timeout_seconds",
+            side_effect=[9.0, 9.0, 7.5, 7.5],
+        ):
+            result = run_agent_loop(
+                messages=[
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "Analyze"},
+                ],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=3,
+                max_wall_clock_seconds=10.0,
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("insufficient budget", (result.error or "").lower())
+        self.assertEqual(adapter.call_with_tools.call_count, 1)
+        self.assertEqual(len(result.tool_calls_log), 1)
+        self.assertEqual(result.total_steps, 1)
 
 
 # ============================================================

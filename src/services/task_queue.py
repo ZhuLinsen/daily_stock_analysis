@@ -342,6 +342,7 @@ class AnalysisTaskQueue:
         selection_source: Optional[str] = None,
         report_type: str = "detailed",
         force_refresh: bool = False,
+        notify: bool = True,
     ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
         """
         Submit analysis tasks in batch.
@@ -389,6 +390,7 @@ class AnalysisTaskQueue:
                         stock_code,
                         report_type,
                         force_refresh,
+                        notify,
                     )
                 except Exception:
                     # Roll back the current batch to avoid partial submission.
@@ -484,6 +486,42 @@ class AnalysisTaskQueue:
             for task in self._tasks.values():
                 stats[task.status.value] = stats.get(task.status.value, 0) + 1
             return stats
+
+    def update_task_progress(
+        self,
+        task_id: str,
+        progress: int,
+        message: Optional[str] = None,
+        *,
+        event_type: str = "task_progress",
+    ) -> Optional[TaskInfo]:
+        """
+        Update in-flight task progress and broadcast an SSE event.
+
+        Only pending/processing tasks are updated. Progress is clamped to
+        [0, 99] so terminal states remain controlled by completion/failure.
+        """
+        with self._data_lock:
+            task = self._tasks.get(task_id)
+            if not task or task.status not in (TaskStatus.PENDING, TaskStatus.PROCESSING):
+                return None
+
+            next_progress = max(task.progress, max(0, min(99, int(progress))))
+            changed = False
+            if next_progress != task.progress:
+                task.progress = next_progress
+                changed = True
+            if message is not None and message != task.message:
+                task.message = message
+                changed = True
+
+            if not changed:
+                return task.copy()
+
+            task_snapshot = task.copy()
+
+        self._broadcast_event(event_type, task_snapshot.to_dict())
+        return task_snapshot
     
     # ========== 任务执行 ==========
     
@@ -493,6 +531,7 @@ class AnalysisTaskQueue:
         stock_code: str,
         report_type: str,
         force_refresh: bool,
+        notify: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         执行分析任务（在线程池中运行）
@@ -524,11 +563,17 @@ class AnalysisTaskQueue:
             
             # 执行分析
             service = AnalysisService()
+
+            def _on_progress(progress: int, message: str) -> None:
+                self.update_task_progress(task_id, progress, message)
+
             result = service.analyze_stock(
                 stock_code=stock_code,
                 report_type=report_type,
                 force_refresh=force_refresh,
                 query_id=task_id,
+                send_notification=notify,
+                progress_callback=_on_progress,
             )
             
             if result:
@@ -557,7 +602,7 @@ class AnalysisTaskQueue:
                 return result
             else:
                 # 分析返回空结果
-                raise Exception("分析返回空结果")
+                raise Exception(service.last_error or "分析返回空结果")
                 
         except Exception as e:
             error_msg = str(e)

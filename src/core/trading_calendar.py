@@ -15,6 +15,7 @@
 import logging
 from datetime import date, datetime
 from typing import Optional, Set
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,79 @@ def is_market_open(market: str, check_date: date) -> bool:
         return True
 
 
+def get_market_now(
+    market: Optional[str], current_time: Optional[datetime] = None
+) -> datetime:
+    """
+    Return current time in the market's local timezone.
+
+    If current_time is naive, treat it as already expressed in the market timezone.
+    Unknown markets fall back to the given datetime (or local system time).
+    """
+    tz_name = MARKET_TIMEZONE.get(market or "")
+
+    if current_time is None:
+        if tz_name:
+            return datetime.now(ZoneInfo(tz_name))
+        return datetime.now()
+
+    if not tz_name:
+        return current_time
+
+    tz = ZoneInfo(tz_name)
+    if current_time.tzinfo is None:
+        return current_time.replace(tzinfo=tz)
+    return current_time.astimezone(tz)
+
+
+def get_effective_trading_date(
+    market: Optional[str], current_time: Optional[datetime] = None
+) -> date:
+    """
+    Resolve the latest reusable daily-bar date for checkpoint/resume logic.
+
+    Rules:
+    - Non-trading day / holiday: previous trading session
+    - Trading day before market close: previous completed trading session
+    - Trading day after market close: current trading session
+    - Calendar lookup failure: fail-open to market-local natural date
+    """
+    market_now = get_market_now(market, current_time=current_time)
+    fallback_date = market_now.date()
+
+    if not _XCALS_AVAILABLE:
+        return fallback_date
+
+    ex = MARKET_EXCHANGE.get(market or "")
+    tz_name = MARKET_TIMEZONE.get(market or "")
+    if not ex or not tz_name:
+        return fallback_date
+
+    try:
+        cal = xcals.get_calendar(ex)
+        local_date = market_now.date()
+
+        if not cal.is_session(local_date):
+            return cal.date_to_session(local_date, direction="previous").date()
+
+        session = cal.date_to_session(local_date, direction="previous")
+        session_close = cal.session_close(session)
+        if hasattr(session_close, "tz_convert"):
+            close_local = session_close.tz_convert(tz_name).to_pydatetime()
+        elif session_close.tzinfo is not None:
+            close_local = session_close.astimezone(ZoneInfo(tz_name))
+        else:
+            close_local = session_close.replace(tzinfo=ZoneInfo(tz_name))
+
+        if market_now >= close_local:
+            return session.date()
+
+        return cal.previous_session(session).date()
+    except Exception as e:
+        logger.warning("trading_calendar.get_effective_trading_date fail-open: %s", e)
+        return fallback_date
+
+
 def get_open_markets_today() -> Set[str]:
     """
     Get markets that are open today (by each market's local timezone).
@@ -100,7 +174,6 @@ def get_open_markets_today() -> Set[str]:
     if not _XCALS_AVAILABLE:
         return {"cn", "hk", "us"}
     result: Set[str] = set()
-    from zoneinfo import ZoneInfo
     for mkt, tz_name in MARKET_TIMEZONE.items():
         try:
             tz = ZoneInfo(tz_name)

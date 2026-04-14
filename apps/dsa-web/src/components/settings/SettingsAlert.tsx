@@ -1,4 +1,5 @@
 import type React from 'react';
+import { Button, InlineAlert } from '../common';
 
 interface SettingsAlertProps {
   title: string;
@@ -9,10 +10,10 @@ interface SettingsAlertProps {
   className?: string;
 }
 
-const variantStyles: Record<NonNullable<SettingsAlertProps['variant']>, string> = {
-  error: 'border-danger/35 bg-danger/10 text-danger',
-  success: 'border-success/35 bg-success/10 text-success',
-  warning: 'border-warning/35 bg-warning/10 text-warning',
+const variantMap: Record<NonNullable<SettingsAlertProps['variant']>, 'danger' | 'success' | 'warning'> = {
+  error: 'danger',
+  success: 'success',
+  warning: 'warning',
 };
 
 export const SettingsAlert: React.FC<SettingsAlertProps> = ({
@@ -24,14 +25,21 @@ export const SettingsAlert: React.FC<SettingsAlertProps> = ({
   className = '',
 }) => {
   return (
-    <div className={`rounded-xl border px-4 py-3 ${variantStyles[variant]} ${className}`} role="alert">
-      <p className="text-sm font-semibold">{title}</p>
-      <p className="mt-1 text-xs opacity-90">{message}</p>
-      {actionLabel && onAction ? (
-        <button type="button" className="mt-3 btn-secondary !py-1.5 !px-3 !text-xs" onClick={onAction}>
+    <InlineAlert
+      title={title}
+      message={message}
+      variant={variantMap[variant]}
+      className={className}
+      action={actionLabel && onAction ? (
+        <Button
+          type="button"
+          variant="settings-secondary"
+          size="xsm"
+          onClick={onAction}
+        >
           {actionLabel}
-        </button>
-      ) : null}
-    </div>
+        </Button>
+      ) : undefined}
+    />
   );
 };

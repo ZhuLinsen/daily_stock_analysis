@@ -12,6 +12,7 @@ Only activates for US stock codes (AAPL, TSLA, etc.).
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,8 @@ _TRANSIENT_EXCEPTIONS = (
 )
 
 _REQUEST_TIMEOUT = 8  # seconds
+_REQUEST_RETRY_ATTEMPTS = 2
+_REQUEST_RETRY_WAIT_CAP = 5  # wait_exponential(..., max=5)
 
 
 @retry(
@@ -71,6 +74,8 @@ class SocialSentimentService:
         self._api_url = (api_url or "https://api.adanos.org").rstrip("/")
         # Simple in-memory cache: {"key": (timestamp, data)}
         self._cache: Dict[str, tuple] = {}
+        self._cache_lock = threading.RLock()
+        self._cache_inflight: Dict[str, threading.Event] = {}
 
     @property
     def is_available(self) -> bool:
@@ -97,16 +102,52 @@ class SocialSentimentService:
             logger.warning("Social sentiment API %s unexpected error: %s", url, e)
         return None
 
+    @classmethod
+    def _cache_wait_timeout_seconds(cls) -> float:
+        request_budget = (_REQUEST_TIMEOUT * _REQUEST_RETRY_ATTEMPTS) + _REQUEST_RETRY_WAIT_CAP
+        return max(1.0, min(float(cls._TRENDING_CACHE_TTL), float(request_budget), 30.0))
+
     def _fetch_cached(self, cache_key: str, url: str, params: Optional[Dict[str, Any]] = None) -> Optional[Any]:
         """Fetch with simple TTL cache (for trending endpoints)."""
         now = time.monotonic()
-        cached = self._cache.get(cache_key)
-        if cached and (now - cached[0]) < self._TRENDING_CACHE_TTL:
-            return cached[1]
-        data = self._fetch_json(url, params)
-        if data is not None:
-            self._cache[cache_key] = (now, data)
-        return data
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if cached and (now - cached[0]) < self._TRENDING_CACHE_TTL:
+                return cached[1]
+            inflight = self._cache_inflight.get(cache_key)
+            if inflight is None:
+                inflight = threading.Event()
+                self._cache_inflight[cache_key] = inflight
+                owner = True
+            else:
+                owner = False
+
+        if not owner:
+            inflight.wait(timeout=self._cache_wait_timeout_seconds())
+            now = time.monotonic()
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+                if cached and (now - cached[0]) < self._TRENDING_CACHE_TTL:
+                    return cached[1]
+
+            data = self._fetch_json(url, params)
+            if data is not None:
+                with self._cache_lock:
+                    self._cache[cache_key] = (time.monotonic(), data)
+            return data
+
+        try:
+            data = self._fetch_json(url, params)
+            if data is not None:
+                with self._cache_lock:
+                    self._cache[cache_key] = (time.monotonic(), data)
+            return data
+        finally:
+            with self._cache_lock:
+                current = self._cache_inflight.get(cache_key)
+                if current is inflight:
+                    self._cache_inflight.pop(cache_key, None)
+                    inflight.set()
 
     def fetch_reddit_report(self, ticker: str) -> Optional[Dict]:
         """Fetch detailed Reddit report for a single ticker."""

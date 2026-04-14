@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
 import { cn } from '../../utils/cn';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { StatusDot } from '../common/StatusDot';
 import { ThemeToggle } from '../theme/ThemeToggle';
 
 type SidebarNavProps = {
@@ -60,7 +61,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
                 'h-[var(--nav-item-height)]',
                 collapsed ? 'justify-center px-0' : 'px-[var(--nav-item-padding-x)]',
                 isActive
-                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] text-foreground shadow-[inset_0_0_15px_var(--nav-active-shadow)]'
+                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] text-[hsl(var(--primary))] font-medium'
                   : 'border-transparent text-secondary-text hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
               )
             }
@@ -79,10 +80,11 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
                 <Icon className={cn('ml-1 h-5 w-5 shrink-0', isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
                 {!collapsed ? <span className="truncate">{label}</span> : null}
                 {badge === 'completion' && completionBadge ? (
-                  <span
+                  <StatusDot
+                    tone="info"
                     data-testid="chat-completion-badge"
                     className={cn(
-                      'absolute right-3 h-2.5 w-2.5 rounded-full border-2 border-background bg-[var(--nav-badge-bg)] shadow-[0_0_10px_var(--nav-indicator-shadow)]',
+                      'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
                       collapsed ? 'right-2 top-2' : ''
                     )}
                     aria-label="问股有新消息"

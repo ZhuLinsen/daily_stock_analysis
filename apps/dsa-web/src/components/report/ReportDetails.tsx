@@ -74,14 +74,17 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
     const jsonStr = JSON.stringify(data, null, 2);
     return (
       <div className="relative overflow-hidden">
-        <button
-          type="button"
-          onClick={() => copyToClipboard(jsonStr, panel)}
-          className="home-accent-link absolute top-2 right-2 z-10 text-xs text-muted-text"
-        >
-          {copiedPanels[panel] ? text.copied : text.copy}
-        </button>
-        <pre className="text-xs text-secondary-text font-mono overflow-x-auto p-3 bg-base rounded-lg max-h-80 overflow-y-auto text-left w-0 min-w-full">
+        <span className="absolute top-2 right-2 z-10 inline-flex">
+          <button
+            type="button"
+            onClick={() => copyToClipboard(jsonStr, panel)}
+            className="home-accent-link text-xs text-muted-text"
+            aria-label={copiedPanels[panel] ? text.copied : text.copy}
+          >
+            {copiedPanels[panel] ? text.copied : text.copy}
+          </button>
+        </span>
+        <pre className="home-trace-pre home-trace-pre-content text-xs text-foreground font-mono overflow-x-auto p-3 bg-base rounded-lg max-h-80 overflow-y-auto text-left w-0 min-w-full">
           {jsonStr}
         </pre>
       </div>
@@ -114,7 +117,7 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
             <button
               type="button"
               onClick={() => setShowRaw(!showRaw)}
-              className="home-surface-button flex w-full items-center justify-between rounded-lg p-2.5"
+              className="home-surface-button home-trace-toggle flex w-full items-center justify-between rounded-lg p-2.5"
             >
               <span className="text-xs text-foreground">{text.rawResult}</span>
               <svg
@@ -140,7 +143,7 @@ export const ReportDetails: React.FC<ReportDetailsProps> = ({
             <button
               type="button"
               onClick={() => setShowSnapshot(!showSnapshot)}
-              className="home-surface-button flex w-full items-center justify-between rounded-lg p-2.5"
+              className="home-surface-button home-trace-toggle flex w-full items-center justify-between rounded-lg p-2.5"
             >
               <span className="text-xs text-foreground">{text.analysisSnapshot}</span>
               <svg

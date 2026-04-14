@@ -50,13 +50,31 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-ci.txt
       - name: 📦 Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flake8 pytest
-      - name: ✅ Run backend gate
-        run: ./scripts/ci_gate.sh
+          python -m pip install --upgrade pip
+          for attempt in 1 2 3; do
+            if python -m pip install -r requirements-ci.txt; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Dependency install failed after ${attempt} attempts." >&2
+              exit 1
+            fi
+            echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
+            sleep 15
+          done
+      - name: ✅ Python syntax check
+        run: ./scripts/ci_gate.sh syntax
+      - name: ✅ Flake8 critical checks
+        run: ./scripts/ci_gate.sh flake8
+      - name: ✅ Local deterministic checks
+        run: ./scripts/ci_gate.sh deterministic
+      - name: ✅ Offline test suite
+        run: ./scripts/ci_gate.sh offline-tests
 
   docker-build:
     name: docker-build

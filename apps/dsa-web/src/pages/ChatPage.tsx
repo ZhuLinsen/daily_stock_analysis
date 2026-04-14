@@ -2,10 +2,12 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cn } from '../utils/cn';
 import { agentApi } from '../api/agent';
-import { ApiErrorAlert, Button, ConfirmDialog, ScrollArea } from '../components/common';
+import { ApiErrorAlert, Badge, Button, ConfirmDialog, EmptyState, InlineAlert, ScrollArea, Tooltip } from '../components/common';
 import { getParsedApiError } from '../api/error';
 import type { SkillInfo } from '../api/agent';
+import { DashboardStateBlock } from '../components/dashboard';
 import {
   useAgentChatStore,
   type Message,
@@ -13,8 +15,15 @@ import {
 } from '../stores/agentChatStore';
 import { downloadSession, formatSessionAsMarkdown } from '../utils/chatExport';
 import type { ChatFollowUpContext } from '../utils/chatFollowUp';
-import { buildFollowUpPrompt, resolveChatFollowUpContext } from '../utils/chatFollowUp';
+import {
+  buildFollowUpPrompt,
+  parseFollowUpRecordId,
+  resolveChatFollowUpContext,
+  sanitizeFollowUpStockCode,
+  sanitizeFollowUpStockName,
+} from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
+import { getReportText } from '../utils/reportLanguage';
 
 // Quick question examples shown on empty state
 const QUICK_QUESTIONS = [
@@ -41,13 +50,35 @@ const ChatPage: React.FC = () => {
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [copiedMessages, setCopiedMessages] = useState<Set<string>>(new Set());
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
+  const sendToastTimerRef = useRef<number | null>(null);
   const followUpHydrationTokenRef = useRef(0);
   const followUpContextRef = useRef<ChatFollowUpContext | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>('auto');
+
+  // Get localized text (default to Chinese)
+  const text = getReportText('zh');
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    const timers = copyResetTimerRef.current;
+    return () => {
+      if (sendToastTimerRef.current !== null) {
+        window.clearTimeout(sendToastTimerRef.current);
+      }
+      Object.values(timers).forEach((timerId) => {
+        if (timerId !== undefined) {
+          window.clearTimeout(timerId);
+        }
+      });
+    };
+  }, []);
 
   // Set page title
   useEffect(() => {
@@ -76,11 +107,13 @@ const ChatPage: React.FC = () => {
   const syncScrollState = useCallback(() => {
     const viewport = messagesViewportRef.current;
     if (!viewport) return;
-    shouldStickToBottomRef.current = isNearBottom({
+    const nearBottom = isNearBottom({
       scrollTop: viewport.scrollTop,
       clientHeight: viewport.clientHeight,
       scrollHeight: viewport.scrollHeight,
     });
+    shouldStickToBottomRef.current = nearBottom;
+    setShowJumpToBottom((prev) => (nearBottom ? false : prev));
   }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -90,6 +123,7 @@ const ChatPage: React.FC = () => {
   const requestScrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     shouldStickToBottomRef.current = true;
     pendingScrollBehaviorRef.current = behavior;
+    setShowJumpToBottom(false);
   }, []);
 
   const handleMessagesScroll = useCallback(() => {
@@ -103,7 +137,12 @@ const ChatPage: React.FC = () => {
   useEffect(() => {
     const behavior = pendingScrollBehaviorRef.current;
     const shouldAutoScroll = shouldStickToBottomRef.current;
-    if (!shouldAutoScroll) return;
+    if (!shouldAutoScroll) {
+      if (messages.length > 0 || progressSteps.length > 0 || loading) {
+        setShowJumpToBottom(true);
+      }
+      return;
+    }
 
     const frame = window.requestAnimationFrame(() => {
       scrollToBottom(behavior);
@@ -128,14 +167,18 @@ const ChatPage: React.FC = () => {
   }, [loadInitialSession]);
 
   useEffect(() => {
-    agentApi.getSkills().then((res) => {
-      setSkills(res.skills);
-      const defaultId =
-        res.default_skill_id ||
-        res.skills[0]?.id ||
-        '';
-      setSelectedSkill(defaultId);
-    }).catch(() => {});
+    agentApi.getSkills()
+      .then((res) => {
+        setSkills(res.skills);
+        const defaultId =
+          res.default_skill_id ||
+          res.skills[0]?.id ||
+          '';
+        setSelectedSkill(defaultId);
+      })
+      .catch((error) => {
+        console.error('Failed to load chat skills:', error);
+      });
   }, []);
 
   const availableSkillIds = new Set(skills.map((skill) => skill.id));
@@ -156,21 +199,27 @@ const ChatPage: React.FC = () => {
 
   const confirmDelete = useCallback(() => {
     if (!deleteConfirmId) return;
-    agentApi.deleteChatSession(deleteConfirmId).then(() => {
-      loadSessions();
-      if (deleteConfirmId === sessionId) {
-        handleStartNewChat();
-      }
-    }).catch(() => {});
+    agentApi.deleteChatSession(deleteConfirmId)
+      .then(() => {
+        loadSessions();
+        if (deleteConfirmId === sessionId) {
+          handleStartNewChat();
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to delete chat session:', error);
+      });
     setDeleteConfirmId(null);
   }, [deleteConfirmId, sessionId, loadSessions, handleStartNewChat]);
 
   // Handle follow-up from report page: ?stock=600519&name=贵州茅台&recordId=xxx
   useEffect(() => {
-    const stock = searchParams.get('stock');
-    const name = searchParams.get('name');
-    const recordId = searchParams.get('recordId');
+    const stock = sanitizeFollowUpStockCode(searchParams.get('stock'));
+    const name = sanitizeFollowUpStockName(searchParams.get('name'));
+    const recordId = parseFollowUpRecordId(searchParams.get('recordId'));
+
     if (!stock) {
+      setSearchParams({}, { replace: true });
       return;
     }
 
@@ -180,13 +229,13 @@ const ChatPage: React.FC = () => {
       stock_code: stock,
       stock_name: name,
     };
-    if (recordId) {
+    if (recordId !== undefined) {
       setIsFollowUpContextLoading(true);
     }
     void resolveChatFollowUpContext({
       stockCode: stock,
       stockName: name,
-      recordId: recordId ? Number(recordId) : undefined,
+      recordId,
     }).then((context) => {
       if (!isMountedRef.current || followUpHydrationTokenRef.current !== hydrationToken) {
         return;
@@ -238,6 +287,17 @@ const ChatPage: React.FC = () => {
     handleSend(q.label, q.skill);
   };
 
+  const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
+    if (sendToastTimerRef.current !== null) {
+      window.clearTimeout(sendToastTimerRef.current);
+    }
+    setSendToast(nextToast);
+    sendToastTimerRef.current = window.setTimeout(() => {
+      setSendToast(null);
+      sendToastTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
   const toggleThinking = (msgId: string) => {
     setExpandedThinking((prev) => {
       const next = new Set(prev);
@@ -246,6 +306,41 @@ const ChatPage: React.FC = () => {
       return next;
     });
   };
+
+  const copyMessageToClipboard = async (msgId: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessages((prev) => new Set(prev).add(msgId));
+      const existingTimer = copyResetTimerRef.current[msgId];
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+      }
+      copyResetTimerRef.current[msgId] = window.setTimeout(() => {
+        setCopiedMessages((prev) => {
+          const next = new Set(prev);
+          next.delete(msgId);
+          return next;
+        });
+        delete copyResetTimerRef.current[msgId];
+      }, 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
+
+  const downloadMessageAsMarkdown = useCallback((msg: Message) => {
+    const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${msg.skillName ? ` · ${msg.skillName}` : ''}`;
+    const content = [heading, '', msg.content].join('\n');
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${msg.role === 'user' ? 'user' : 'assistant'}-message-${msg.id}.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }, []);
 
   const getCurrentStage = (steps: ProgressStep[]): string => {
     if (steps.length === 0) return '正在连接...';
@@ -298,34 +393,34 @@ const ChatPage: React.FC = () => {
   };
 
   const renderThinkingDetails = (steps: ProgressStep[]) => (
-    <div className="mb-3 pl-5 border-l border-border/40 space-y-0.5 animate-fade-in">
+    <div className="mb-3 pl-5 border-l border-border/40 space-y-1.5 animate-fade-in">
       {steps.map((step, idx) => {
-        let icon = '⋯';
+        let statusClass = 'chat-progress-item-muted';
+        let iconClass = 'chat-progress-dot-muted';
         let text = '';
-        let colorClass = 'text-muted-text';
         if (step.type === 'thinking') {
-          icon = '🤔';
           text = step.message || `第 ${step.step} 步：思考`;
-          colorClass = 'text-secondary-text';
+          statusClass = 'chat-progress-item-thinking';
+          iconClass = 'chat-progress-dot-thinking';
         } else if (step.type === 'tool_start') {
-          icon = '⚙️';
           text = `${step.display_name || step.tool}...`;
-          colorClass = 'text-secondary-text';
+          statusClass = 'chat-progress-item-tool';
+          iconClass = 'chat-progress-dot-tool';
         } else if (step.type === 'tool_done') {
-          icon = step.success ? '✅' : '❌';
           text = `${step.display_name || step.tool} (${step.duration}s)`;
-          colorClass = step.success ? 'text-green-400' : 'text-red-400';
+          statusClass = step.success ? 'chat-progress-item-success' : 'chat-progress-item-danger';
+          iconClass = step.success ? 'chat-progress-dot-success' : 'chat-progress-dot-danger';
         } else if (step.type === 'generating') {
-          icon = '✍️';
           text = step.message || '生成分析';
-          colorClass = 'text-cyan';
+          statusClass = 'chat-progress-item-generating';
+          iconClass = 'chat-progress-dot-generating';
         }
         return (
           <div
             key={idx}
-            className={`flex items-center gap-2 text-xs py-0.5 ${colorClass}`}
+            className={cn('chat-progress-item', statusClass)}
           >
-            <span className="w-4 flex-shrink-0 text-center">{icon}</span>
+            <span className={cn('chat-progress-dot', iconClass)} />
             <span className="leading-relaxed">{text}</span>
           </div>
         );
@@ -336,8 +431,8 @@ const ChatPage: React.FC = () => {
   const sidebarContent = (
     <>
       <div className="flex items-center justify-between border-b border-white/5 bg-white/2 p-3.5">
-        <h2 className="text-[11px] font-semibold text-cyan uppercase tracking-[0.2em] flex items-center gap-2">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <h2 className="text-sm font-semibold text-cyan uppercase tracking-[0.2em] flex items-center gap-2">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           历史对话
@@ -345,7 +440,7 @@ const ChatPage: React.FC = () => {
         <button
           onClick={handleStartNewChat}
           className="rounded-lg p-1.5 text-muted-text transition-all hover:bg-white/10 hover:text-foreground"
-          title="开启新对话"
+          aria-label="开启新对话"
         >
           <svg
             className="w-4 h-4"
@@ -362,86 +457,72 @@ const ChatPage: React.FC = () => {
           </svg>
         </button>
       </div>
-      <ScrollArea testId="chat-session-list-scroll">
+      <ScrollArea testId="chat-session-list-scroll" viewportClassName="p-3">
         {sessionsLoading ? (
-          <div className="p-4 text-center text-xs text-muted-text">加载中...</div>
+          <DashboardStateBlock
+            loading
+            compact
+            title="加载对话中..."
+            className="rounded-2xl border border-dashed border-border/50 bg-surface/30"
+          />
         ) : sessions.length === 0 ? (
-          <div className="p-4 text-center text-xs text-muted-text">暂无历史对话</div>
+          <DashboardStateBlock
+            compact
+            title="暂无历史对话"
+            description="开始提问后，这里会保留会话记录。"
+            className="rounded-2xl border border-dashed border-border/50 bg-surface/30"
+          />
         ) : (
-          <div className="space-y-2 p-3">
+          <div className="space-y-2">
             {sessions.map((s) => (
-              <div
-                key={s.session_id}
-                role="button"
-                tabIndex={0}
-                onClick={() => handleSwitchSession(s.session_id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    handleSwitchSession(s.session_id);
-                  }
-                }}
-                className={`group relative flex w-full cursor-pointer items-start gap-3 overflow-hidden rounded-xl border p-2.5 transition-all duration-200 ${
-                  s.session_id === sessionId
-                    ? 'border-cyan bg-cyan/10 shadow-[0_0_15px_rgba(0,212,255,0.1)]'
-                    : 'border-white/5 bg-white/2 hover:border-white/10 hover:bg-white/5'
-                }`}
-                aria-label={`切换到对话 ${s.title}`}
-              >
-                {/* 装饰条 */}
-                <div
-                  className={`h-10 w-1 rounded-full flex-shrink-0 transition-colors ${
-                    s.session_id === sessionId ? 'bg-cyan' : 'bg-white/10'
-                  }`}
-                />
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <span className={`block truncate text-sm font-semibold tracking-tight transition-colors ${
-                        s.session_id === sessionId ? 'text-foreground' : 'text-secondary-text group-hover:text-foreground'
-                      }`}>
-                        {s.title}
+              <div key={s.session_id} className="session-item-row">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchSession(s.session_id)}
+                  className={`session-item ${s.session_id === sessionId ? 'active' : ''}`}
+                  aria-label={`切换到对话 ${s.title}`}
+                  aria-current={s.session_id === sessionId ? 'page' : undefined}
+                >
+                  <div className="indicator" />
+                  <div className="content">
+                    <span className="title">{s.title}</span>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className="meta">
+                        {s.message_count} 条对话
                       </span>
+                      {s.last_active && (
+                        <>
+                          <span className="separator" />
+                          <span className="meta">
+                            {new Date(s.last_active).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
+                          </span>
+                        </>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteConfirmId(s.session_id);
-                      }}
-                      className="flex-shrink-0 rounded p-1 text-muted-text opacity-0 transition-all hover:bg-white/10 hover:text-rose-400 group-hover:opacity-100"
-                      title="删除"
-                    >
-                      <svg
-                        className="w-3.5 h-3.5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                        />
-                      </svg>
-                    </button>
                   </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="text-[11px] text-muted-text">
-                      {s.message_count} 条对话
-                    </span>
-                    {s.last_active && (
-                      <>
-                        <span className="h-1 w-1 rounded-full bg-white/10" />
-                        <span className="text-[11px] text-muted-text">
-                          {new Date(s.last_active).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
+                </button>
+                <button
+                  type="button"
+                  className="delete-btn"
+                  onClick={() => {
+                    setDeleteConfirmId(s.session_id);
+                  }}
+                  aria-label={`删除对话 ${s.title}`}
+                >
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
               </div>
             ))}
           </div>
@@ -466,7 +547,7 @@ const ChatPage: React.FC = () => {
           className="fixed inset-0 z-40 md:hidden"
           onClick={() => setSidebarOpen(false)}
         >
-          <div className="absolute inset-0 bg-black/60" />
+          <div className="page-drawer-overlay absolute inset-0" />
           <div
             className="absolute left-0 top-0 bottom-0 w-72 flex flex-col glass-card overflow-hidden border-r border-white/10 bg-card/90 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
@@ -490,55 +571,16 @@ const ChatPage: React.FC = () => {
 
       {/* Main chat area */}
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="mb-4 flex-shrink-0">
-          <h1 className="text-2xl font-bold text-foreground mb-2 flex items-center gap-2">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="md:hidden p-1.5 -ml-1 rounded-lg hover:bg-hover transition-colors text-secondary-text hover:text-foreground"
-              title="历史对话"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 6h16M4 12h16M4 18h16"
-                />
-              </svg>
-            </button>
-            <svg
-              className="w-6 h-6 text-cyan"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-              />
-            </svg>
-            问股
-          </h1>
-          <p className="text-secondary-text text-sm">
-            向 AI 询问个股分析，获取基于技能视角的交易建议与实时决策报告。
-          </p>
-          {messages.length > 0 && (
-            <div className="mt-2 flex gap-2 items-center">
+        <header className="mb-4 flex-shrink-0 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
               <button
-                type="button"
-                onClick={() => downloadSession(messages)}
-                className="px-3 py-1.5 rounded-lg text-sm text-secondary-text hover:text-foreground hover:bg-hover border border-border/70 transition-colors flex items-center gap-1.5"
-                title="导出会话为 Markdown 文件"
+                onClick={() => setSidebarOpen(true)}
+                className="md:hidden p-1.5 -ml-1 rounded-lg hover:bg-hover transition-colors text-secondary-text hover:text-foreground"
+                aria-label="历史对话"
               >
                 <svg
-                  className="w-4 h-4"
+                  className="w-5 h-5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -547,83 +589,131 @@ const ChatPage: React.FC = () => {
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                    d="M4 6h16M4 12h16M4 18h16"
                   />
                 </svg>
-                导出会话
               </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (sending) return;
-                  setSending(true);
-                  setSendToast(null);
-                  try {
-                    const content = formatSessionAsMarkdown(messages);
-                    await agentApi.sendChat(content);
-                    setSendToast({ type: 'success', message: '已发送到通知渠道' });
-                    setTimeout(() => setSendToast(null), 3000);
-                  } catch (err) {
-                    const parsed = getParsedApiError(err);
-                    setSendToast({
-                      type: 'error',
-                      message: parsed.message || '发送失败',
-                    });
-                    setTimeout(() => setSendToast(null), 5000);
-                  } finally {
-                    setSending(false);
-                  }
-                }}
-                disabled={sending}
-                className="px-3 py-1.5 rounded-lg text-sm text-secondary-text hover:text-foreground hover:bg-hover border border-border/70 transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="发送到已配置的通知机器人/邮箱"
+              <svg
+                className="w-6 h-6 text-cyan"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
               >
-                {sending ? (
-                  <svg
-                    className="w-4 h-4 animate-spin"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
-                ) : (
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                    />
-                  </svg>
-                )}
-                发送
-              </button>
-              {sendToast && (
-                <span
-                  className={`text-sm ${sendToast.type === 'success' ? 'text-green-400' : 'text-red-400'}`}
-                >
-                  {sendToast.message}
-                </span>
-              )}
-            </div>
-          )}
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                />
+              </svg>
+              问股
+            </h1>
+            {messages.length > 0 && (
+              <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2">
+                <Tooltip content="导出会话为 Markdown 文件">
+                  <span className="inline-flex">
+                    <Button
+                      variant="action-primary"
+                      size="sm"
+                      onClick={() => downloadSession(messages)}
+                      aria-label="导出会话为 Markdown 文件"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                        />
+                      </svg>
+                      导出会话
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip content="发送到已配置的通知机器人/邮箱">
+                  <span className="inline-flex">
+                    <Button
+                      variant="action-primary"
+                      size="sm"
+                      disabled={sending}
+                      onClick={async () => {
+                        if (sending) return;
+                        setSending(true);
+                        setSendToast(null);
+                        try {
+                          const content = formatSessionAsMarkdown(messages);
+                          await agentApi.sendChat(content);
+                          showSendFeedback({ type: 'success', message: '已发送到通知渠道' }, 3000);
+                        } catch (err) {
+                          const parsed = getParsedApiError(err);
+                          showSendFeedback({
+                            type: 'error',
+                            message: parsed.message || '发送失败',
+                          }, 5000);
+                        } finally {
+                          setSending(false);
+                        }
+                      }}
+                      aria-label="发送到已配置的通知机器人/邮箱"
+                    >
+                      {sending ? (
+                        <svg
+                          className="w-4 h-4 animate-spin"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle
+                            className="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                          />
+                          <path
+                            className="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                          />
+                        </svg>
+                      ) : (
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                          />
+                        </svg>
+                      )}
+                      发送
+                    </Button>
+                  </span>
+                </Tooltip>
+              </div>
+            )}
+          </div>
+          <p className="text-secondary-text text-sm">
+            向 AI 询问个股分析，获取基于技能视角的交易建议与实时决策报告。
+          </p>
+          {sendToast ? (
+            <InlineAlert
+              variant={sendToast.type === 'success' ? 'success' : 'danger'}
+              title={sendToast.type === 'success' ? '发送成功' : '发送失败'}
+              message={sendToast.message}
+              className="max-w-md rounded-xl px-3 py-2 text-xs shadow-none"
+            />
+          ) : null}
         </header>
 
         <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden border border-white/6 bg-card/78 glass-card">
@@ -636,40 +726,40 @@ const ChatPage: React.FC = () => {
             testId="chat-message-scroll"
           >
             {messages.length === 0 && !loading ? (
-              <div className="h-full flex flex-col items-center justify-center text-center">
-                <div className="w-16 h-16 mb-4 rounded-2xl bg-card/70 flex items-center justify-center">
-                  <svg
-                    className="w-8 h-8 text-muted-text"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.5}
-                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-                    />
-                  </svg>
-                </div>
-                <h3 className="text-lg font-medium text-foreground mb-2">
-                  开始问股
-                </h3>
-                <p className="text-sm text-secondary-text max-w-sm mb-6">
-                  输入「分析 600519」或「茅台现在能买吗」，AI
-                  将调用实时数据工具为您生成决策报告。
-                </p>
-                <div className="flex flex-wrap gap-2 justify-center max-w-lg">
-                  {quickQuestions.map((q, i) => (
-                    <button
-                      key={i}
-                      onClick={() => handleQuickQuestion(q)}
-                      className="px-3 py-1.5 rounded-full bg-card/70 border border-border/70 text-sm text-secondary-text hover:text-foreground hover:border-cyan/40 hover:bg-cyan/5 transition-all"
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
+                  title="开始问股"
+                  description="输入「分析 600519」或「茅台现在能买吗」，AI 将调用实时数据工具为您生成决策报告。"
+                  className="max-w-2xl border-dashed bg-card/55"
+                  icon={(
+                    <svg
+                      className="h-8 w-8"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
                     >
-                      {q.label}
-                    </button>
-                  ))}
-                </div>
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={1.5}
+                        d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+                      />
+                    </svg>
+                  )}
+                  action={(
+                    <div className="flex max-w-lg flex-wrap justify-center gap-2">
+                      {quickQuestions.map((q, i) => (
+                        <button
+                          key={i}
+                          onClick={() => handleQuickQuestion(q)}
+                          className="quick-question-btn"
+                        >
+                          {q.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                />
               </div>
             ) : (
               messages.map((msg) => (
@@ -678,24 +768,22 @@ const ChatPage: React.FC = () => {
                   className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
                 >
                   <div
-                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold ${
-                      msg.role === 'user'
-                        ? 'bg-cyan text-black'
-                        : 'bg-elevated text-foreground'
-                    }`}
+                    className={cn(
+                      'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[10px] font-bold shadow-sm transition-all',
+                      msg.role === 'user' ? 'chat-avatar-user' : 'chat-avatar-ai'
+                    )}
                   >
                     {msg.role === 'user' ? 'U' : 'AI'}
                   </div>
                   <div
-                    className={`min-w-0 w-fit max-w-[min(100%,48rem)] overflow-hidden rounded-2xl px-5 py-3.5 ${
-                      msg.role === 'user'
-                        ? 'bg-cyan/10 text-foreground border border-cyan/20 rounded-tr-sm'
-                        : 'bg-card/72 text-secondary-text border border-white/30 rounded-tl-sm'
-                    }`}
+                    className={cn(
+                      'group/message min-w-0 w-fit max-w-[min(100%,48rem)] overflow-hidden px-5 py-3.5 transition-colors',
+                      msg.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'
+                    )}
                   >
                     {msg.role === 'assistant' && msg.skillName && (
                       <div className="mb-2">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan/10 border border-cyan/20 text-xs text-cyan">
+                        <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`技能 ${msg.skillName}`}>
                           <svg
                             className="w-3 h-3"
                             fill="none"
@@ -710,7 +798,7 @@ const ChatPage: React.FC = () => {
                             />
                           </svg>
                           {msg.skillName}
-                        </span>
+                        </Badge>
                       </div>
                     )}
                     {msg.role === 'assistant' && renderThinkingBlock(msg)}
@@ -719,28 +807,30 @@ const ChatPage: React.FC = () => {
                       msg.thinkingSteps &&
                       renderThinkingDetails(msg.thinkingSteps)}
                     {msg.role === 'assistant' ? (
-                      <div
-                        className="prose prose-invert prose-sm max-w-none
-                      prose-headings:text-foreground prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1.5
-                      prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
-                      prose-p:mb-2 prose-p:last:mb-0 prose-p:leading-7 prose-p:break-words
-                      prose-strong:text-foreground prose-strong:font-semibold
-                      prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-li:break-words
-                      prose-code:text-cyan prose-code:bg-card/70 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:break-all
-                      prose-pre:max-w-full prose-pre:overflow-x-auto prose-pre:bg-black/30 prose-pre:border prose-pre:border-border/70 prose-pre:rounded-lg prose-pre:p-3
-                      prose-table:w-full prose-table:text-sm
-                      prose-th:text-foreground prose-th:font-medium prose-th:border-border prose-th:px-3 prose-th:py-1.5 prose-th:bg-card/70
-                      prose-td:border-border/70 prose-td:px-3 prose-td:py-1.5
-                      prose-hr:border-border/70 prose-hr:my-3
-                      prose-a:text-cyan prose-a:no-underline hover:prose-a:underline
-                      prose-blockquote:border-cyan/30 prose-blockquote:text-secondary-text
-                      [&_table]:block [&_table]:overflow-x-auto [&_table]:whitespace-nowrap
-                      [&_img]:max-w-full
-                    "
-                      >
-                        <Markdown remarkPlugins={[remarkGfm]}>
-                          {msg.content}
-                        </Markdown>
+                      <div className="relative">
+                        <div className="chat-message-actions">
+                          <button
+                            type="button"
+                            onClick={() => copyMessageToClipboard(msg.id, msg.content)}
+                            className="chat-copy-btn"
+                            aria-label={copiedMessages.has(msg.id) ? text.copied : text.copy}
+                          >
+                            {copiedMessages.has(msg.id) ? text.copied : text.copy}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => downloadMessageAsMarkdown(msg)}
+                            className="chat-copy-btn"
+                            aria-label="导出此条消息为 Markdown"
+                          >
+                            导出
+                          </button>
+                        </div>
+                        <div className="chat-prose pr-20 sm:pr-24">
+                          <Markdown remarkPlugins={[remarkGfm]}>
+                            {msg.content}
+                          </Markdown>
+                        </div>
                       </div>
                     ) : (
                       msg.content
@@ -781,13 +871,49 @@ const ChatPage: React.FC = () => {
             <div ref={messagesEndRef} />
           </ScrollArea>
 
+          {showJumpToBottom && (
+            <div className="pointer-events-none absolute bottom-[5.75rem] right-4 z-20 md:bottom-24 md:right-6">
+              <button
+                type="button"
+                className="pointer-events-auto chat-copy-btn shadow-soft-card"
+                onClick={() => {
+                  requestScrollToBottom('smooth');
+                  scrollToBottom('smooth');
+                }}
+                aria-label="查看最新消息"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                  />
+                </svg>
+                有新消息
+              </button>
+            </div>
+          )}
+
           {/* Input area */}
-          <div className="p-4 md:p-6 border-t border-white/6 bg-card/88 relative z-20">
-            {chatError ? (
-              <ApiErrorAlert error={chatError} className="mb-3" />
-            ) : null}
+          <div className="border-t border-white/6 bg-card/88 p-4 md:p-6 relative z-20">
+            <div className="space-y-3">
+              {chatError ? <ApiErrorAlert error={chatError} /> : null}
+              {isFollowUpContextLoading ? (
+                <InlineAlert
+                  variant="info"
+                  title="追问上下文加载中"
+                  message="正在加载历史分析上下文；现在可直接发送追问。"
+                  className="rounded-xl px-3 py-2 text-xs shadow-none"
+                />
+              ) : null}
             {skills.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-x-5 gap-y-2 items-start">
+              <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
                 <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
                   策略
                 </span>
@@ -798,7 +924,7 @@ const ChatPage: React.FC = () => {
                     value=""
                     checked={selectedSkill === ''}
                     onChange={() => setSelectedSkill('')}
-                    className="w-3.5 h-3.5 accent-cyan"
+                    className="chat-skill-radio"
                   />
                   <span
                     className={`transition-colors text-sm ${selectedSkill === '' ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
@@ -819,7 +945,7 @@ const ChatPage: React.FC = () => {
                       value={s.id}
                       checked={selectedSkill === s.id}
                       onChange={() => setSelectedSkill(s.id)}
-                      className="w-3.5 h-3.5 accent-cyan"
+                      className="chat-skill-radio"
                     />
                     <span
                       className={`transition-colors text-sm ${selectedSkill === s.id ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
@@ -827,8 +953,8 @@ const ChatPage: React.FC = () => {
                       {s.name}
                     </span>
                     {showSkillDesc === s.id && s.description && (
-                      <div className="absolute left-0 bottom-full mb-2 z-50 w-64 p-2.5 rounded-lg bg-elevated border border-border/70 shadow-xl text-xs text-secondary-text leading-relaxed pointer-events-none animate-fade-in">
-                        <p className="font-medium text-foreground mb-1">{s.name}</p>
+                      <div className="skill-desc-tooltip">
+                        <p className="skill-title">{s.name}</p>
                         <p>{s.description}</p>
                       </div>
                     )}
@@ -837,37 +963,33 @@ const ChatPage: React.FC = () => {
               </div>
             )}
 
-            <div className="flex gap-3 items-end">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="例如：分析 600519 / 茅台现在适合买入吗？ (Enter 发送, Shift+Enter 换行)"
-                disabled={loading}
-                rows={1}
-                className="input-terminal flex-1 min-h-[44px] max-h-[200px] py-2.5 resize-none"
-                style={{ height: 'auto' }}
-                onInput={(e) => {
-                  const t = e.target as HTMLTextAreaElement;
-                  t.style.height = 'auto';
-                  t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
-                }}
-              />
-              <Button
-                variant="primary"
-                onClick={() => handleSend()}
-                disabled={!input.trim() || loading}
-                isLoading={loading}
-                className="btn-primary flex-shrink-0"
-              >
-                发送
-              </Button>
+              <div className="flex items-end gap-3">
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="例如：分析 600519 / 茅台现在适合买入吗？ (Enter 发送, Shift+Enter 换行)"
+                  disabled={loading}
+                  rows={1}
+                  className="input-surface input-focus-glow flex-1 min-h-[44px] max-h-[200px] rounded-xl border bg-transparent px-4 py-2.5 text-sm transition-all focus:outline-none resize-none disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{ height: 'auto' }}
+                  onInput={(e) => {
+                    const t = e.target as HTMLTextAreaElement;
+                    t.style.height = 'auto';
+                    t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
+                  }}
+                />
+                <Button
+                  variant="primary"
+                  onClick={() => handleSend()}
+                  disabled={!input.trim() || loading}
+                  isLoading={loading}
+                  className="btn-primary flex-shrink-0"
+                >
+                  发送
+                </Button>
+              </div>
             </div>
-            {isFollowUpContextLoading && (
-              <p className="mt-2 text-xs text-secondary-text">
-                正在加载历史分析上下文；现在可直接发送追问。
-              </p>
-            )}
           </div>
         </div>
       </div>

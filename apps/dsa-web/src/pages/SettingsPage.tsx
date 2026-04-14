@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth, useSystemConfig } from '../hooks';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, ConfirmDialog } from '../components/common';
+import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
 import {
   AuthSettingsCard,
   ChangePasswordCard,
@@ -15,6 +15,7 @@ import {
   SettingsLoading,
   SettingsSectionCard,
 } from '../components/settings';
+import { WEB_BUILD_INFO } from '../utils/constants';
 import { getCategoryDescriptionZh } from '../utils/systemConfigI18n';
 import type { SystemConfigCategory } from '../types/systemConfig';
 
@@ -128,13 +129,7 @@ const SettingsPage: React.FC = () => {
   const SYSTEM_HIDDEN_KEYS = new Set([
     'ADMIN_AUTH_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set([
-    'AGENT_DEEP_RESEARCH_BUDGET',
-    'AGENT_DEEP_RESEARCH_TIMEOUT',
-    'AGENT_EVENT_MONITOR_ENABLED',
-    'AGENT_EVENT_MONITOR_INTERVAL_MINUTES',
-    'AGENT_EVENT_ALERT_RULES_JSON',
-  ]);
+  const AGENT_HIDDEN_KEYS = new Set<string>();
   const activeItems =
     activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
@@ -223,8 +218,8 @@ const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full px-4 pb-6 pt-4 md:px-6">
-      <div className="mb-5 rounded-xl bg-card/50 px-5 py-5 shadow-soft-card-strong">
+    <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
+      <div className="mb-5 rounded-[1.5rem] border settings-border bg-card/94 px-5 py-5 shadow-soft-card-strong backdrop-blur-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-foreground">系统设置</h1>
@@ -237,7 +232,6 @@ const SettingsPage: React.FC = () => {
             <Button
               type="button"
               variant="settings-secondary"
-              className="border-border/50 bg-muted/30 hover:border-border/70"
               onClick={resetDraft}
               disabled={isLoading || isSaving}
             >
@@ -290,6 +284,47 @@ const SettingsPage: React.FC = () => {
 
           <section className="space-y-4">
             {activeCategory === 'system' ? <AuthSettingsCard /> : null}
+            {activeCategory === 'system' ? (
+              <SettingsSectionCard
+                title="版本信息"
+                description="用于确认当前 WebUI 静态资源是否已经切换到最新构建。"
+              >
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
+                      WebUI 版本
+                    </p>
+                    <p className="mt-2 break-all font-mono text-sm text-foreground">
+                      {WEB_BUILD_INFO.version}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
+                      构建标识
+                    </p>
+                    <p className="mt-2 break-all font-mono text-sm text-foreground">
+                      {WEB_BUILD_INFO.buildId}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
+                      构建时间
+                    </p>
+                    <p className="mt-2 break-all font-mono text-sm text-foreground">
+                      {WEB_BUILD_INFO.buildTime}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-xs leading-6 text-muted-text">
+                  重新执行前端构建或 Docker 镜像构建后，此处的构建标识和构建时间会更新，可用来确认当前页面资源是否已切换。
+                </p>
+                {WEB_BUILD_INFO.isFallbackVersion ? (
+                  <p className="text-xs leading-6 text-amber-700 dark:text-amber-300">
+                    当前 package.json 仍为占位版本 0.0.0，页面已自动回退展示构建标识，避免误判旧资源仍在生效。
+                  </p>
+                ) : null}
+              </SettingsSectionCard>
+            ) : null}
             {activeCategory === 'system' && isDesktopRuntime ? (
               <SettingsSectionCard
                 title="配置备份"
@@ -363,8 +398,8 @@ const SettingsPage: React.FC = () => {
             ) : null}
             {activeCategory === 'ai_model' ? (
               <SettingsSectionCard
-                title="LLM 渠道与模型"
-                description="统一管理渠道协议、基础地址、API Key、主模型与回退模型。"
+                title="AI 模型接入"
+                description="统一管理模型渠道、基础地址、API Key、主模型与备选模型。"
               >
                 <LLMChannelEditor
                   items={rawActiveItems}
@@ -397,9 +432,11 @@ const SettingsPage: React.FC = () => {
                 ))}
               </SettingsSectionCard>
             ) : (
-              <div className="settings-panel-muted rounded-[1.5rem] border p-5 text-sm text-secondary-text shadow-soft-card">
-                当前分类下暂无配置项。
-              </div>
+              <EmptyState
+                title="当前分类下暂无配置项"
+                description="当前分类没有可编辑字段；可切换左侧分类继续查看其它系统配置。"
+                className="settings-surface-panel settings-border-strong border-none bg-transparent shadow-none"
+              />
             )}
           </section>
         </div>

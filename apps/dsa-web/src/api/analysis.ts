@@ -28,6 +28,7 @@ export const analysisApi = {
       stock_name: data.stockName,
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
+      ...(data.notify !== undefined && { notify: data.notify }),
     };
 
     const response = await apiClient.post<Record<string, unknown>>(
@@ -60,6 +61,7 @@ export const analysisApi = {
       stock_name: data.stockName,
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
+      ...(data.notify !== undefined && { notify: data.notify }),
     };
 
     const response = await apiClient.post<Record<string, unknown>>(

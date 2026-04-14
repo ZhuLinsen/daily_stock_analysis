@@ -1,5 +1,5 @@
 # ===================================
-# LiteLLM Router 配置模板
+# 高级模型路由 YAML 模板（底层兼容 LiteLLM Router）
 # ===================================
 # 配套文档：docs/LLM_CONFIG_GUIDE.md 第 3.2 节
 #
@@ -17,7 +17,7 @@
 
 model_list:
   # --- siliconflow (OpenAI 兼容，一个 Key 使用多种模型) ---
-  # 这是一个关于如何配置在LiteLLM自定义OpenAI兼容API接口的示例
+  # 这是一个自定义 OpenAI 兼容模型渠道的示例
   - model_name: openai/Qwen/Qwen3.5-397B-A17B
     litellm_params:
       model: openai/Qwen/Qwen3.5-397B-A17B

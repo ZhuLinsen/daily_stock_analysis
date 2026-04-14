@@ -11,6 +11,8 @@ from threading import BoundedSemaphore, Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.base import DataFetcherManager
@@ -470,6 +472,43 @@ class TestFundamentalContext(unittest.TestCase):
                 {"name": "算力"},
             ],
         )
+
+    def test_missing_value_helpers_keep_common_null_compatibility(self) -> None:
+        for value in (None, np.nan, "", "  ", "null", "NaN", " n/a "):
+            self.assertTrue(DataFetcherManager._is_missing_board_value(value))
+        self.assertFalse(DataFetcherManager._is_missing_board_value("白酒"))
+        self.assertFalse(DataFetcherManager._has_meaningful_payload(np.array([None, np.nan])))
+        self.assertTrue(DataFetcherManager._has_meaningful_payload(np.array([None, "白酒"])))
+
+    def test_missing_value_helpers_log_expected_pd_isna_fallback(self) -> None:
+        sentinel = object()
+        with patch("data_provider.base.pd.isna", side_effect=ValueError("ambiguous")):
+            with self.assertLogs("data_provider.base", level="DEBUG") as logs:
+                self.assertFalse(DataFetcherManager._is_missing_board_value(sentinel))
+                self.assertTrue(DataFetcherManager._has_meaningful_payload(sentinel))
+
+        joined_logs = "\n".join(logs.output)
+        self.assertIn("[board_value] pd.isna fallback", joined_logs)
+        self.assertIn("[fundamental_payload] pd.isna fallback", joined_logs)
+
+    def test_missing_value_helpers_propagate_array_protocol_pd_isna_errors(self) -> None:
+        class _ArrayProtocolErrorPayload:
+            def __array__(self):
+                raise ValueError("boom")
+
+        payload = _ArrayProtocolErrorPayload()
+        with self.assertRaises(ValueError):
+            DataFetcherManager._is_missing_board_value(payload)
+        with self.assertRaises(ValueError):
+            DataFetcherManager._has_meaningful_payload(payload)
+
+    def test_missing_value_helpers_propagate_unexpected_pd_isna_errors(self) -> None:
+        sentinel = object()
+        with patch("data_provider.base.pd.isna", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                DataFetcherManager._is_missing_board_value(sentinel)
+            with self.assertRaises(RuntimeError):
+                DataFetcherManager._has_meaningful_payload(sentinel)
 
 
 if __name__ == "__main__":

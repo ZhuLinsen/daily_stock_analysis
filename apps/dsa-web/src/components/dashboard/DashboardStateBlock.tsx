@@ -11,6 +11,7 @@ interface DashboardStateBlockProps {
   descriptionClassName?: string;
   compact?: boolean;
   loading?: boolean;
+  titleAs?: 'p' | 'h2' | 'h3' | 'h4' | 'span';
 }
 
 export const DashboardStateBlock: React.FC<DashboardStateBlockProps> = ({
@@ -23,7 +24,10 @@ export const DashboardStateBlock: React.FC<DashboardStateBlockProps> = ({
   descriptionClassName = '',
   compact = false,
   loading = false,
+  titleAs = 'p',
 }) => {
+  const TitleTag = titleAs;
+
   return (
     <div
       className={cn(
@@ -40,9 +44,11 @@ export const DashboardStateBlock: React.FC<DashboardStateBlockProps> = ({
         </div>
       ) : null}
       <div className="space-y-1">
-        <p className={cn('text-secondary-text', compact ? 'text-xs' : 'text-sm', titleClassName)}>{title}</p>
+        <TitleTag className={cn('text-secondary-text', compact ? 'text-xs' : 'text-sm', titleClassName)}>
+          {title}
+        </TitleTag>
         {description ? (
-          <p className={cn('mx-auto max-w-xs text-muted-text', compact ? 'text-label' : 'text-xs', descriptionClassName)}>
+          <p className={cn('mx-auto max-w-xs text-secondary-text', compact ? 'text-label' : 'text-xs', descriptionClassName)}>
             {description}
           </p>
         ) : null}
