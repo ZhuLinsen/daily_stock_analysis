@@ -447,8 +447,13 @@ async def agent_chat_stream(request: ChatRequest):
         finally:
             try:
                 await asyncio.wait_for(fut, timeout=5.0)
-            except Exception:
+            except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                # Cleanup taking longer than 5s is treated as an expected timeout; no warning.
+                logger.debug("agent executor cleanup timed out after 5s for session %s", session_id)
+            except Exception as exc:
+                logger.warning("agent executor cleanup error (ignored): %s", exc, exc_info=True)
 
     return StreamingResponse(
         event_generator(),

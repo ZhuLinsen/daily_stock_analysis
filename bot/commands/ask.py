@@ -128,7 +128,8 @@ class AskCommand(BotCommand):
 
             sm = get_skill_manager()
             return list(sm.list_skills())
-        except Exception:
+        except Exception as e:
+            logger.warning("_load_skills failed: Failed to load skills: %s", e, exc_info=True)
             return []
 
     @classmethod
@@ -137,7 +138,8 @@ class AskCommand(BotCommand):
             from src.agent.skills.defaults import get_primary_default_skill_id
 
             return get_primary_default_skill_id(cls._load_skills())
-        except Exception:
+        except Exception as e:
+            logger.warning("_get_default_skill_id failed: Failed to resolve default skill id: %s", e, exc_info=True)
             return ""
 
     @classmethod

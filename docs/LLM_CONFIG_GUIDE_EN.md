@@ -2,7 +2,7 @@
 
 Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
-Our LLM integration is powered by the robust and universal [LiteLLM](https://docs.litellm.ai/), which means we support almost all mainstream models on the market (both official APIs and third-party relay services). To cater to users at different experience levels, we have designed a "three-tier priority" configuration. Simply choose the method that suits you best.
+This project exposes a unified AI model access flow that supports official APIs, OpenAI-compatible platforms, and local models. Under the hood it is powered by [LiteLLM](https://docs.litellm.ai/), but most users only need to think in terms of picking a provider, adding an API key, and optionally choosing a primary model or channels. To cater to different experience levels, we provide a three-tier configuration hierarchy. Choose the method that fits you best.
 
 ---
 
@@ -55,7 +55,7 @@ OLLAMA_API_BASE=http://localhost:11434
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
-> **Important**: Ollama must be configured with `OLLAMA_API_BASE`. **Do not** use `OPENAI_BASE_URL`, or LiteLLM will incorrectly concatenate URLs (e.g. 404, `api/generate/api/show`). For remote Ollama, set `OLLAMA_API_BASE` to the actual address (e.g. `http://192.168.1.100:11434`). Requires LiteLLM ≥1.80.10 (matches requirements.txt).
+> **Important**: Ollama must be configured with `OLLAMA_API_BASE`. **Do not** use `OPENAI_BASE_URL`, or the system will concatenate URLs incorrectly (e.g. 404, `api/generate/api/show`). For remote Ollama, set `OLLAMA_API_BASE` to the actual address (e.g. `http://192.168.1.100:11434`). Current dependency requirement is LiteLLM ≥1.80.10 (matches requirements.txt).
 
 > **Congratulations! If you're a beginner, you can stop reading here and run the program!**
 > Want to test the connection? Open your terminal in the root directory and run: `python test_env.py --llm`
@@ -66,7 +66,9 @@ LITELLM_MODEL=ollama/qwen3:8b
 
 **Goal:** I have Keys from multiple different platforms and want to use them together. If my primary model fails or the network drops, I want it to automatically switch to fallback models.
 
-**Configure via Web UI directly:** After starting the application, you can do this visually under **System Settings -> AI Models -> Channel Editor** in the Web UI!
+**Configure via Web UI directly:** After starting the application, you can do this visually under **System Settings -> AI Model -> AI Model Access** in the Web UI.
+
+> **New editor behavior**: For DeepSeek, DashScope, and other OpenAI-compatible providers that expose `/v1/models`, the settings page can now fetch models directly from `{base_url}/models` and let you select multiple entries visually. The underlying storage format is still the existing comma-separated `LLM_{CHANNEL}_MODELS=model1,model2` value. If a provider does not support `/models`, authentication fails, or the endpoint is temporarily unavailable, you can still type the model list manually and save normally.
 
 If you prefer modifying files, configuring this in the `.env` file is also very smooth. It allows you to manage multiple platforms simultaneously. The rules are:
 
@@ -91,7 +93,7 @@ LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 # 4. [Key Step] Specify the primary model and fallback list
 # Set your primary model:
 LITELLM_MODEL=deepseek/deepseek-chat
-# Optional: set an Agent-only primary model (empty = inherit LITELLM_MODEL)
+# Optional: set an Agent-only primary model (empty = inherit the primary model)
 AGENT_LITELLM_MODEL=deepseek/deepseek-reasoner
 # If the primary model crashes, try these fallbacks sequentially:
 LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
@@ -110,6 +112,11 @@ LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
+### MiniMax Model Naming in Channel Mode
+
+- If you access MiniMax through an OpenAI-compatible channel, enter the model as `minimax/<model-name>` in the channel model list, for example `minimax/MiniMax-M1`.
+- The Web settings page now keeps that value unchanged in Primary, Agent Primary, Fallback, and Vision selectors instead of rewriting it to `openai/minimax/<model-name>`.
+
 > **Critical Warning**: If you enable `LLM_CHANNELS`, any standard `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` declared independently will be **completely ignored**. **Use only one mode** to prevent configuration conflicts.
 
 ---
@@ -118,7 +125,7 @@ LITELLM_MODEL=ollama/qwen3:8b
 
 **Goal:** I want maximum control and origin-level routing rules for enterprise-grade high availability.
 
-This project completely unlocks LiteLLM's native capabilities, supporting high concurrency, automatic retries, and TPM/RPM based load balancing.
+This layer maps directly to the underlying LiteLLM routing capabilities, including high concurrency, automatic retries, and TPM/RPM-based load balancing.
 
 1. Keep only one declaration line in your `.env`:
    ```env
@@ -176,10 +183,10 @@ Afraid you got the config wrong? Type the following commands in your terminal to
 
 | Weird Error You Got? | Likely Culprit | How to Fix It? |
 |----------------------|----------------|----------------|
-| **"LLM_MODEL is not configured" pops up** | The system doesn't know which brand's model you want to use. | Add a clear instruction in `.env`: `LITELLM_MODEL=provider/your_model_name`. Example: `openai/gpt-4o-mini`. |
+| **The UI says the primary model is not configured** | The system doesn't know which provider/model you want to use. | Add a clear instruction in `.env`: `LITELLM_MODEL=provider/your_model_name`. Example: `openai/gpt-4o-mini`. |
 | **I added multiple provider Keys, why is only one working?** | You mixed the **Simple Mode** and **Channels Mode**! | Choose one path. For simple setups, delete anything starting with `LLM_CHANNELS`. To use multi-model fallbacks, migrate all your Keys into the `LLM_CHANNELS` setup. |
 | **Returns 400, 401, or Invalid API Key** | The API Key is wrong, copied incompletely, account lacks credits, or you mistyped the model name (extremely common). | 1. Ensure there are no spaces at the start/end of your Key.<br> 2. Ensure your Base URL ends with `/v1`.<br> 3. Check if you forgot the `openai/` prefix on the model name! |
 | **Spins endlessly, eventually hits Timeout/ConnectionRefused** | You are using restricted APIs (like Google/OpenAI) in a blocked region without a proxy, or your cloud server lacks external internet access. | Highly recommend using **official regional APIs** (like DeepSeek) or **OpenAI-compatible relay platforms**. Third-party platforms bypass these network constraints. |
-| **Ollama returns 404, `Could not get model info`, or `api/generate/api/show`** | Using `OPENAI_BASE_URL` for Ollama; LiteLLM incorrectly concatenates URLs | Use `OLLAMA_API_BASE=http://localhost:11434` or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) instead |
+| **Ollama returns 404, `Could not get model info`, or `api/generate/api/show`** | Using `OPENAI_BASE_URL` for Ollama makes the system concatenate URLs incorrectly | Use `OLLAMA_API_BASE=http://localhost:11434` or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL`) instead |
 
 *Veteran's Tip: If you enable **Agent Mode (Deep-thinking & web-search)**, experience shows you should use an advanced reasoning model like `deepseek-reasoner`. Trying to save money by using weak mini-models for agents will likely result in infinite loops or missed objectives.*

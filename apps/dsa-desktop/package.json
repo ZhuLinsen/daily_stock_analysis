@@ -35,6 +35,12 @@
     "win": {
       "target": "nsis"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "include": "installer.nsh"
+    },
     "mac": {
       "target": "dmg"
     }

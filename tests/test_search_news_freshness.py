@@ -152,6 +152,171 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         p1.search.assert_called_once()
         p2.search.assert_called_once()
 
+    def test_search_stock_news_tries_next_provider_when_chinese_context_is_english_only(self) -> None:
+        """Chinese-preferred queries should not stop on English-only provider results."""
+        fresh = datetime.now().date().isoformat()
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+
+        p1 = SimpleNamespace(
+            is_available=True,
+            name="P1",
+            search=MagicMock(
+                return_value=_response(
+                    [
+                        _result("English headline", fresh),
+                        _result("Another English story", fresh),
+                    ]
+                )
+            ),
+        )
+        p2 = SimpleNamespace(
+            is_available=True,
+            name="P2",
+            search=MagicMock(return_value=_response([_result("中文资讯", fresh)])),
+        )
+        service._providers = [p1, p2]
+
+        resp = service.search_stock_news("600519", "贵州茅台", max_results=3)
+        self.assertEqual([r.title for r in resp.results], ["中文资讯"])
+        p1.search.assert_called_once()
+        p2.search.assert_called_once()
+
+    def test_search_stock_news_prioritizes_chinese_items_within_mixed_results(self) -> None:
+        """Chinese items should be ordered ahead of English items in mixed batches."""
+        fresh = datetime.now().date().isoformat()
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+
+        mixed_provider = SimpleNamespace(
+            is_available=True,
+            name="Mixed",
+            search=MagicMock(
+                return_value=_response(
+                    [
+                        _result("English headline", fresh),
+                        _result("中文快讯", fresh),
+                        _result("Second English headline", fresh),
+                    ]
+                )
+            ),
+        )
+        service._providers = [mixed_provider]
+
+        resp = service.search_stock_news("600519", "贵州茅台", max_results=3)
+        self.assertEqual(
+            [r.title for r in resp.results],
+            ["中文快讯", "English headline", "Second English headline"],
+        )
+
+    def test_search_stock_news_prioritizes_chinese_before_truncating_results(self) -> None:
+        """Chinese candidates beyond the first raw slot should still win after reprioritization."""
+        fresh = datetime.now().date().isoformat()
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+
+        p1 = SimpleNamespace(
+            is_available=True,
+            name="P1",
+            search=MagicMock(
+                return_value=_response(
+                    [
+                        _result("English headline", fresh),
+                        _result("中文快讯", fresh),
+                    ]
+                )
+            ),
+        )
+        p2 = SimpleNamespace(
+            is_available=True,
+            name="P2",
+            search=MagicMock(return_value=_response([_result("后续中文资讯", fresh)])),
+        )
+        service._providers = [p1, p2]
+
+        resp = service.search_stock_news("600519", "贵州茅台", max_results=1)
+        self.assertEqual([r.title for r in resp.results], ["中文快讯"])
+        p1.search.assert_called_once()
+        p2.search.assert_not_called()
+
+    def test_search_stock_news_keeps_english_provider_order_for_us_stock(self) -> None:
+        """English stock searches should keep the first successful provider result."""
+        fresh = datetime.now().date().isoformat()
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+
+        p1 = SimpleNamespace(
+            is_available=True,
+            name="P1",
+            search=MagicMock(return_value=_response([_result("Apple earnings beat", fresh)])),
+        )
+        p2 = SimpleNamespace(
+            is_available=True,
+            name="P2",
+            search=MagicMock(return_value=_response([_result("苹果资讯", fresh)])),
+        )
+        service._providers = [p1, p2]
+
+        resp = service.search_stock_news("AAPL", "Apple", max_results=3)
+        self.assertEqual([r.title for r in resp.results], ["Apple earnings beat"])
+        p1.search.assert_called_once()
+        p2.search.assert_not_called()
+
+    def test_search_stock_news_brave_locale_matches_market_context(self) -> None:
+        """Brave locale should follow Chinese-preferred vs US-stock contexts."""
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_iso = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        for stock_code, stock_name, expected_lang, expected_country, title, description in (
+            ("600519", "贵州茅台", "zh-hans", "CN", "中文资讯", "中文摘要"),
+            ("AAPL", "Apple", "en", "US", "Apple earnings beat", "English summary"),
+        ):
+            with self.subTest(stock_code=stock_code):
+                fake_response = MagicMock()
+                fake_response.status_code = 200
+                fake_response.json.return_value = {
+                    "web": {
+                        "results": [
+                            {
+                                "title": title,
+                                "description": description,
+                                "url": "https://example.com/news",
+                                "age": fresh_iso,
+                            }
+                        ]
+                    }
+                }
+
+                with patch("src.search_service.requests.get", return_value=fake_response) as mock_get:
+                    service = SearchService(
+                        brave_keys=["dummy_key"],
+                        searxng_public_instances_enabled=False,
+                        news_max_age_days=3,
+                        news_strategy_profile="short",
+                    )
+                    resp = service.search_stock_news(stock_code, stock_name, max_results=1)
+
+                self.assertEqual(len(resp.results), 1)
+                params = mock_get.call_args.kwargs["params"]
+                self.assertEqual(params["search_lang"], expected_lang)
+                self.assertEqual(params["country"], expected_country)
+
     def test_search_comprehensive_intel_splits_strict_and_non_strict_filters(self) -> None:
         """Latest news stays strict while market analysis keeps undated results."""
         today = datetime.now().date()
@@ -246,6 +411,90 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertEqual([item.title for item in intel["market_analysis"].results], ["market_analysis_unknown"])
         self.assertIsNone(intel["market_analysis"].results[0].published_date)
         self.assertEqual(intel["risk_check"].results, [])
+
+    def test_announcements_dimension_included_within_max_searches_5(self) -> None:
+        """announcements is now at index 3 so it is processed when max_searches>=4."""
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("announcement_item", fresh_text)]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=4,
+            )
+
+        self.assertIn("announcements", intel)
+        self.assertEqual(
+            [item.title for item in intel["announcements"].results],
+            ["announcement_item"],
+        )
+
+    def test_announcements_dimension_uses_news_topic_and_strict_filter(self) -> None:
+        """announcements uses tavily_topic='news' and strict_freshness=True."""
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        old = (datetime.now().date() - timedelta(days=30)).isoformat()
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", fresh_text)]),
+            _response([_result("old_announcement", old), _result("fresh_announcement", fresh_text)]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="600519",
+                stock_name="贵州茅台",
+                max_searches=4,
+            )
+
+        self.assertIn("announcements", intel)
+        # strict_freshness=True: stale result is filtered out
+        titles = [item.title for item in intel["announcements"].results]
+        self.assertNotIn("old_announcement", titles)
+        self.assertIn("fresh_announcement", titles)
+
+    def test_announcements_etf_is_not_strict(self) -> None:
+        """For ETF, announcements dimension also uses tavily_topic='news' and strict_freshness=True."""
+        fresh_dt = datetime.now(timezone.utc).replace(microsecond=0)
+        fresh_text = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        mock_search.side_effect = [
+            _response([_result("latest_news", fresh_text)]),
+            _response([_result("market_analysis", None)]),
+            _response([_result("risk_check", None)]),
+            _response([_result("announcement_item", fresh_text)]),
+        ]
+
+        with patch("src.search_service.time.sleep"):
+            intel = service.search_comprehensive_intel(
+                stock_code="510300",
+                stock_name="沪深300ETF",
+                max_searches=4,
+            )
+
+        self.assertIn("announcements", intel)
 
     def test_effective_window_helper_has_no_side_effect(self) -> None:
         """_effective_news_window_days should not mutate stored news_window_days."""

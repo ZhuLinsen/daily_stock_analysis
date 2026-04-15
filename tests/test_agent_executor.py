@@ -17,7 +17,7 @@ import unittest
 import sys
 import os
 from dataclasses import dataclass
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -579,6 +579,38 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertIsNotNone(captured.get("timeout"))
         self.assertGreater(captured["timeout"], 0.0)
         self.assertLessEqual(captured["timeout"], 1.0)
+
+    def test_min_step_budget_skips_followup_llm_call(self):
+        """When step>0 and remaining budget is too small, no extra LLM call should be made."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Need one tool first.",
+            tool_calls=[ToolCall(id="echo_1", name="echo", arguments={"message": "hello"})],
+            usage={"total_tokens": 10},
+            provider="openai",
+        )
+
+        with patch(
+            "src.agent.runner._remaining_timeout_seconds",
+            side_effect=[9.0, 9.0, 7.5, 7.5],
+        ):
+            result = run_agent_loop(
+                messages=[
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "Analyze"},
+                ],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=3,
+                max_wall_clock_seconds=10.0,
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("insufficient budget", (result.error or "").lower())
+        self.assertEqual(adapter.call_with_tools.call_count, 1)
+        self.assertEqual(len(result.tool_calls_log), 1)
+        self.assertEqual(result.total_steps, 1)
 
 
 # ============================================================

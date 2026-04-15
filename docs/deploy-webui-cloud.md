@@ -11,6 +11,7 @@
 - [方式一：直接部署（pip + python）](#方式一直接部署pip--python)
 - [方式二：Docker Compose](#方式二docker-compose)
 - [如何在浏览器里打开界面](#如何在浏览器里打开界面)
+- [如何确认 Docker 重建已生效](#如何确认-docker-重建已生效)
 - [访问不了？先检查这几项](#访问不了先检查这几项)
 - [可选：Nginx 反向代理（绑定域名 / 80 端口）](#可选nginx-反向代理绑定域名--80-端口)
 - [安全建议](#安全建议)
@@ -142,6 +143,31 @@ http://your-domain.com:8000
 
 ---
 
+## 如何确认 Docker 重建已生效
+
+WebUI 现在会在“系统设置”页展示只读的“版本信息”卡片，包含：
+
+- `WebUI 版本`
+- `构建标识`
+- `构建时间`
+
+如果 `apps/dsa-web/package.json` 里的版本号仍是占位值 `0.0.0`，页面会自动回退展示本次前端构建生成的 `构建标识`，避免你误把占位版本当成真实发布版本。
+
+当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，优先确认“构建时间”是否已经变化；若变化，通常就说明当前加载的静态资源已经切换到最新构建。
+
+在确认本地前端打包链路时，建议执行以下命令用于本次改动的最小验证闭环：
+
+```bash
+cd apps/dsa-web
+npm ci
+npm run lint
+npm run build
+```
+
+其中 `build` 成功后，`static` 下生成的 `index.html`/JS/CSS 资源会包含本次构建时间与构建版本信息；刷新后在“版本信息”卡片中应能见到变化。
+
+---
+
 ## 访问不了？先检查这几项
 
 ### 1. 安全组 / 防火墙没有放行端口
@@ -182,6 +208,34 @@ sudo firewall-cmd --reload
 
 - 直接部署：默认 8000，可通过 `WEBUI_PORT=xxxx` 修改
 - Docker：默认 8000，可通过 `API_PORT=xxxx` 修改
+
+### 5. 页面能打开，但 UI 元素异常变大 / 布局错乱
+
+**症状**：浏览器能访问到 8000 端口，页面有内容，但文字、按钮、卡片尺寸异常大，没有正常布局与配色。
+
+**根因**：`static/index.html` 存在但 CSS/JS 资源缺失（`static/assets/` 为空或不存在），浏览器加载了 HTML 框架但无法拿到样式与脚本，退化为裸 HTML 渲染。
+
+可先用浏览器开发者工具（F12 → Network 标签页）检查是否有 `/assets/index-*.js`、`/assets/index-*.css` 的 **404** 错误。若有，按以下方式修复：
+
+**Docker 用户**：
+
+```bash
+docker-compose -f ./docker/docker-compose.yml down
+docker-compose -f ./docker/docker-compose.yml build --no-cache
+docker-compose -f ./docker/docker-compose.yml up -d
+```
+
+重建完成后，用 `Ctrl+Shift+R` 强制刷新浏览器缓存，再访问页面。
+
+**直接部署用户**：先确保已安装 Node.js 18+（推荐 20+），然后手动构建前端：
+
+```bash
+cd apps/dsa-web
+npm ci
+npm run build
+cd ../..
+python main.py --webui-only
+```
 
 ---
 

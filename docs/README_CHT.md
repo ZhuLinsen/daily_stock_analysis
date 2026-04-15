@@ -20,9 +20,9 @@
 
 **零成本部署** · GitHub Actions 免費運行 · 無需伺服器
 
-[**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**完整指南**](full-guide.md) · [**常見問題**](FAQ.md) · [**更新日誌**](CHANGELOG.md)
+[**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**完整指南**](./full-guide.md) · [**常見問題**](./FAQ.md) · [**更新日誌**](./CHANGELOG.md)
 
- 繁體中文 | [English](../README_EN.md) | [简体中文](../README.md)
+ 繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
 
 </div>
 
@@ -54,8 +54,10 @@
 | 類型 | 支援 |
 |------|------|
 | AI 模型 | Gemini（免費）、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama |
-| 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance |
-| 新聞搜索 | Tavily、SerpAPI、Bocha、Brave、MiniMax |
+| 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance、[Longbridge](https://open.longbridge.com/)（美股/港股首選數據源） |
+| 新聞搜索 | Tavily、Anspire、SerpAPI、Bocha、Brave、MiniMax |
+
+> **長橋優先策略（僅美／港股）**：在已設定 `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` 的前提下，美股與港股的 **日線** 與 **即時行情** 由 **Longbridge 優先**；長橋失敗或欄位不足時再由 **YFinance／AkShare** 兜底或合併補欄。**未設定長橋憑證時不會呼叫 Longbridge**，美／港股仍以 YFinance／AkShare 為主（與未整合長橋前一致）。**美股大盤指數**始終以 YFinance 優先（長橋不提供指數行情）。**A 股**路由不變。詳見 `.env.example` 與 [完整指南](./full-guide.md)。
 
 ### 內建交易紀律
 
@@ -82,6 +84,8 @@
 
 **AI 模型配置（二選一）**
 
+> 詳細配置請參考 [LLM 配置指南](LLM_CONFIG_GUIDE.md)。預設路徑是先選服務商、填 API Key，再視需要補主模型；只有需要多模型切換時才啟用渠道模式，高級 YAML 路由則留給進階用戶。
+
 | Secret 名稱 | 說明 | 必填 |
 |------------|------|:----:|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 獲取免費 Key | ✅* |
@@ -102,6 +106,7 @@
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可選 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（與 Webhook 二選一） | 可選 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 時需要） | 可選 |
+| `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（僅接收入站 Interaction/Webhook 回調並進行簽名校驗時需要） | 可選 |
 | `SLACK_BOT_TOKEN` | Slack Bot Token（推薦，支援圖片上傳；同時配置時優先於 Webhook） | 可選 |
 | `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 時需要） | 可選 |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（僅文字，不支援圖片） | 可選 |
@@ -119,7 +124,7 @@
 | `REPORT_LANGUAGE` | 報告輸出語言：`zh`(預設中文) / `en`(英文)；會同步影響 Prompt、Markdown 模板、通知 fallback 與 Web 報告頁固定文案 | 可選 |
 | `ANALYSIS_DELAY` | 個股分析和大盤分析之間的延遲（秒），避免API限流，如 `10` | 可選 |
 
-> 至少配置一個渠道，配置多個則同時推送。更多配置請參考 [完整指南](full-guide.md)
+> 至少配置一個渠道，配置多個則同時推送。更多配置請參考 [完整指南](./full-guide.md)
 
 </details>
 
@@ -129,6 +134,7 @@
 |------------|------|:----:|
 | `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,TSLA` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新聞搜索） | 推薦 |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 針對中文內容特別優化（可有效增強A股分析效果） | 可選 |
 | `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/) Coding Plan Web Search（結構化搜索結果） | 可選 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索優化，支持AI摘要，多個key用逗號分隔） | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隱私優先，美股優化，多個key用逗號分隔） | 可選 |
@@ -136,9 +142,20 @@
 | `SEARXNG_BASE_URLS` | SearXNG 自建實例（無配額兜底，需在 settings.yml 啟用 format: json）；留空時預設自動發現公共實例 | 可選 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 為空時自動從 `searx.space` 取得公共實例（預設 `true`） | 可選 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可選 |
+| `LONGBRIDGE_APP_KEY` | [Longbridge OpenAPI](https://open.longbridge.com/) App Key（設定後自動成為美股/港股首選數據源） | 可選 |
+| `LONGBRIDGE_APP_SECRET` | Longbridge App Secret | 可選 |
+| `LONGBRIDGE_ACCESS_TOKEN` | Longbridge Access Token | 可選 |
+| `LONGBRIDGE_STATIC_INFO_TTL_SECONDS` | 長橋 `static_info` 進程內快取秒數，預設 `86400`；`0` 表示不快取 | 可選 |
+| `LONGBRIDGE_HTTP_URL` | HTTP 介面位址（預設 `https://openapi.longbridge.com`） | 可選 |
+| `LONGBRIDGE_QUOTE_WS_URL` | 行情 WebSocket 位址（預設 `wss://openapi-quote.longbridge.com/v2`） | 可選 |
+| `LONGBRIDGE_TRADE_WS_URL` | 交易 WebSocket 位址（預設 `wss://openapi-trade.longbridge.com/v2`） | 可選 |
+| `LONGBRIDGE_REGION` | 覆寫接入點；SDK 會依網路自動選擇，預設 `hk`，若判斷不正確可設定（如 `cn`、`hk`） | 可選 |
+| `LONGBRIDGE_ENABLE_OVERNIGHT` | 是否開啟夜盤行情 `true` / `false`，預設 `false` | 可選 |
+| `LONGBRIDGE_PUSH_CANDLESTICK_MODE` | K 線推送模式：`realtime` 或 `confirmed`（預設 `realtime`） | 可選 |
+| `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | 連線時是否列印行情包（未設定時預設 `false`；設為 `1`/`true`/`yes` 開啟） | 可選 |
 | `AGENT_MODE` | 啟用 Agent 策略問股模式（內部統一命名為 skill，`true`/`false`，預設 `false`） | 可選 |
-| `AGENT_LITELLM_MODEL` | Agent 專用主模型（可選）；留空時繼承 `LITELLM_MODEL`，無 provider 前綴時按 `openai/<model>` 解析 | 可選 |
-| `AGENT_MAX_STEPS` | Agent 最大推理步數（預設 `10`） | 可選 |
+| `AGENT_LITELLM_MODEL` | Agent 專用主模型（可選）；留空時繼承主模型，無 provider 前綴時按 `openai/<model>` 解析 | 可選 |
+| `AGENT_MAX_STEPS` | Agent 最大推理步數上限（預設 `10`）；保持預設時各子 Agent 依自身預設步數運行；主動調高到高於預設值時，所有子 Agent 統一採用該值；若設定值低於某子 Agent 的預設步數，則仍按該值作為上限進行限制 | 可選 |
 | `AGENT_SKILLS` | 逗號分隔的策略技能 id。留空時使用 metadata 宣告的主預設策略 skill（內建預設為 `bull_trend`）；使用 `all` 可啟用所有已載入策略技能。 | 可選 |
 | `AGENT_SKILL_DIR` | 自訂策略技能目錄（預設沿用內建 `strategies/` 相容路徑） | 可選 |
 
@@ -154,9 +171,11 @@
 
 默認每個工作日 **18:00（北京時間）** 自動執行
 
+> 斷點續傳與 `--dry-run` 的資料存在性判斷，現在會按股票所屬市場的本地時區與交易日曆解析「最新可復用交易日」；週末 / 節假日會復用最近交易日，交易日盤中會復用上一個已完成交易日，盤後若當日資料已落庫則可直接跳過。詳細規則見 [完整配置指南](./full-guide.md)。
+
 ### 方式二：本地運行 / Docker 部署
 
-> 📖 本地運行、Docker 部署詳細步驟請參考 [完整配置指南](full-guide.md)
+> 📖 本地運行、Docker 部署詳細步驟請參考 [完整配置指南](./full-guide.md)
 
 ## 📱 推送效果
 
@@ -198,7 +217,7 @@
 
 ## 配置說明
 
-> 📖 完整環境變量、定時任務配置請參考 [完整配置指南](full-guide.md)
+> 📖 完整環境變量、定時任務配置請參考 [完整配置指南](./full-guide.md)
 
 ## 🧩 FastAPI Web 服務（可選）
 

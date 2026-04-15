@@ -10,10 +10,14 @@ A股自选股智能分析系统 - 新闻情报存储单元测试
 """
 
 import os
+import sqlite3
 import tempfile
 import unittest
 
 from datetime import datetime
+from unittest.mock import patch
+
+from sqlalchemy.exc import OperationalError
 
 from src.config import Config
 from src.storage import DatabaseManager, NewsIntel
@@ -157,6 +161,43 @@ class NewsIntelStorageTestCase(unittest.TestCase):
         recent_news = self.db.get_recent_news(code="600519", days=7, limit=10)
         self.assertEqual(len(recent_news), 1)
         self.assertEqual(recent_news[0].title, "茅台股价震荡")
+
+    def test_save_news_intel_retries_on_sqlite_locked_execute(self) -> None:
+        result = SearchResult(
+            title="茅台锁竞争重试",
+            snippet="模拟 SQLite locked...",
+            url="https://news.example.com/retry",
+            source="example.com",
+            published_date="2025-01-05",
+        )
+        response = self._build_response([result])
+
+        first_session = self.db.get_session()
+        second_session = self.db.get_session()
+        stmt_exc = OperationalError(
+            "COMMIT",
+            None,
+            sqlite3.OperationalError("database is locked"),
+        )
+
+        with patch.object(self.db, "get_session", side_effect=[first_session, second_session]):
+            with patch.object(first_session, "execute", side_effect=stmt_exc):
+                with patch("src.storage.time.sleep") as mock_sleep:
+                    saved = self.db.save_news_intel(
+                        code="600519",
+                        name="贵州茅台",
+                        dimension="latest_news",
+                        query=response.query,
+                        response=response,
+                    )
+
+        self.assertEqual(saved, 1)
+        self.assertEqual(mock_sleep.call_count, 1)
+        self.assertAlmostEqual(mock_sleep.call_args.args[0], self.db._sqlite_write_retry_base_delay, places=6)
+
+        with self.db.get_session() as session:
+            total = session.query(NewsIntel).count()
+        self.assertEqual(total, 1)
 
 
 if __name__ == "__main__":

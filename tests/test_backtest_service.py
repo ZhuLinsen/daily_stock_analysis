@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from datetime import date, datetime
+from unittest.mock import patch
 
 from src.config import Config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE
@@ -69,6 +70,47 @@ class BacktestServiceTestCase(unittest.TestCase):
                     StockDaily(code="600519", date=date(2024, 1, 4), high=109.0, low=104.0, close=107.0),
                 ]
             )
+            session.commit()
+
+    def _seed_analysis(
+        self,
+        *,
+        query_id: str,
+        analysis_date: date,
+        created_at: datetime,
+        operation_advice: str,
+        trend_prediction: str,
+        start_close: float,
+        forward_bars: list[StockDaily],
+    ) -> None:
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id=query_id,
+                    code="600519",
+                    name="贵州茅台",
+                    report_type="simple",
+                    sentiment_score=60,
+                    operation_advice=operation_advice,
+                    trend_prediction=trend_prediction,
+                    analysis_summary="extra-test",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=created_at,
+                    context_snapshot=f'{{"enhanced_context": {{"date": "{analysis_date.isoformat()}"}}}}',
+                )
+            )
+            session.add(
+                StockDaily(
+                    code="600519",
+                    date=analysis_date,
+                    open=start_close,
+                    high=start_close,
+                    low=start_close,
+                    close=start_close,
+                )
+            )
+            session.add_all(forward_bars)
             session.commit()
 
     def tearDown(self) -> None:
@@ -213,6 +255,190 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(item["outcome"], "win")
         self.assertEqual(item["direction_expected"], "up")
         self.assertTrue(item["direction_correct"])
+
+    def test_get_recent_evaluations_supports_tracking_fields_and_analysis_date_filters(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=95.0, close=96.0),
+            ],
+        )
+
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=1, min_age_days=0, limit=20)
+
+        data = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=10,
+            page=1,
+            analysis_date_from=date(2024, 1, 10),
+            analysis_date_to=date(2024, 1, 10),
+        )
+        self.assertEqual(data["total"], 1)
+        item = data["items"][0]
+        self.assertEqual(item["stock_name"], "贵州茅台")
+        self.assertEqual(item["trend_prediction"], "看多")
+        self.assertEqual(item["actual_movement"], "down")
+        self.assertAlmostEqual(item["actual_return_pct"], -4.0)
+        self.assertFalse(item["direction_correct"])
+
+    def test_get_summary_supports_analysis_date_range(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=95.0, close=96.0),
+            ],
+        )
+
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=1, min_age_days=0, limit=20)
+
+        summary = service.get_summary(
+            scope="stock",
+            code="600519",
+            eval_window_days=1,
+            analysis_date_from=date(2024, 1, 10),
+            analysis_date_to=date(2024, 1, 10),
+        )
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["total_evaluations"], 1)
+        self.assertEqual(summary["completed_count"], 1)
+        self.assertEqual(summary["win_count"], 0)
+        self.assertEqual(summary["loss_count"], 1)
+        self.assertAlmostEqual(summary["direction_accuracy_pct"], 0.0)
+
+    def test_get_summary_date_range_filters_to_single_window_and_engine(self) -> None:
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        with self.db.get_session() as session:
+            base_result = session.query(BacktestResult).filter(
+                BacktestResult.code == "600519",
+                BacktestResult.eval_window_days == 3,
+                BacktestResult.engine_version == "v1",
+            ).one()
+            session.add_all([
+                BacktestResult(
+                    analysis_history_id=base_result.analysis_history_id,
+                    code=base_result.code,
+                    analysis_date=base_result.analysis_date,
+                    eval_window_days=1,
+                    engine_version="v1",
+                    eval_status="completed",
+                    evaluated_at=datetime(2024, 1, 5, 0, 0, 0),
+                    operation_advice="买入",
+                    position_recommendation="long",
+                    start_price=100.0,
+                    end_close=96.0,
+                    stock_return_pct=-4.0,
+                    direction_expected="up",
+                    direction_correct=False,
+                    outcome="loss",
+                    simulated_return_pct=-4.0,
+                ),
+                BacktestResult(
+                    analysis_history_id=base_result.analysis_history_id,
+                    code=base_result.code,
+                    analysis_date=base_result.analysis_date,
+                    eval_window_days=3,
+                    engine_version="v2",
+                    eval_status="completed",
+                    evaluated_at=datetime(2024, 1, 6, 0, 0, 0),
+                    operation_advice="买入",
+                    position_recommendation="long",
+                    start_price=100.0,
+                    end_close=96.0,
+                    stock_return_pct=-4.0,
+                    direction_expected="up",
+                    direction_correct=False,
+                    outcome="loss",
+                    simulated_return_pct=-4.0,
+                ),
+            ])
+            session.commit()
+
+        rows = service.repo.list_results(
+            code="600519",
+            eval_window_days=3,
+            engine_version="v1",
+            analysis_date_from=date(2024, 1, 1),
+            analysis_date_to=date(2024, 1, 1),
+        )
+        self.assertEqual(len(rows), 1)
+
+        evaluations = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=3,
+            limit=10,
+            page=1,
+            analysis_date_from=date(2024, 1, 1),
+            analysis_date_to=date(2024, 1, 1),
+        )
+        self.assertEqual(evaluations["total"], 1)
+        self.assertEqual(len(evaluations["items"]), 1)
+        self.assertEqual(evaluations["items"][0]["engine_version"], "v1")
+
+        # Without explicit eval_window_days, summary infers the smallest
+        # window from matched rows (window=1 in this dataset) instead of
+        # falling back to the config default.
+        summary_inferred = service.get_summary(
+            scope="stock",
+            code="600519",
+            analysis_date_from=date(2024, 1, 1),
+            analysis_date_to=date(2024, 1, 1),
+        )
+        self.assertIsNotNone(summary_inferred)
+        assert summary_inferred is not None
+        self.assertEqual(summary_inferred["eval_window_days"], 1)
+        self.assertEqual(summary_inferred["engine_version"], "v1")
+        self.assertEqual(summary_inferred["total_evaluations"], 1)
+        self.assertEqual(summary_inferred["completed_count"], 1)
+        self.assertEqual(summary_inferred["win_count"], 0)
+        self.assertEqual(summary_inferred["loss_count"], 1)
+        self.assertAlmostEqual(summary_inferred["direction_accuracy_pct"], 0.0)
+
+        # With explicit eval_window_days=3, summary filters to that window only.
+        summary_explicit = service.get_summary(
+            scope="stock",
+            code="600519",
+            eval_window_days=3,
+            analysis_date_from=date(2024, 1, 1),
+            analysis_date_to=date(2024, 1, 1),
+        )
+        self.assertIsNotNone(summary_explicit)
+        assert summary_explicit is not None
+        self.assertEqual(summary_explicit["eval_window_days"], 3)
+        self.assertEqual(summary_explicit["engine_version"], "v1")
+        self.assertEqual(summary_explicit["total_evaluations"], 1)
+        self.assertEqual(summary_explicit["completed_count"], 1)
+        self.assertEqual(summary_explicit["win_count"], 1)
+        self.assertEqual(summary_explicit["loss_count"], 0)
+        self.assertAlmostEqual(summary_explicit["direction_accuracy_pct"], 100.0)
+
+    def test_get_summary_date_range_rejects_excessive_row_counts(self) -> None:
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        with patch.object(BacktestService, "MAX_DYNAMIC_SUMMARY_ROWS", 0):
+            with self.assertRaisesRegex(ValueError, "Date-filtered summary matches too many rows"):
+                service.get_summary(
+                    scope="stock",
+                    code="600519",
+                    analysis_date_from=date(2024, 1, 1),
+                    analysis_date_to=date(2024, 1, 1),
+                )
 
     def test_multi_stock_summaries(self) -> None:
         """Verify separate summaries for multiple stocks + correct overall aggregate."""

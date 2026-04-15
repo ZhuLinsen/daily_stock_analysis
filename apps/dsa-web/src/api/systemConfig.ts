@@ -2,6 +2,8 @@ import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
 import type {
+  DiscoverLLMChannelModelsRequest,
+  DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
   ImportSystemConfigRequest,
   SystemConfigConflictResponse,
@@ -93,6 +95,17 @@ function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<strin
   };
 }
 
+function toSnakeDiscoverModelsPayload(payload: DiscoverLLMChannelModelsRequest): Record<string, unknown> {
+  return {
+    name: payload.name,
+    protocol: payload.protocol,
+    base_url: payload.baseUrl ?? '',
+    api_key: payload.apiKey ?? '',
+    models: payload.models,
+    timeout_seconds: payload.timeoutSeconds ?? 20,
+  };
+}
+
 export const systemConfigApi = {
   async getConfig(includeSchema = true): Promise<SystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config', {
@@ -133,6 +146,16 @@ export const systemConfigApi = {
       toSnakeTestChannelPayload(payload),
     );
     return toCamelCase<TestLLMChannelResponse>(response.data);
+  },
+
+  async discoverLLMChannelModels(
+    payload: DiscoverLLMChannelModelsRequest,
+  ): Promise<DiscoverLLMChannelModelsResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/llm/discover-models',
+      toSnakeDiscoverModelsPayload(payload),
+    );
+    return toCamelCase<DiscoverLLMChannelModelsResponse>(response.data);
   },
 
   async update(payload: UpdateSystemConfigRequest): Promise<UpdateSystemConfigResponse> {

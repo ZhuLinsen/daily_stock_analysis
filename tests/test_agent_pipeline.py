@@ -40,12 +40,12 @@ class TestAgentConfig(unittest.TestCase):
     @patch('src.config.load_dotenv')
     def test_default_agent_config(self, _mock_dotenv):
         """Agent mode should be disabled by default."""
-        from src.config import Config
+        from src.config import AGENT_MAX_STEPS_DEFAULT, Config
         Config._instance = None
         config = Config._load_from_env()
         self.assertEqual(config.agent_litellm_model, "")
         self.assertFalse(config.agent_mode)
-        self.assertEqual(config.agent_max_steps, 10)
+        self.assertEqual(config.agent_max_steps, AGENT_MAX_STEPS_DEFAULT)
         self.assertEqual(config.agent_skills, [])
 
     @patch.dict(os.environ, {
@@ -334,6 +334,7 @@ class TestAgentResultConversion(unittest.TestCase):
             mock_cfg.max_workers = 2
             mock_cfg.agent_mode = True
             mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_orchestrator_timeout_s = 0
             mock_cfg.agent_skills = []
             mock_cfg.bocha_api_keys = []
             mock_cfg.tavily_api_keys = []
@@ -628,7 +629,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
              patch('src.core.pipeline.GeminiAnalyzer'), \
              patch('src.core.pipeline.NotificationService'), \
              patch('src.core.pipeline.SearchService'), \
-             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor, \
+             patch('src.agent.executor.AgentExecutor.run') as mock_agent_run:
 
             mock_cfg = MagicMock()
             mock_cfg.max_workers = 2
@@ -668,6 +670,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_executor = MagicMock()
             mock_executor.run.return_value = agent_result
             mock_build_executor.return_value = mock_executor
+            mock_agent_run.return_value = agent_result
 
             news_response = MagicMock()
             news_response.success = True
@@ -860,6 +863,149 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertEqual(result.content, "ok")
         self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
         self.assertEqual(timeouts[1], ("anthropic/claude-3-5-sonnet-20241022", 3.0))
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_rate_limit_backoff_is_bounded_by_remaining_timeout(self, _mock_router):
+        """Rate-limit backoff should sleep, but never longer than the remaining timeout budget."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["openai/gpt-4.1-mini"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeRateLimitError(Exception):
+            pass
+
+        timeouts = []
+        sleep_calls = []
+        clock = {"value": 0.0}
+
+        def fake_time():
+            return clock["value"]
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            clock["value"] += seconds
+
+        def fake_call(_messages, _tools, model, **kwargs):
+            timeouts.append((model, kwargs.get("timeout")))
+            if model == "openai/gpt-4o-mini":
+                clock["value"] += 8.0
+                raise FakeRateLimitError("rate limited")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.litellm.RateLimitError", FakeRateLimitError), \
+             patch("src.agent.llm_adapter.logger.warning"), \
+             patch("src.agent.llm_adapter.time.time", side_effect=fake_time), \
+             patch("src.agent.llm_adapter.time.sleep", side_effect=fake_sleep) as mock_sleep:
+            result = adapter.call_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[],
+                timeout=10.0,
+            )
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(timeouts[0], ("openai/gpt-4o-mini", 10.0))
+        self.assertEqual(timeouts[1][0], "openai/gpt-4.1-mini")
+        expected_backoff = min(2.0, 8.0 * 0.1 + 0.5)
+        expected_next_timeout = 10.0 - (8.0 + expected_backoff)
+        self.assertAlmostEqual(timeouts[1][1], expected_next_timeout)
+        mock_sleep.assert_called_once()
+        self.assertAlmostEqual(mock_sleep.call_args.args[0], expected_backoff)
+        self.assertAlmostEqual(sleep_calls[0], expected_backoff)
+        self.assertAlmostEqual(clock["value"], 8.0 + expected_backoff)
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_context_window_error_skips_sleep(self, _mock_router):
+        """Context-window errors should continue fallback immediately without backoff."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeContextWindowExceededError(Exception):
+            pass
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            if model == "openai/gpt-4o-mini":
+                raise FakeContextWindowExceededError("window exceeded")
+            return MagicMock(content="ok")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch(
+            "src.agent.llm_adapter.litellm.ContextWindowExceededError",
+            FakeContextWindowExceededError,
+        ), patch("src.agent.llm_adapter.time.sleep") as mock_sleep:
+            result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.content, "ok")
+        mock_sleep.assert_not_called()
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_reports_rate_limit_suffix_when_any_fallback_hit_limit(self, _mock_router):
+        """Final error should note earlier rate limiting even if the last error differs."""
+        mock_cfg = MagicMock()
+        mock_cfg.agent_litellm_model = "gpt-4o-mini"
+        mock_cfg.litellm_model = None
+        mock_cfg.litellm_fallback_models = ["anthropic/claude-3-5-sonnet-20241022"]
+        mock_cfg.llm_model_list = []
+        mock_cfg.llm_temperature = 0.7
+        mock_cfg.gemini_api_keys = []
+        mock_cfg.anthropic_api_keys = []
+        mock_cfg.openai_api_keys = []
+        mock_cfg.deepseek_api_keys = []
+        mock_cfg.openai_base_url = None
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        class FakeRateLimitError(Exception):
+            pass
+
+        class FakeContextWindowExceededError(Exception):
+            pass
+
+        def fake_call(_messages, _tools, model, **_kwargs):
+            if model == "openai/gpt-4o-mini":
+                raise FakeRateLimitError("rate limited")
+            raise FakeContextWindowExceededError("window exceeded")
+
+        adapter._call_litellm_model = MagicMock(side_effect=fake_call)
+
+        with patch("src.agent.llm_adapter.litellm.RateLimitError", FakeRateLimitError), \
+             patch(
+                 "src.agent.llm_adapter.litellm.ContextWindowExceededError",
+                 FakeContextWindowExceededError,
+             ), \
+             patch("src.agent.llm_adapter.time.sleep") as mock_sleep:
+            result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.provider, "error")
+        self.assertIn("All LLM models failed (rate-limit encountered during fallback).", result.content)
+        self.assertIn("window exceeded", result.content)
+        mock_sleep.assert_not_called()
 
 
 # ============================================================

@@ -29,6 +29,8 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
+from src.config import AGENT_MAX_STEPS_DEFAULT
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -323,7 +325,7 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         skill_instructions=prompt_state.skill_instructions,
         default_skill_policy=prompt_state.default_skill_policy,
         use_legacy_default_prompt=prompt_state.use_legacy_default_prompt,
-        max_steps=getattr(config, "agent_max_steps", 10),
+        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
         timeout_seconds=getattr(config, "agent_orchestrator_timeout_s", 0),
     )
 
@@ -344,7 +346,7 @@ def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technic
         llm_adapter=llm_adapter,
         skill_instructions=skill_manager.get_skill_instructions(),
         technical_skill_policy=technical_skill_policy,
-        max_steps=getattr(config, "agent_max_steps", 10),
+        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
         mode=mode,
         skill_manager=skill_manager,
         config=config,

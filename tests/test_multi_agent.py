@@ -35,6 +35,7 @@ from src.agent.protocols import (
     StageResult,
     StageStatus,
 )
+from src.config import AGENT_MAX_STEPS_DEFAULT
 
 
 # ============================================================
@@ -500,12 +501,38 @@ class TestOrchestratorModes(unittest.TestCase):
         self.assertEqual(orch.mode, "standard")
 
     def test_chain_agents_inherit_orchestrator_max_steps(self):
+        """Default/lowered limits cap agents; raised limits hard-override all agents."""
         orch = self._make_orchestrator("full")
-        orch.max_steps = 9
-        ctx = AgentContext(query="test", stock_code="600519")
-        chain = orch._build_agent_chain(ctx)
-        self.assertTrue(chain)
-        self.assertTrue(all(agent.max_steps == 9 for agent in chain))
+        orch.max_steps = AGENT_MAX_STEPS_DEFAULT
+        high_limit_chain = orch._build_agent_chain(AgentContext(query="test", stock_code="600519"))
+        self.assertEqual(
+            {agent.agent_name: agent.max_steps for agent in high_limit_chain},
+            {"technical": 6, "intel": 4, "risk": 4, "decision": 3},
+        )
+
+        orch.max_steps = 5
+        low_limit_chain = orch._build_agent_chain(AgentContext(query="test", stock_code="600519"))
+        self.assertEqual(
+            {agent.agent_name: agent.max_steps for agent in low_limit_chain},
+            {"technical": 5, "intel": 4, "risk": 4, "decision": 3},
+        )
+
+        orch.max_steps = AGENT_MAX_STEPS_DEFAULT + 2
+        raised_limit_chain = orch._build_agent_chain(AgentContext(query="test", stock_code="600519"))
+        self.assertEqual(
+            {agent.agent_name: agent.max_steps for agent in raised_limit_chain},
+            {"technical": AGENT_MAX_STEPS_DEFAULT + 2, "intel": AGENT_MAX_STEPS_DEFAULT + 2, "risk": AGENT_MAX_STEPS_DEFAULT + 2, "decision": AGENT_MAX_STEPS_DEFAULT + 2},
+        )
+
+    def test_prepare_agent_raised_limit_overrides_low_default_agent(self):
+        orch = self._make_orchestrator("full")
+        orch.max_steps = AGENT_MAX_STEPS_DEFAULT + 2
+        decision = MagicMock(agent_name="decision", max_steps=3)
+
+        prepared = orch._prepare_agent(decision)
+
+        self.assertIs(prepared, decision)
+        self.assertEqual(prepared.max_steps, AGENT_MAX_STEPS_DEFAULT + 2)
 
     def test_build_context_from_dict(self):
         orch = self._make_orchestrator()
@@ -552,6 +579,24 @@ class TestOrchestratorExecution(unittest.TestCase):
         result.meta["models_used"] = ["test/model"]
         return result
 
+    def test_prepare_agent_uses_default_constant_as_raise_threshold(self):
+        orch = self._make_orchestrator()
+        agent = MagicMock(agent_name="technical", max_steps=6)
+
+        prepared = orch._prepare_agent(agent)
+        self.assertIs(prepared, agent)
+        self.assertEqual(agent.max_steps, 6)
+
+        orch.max_steps = 12
+        agent.max_steps = 6
+        orch._prepare_agent(agent)
+        self.assertEqual(agent.max_steps, 12)
+
+        orch.max_steps = 5
+        agent.max_steps = 6
+        orch._prepare_agent(agent)
+        self.assertEqual(agent.max_steps, 5)
+
     def test_execute_pipeline_stops_on_critical_failure(self):
         orch = self._make_orchestrator()
         technical = MagicMock(agent_name="technical")
@@ -579,6 +624,133 @@ class TestOrchestratorExecution(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertIn("Analysis Summary", result.content)
+
+    def test_execute_pipeline_degrades_on_skill_agent_failure_and_continues_to_decision(self):
+        orch = self._make_orchestrator()
+        orch.mode = "specialist"
+        ctx = AgentContext(query="test", stock_code="600519")
+        ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8, reasoning="Strong trend"))
+
+        technical = MagicMock(agent_name="technical")
+        technical.run.return_value = self._stage_result("technical")
+        intel = MagicMock(agent_name="intel")
+        intel.run.return_value = self._stage_result("intel")
+        risk = MagicMock(agent_name="risk")
+        risk.run.return_value = self._stage_result("risk")
+        skill = MagicMock(agent_name="strategy_bull_trend")
+        skill.run.return_value = self._stage_result("strategy_bull_trend", StageStatus.FAILED, error="skill boom")
+        decision = MagicMock(agent_name="decision")
+        decision.run.return_value = self._stage_result("decision")
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, risk, decision]):
+            with patch.object(orch, "_build_specialist_agents", return_value=[skill]):
+                result = orch._execute_pipeline(ctx, parse_dashboard=False)
+
+        self.assertTrue(result.success)
+        self.assertIn("Analysis Summary", result.content)
+        skill.run.assert_called_once()
+        decision.run.assert_called_once()
+
+    def test_execute_pipeline_skips_stage_when_remaining_budget_below_minimum(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20))
+        ctx = AgentContext(query="test", stock_code="600519", stock_name="贵州茅台")
+
+        technical = MagicMock(agent_name="technical")
+
+        def _run_technical(run_ctx, progress_callback=None):
+            run_ctx.add_opinion(AgentOpinion(
+                agent_name="technical",
+                signal="buy",
+                confidence=0.8,
+                reasoning="技术面结构未出现明显拐点，趋势偏强。",
+                raw_data={"ma_alignment": "bullish", "trend_score": 82, "volume_status": "normal"},
+            ))
+            return self._stage_result("technical")
+
+        technical.run.side_effect = _run_technical
+        intel = MagicMock(agent_name="intel", tool_names=["news_search"])
+        intel.run.side_effect = AssertionError("intel should be skipped due to budget guard")
+        times = iter([0.0, 0.2, 0.3, 14.6, 14.7])
+
+        def _next_time():
+            return next(times, 100.0)
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel]):
+            with patch("src.agent.orchestrator.time.time", side_effect=_next_time):
+                result = orch._execute_pipeline(ctx)
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.dashboard)
+        self.assertIsNotNone(result.content)
+        self.assertIn("insufficient budget", (result.error or "").lower())
+        self.assertIn("[降级结果]", result.dashboard["analysis_summary"])
+        technical.run.assert_called_once()
+        intel.run.assert_not_called()
+
+    def test_execute_pipeline_skips_toolless_decision_with_low_remaining_budget(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20))
+        ctx = AgentContext(query="test", stock_code="600519", stock_name="贵州茅台")
+
+        technical = MagicMock(agent_name="technical")
+
+        def _run_technical(run_ctx, progress_callback=None):
+            run_ctx.add_opinion(AgentOpinion(
+                agent_name="technical",
+                signal="buy",
+                confidence=0.8,
+                reasoning="技术面结构未出现明显拐点，趋势偏强。",
+                raw_data={"ma_alignment": "bullish", "trend_score": 82, "volume_status": "normal"},
+            ))
+            return self._stage_result("technical")
+
+        technical.run.side_effect = _run_technical
+        decision = MagicMock(agent_name="decision", tool_names=[])
+
+        def _run_decision(run_ctx, progress_callback=None):
+            run_ctx.add_opinion(AgentOpinion(
+                agent_name="decision",
+                signal="buy",
+                confidence=0.87,
+                reasoning="综合技术与情绪判断，倾向于买入。",
+            ))
+            return self._stage_result("decision")
+
+        decision.run.side_effect = _run_decision
+        times = iter([0.0, 0.2, 0.3, 14.6, 14.7])
+
+        def _next_time():
+            return next(times, 100.0)
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, decision]):
+            with patch("src.agent.orchestrator.time.time", side_effect=_next_time):
+                result = orch._execute_pipeline(ctx)
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(result.content)
+        self.assertIn("insufficient budget", (result.error or "").lower())
+        self.assertEqual(result.total_steps, 1)
+        technical.run.assert_called_once()
+        decision.run.assert_not_called()
+
+    def test_execute_pipeline_first_stage_still_runs_when_timeout_short(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=10))
+        ctx = AgentContext(query="test", stock_code="600519", stock_name="贵州茅台")
+
+        technical = MagicMock(agent_name="technical")
+        technical.run.side_effect = lambda run_ctx, progress_callback=None: self._stage_result("technical")
+        times = iter([0.0, 0.2, 0.3, 0.4, 0.5])
+
+        def _next_time():
+            return next(times, 1.0)
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical]):
+            with patch("src.agent.orchestrator.time.time", side_effect=_next_time):
+                result = orch._execute_pipeline(ctx)
+
+        self.assertIsNotNone(result.error)
+        self.assertEqual(result.total_steps, 1)
+        technical.run.assert_called_once()
+        self.assertNotIn("insufficient budget", (result.error or "").lower())
 
     def test_execute_pipeline_times_out_after_stage(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=1))
@@ -1491,6 +1663,28 @@ class TestResearchAgentFilteredRegistry(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "boom")
+
+    def test_research_sub_question_marks_budget_guard_as_timeout(self):
+        from src.agent.research import ResearchAgent
+
+        agent = ResearchAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        with patch("src.agent.research.run_agent_loop", return_value=SimpleNamespace(
+            success=False,
+            content="",
+            total_tokens=7,
+            error="Agent step skipped due to insufficient budget: 3.0s remaining, minimum 8.0s required",
+        )):
+            result = agent._research_sub_question(
+                "Q1",
+                {},
+                0,
+                timeout_seconds=10,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["timed_out"])
+        self.assertIn("insufficient budget", (result["error"] or "").lower())
+        self.assertEqual(result["tokens"], 7)
 
     def test_research_returns_timeout_result_when_overall_deadline_is_exceeded(self):
         import time as _time

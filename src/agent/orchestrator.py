@@ -42,6 +42,7 @@ from src.agent.protocols import (
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
+from src.config import AGENT_MAX_STEPS_DEFAULT
 from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
@@ -83,7 +84,7 @@ class AgentOrchestrator:
         llm_adapter: LLMToolAdapter,
         skill_instructions: str = "",
         technical_skill_policy: str = "",
-        max_steps: int = 10,
+        max_steps: int = AGENT_MAX_STEPS_DEFAULT,
         mode: str = "standard",
         skill_manager=None,
         config=None,
@@ -152,10 +153,73 @@ class AgentOrchestrator:
             model=model,
         )
 
+    def _build_budget_skip_result(
+        self,
+        stats: AgentRunStats,
+        all_tool_calls: List[Dict[str, Any]],
+        models_used: List[str],
+        elapsed_s: float,
+        timeout_s: int,
+        stage_name: str,
+        remaining_budget: float,
+        min_stage_budget_s: int,
+        ctx: Optional[AgentContext] = None,
+        parse_dashboard: bool = True,
+    ) -> OrchestratorResult:
+        """Build a result for budget-insufficient stage skip (non-timeout semantics)."""
+        stats.total_duration_s = round(elapsed_s, 2)
+        stats.models_used = list(dict.fromkeys(models_used))
+        dashboard = None
+        content = ""
+        if ctx is not None:
+            dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+            if parse_dashboard and dashboard is not None:
+                dashboard = self._mark_partial_dashboard(
+                    dashboard,
+                    note="多 Agent 预算不足，以下结论基于已完成阶段自动降级生成。",
+                )
+                ctx.set_data("final_dashboard", dashboard)
+                content = json.dumps(dashboard, ensure_ascii=False, indent=2)
+
+        return OrchestratorResult(
+            success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
+            content=content,
+            dashboard=dashboard,
+            error=(
+                f"Pipeline skipped before stage '{stage_name}' due to insufficient budget "
+                f"({remaining_budget:.1f}s remaining, minimum {min_stage_budget_s}s required)"
+            ),
+            stats=stats,
+            total_steps=stats.total_stages,
+            total_tokens=stats.total_tokens,
+            tool_calls_log=all_tool_calls,
+            provider=stats.models_used[0] if stats.models_used else "",
+            model=", ".join(stats.models_used),
+        )
+
+
     def _prepare_agent(self, agent: Any) -> Any:
-        """Apply orchestrator-level runtime settings to a child agent."""
+        """Apply orchestrator-level runtime settings to a child agent.
+
+        When the orchestrator-level ``max_steps`` equals the default
+        (``AGENT_MAX_STEPS_DEFAULT``),
+        each agent keeps its own per-agent limit — this prevents inflating
+        a decision agent (designed for 3 steps) to 10 steps.
+
+        When the user **explicitly** raises the global limit above the
+        default, all agents adopt the global value so the user's intent to
+        allow more steps is respected.
+
+        When the user **lowers** the global limit below an agent's default,
+        the agent is capped at the global value.
+        """
         if hasattr(agent, "max_steps"):
-            agent.max_steps = self.max_steps
+            if self.max_steps > AGENT_MAX_STEPS_DEFAULT:
+                # User explicitly raised the limit — apply to all agents.
+                agent.max_steps = self.max_steps
+            else:
+                # Default or lowered — keep per-agent limit as ceiling.
+                agent.max_steps = min(agent.max_steps, self.max_steps)
         return agent
 
     def _callable_accepts_timeout_kwarg(self, func: Any) -> Optional[bool]:
@@ -307,10 +371,32 @@ class AgentOrchestrator:
         specialist_agents_inserted = False
         index = 0
 
+        # Minimum seconds required for a stage to do useful work.  Starting
+        # a stage with less budget virtually guarantees a timeout that wastes
+        # an LLM billing cycle.  Only enforced after at least one stage has
+        # completed so that the first stage always gets a chance to run
+        # even when the total budget is small.
+        _MIN_STAGE_BUDGET_S = 15
+
         while index < len(agents):
             agent = agents[index]
             elapsed_s = time.time() - t0
-            if timeout_s and elapsed_s >= timeout_s:
+            remaining_budget = timeout_s - elapsed_s if timeout_s else None
+            stage_min_budget_s = (
+                _MIN_STAGE_BUDGET_S
+            )
+            timeout_exhausted = (
+                timeout_s
+                and remaining_budget is not None
+                and remaining_budget <= 0
+            )
+            budget_guard_triggered = (
+                timeout_s
+                and remaining_budget is not None
+                and index > 0
+                and remaining_budget < stage_min_budget_s
+            )
+            if timeout_exhausted:
                 logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
                 if progress_callback:
                     progress_callback({
@@ -325,6 +411,33 @@ class AgentOrchestrator:
                     models_used,
                     elapsed_s,
                     timeout_s,
+                    ctx=ctx,
+                    parse_dashboard=parse_dashboard,
+                )
+
+            if budget_guard_triggered:
+                logger.warning(
+                    "[Orchestrator] pipeline insufficient budget before stage '%s' (%.1fs remaining, min %ds)",
+                    agent.agent_name,
+                    remaining_budget,
+                    stage_min_budget_s,
+                )
+                if progress_callback:
+                    progress_callback({
+                        "type": "pipeline_timeout",
+                        "stage": agent.agent_name,
+                        "elapsed": round(elapsed_s, 2),
+                        "timeout": timeout_s,
+                    })
+                return self._build_budget_skip_result(
+                    stats,
+                    all_tool_calls,
+                    models_used,
+                    elapsed_s,
+                    timeout_s,
+                    agent.agent_name,
+                    remaining_budget,
+                    stage_min_budget_s,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
@@ -405,9 +518,16 @@ class AgentOrchestrator:
             if result.success and agent.agent_name == "decision":
                 self._apply_risk_override(ctx)
 
-            # Abort pipeline on critical failure (except intel/risk — degrade gracefully)
+            # Abort pipeline on critical failure.
+            # Non-critical stages that degrade gracefully:
+            #   - intel / risk (standard support stages)
+            #   - skill agents (specialist evaluation, optional)
             if result.status == StageStatus.FAILED:
-                if agent.agent_name not in ("intel", "risk"):
+                non_critical = (
+                    agent.agent_name in ("intel", "risk")
+                    or agent.agent_name in getattr(self, "_skill_agent_names", set())
+                )
+                if not non_critical:
                     logger.error("[Orchestrator] critical stage '%s' failed: %s", agent.agent_name, result.error)
                     return OrchestratorResult(
                         success=False,

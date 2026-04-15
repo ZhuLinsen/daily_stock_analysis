@@ -236,7 +236,12 @@ class ResearchAgent:
     def _looks_like_timeout_error(error: Any) -> bool:
         """Best-effort detection for timeout-like failures from lower layers."""
         message = str(error or "").lower()
-        return "timed out" in message or "timeout" in message
+        return (
+            "timed out" in message
+            or "timeout" in message
+            or "insufficient budget" in message
+            or "budget too low" in message
+        )
 
     @staticmethod
     def _build_timeout_result(

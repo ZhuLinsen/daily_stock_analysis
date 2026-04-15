@@ -19,6 +19,7 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
   const statusLabel = isProcessing ? '分析中' : '等待中';
   const statusVariant = isProcessing ? 'info' : 'default';
   const statusTone = isProcessing ? 'info' : 'neutral';
+  const progress = Math.max(0, Math.min(100, task.progress || 0));
 
   return (
     <div className="home-subpanel flex items-center gap-3 px-3 py-2.5">
@@ -46,6 +47,17 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
             {task.message}
           </p>
         )}
+        <div className="mt-2 flex items-center gap-2">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/8">
+            <div
+              className="h-full rounded-full bg-cyan transition-[width] duration-300 ease-out"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <span className="shrink-0 text-[11px] text-muted-text tabular-nums">
+            {progress}%
+          </span>
+        </div>
       </div>
 
       {/* 状态标签 */}

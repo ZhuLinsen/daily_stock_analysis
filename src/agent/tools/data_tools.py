@@ -539,3 +539,70 @@ ALL_DATA_TOOLS = [
     get_stock_info_tool,
     get_portfolio_snapshot_tool,
 ]
+
+
+# ============================================================
+# get_capital_flow
+# ============================================================
+
+def _handle_get_capital_flow(stock_code: str) -> dict:
+    """Get main-force capital flow data for a stock."""
+    manager = _get_fetcher_manager()
+    try:
+        ctx = manager.get_capital_flow_context(stock_code)
+    except Exception as exc:
+        logger.warning("get_capital_flow failed for %s: %s", stock_code, exc)
+        return {
+            "stock_code": stock_code,
+            "status": "error",
+            "error": f"capital flow fetch failed: {exc}",
+        }
+
+    status = ctx.get("status", "not_supported")
+    if status == "not_supported":
+        return {
+            "stock_code": stock_code,
+            "status": "not_supported",
+            "note": "Capital flow data is only available for A-share stocks (not ETFs/indices).",
+        }
+
+    data = ctx.get("data", {})
+    stock_flow = data.get("stock_flow") or {}
+    sector_rankings = data.get("sector_rankings") or {}
+    errors = ctx.get("errors") or []
+
+    return {
+        "stock_code": stock_code,
+        "status": status,
+        "main_net_inflow": stock_flow.get("main_net_inflow"),
+        "inflow_5d": stock_flow.get("inflow_5d"),
+        "inflow_10d": stock_flow.get("inflow_10d"),
+        "sector_rankings": {
+            "top_inflow_sectors": sector_rankings.get("top", [])[:3],
+            "top_outflow_sectors": sector_rankings.get("bottom", [])[:3],
+        },
+        "errors": errors,
+    }
+
+
+get_capital_flow_tool = ToolDefinition(
+    name="get_capital_flow",
+    description=(
+        "Get main-force (主力) capital flow data for an A-share stock. "
+        "Returns today's net inflow, 5-day and 10-day cumulative inflows, "
+        "and top sector-level capital flow rankings. "
+        "Only supported for A-share individual stocks (not ETFs, indices, HK, or US stocks)."
+    ),
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="A-share stock code, e.g., '600519'",
+        ),
+    ],
+    handler=_handle_get_capital_flow,
+    category="data",
+)
+
+
+ALL_DATA_TOOLS.append(get_capital_flow_tool)

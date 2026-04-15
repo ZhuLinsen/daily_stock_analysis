@@ -123,6 +123,35 @@ describe('useDashboardLifecycle', () => {
     expect(removeTask).toHaveBeenCalledWith(completedTask.taskId);
   });
 
+  it('forwards task progress updates to the task sync handler', () => {
+    const syncTaskUpdated = vi.fn();
+
+    renderHook(() =>
+      useDashboardLifecycle({
+        loadInitialHistory: vi.fn().mockResolvedValue(undefined),
+        refreshHistory: vi.fn().mockResolvedValue(undefined),
+        syncTaskCreated: vi.fn(),
+        syncTaskUpdated,
+        syncTaskFailed: vi.fn(),
+        removeTask: vi.fn(),
+      }),
+    );
+
+    const taskStreamOptions = vi.mocked(useTaskStream).mock.calls[0]?.[0];
+    const progressTask = {
+      ...createTask(),
+      status: 'processing' as const,
+      progress: 72,
+      message: 'LLM 正在生成分析结果',
+    };
+
+    act(() => {
+      taskStreamOptions?.onTaskProgress?.(progressTask);
+    });
+
+    expect(syncTaskUpdated).toHaveBeenCalledWith(progressTask);
+  });
+
   it('reports failed tasks and removes them after the failure grace window', () => {
     const syncTaskFailed = vi.fn();
     const removeTask = vi.fn();

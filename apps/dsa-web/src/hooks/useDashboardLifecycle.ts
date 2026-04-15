@@ -77,6 +77,7 @@ export function useDashboardLifecycle({
   useTaskStream({
     onTaskCreated: syncTaskCreated,
     onTaskStarted: syncTaskUpdated,
+    onTaskProgress: syncTaskUpdated,
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
       void refreshHistory(true);

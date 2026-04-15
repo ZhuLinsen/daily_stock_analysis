@@ -344,5 +344,26 @@ class TestAskCommandMultiStock(unittest.TestCase):
         self.assertEqual(captured["context"]["strategies"], ["chan_theory"])
 
 
+class TestAskCommandSilentExceptionFix(unittest.TestCase):
+    """Verify that _load_skills and _get_default_skill_id log warnings on failure."""
+
+    def test_load_skills_logs_warning_and_returns_empty_list(self):
+        boom = RuntimeError("skill manager unavailable")
+        with patch("src.agent.factory.get_skill_manager", side_effect=boom):
+            with self.assertLogs("bot.commands.ask", level="WARNING") as cm:
+                result = AskCommand._load_skills()
+        self.assertEqual(result, [])
+        self.assertTrue(any("_load_skills failed" in line for line in cm.output))
+
+    def test_get_default_skill_id_logs_warning_and_returns_empty_string(self):
+        boom = RuntimeError("defaults unavailable")
+        with patch.object(AskCommand, "_load_skills", return_value=[]):
+            with patch("src.agent.skills.defaults.get_primary_default_skill_id", side_effect=boom):
+                with self.assertLogs("bot.commands.ask", level="WARNING") as cm:
+                    result = AskCommand._get_default_skill_id()
+        self.assertEqual(result, "")
+        self.assertTrue(any("_get_default_skill_id failed" in line for line in cm.output))
+
+
 if __name__ == "__main__":
     unittest.main()

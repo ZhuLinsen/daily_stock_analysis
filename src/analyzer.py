@@ -15,7 +15,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 
 import litellm
 from json_repair import repair_json
@@ -47,6 +47,14 @@ from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
 
 logger = logging.getLogger(__name__)
+
+
+class _LiteLLMStreamError(RuntimeError):
+    """Internal error wrapper that records whether any text was streamed."""
+
+    def __init__(self, message: str, *, partial_received: bool = False):
+        super().__init__(message)
+        self.partial_received = partial_received
 
 
 def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
@@ -989,12 +997,136 @@ class GeminiAnalyzer:
         """Check if LiteLLM is properly configured with at least one API key."""
         return self._router is not None or self._litellm_available
 
+    def _dispatch_litellm_completion(
+        self,
+        model: str,
+        call_kwargs: Dict[str, Any],
+        *,
+        config: Config,
+        use_channel_router: bool,
+        router_model_names: set[str],
+    ) -> Any:
+        """Dispatch a LiteLLM completion through router or direct fallback."""
+        effective_kwargs = dict(call_kwargs)
+        if use_channel_router and self._router and model in router_model_names:
+            return self._router.completion(**effective_kwargs)
+        if self._router and model == config.litellm_model and not use_channel_router:
+            return self._router.completion(**effective_kwargs)
+
+        keys = get_api_keys_for_model(model, config)
+        if keys:
+            effective_kwargs["api_key"] = keys[0]
+        effective_kwargs.update(extra_litellm_params(model, config))
+        return litellm.completion(**effective_kwargs)
+
+    def _normalize_usage(self, usage_obj: Any) -> Dict[str, Any]:
+        """Normalize usage objects from LiteLLM responses/chunks."""
+        if not usage_obj:
+            return {}
+
+        def _get_value(key: str) -> int:
+            if isinstance(usage_obj, dict):
+                return int(usage_obj.get(key) or 0)
+            return int(getattr(usage_obj, key, 0) or 0)
+
+        return {
+            "prompt_tokens": _get_value("prompt_tokens"),
+            "completion_tokens": _get_value("completion_tokens"),
+            "total_tokens": _get_value("total_tokens"),
+        }
+
+    def _extract_stream_text(self, chunk: Any) -> str:
+        """Extract provider-agnostic text delta from a LiteLLM streaming chunk."""
+        choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+
+        content: Any = None
+        if isinstance(delta, dict):
+            content = delta.get("content")
+        elif isinstance(delta, str):
+            content = delta
+        elif delta is not None:
+            content = getattr(delta, "content", None)
+
+        if content is None:
+            if isinstance(message, dict):
+                content = message.get("content")
+            elif message is not None:
+                content = getattr(message, "content", None)
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+
+        return content if isinstance(content, str) else ""
+
+    def _consume_litellm_stream(
+        self,
+        stream_response: Any,
+        *,
+        model: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Consume a LiteLLM stream into a single text payload."""
+        chunks: List[str] = []
+        usage: Dict[str, Any] = {}
+        chars_received = 0
+        next_emit_at = 1
+
+        try:
+            for chunk in stream_response:
+                chunk_usage = chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+                normalized_usage = self._normalize_usage(chunk_usage)
+                if normalized_usage:
+                    usage = normalized_usage
+
+                delta_text = self._extract_stream_text(chunk)
+                if not delta_text:
+                    continue
+
+                chunks.append(delta_text)
+                chars_received += len(delta_text)
+                if progress_callback and chars_received >= next_emit_at:
+                    progress_callback(chars_received)
+                    next_emit_at = chars_received + 160
+        except Exception as exc:
+            raise _LiteLLMStreamError(
+                f"{model} stream interrupted: {exc}",
+                partial_received=chars_received > 0,
+            ) from exc
+
+        response_text = "".join(chunks).strip()
+        if not response_text:
+            raise _LiteLLMStreamError(
+                f"{model} stream returned empty response",
+                partial_received=False,
+            )
+
+        if progress_callback and chars_received > 0:
+            progress_callback(chars_received)
+
+        return response_text, usage
+
     def _call_litellm(
         self,
         prompt: str,
         generation_config: dict,
         *,
         system_prompt: Optional[str] = None,
+        stream: bool = False,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
@@ -1026,6 +1158,7 @@ class GeminiAnalyzer:
 
         last_error = None
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
+        router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
@@ -1042,31 +1175,52 @@ class GeminiAnalyzer:
                 if extra:
                     call_kwargs["extra_body"] = extra
 
-                _router_model_names = set(get_configured_llm_models(config.llm_model_list))
-                if use_channel_router and self._router and model in _router_model_names:
-                    # Channel / YAML path: Router manages key + base_url per model
-                    response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model and not use_channel_router:
-                    # Legacy path: Router only for primary model multi-key
-                    response = self._router.completion(**call_kwargs)
-                else:
-                    # Legacy/direct-env path: direct call (also handles direct-env
-                    # providers like groq/ or bedrock/ that are not in the Router
-                    # model_list even when channel mode is active)
-                    keys = get_api_keys_for_model(model, config)
-                    if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+                if stream:
+                    try:
+                        stream_response = self._dispatch_litellm_completion(
+                            model,
+                            {**call_kwargs, "stream": True},
+                            config=config,
+                            use_channel_router=use_channel_router,
+                            router_model_names=router_model_names,
+                        )
+                        response_text, usage = self._consume_litellm_stream(
+                            stream_response,
+                            model=model,
+                            progress_callback=stream_progress_callback,
+                        )
+                        return response_text, model, usage
+                    except _LiteLLMStreamError as exc:
+                        if exc.partial_received:
+                            logger.warning(
+                                "[LiteLLM] %s stream failed after partial output, retrying non-stream for same model: %s",
+                                model,
+                                exc,
+                            )
+                        else:
+                            logger.warning(
+                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                                model,
+                                exc,
+                            )
+                        last_error = exc
+                    except Exception as exc:
+                        logger.warning(
+                            "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
+                            model,
+                            exc,
+                        )
+
+                response = self._dispatch_litellm_completion(
+                    model,
+                    call_kwargs,
+                    config=config,
+                    use_channel_router=use_channel_router,
+                    router_model_names=router_model_names,
+                )
 
                 if response and response.choices and response.choices[0].message.content:
-                    usage: Dict[str, Any] = {}
-                    if response.usage:
-                        usage = {
-                            "prompt_tokens": response.usage.prompt_tokens or 0,
-                            "completion_tokens": response.usage.completion_tokens or 0,
-                            "total_tokens": response.usage.total_tokens or 0,
-                        }
+                    usage = self._normalize_usage(getattr(response, "usage", None))
                     return (response.choices[0].message.content, model, usage)
                 raise ValueError("LLM returned empty response")
 
@@ -1114,7 +1268,9 @@ class GeminiAnalyzer:
     def analyze(
         self, 
         context: Dict[str, Any],
-        news_context: Optional[str] = None
+        news_context: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
     ) -> AnalysisResult:
         """
         分析单只股票
@@ -1132,6 +1288,14 @@ class GeminiAnalyzer:
         Returns:
             AnalysisResult 对象
         """
+        def _emit_progress(progress: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(progress, message)
+            except Exception as exc:
+                logger.debug("[analyzer] progress callback skipped: %s", exc)
+
         code = context.get('code', 'Unknown')
         config = self._get_runtime_config()
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
@@ -1141,6 +1305,7 @@ class GeminiAnalyzer:
         request_delay = config.gemini_request_delay
         if request_delay > 0:
             logger.debug(f"[LLM] 请求前等待 {request_delay:.1f} 秒...")
+            _emit_progress(65, f"{code}：LLM 请求前等待 {request_delay:.1f} 秒")
             time.sleep(request_delay)
         
         # 优先从上下文获取股票名称（由 main.py 传入）
@@ -1193,6 +1358,7 @@ class GeminiAnalyzer:
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
+            _emit_progress(68, f"{name}：LLM 已接收请求，等待响应")
 
             # 使用 litellm 调用（支持完整性校验重试）
             current_prompt = prompt
@@ -1205,6 +1371,8 @@ class GeminiAnalyzer:
                     current_prompt,
                     generation_config,
                     system_prompt=system_prompt,
+                    stream=True,
+                    stream_progress_callback=stream_progress_callback,
                 )
                 elapsed = time.time() - start_time
 
@@ -1217,6 +1385,9 @@ class GeminiAnalyzer:
                 logger.debug(
                     f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
                 )
+                # Keep parser/retry progress monotonic so task progress/message never "goes backward".
+                parse_progress = min(99, 93 + retry_count * 2)
+                _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
 
                 # 解析响应
                 result = self._parse_response(response_text, code, name)
@@ -1244,6 +1415,11 @@ class GeminiAnalyzer:
                         "[LLM完整性] 必填字段缺失 %s，第 %d 次补全重试",
                         missing_fields,
                         retry_count,
+                    )
+                    retry_progress = min(99, 92 + retry_count * 2)
+                    _emit_progress(
+                        retry_progress,
+                        f"{name}：报告字段不完整，正在补全重试（{retry_count}/{max_retries}）",
                     )
                 else:
                     self._apply_placeholder_fill(result, missing_fields)
@@ -1861,12 +2037,12 @@ class GeminiAnalyzer:
                     success=True,
                 )
             else:
-                # 没有找到 JSON，尝试从纯文本中提取信息
-                logger.warning(f"无法从响应中提取 JSON，使用原始文本分析")
+                # 没有找到 JSON，标记为失败
+                logger.warning(f"无法从响应中提取 JSON，标记为解析失败")
                 return self._parse_text_response(response_text, code, name)
                 
         except json.JSONDecodeError as e:
-            logger.warning(f"JSON 解析失败: {e}，尝试从文本提取")
+            logger.warning(f"JSON 解析失败: {e}，标记为解析失败")
             return self._parse_text_response(response_text, code, name)
     
     def _fix_json_string(self, json_str: str) -> str:
@@ -1941,7 +2117,8 @@ class GeminiAnalyzer:
             key_points='JSON parsing failed; treat this as best-effort output.' if report_language == "en" else 'JSON解析失败，仅供参考',
             risk_warning='The result may be inaccurate. Cross-check with other information.' if report_language == "en" else '分析结果可能不准确，建议结合其他信息判断',
             raw_response=response_text,
-            success=True,
+            success=False,
+            error_message='LLM response is not valid JSON; analysis result will not be persisted',
             report_language=report_language,
         )
     

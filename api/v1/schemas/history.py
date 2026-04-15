@@ -23,10 +23,8 @@ class HistoryItem(BaseModel):
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
     sentiment_score: Optional[int] = Field(
-        None, 
-        description="情绪评分 (0-100)",
-        ge=0,
-        le=100
+        None,
+        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     operation_advice: Optional[str] = Field(None, description="操作建议")
     created_at: Optional[str] = Field(None, description="创建时间")
@@ -133,10 +131,8 @@ class ReportSummary(BaseModel):
     operation_advice: Optional[str] = Field(None, description="操作建议")
     trend_prediction: Optional[str] = Field(None, description="趋势预测")
     sentiment_score: Optional[int] = Field(
-        None, 
-        description="情绪评分 (0-100)",
-        ge=0,
-        le=100
+        None,
+        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     sentiment_label: Optional[str] = Field(None, description="情绪标签")
 

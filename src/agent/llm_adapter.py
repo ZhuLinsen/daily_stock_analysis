@@ -61,6 +61,32 @@ _OPT_IN_THINKING_MODELS: Dict[str, dict] = {
     "deepseek-chat": {"thinking": {"type": "enabled"}},
 }
 
+# Custom model pricing for models not in LiteLLM's built-in price list
+# Official MiniMax pricing: https://platform.minimax.io/docs/guides/pricing-paygo
+# - MiniMax-M2.7 / M2.5: $0.3/M input tokens, $1.2/M output tokens
+_CUSTOM_MODEL_PRICING: Dict[str, dict] = {
+    "MiniMax-M2.7": {
+        "supports_function_calling": True,
+        "supports_vision": False,
+        "supports_audio_input": False,
+        "supports_audio_output": False,
+        "context_window": 100000,
+        "max_tokens": 10000,
+        "input_cost_per_token": 0.0000003,   # $0.3 / 1M tokens
+        "output_cost_per_token": 0.0000012,   # $1.2 / 1M tokens
+    },
+    "MiniMax-M2.5": {
+        "supports_function_calling": True,
+        "supports_vision": False,
+        "supports_audio_input": False,
+        "supports_audio_output": False,
+        "context_window": 100000,
+        "max_tokens": 10000,
+        "input_cost_per_token": 0.0000003,   # $0.3 / 1M tokens
+        "output_cost_per_token": 0.0000012,   # $1.2 / 1M tokens
+    },
+}
+
 
 def _model_matches(model: str, entries: List[str]) -> bool:
     """Check if model name matches any entry (exact or prefix with version suffix)."""
@@ -117,7 +143,25 @@ class LLMToolAdapter:
         self._config = config
         self._router = None          # litellm Router (multi-key primary model)
         self._litellm_available = False
+        self._register_custom_model_pricing()
         self._init_litellm()
+
+    @staticmethod
+    def _register_custom_model_pricing() -> None:
+        """Register custom model pricing for models not in LiteLLM's built-in price list.
+
+        This prevents cost calculation errors for MiniMax-M2.7 and similar models.
+        """
+        for model_name, pricing in _CUSTOM_MODEL_PRICING.items():
+            try:
+                litellm.register_model(
+                    {
+                        model_name: pricing
+                    }
+                )
+                logger.debug(f"Registered custom pricing for {model_name}")
+            except Exception as e:
+                logger.debug(f"Model {model_name} may already be registered or pricing error: {e}")
 
     def _has_channel_config(self) -> bool:
         """Check if multi-channel config (channels / YAML) is active."""
@@ -256,9 +300,11 @@ class LLMToolAdapter:
         config = self._config
         models_to_try = get_effective_agent_models_to_try(config)
         started_at = time.time()
+        providers = [self._get_model_provider(model) for model in models_to_try]
 
         last_error = None
-        for model in models_to_try:
+        hit_rate_limit = False
+        for idx, model in enumerate(models_to_try):
             remaining_timeout = timeout
             if timeout is not None and timeout > 0:
                 remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
@@ -276,14 +322,46 @@ class LLMToolAdapter:
                     max_tokens=max_tokens,
                     timeout=remaining_timeout,
                 )
+            except litellm.RateLimitError as e:
+                logger.warning("Agent LLM rate-limited on %s: %s", model, e)
+                last_error = e
+                hit_rate_limit = True
+
+                # Avoid blind backoff across different providers; cross-provider
+                # fallback usually means different accounts/rate-limit buckets.
+                should_backoff = (
+                    idx + 1 < len(models_to_try)
+                    and providers[idx] == providers[idx + 1]
+                )
+                if should_backoff:
+                    backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
+                    if timeout is not None and timeout > 0:
+                        remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
+                        if remaining_timeout > 0:
+                            time.sleep(min(backoff_sleep, remaining_timeout))
+                    else:
+                        time.sleep(backoff_sleep)
+                continue
+            except litellm.ContextWindowExceededError as e:
+                logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
+                last_error = e
+                continue
             except Exception as e:
-                logger.warning(f"Agent LLM call failed with {model}: {e}")
+                logger.warning("Agent LLM call failed with %s: %s", model, e)
                 last_error = e
                 continue
 
-        error_msg = f"All LLM models failed. Last error: {last_error}"
+        suffix = " (rate-limit encountered during fallback)" if hit_rate_limit else ""
+        error_msg = f"All LLM models failed{suffix}. Last error: {last_error}"
         logger.error(error_msg)
         return LLMResponse(content=error_msg, provider="error")
+
+    @staticmethod
+    def _get_model_provider(model: str) -> str:
+        """Return LiteLLM provider namespace for model fallback grouping."""
+        if "/" in model:
+            return model.split("/", 1)[0]
+        return "openai"
 
     def _call_litellm_model(
         self,
@@ -388,7 +466,32 @@ class LLMToolAdapter:
         """Parse litellm OpenAI-compatible response into LLMResponse."""
         choice = response.choices[0]
         tool_calls: List[ToolCall] = []
+
+        # Handle MiniMax-specific content_blocks format
+        # MiniMax-M2.7 may return content_blocks at choice level or inside message
+        # Check both possible locations for content_blocks to ensure consistency
+        # Concatenate ALL text blocks to avoid truncating multi-block responses
         text_content = choice.message.content
+        if text_content is None:
+            content_blocks = None
+            if hasattr(choice, "content_blocks"):
+                content_blocks = choice.content_blocks
+            elif hasattr(choice.message, "content_blocks"):
+                content_blocks = choice.message.content_blocks
+
+            if content_blocks:
+                # MiniMax response format: content_blocks[].text
+                # Concatenate ALL text blocks to preserve complete response
+                text_parts = []
+                for block in content_blocks:
+                    if getattr(block, "type", None) == "text":
+                        text = getattr(block, "text", "") or ""
+                        if text:
+                            text_parts.append(text)
+                    elif hasattr(block, "content") and block.content:
+                        text_parts.append(block.content)
+                text_content = "".join(text_parts).strip()
+
         # DeepSeek/Qwen thinking mode; not in standard OpenAI type, accessed via getattr
         reasoning_content = getattr(choice.message, "reasoning_content", None)
 

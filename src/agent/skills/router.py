@@ -106,6 +106,7 @@ class SkillRouter:
             config = get_config()
             return getattr(config, "agent_skill_routing", "auto")
         except Exception:
+            logger.warning("Failed to get routing mode, falling back to auto", exc_info=True)
             return "auto"
 
     @staticmethod
@@ -125,6 +126,7 @@ class SkillRouter:
             sm = get_skill_manager()
             return list(sm.list_skills())
         except Exception:
+            logger.warning("Failed to get available skills", exc_info=True)
             return []
 
     @classmethod
@@ -140,6 +142,7 @@ class SkillRouter:
                 if isinstance(skill_id, str) and skill_id
             ]
         except Exception:
+            logger.warning("Failed to get manual skills config", exc_info=True)
             configured = []
 
         available_skills = cls._get_available_skills()

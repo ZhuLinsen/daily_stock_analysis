@@ -7,8 +7,10 @@ Bot Webhook 处理器
 处理各平台的 Webhook 回调，分发到命令处理器。
 """
 
+import asyncio
 import json
 import logging
+import threading
 from typing import Dict, Optional, TYPE_CHECKING
 
 from bot.models import WebhookResponse
@@ -92,12 +94,28 @@ def handle_webhook(
     logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
 
     # 处理 Webhook
-    message, challenge_response = platform.handle_webhook(headers, body, data)
+    message, immediate_response = platform.handle_webhook(headers, body, data)
 
-    # 如果是验证请求，直接返回验证响应
-    if challenge_response:
+    # 如果是验证/错误响应且没有消息需要处理，直接返回
+    if immediate_response and not message:
         logger.info("[BotHandler] 返回验证响应")
-        return challenge_response
+        return immediate_response
+
+    # 延迟响应（如 Discord type 5）：立即返回 ACK，后台处理命令
+    if immediate_response and message:
+        logger.info("[BotHandler] 返回延迟 ACK，后台处理命令")
+
+        def _deferred_dispatch() -> None:
+            try:
+                dispatcher = get_dispatcher()
+                response = dispatcher.dispatch(message)
+                if response.text:
+                    platform.send_followup(response, message)
+            except Exception as exc:
+                logger.error("[BotHandler] 延迟命令处理失败: %s", exc)
+
+        threading.Thread(target=_deferred_dispatch, daemon=True).start()
+        return immediate_response
 
     # 如果没有消息需要处理，返回空响应
     if not message:
@@ -150,11 +168,26 @@ async def handle_webhook_async(
 
     logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
 
-    message, challenge_response = platform.handle_webhook(headers, body, data)
+    message, immediate_response = platform.handle_webhook(headers, body, data)
 
-    if challenge_response:
+    if immediate_response and not message:
         logger.info("[BotHandler] 返回验证响应")
-        return challenge_response
+        return immediate_response
+
+    if immediate_response and message:
+        logger.info("[BotHandler] 返回延迟 ACK，后台处理命令 (async)")
+
+        async def _deferred_dispatch() -> None:
+            try:
+                dispatcher = get_dispatcher()
+                response = await dispatcher.dispatch_async(message)
+                if response.text:
+                    await asyncio.to_thread(platform.send_followup, response, message)
+            except Exception as exc:
+                logger.error("[BotHandler] 延迟命令处理失败: %s", exc)
+
+        asyncio.ensure_future(_deferred_dispatch())
+        return immediate_response
 
     if not message:
         logger.debug("[BotHandler] 无需处理的消息")
