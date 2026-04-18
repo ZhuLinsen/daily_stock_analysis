@@ -221,6 +221,108 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("600519", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_localizes_english_fallback(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="en")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=78,
+            trend_prediction="Bullish",
+            operation_advice="Buy",
+            analysis_summary="Momentum remains constructive.",
+            decision_type="buy",
+            report_language="en",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "Favor buying on pullbacks.",
+                    "position_advice": {
+                        "no_position": "Open a starter position.",
+                        "has_position": "Hold and trail the stop.",
+                    },
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "180-182",
+                        "stop_loss": "172",
+                        "take_profit": "195",
+                    }
+                },
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-03-18")
+
+        self.assertIn("Decision Dashboard", out)
+        self.assertIn("Summary", out)
+        self.assertIn("Action Levels", out)
+        self.assertIn("Buy", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_localizes_english_no_dashboard_fallback(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="en")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=61,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="Wait for confirmation.",
+            report_language="en",
+            buy_reason="Momentum remains constructive.",
+            risk_warning="Watch for a failed breakout.",
+            ma_analysis="Price remains above MA20.",
+            volume_analysis="Volume is steady.",
+            news_summary="Product cycle remains supportive.",
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-03-19")
+
+        self.assertIn("Rationale", out)
+        self.assertIn("Risk Warning", out)
+        self.assertIn("Technicals", out)
+        self.assertIn("Moving Averages", out)
+        self.assertIn("Volume", out)
+        self.assertIn("News Flow", out)
+        self.assertNotIn("操作理由", out)
+        self.assertNotIn("风险提示", out)
+        self.assertNotIn("技术面", out)
+        self.assertNotIn("消息面", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_localizes_english_fallback(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="en")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=65,
+            trend_prediction="Sideways",
+            operation_advice="Hold",
+            analysis_summary="Wait for a cleaner breakout.",
+            report_language="en",
+            dashboard={
+                "core_conclusion": {"one_sentence": "Wait for confirmation."},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "190",
+                        "stop_loss": "182",
+                        "take_profit": "205",
+                    }
+                },
+            },
+        )
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("Core Conclusion", out)
+        self.assertIn("Action Levels", out)
+        self.assertIn("Hold", out)
+
+    @mock.patch("src.notification.get_config")
     def test_history_compare_context_uses_cache(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_history_compare_n=3)
         service = NotificationService()
@@ -379,6 +481,43 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertGreaterEqual(mock_post.call_count, 2)
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_slack_via_notification_service_with_webhook(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        mock_get_config.return_value = cfg
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.SLACK, service.get_available_channels())
+
+        ok = service.send("slack content")
+
+        self.assertTrue(ok)
+        mock_post.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_slack_via_notification_service_with_bot(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(slack_bot_token="xoxb-test", slack_channel_id="C123")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"ok": True})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.SLACK, service.get_available_channels())
+
+        ok = service.send("slack bot content")
+
+        self.assertTrue(ok)
+        mock_post.assert_called_once()
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")

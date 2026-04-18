@@ -36,6 +36,9 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import PyInstaller")) {
 
 Write-Host 'Installing backend dependencies...'
 & $pythonBin -m pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+  throw "pip install -r requirements.txt failed with exit code $LASTEXITCODE."
+}
 
 Write-Host 'Checking python-multipart availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import multipart, multipart.multipart")) {

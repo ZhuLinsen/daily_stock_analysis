@@ -5,9 +5,14 @@ Unit tests for src.notification_sender module.
 Tests sender classes in isolation (config, request shape, error handling).
 Does not duplicate test_notification.py which tests NotificationService.send() flow.
 """
+import base64
+import hashlib
+import hmac
 import os
 import sys
 import unittest
+from email.header import decode_header, make_header
+from email.utils import parseaddr
 from unittest import mock
 from typing import Optional
 
@@ -23,6 +28,7 @@ from src.notification_sender import (
     PushoverSender,
     PushplusSender,
     Serverchan3Sender,
+    SlackSender,
     TelegramSender,
     WechatSender,
     WECHAT_IMAGE_MAX_BYTES,
@@ -168,6 +174,60 @@ class TestFeishuSender(unittest.TestCase):
         result = sender.send_to_feishu("hello")
         self.assertFalse(result)
 
+    @mock.patch("src.notification_sender.feishu_sender.time.time", return_value=1700000000)
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_with_secret_and_keyword_builds_signed_payload(self, mock_post, _mock_time):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_webhook_secret="secret-token",
+            feishu_webhook_keyword="股票日报",
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["timestamp"], "1700000000")
+        expected_sign = base64.b64encode(
+            hmac.new(
+                b"1700000000\nsecret-token",
+                digestmod=hashlib.sha256,
+            ).digest()
+        ).decode("utf-8")
+        self.assertEqual(payload["sign"], expected_sign)
+        self.assertEqual(
+            payload["card"]["elements"][0]["text"]["content"],
+            "股票日报\nhello",
+        )
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_error_response_returns_false(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 19024, "msg": "keyword not found"})
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 2)
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_with_keyword_that_leaves_too_little_chunk_budget_returns_false(self, mock_post):
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_webhook_keyword="abcd",
+            feishu_max_bytes=60,
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("x" * 100)
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
 
 class TestEmailSender(unittest.TestCase):
     """Unit tests for EmailSender (config and receiver logic; send path covered via service)."""
@@ -231,6 +291,54 @@ class TestEmailSender(unittest.TestCase):
         self.assertIn("g1@qq.com", receivers)
         self.assertIn("g2@qq.com", receivers)
         self.assertIn("default@qq.com", receivers)
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_send_to_email_encodes_non_ascii_sender_name(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="a@qq.com",
+            email_password="p",
+            email_receivers=["b@qq.com"],
+            email_sender_name="daily_stock_analysis股票分析助手",
+        )
+        sender = EmailSender(cfg)
+
+        result = sender.send_to_email("body", subject="测试主题")
+
+        self.assertTrue(result)
+        server = mock_smtp_ssl.return_value
+        server.send_message.assert_called_once()
+        msg = server.send_message.call_args[0][0]
+        realname, addr = parseaddr(msg["From"])
+        self.assertEqual(addr, "a@qq.com")
+        self.assertEqual(
+            str(make_header(decode_header(realname))),
+            "daily_stock_analysis股票分析助手",
+        )
+        server.quit.assert_called_once()
+
+    @mock.patch("smtplib.SMTP_SSL")
+    def test_send_image_email_encodes_non_ascii_sender_name(self, mock_smtp_ssl):
+        cfg = _config(
+            email_sender="a@qq.com",
+            email_password="p",
+            email_receivers=["b@qq.com"],
+            email_sender_name="daily_stock_analysis股票分析助手",
+        )
+        sender = EmailSender(cfg)
+
+        result = sender._send_email_with_inline_image(b"PNG_BYTES", receivers=["b@qq.com"])
+
+        self.assertTrue(result)
+        server = mock_smtp_ssl.return_value
+        server.send_message.assert_called_once()
+        msg = server.send_message.call_args[0][0]
+        realname, addr = parseaddr(msg["From"])
+        self.assertEqual(addr, "a@qq.com")
+        self.assertEqual(
+            str(make_header(decode_header(realname))),
+            "daily_stock_analysis股票分析助手",
+        )
+        server.quit.assert_called_once()
 
 
 class TestAstrbotSender(unittest.TestCase):
@@ -341,6 +449,126 @@ class TestServerchan3Sender(unittest.TestCase):
         self.assertTrue(result)
 
 
+class TestSlackSender(unittest.TestCase):
+    """Unit tests for SlackSender."""
+
+    def test_send_returns_false_when_not_configured(self):
+        cfg = _config()
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertFalse(result)
+
+    def test_is_slack_configured_webhook_only(self):
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+        self.assertTrue(sender._is_slack_configured())
+
+    def test_is_slack_configured_bot_only(self):
+        cfg = _config(slack_bot_token="xoxb-test", slack_channel_id="C123")
+        sender = SlackSender(cfg)
+        self.assertTrue(sender._is_slack_configured())
+
+    def test_is_slack_configured_neither(self):
+        cfg = _config()
+        sender = SlackSender(cfg)
+        self.assertFalse(sender._is_slack_configured())
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_webhook_success(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_webhook_http_error_returns_false(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 400
+        resp.text = "invalid_payload"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_bot_success(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(slack_bot_token="xoxb-test", slack_channel_id="C123")
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertTrue(result)
+        self.assertIn("chat.postMessage", mock_post.call_args[0][0])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_bot_error_returns_false(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": False, "error": "channel_not_found"})
+        cfg = _config(slack_bot_token="xoxb-test", slack_channel_id="C123")
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertFalse(result)
+
+    def test_build_blocks_splits_long_content(self):
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+        content = "A" * 6500  # > 3000 * 2, should produce 3 blocks
+        blocks = sender._build_blocks(content)
+        self.assertEqual(len(blocks), 3)
+        self.assertEqual(blocks[0]["type"], "section")
+        self.assertEqual(blocks[0]["text"]["type"], "mrkdwn")
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_text_prefers_bot_when_both_configured(self, mock_post):
+        """When both webhook and bot are configured, text must go via bot
+        so it lands in the same channel as images."""
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(
+            slack_webhook_url="https://hooks.slack.com/services/T/B/xxx",
+            slack_bot_token="xoxb-test",
+            slack_channel_id="C123",
+        )
+        sender = SlackSender(cfg)
+        result = sender.send_to_slack("hello")
+        self.assertTrue(result)
+        self.assertIn("chat.postMessage", mock_post.call_args[0][0])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_image_bot_success(self, mock_post):
+        # Mock three sequential calls: getUploadURLExternal, PUT upload, completeUploadExternal
+        mock_post.side_effect = [
+            _response(200, {"ok": True, "upload_url": "https://files.slack.com/upload/v1/test", "file_id": "F123"}),
+            _response(200, {}),
+            _response(200, {"ok": True}),
+        ]
+        cfg = _config(slack_bot_token="xoxb-test", slack_channel_id="C123")
+        sender = SlackSender(cfg)
+        result = sender._send_slack_image(b"PNG_BYTES")
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertIn("getUploadURLExternal", mock_post.call_args_list[0][0][0])
+        # Step 2: upload must send raw bytes (not multipart) to match declared length
+        upload_call_kwargs = mock_post.call_args_list[1][1]
+        self.assertEqual(upload_call_kwargs.get("data"), b"PNG_BYTES")
+        self.assertNotIn("files", upload_call_kwargs)
+        self.assertIn("completeUploadExternal", mock_post.call_args_list[2][0][0])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_image_fallback_to_text_when_no_bot(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+        result = sender._send_slack_image(b"PNG_BYTES", fallback_content="fallback text")
+        self.assertTrue(result)
+
+
 class TestTelegramSender(unittest.TestCase):
     """Unit tests for TelegramSender."""
 
@@ -358,6 +586,45 @@ class TestTelegramSender(unittest.TestCase):
         result = sender.send_to_telegram("hello")
         self.assertTrue(result)
         self.assertIn("sendMessage", mock_post.call_args[0][0])
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_retries_plain_text_when_markdown_http_400(self, mock_post):
+        markdown_error = _response(400)
+        markdown_error.text = (
+            '{"ok":false,"error_code":400,"description":"Bad Request: can\'t parse entities"}'
+        )
+        plain_text_success = _response(200, {"ok": True})
+        mock_post.side_effect = [markdown_error, plain_text_success]
+
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        result = sender.send_to_telegram("*ST宝实")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 2)
+        first_payload = mock_post.call_args_list[0][1]["json"]
+        second_payload = mock_post.call_args_list[1][1]["json"]
+        self.assertEqual(first_payload["parse_mode"], "Markdown")
+        self.assertNotIn("parse_mode", second_payload)
+        self.assertEqual(second_payload["text"], "*ST宝实")
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_plain_text_fallback_handles_non_json_200(self, mock_post):
+        markdown_error = _response(400)
+        markdown_error.text = (
+            '{"ok":false,"error_code":400,"description":"Bad Request: can\'t parse entities"}'
+        )
+        plain_text_non_json = _response(200)
+        plain_text_non_json.text = "upstream proxy error"
+        plain_text_non_json.json.side_effect = ValueError("invalid json")
+        mock_post.side_effect = [markdown_error, plain_text_non_json]
+
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        result = sender.send_to_telegram("*ST宝实")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 2)
 
 
 if __name__ == "__main__":

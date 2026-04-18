@@ -23,10 +23,8 @@ class HistoryItem(BaseModel):
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
     sentiment_score: Optional[int] = Field(
-        None, 
-        description="情绪评分 (0-100)",
-        ge=0,
-        le=100
+        None,
+        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     operation_advice: Optional[str] = Field(None, description="操作建议")
     created_at: Optional[str] = Field(None, description="创建时间")
@@ -119,6 +117,7 @@ class ReportMeta(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
+    report_language: Optional[str] = Field(None, description="报告输出语言（zh/en）")
     created_at: Optional[str] = Field(None, description="创建时间")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
@@ -132,10 +131,8 @@ class ReportSummary(BaseModel):
     operation_advice: Optional[str] = Field(None, description="操作建议")
     trend_prediction: Optional[str] = Field(None, description="趋势预测")
     sentiment_score: Optional[int] = Field(
-        None, 
-        description="情绪评分 (0-100)",
-        ge=0,
-        le=100
+        None,
+        description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     sentiment_label: Optional[str] = Field(None, description="情绪标签")
 
@@ -155,6 +152,10 @@ class ReportDetails(BaseModel):
     news_content: Optional[str] = Field(None, description="新闻摘要")
     raw_result: Optional[Any] = Field(None, description="原始分析结果（JSON）")
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
+    financial_report: Optional[Any] = Field(None, description="结构化财报摘要（来自 fundamental_context）")
+    dividend_metrics: Optional[Any] = Field(None, description="结构化分红指标（含 TTM 口径）")
+    belong_boards: Optional[Any] = Field(None, description="关联板块列表")
+    sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
 
 
 class AnalysisReport(BaseModel):
@@ -173,6 +174,7 @@ class AnalysisReport(BaseModel):
                     "stock_code": "600519",
                     "stock_name": "贵州茅台",
                     "report_type": "detailed",
+                    "report_language": "zh",
                     "created_at": "2024-01-01T12:00:00"
                 },
                 "summary": {

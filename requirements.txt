@@ -16,6 +16,8 @@ tushare>=1.4.0              # Priority 2: 挖地兔 Pro API
 pytdx>=1.72                 # Priority 2: 通达信行情服务器
 baostock>=0.8.0             # Priority 3: 证券宝数据
 yfinance>=0.2.0             # Priority 4: Yahoo Finance (Fallback)
+longbridge>=0.2.0           # Priority 5: 长桥 OpenAPI（美股/港股兜底）
+tickflow>=0.1.0            # TickFlow official SDK (Issue #632, market review enhancement)
 
 #飞书
 lark-oapi>=1.0.0             # 飞书API
@@ -28,7 +30,9 @@ numpy>=1.24.0               # 数值计算
 json-repair>=0.55.1         # JSON 修复
 
 # AI 分析
-litellm>=1.80.10            # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
+# Restore official PyPI install after the quarantined 1.82.7 / 1.82.8 builds were removed.
+# Keep the historical minimum version and add a safe upper bound.
+litellm>=1.80.10,<1.82.7   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
@@ -49,6 +53,7 @@ dingtalk-stream >= 0.24.3    # 钉钉 Stream SDK
 
 # Discord 机器人
 discord.py>=2.0.0              # Discord 机器人开发库
+PyNaCl>=1.5.0                  # Discord Interaction/Webhook Ed25519 签名验证
 
 # Web Content Extraction
 newspaper3k>=0.2.8          # Article extraction

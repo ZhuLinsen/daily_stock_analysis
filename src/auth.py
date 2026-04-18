@@ -368,11 +368,17 @@ def verify_session(value: str) -> bool:
 
 
 def get_client_ip(request) -> str:
-    """Get client IP, respecting TRUST_X_FORWARDED_FOR."""
+    """Get client IP, respecting TRUST_X_FORWARDED_FOR.
+
+    When behind a single trusted reverse proxy, the proxy appends the real
+    client IP as the rightmost entry in X-Forwarded-For.  We use [-1] instead
+    of [0] so that an attacker cannot spoof an arbitrary leftmost value to
+    rotate rate-limit buckets and bypass brute-force protection.
+    """
     if os.getenv("TRUST_X_FORWARDED_FOR", "false").lower() == "true":
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            return forwarded.split(",")[-1].strip()
     if request.client:
         return request.client.host or "127.0.0.1"
     return "127.0.0.1"

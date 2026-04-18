@@ -11,6 +11,9 @@ required_tools:
   - get_realtime_quote
   - analyze_trend
   - search_stock_news
+aliases: [情绪, 情绪周期]
+default_priority: 100
+market_regimes: [sector_hot]
 
 instructions: |
   **情绪周期策略（Sentiment Cycle Strategy）**

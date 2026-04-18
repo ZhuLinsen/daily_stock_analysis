@@ -8,7 +8,7 @@ export interface ChatStreamOptions {
 
 export interface ChatRequest {
   message: string;
-  strategies?: string[];
+  skills?: string[];
 }
 
 export interface ChatStreamRequest extends ChatRequest {
@@ -23,14 +23,15 @@ export interface ChatResponse {
   error?: string;
 }
 
-export interface StrategyInfo {
+export interface SkillInfo {
   id: string;
   name: string;
   description: string;
 }
 
-export interface StrategiesResponse {
-  strategies: StrategyInfo[];
+export interface SkillsResponse {
+  skills: SkillInfo[];
+  default_skill_id: string;
 }
 
 export interface ChatSessionItem {
@@ -55,8 +56,8 @@ export const agentApi = {
     });
     return response.data;
   },
-  async getStrategies(): Promise<StrategiesResponse> {
-    const response = await apiClient.get<StrategiesResponse>('/api/v1/agent/strategies');
+  async getSkills(): Promise<SkillsResponse> {
+    const response = await apiClient.get<SkillsResponse>('/api/v1/agent/skills');
     return response.data;
   },
   async getChatSessions(limit = 50): Promise<ChatSessionItem[]> {

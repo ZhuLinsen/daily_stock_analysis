@@ -3,18 +3,19 @@ import { analysisApi } from '../api/analysis';
 import type { TaskInfo } from '../types/analysis';
 
 /**
- * SSE 事件类型
+ * SSE event types.
  */
 export type SSEEventType =
   | 'connected'
   | 'task_created'
   | 'task_started'
+  | 'task_progress'
   | 'task_completed'
   | 'task_failed'
   | 'heartbeat';
 
 /**
- * SSE 事件数据
+ * SSE event payload.
  */
 export interface SSEEvent {
   type: SSEEventType;
@@ -23,63 +24,52 @@ export interface SSEEvent {
 }
 
 /**
- * SSE Hook 配置
+ * SSE hook options.
  */
 export interface UseTaskStreamOptions {
-  /** 任务创建回调 */
+  /** Task created callback */
   onTaskCreated?: (task: TaskInfo) => void;
-  /** 任务开始回调 */
+  /** Task started callback */
   onTaskStarted?: (task: TaskInfo) => void;
-  /** 任务完成回调 */
+  /** Task completed callback */
   onTaskCompleted?: (task: TaskInfo) => void;
-  /** 任务失败回调 */
+  /** Task progress callback */
+  onTaskProgress?: (task: TaskInfo) => void;
+  /** Task failed callback */
   onTaskFailed?: (task: TaskInfo) => void;
-  /** 连接成功回调 */
+  /** Connected callback */
   onConnected?: () => void;
-  /** 连接错误回调 */
+  /** Connection error callback */
   onError?: (error: Event) => void;
-  /** 是否自动重连 */
+  /** Whether to reconnect automatically */
   autoReconnect?: boolean;
-  /** 重连延迟(ms) */
+  /** Reconnect delay in milliseconds */
   reconnectDelay?: number;
-  /** 是否启用 */
+  /** Whether the hook is enabled */
   enabled?: boolean;
 }
 
 /**
- * SSE Hook 返回值
+ * SSE hook result.
  */
 export interface UseTaskStreamResult {
-  /** 是否已连接 */
+  /** Whether the stream is connected */
   isConnected: boolean;
-  /** 手动重连 */
+  /** Reconnect manually */
   reconnect: () => void;
-  /** 手动断开 */
+  /** Disconnect manually */
   disconnect: () => void;
 }
 
 /**
- * 任务流 SSE Hook
- * 用于接收实时任务状态更新
- *
- * @example
- * ```tsx
- * const { isConnected } = useTaskStream({
- *   onTaskCompleted: (task) => {
- *     console.log('Task completed:', task);
- *     refreshHistory();
- *   },
- *   onTaskFailed: (task) => {
- *     showError(task.error);
- *   },
- * });
- * ```
+ * Task-stream SSE hook for realtime task status updates.
  */
 export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStreamResult {
   const {
     onTaskCreated,
     onTaskStarted,
     onTaskCompleted,
+    onTaskProgress,
     onTaskFailed,
     onConnected,
     onError,
@@ -93,29 +83,31 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<() => void>(() => {});
 
-  // 使用 ref 存储回调，避免 SSE 连接因回调变化而频繁重连
+  // Store callbacks in a ref to avoid reconnecting on every render.
   const callbacksRef = useRef({
     onTaskCreated,
     onTaskStarted,
     onTaskCompleted,
+    onTaskProgress,
     onTaskFailed,
     onConnected,
     onError,
   });
 
-  // 每次渲染时更新回调 ref（确保事件处理使用最新回调）
+  // Keep the latest callbacks available to the active SSE handlers.
   useEffect(() => {
     callbacksRef.current = {
       onTaskCreated,
       onTaskStarted,
       onTaskCompleted,
+      onTaskProgress,
       onTaskFailed,
       onConnected,
       onError,
     };
   });
 
-  // 将 snake_case 转换为 camelCase
+  // Convert snake_case payloads into camelCase TaskInfo objects.
   const toCamelCase = (data: Record<string, unknown>): TaskInfo => {
     return {
       taskId: data.task_id as string,
@@ -129,10 +121,12 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
       startedAt: data.started_at as string | undefined,
       completedAt: data.completed_at as string | undefined,
       error: data.error as string | undefined,
+      originalQuery: data.original_query as string | undefined,
+      selectionSource: data.selection_source as string | undefined,
     };
   };
 
-  // 解析 SSE 数据
+  // Parse an SSE payload.
   const parseEventData = useCallback((eventData: string): TaskInfo | null => {
     try {
       const data = JSON.parse(eventData);
@@ -143,7 +137,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     }
   }, []);
 
-  // 创建 EventSource 连接
+  // Create an EventSource connection.
   const connect = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -153,47 +147,52 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     const eventSource = new EventSource(url, { withCredentials: true });
     eventSourceRef.current = eventSource;
 
-    // 连接成功
+    // Connected event
     eventSource.addEventListener('connected', () => {
       setIsConnected(true);
       callbacksRef.current.onConnected?.();
     });
 
-    // 任务创建
+    // Task created event
     eventSource.addEventListener('task_created', (e) => {
       const task = parseEventData(e.data);
       if (task) callbacksRef.current.onTaskCreated?.(task);
     });
 
-    // 任务开始
+    // Task started event
     eventSource.addEventListener('task_started', (e) => {
       const task = parseEventData(e.data);
       if (task) callbacksRef.current.onTaskStarted?.(task);
     });
 
-    // 任务完成
+    eventSource.addEventListener('task_progress', (e) => {
+      const task = parseEventData(e.data);
+      if (task) callbacksRef.current.onTaskProgress?.(task);
+    });
+
+    // Task completed event
     eventSource.addEventListener('task_completed', (e) => {
       const task = parseEventData(e.data);
       if (task) callbacksRef.current.onTaskCompleted?.(task);
     });
 
-    // 任务失败
+    // Task failed event
     eventSource.addEventListener('task_failed', (e) => {
       const task = parseEventData(e.data);
       if (task) callbacksRef.current.onTaskFailed?.(task);
     });
 
-    // 心跳 - 仅用于保持连接
+    // Heartbeat event used to keep the connection alive.
     eventSource.addEventListener('heartbeat', () => {
-      // 可选：更新最后心跳时间
+      // Optional place to record the latest heartbeat timestamp.
     });
 
-    // 错误处理
+    // Connection error handling
     eventSource.onerror = (error) => {
       setIsConnected(false);
       callbacksRef.current.onError?.(error);
 
-      // 自动重连（通过 ref 避免闭包引用未声明的 connect）
+      // Auto-reconnect via ref to avoid stale closure issues.
       if (autoReconnect && enabled) {
         eventSource.close();
         reconnectTimeoutRef.current = setTimeout(() => {
@@ -212,7 +211,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     connectRef.current = connect;
   }, [connect]);
 
-  // 断开连接（setState 延后执行，避免 effect 内同步 setState 触发级联渲染）
+  // Disconnect and defer the state update to avoid nested renders.
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -225,13 +224,13 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
     queueMicrotask(() => setIsConnected(false));
   }, []);
 
-  // 重连
+  // Reconnect
   const reconnect = useCallback(() => {
     disconnect();
     connect();
   }, [disconnect, connect]);
 
-  // 启用/禁用时连接/断开
+  // Connect or disconnect when the hook is enabled or disabled.
   useEffect(() => {
     if (enabled) {
       connect();

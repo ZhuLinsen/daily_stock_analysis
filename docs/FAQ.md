@@ -94,12 +94,18 @@
 
 **解决方案**：
 1. 确保 `.env` 文件位于项目根目录
-2. **Docker 部署**：修改后需重启容器
+2. **Docker 部署 / WebUI 系统设置**：
+   - WebUI 保存后的 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 会写回容器内的 `.env`
+   - WebUI 保存后会触发当前进程的配置重载；运行中的读取路径会同步使用最新写回的 `.env`，例如定时任务会继续热读取保存后的 `STOCK_LIST`
+   - 如果容器启动命令里显式传入了这些同名环境变量（如 `docker run -e ...` 或 Compose `environment:`），后续重启时仍以显式进程环境变量为准；要让 WebUI 保存值接管，请同步更新或移除这些显式 override
+   - 其中 `SCHEDULE_*` 与 `RUN_IMMEDIATELY` 属于**启动期调度配置**，保存后不会立即触发一次分析，也不会热重建当前进程里的 scheduler
+   - 如需让调度开关立刻接管当前容器，请重启容器，并确保以 schedule 模式启动
+3. **Docker 手工改 `.env` 后**：修改后仍建议重启容器
    ```bash
    docker-compose down && docker-compose up -d
    ```
-3. **GitHub Actions**：`.env` 文件不生效，必须在 Secrets/Variables 中配置
-4. 检查是否有多个 `.env` 文件（如 `.env.local`）导致覆盖
+4. **GitHub Actions**：`.env` 文件不生效，必须在 Secrets/Variables 中配置
+5. 检查是否有多个 `.env` 文件（如 `.env.local`）导致覆盖
 
 ---
 
@@ -124,15 +130,15 @@ PROXY_PORT=10809
 
 **Q: 配置了 GEMINI_API_KEY 和 LLM_CHANNELS，为什么只用渠道？**
 
-系统按优先级只取一种：`LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys。一旦配置了渠道或 YAML，legacy 区域（`GEMINI_API_KEY` 等）不参与解析。
+系统按优先级只取一种：高级模型路由 YAML（`LITELLM_CONFIG`）> `LLM_CHANNELS` > legacy keys。但 YAML 仅在文件可正常解析且产出了有效 `model_list` 时才生效；如果 YAML 路径无效或内容为空，系统会自动回退到 `LLM_CHANNELS` 或 legacy keys。一旦某一层级实际生效，更低优先级的配置不参与解析。
 
-**Q: test_env 输出 ✗ 未配置任何 LLM 怎么办？**
+**Q: test_env 输出“未配置可用 AI 模型”怎么办？**
 
-配置 `LITELLM_CONFIG` / `LLM_CHANNELS` 或至少一个 `*_API_KEY`（如 `GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`AIHUBMIX_KEY`）。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
+默认先选一种服务商并填写对应 API Key；如果需要固定主模型，再补 `LITELLM_MODEL=provider/model`；如果要多模型切换，再配置 `LLM_CHANNELS` 或高级模型路由 YAML。运行 `python test_env.py --config` 校验配置，`python test_env.py --llm` 实际调用 API 测试。
 
 **Q: 如何同时使用多个模型（如 AIHubmix + DeepSeek + Gemini）？**
 
-使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → 渠道编辑器中可视化配置。
+使用渠道模式：设置 `LLM_CHANNELS=aihubmix,deepseek,gemini`，并配置各渠道的 `LLM_{NAME}_BASE_URL`、`LLM_{NAME}_API_KEY`、`LLM_{NAME}_MODELS`。也可在 Web 设置页 → AI 模型 → AI 模型接入 中可视化配置。
 
 ---
 
@@ -212,6 +218,51 @@ OPENAI_MODEL=deepseek-chat
 - DeepSeek: `https://api.deepseek.com/v1`
 - 通义千问: `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Moonshot: `https://api.moonshot.cn/v1`
+
+---
+
+### Q12b: 如何使用 Ollama 本地模型？
+
+**配置方法**：使用 `OLLAMA_API_BASE` + `LITELLM_MODEL`，或渠道模式（`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`）。
+
+**避坑**：不要使用 `OPENAI_BASE_URL` 配置 Ollama，否则系统会错误拼接 URL（如 404、`api/generate/api/show`）。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md) 示例 4 与渠道示例。
+
+---
+
+### Q12c: 运行时报 `OllamaException / APIConnectionError`（All LLM models failed）怎么办？
+
+**症状**：日志出现 `litellm.APIConnectionError: OllamaException` 或 `Analysis failed: All LLM models failed (tried 1 model(s))`。
+
+逐项排查以下 5 个检查点：
+
+1. **Ollama 服务是否已启动**
+   ```bash
+   # 查看进程
+   pgrep -a ollama
+   # 若无输出则先启动
+   ollama serve
+   ```
+   确认服务正在监听：`curl http://localhost:11434`，应返回 `Ollama is running`。
+
+2. **`OLLAMA_API_BASE` 是否配置正确**
+   - ✅ 正确：`OLLAMA_API_BASE=http://localhost:11434`
+   - ❌ 错误：把 Ollama 地址填到 `OPENAI_BASE_URL`，会导致 URL 路径拼错（如 `…/api/generate/api/show`）。
+
+3. **模型名称是否加了 `ollama/` 前缀**
+   - ✅ 正确：`LITELLM_MODEL=ollama/qwen3:8b`
+   - ❌ 错误：`LITELLM_MODEL=qwen3:8b`（缺少前缀，litellm 无法路由到 Ollama）
+
+4. **模型是否已下载到本地**
+   ```bash
+   ollama list          # 查看已有模型
+   ollama pull qwen3:8b # 如无则先拉取
+   ```
+
+5. **远程部署 / Docker 时的网络与防火墙**
+   - 若 Ollama 和程序不在同一主机，需将 `OLLAMA_API_BASE` 改为实际 IP，如 `http://192.168.1.100:11434`。
+   - 确认防火墙已放行 11434 端口，且 Ollama 启动时绑定了正确地址（`OLLAMA_HOST=0.0.0.0:11434`）。
+
+> 完整配置示例见 [LLM 配置指南 → 示例 4（Ollama）](LLM_CONFIG_GUIDE.md#example-4-ollama)。
 
 ---
 
@@ -317,4 +368,4 @@ python main.py --market-only
 
 ---
 
-*最后更新：2026-02-28*
+*最后更新：2026-04-01*

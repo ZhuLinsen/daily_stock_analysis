@@ -190,7 +190,7 @@ class TaskService:
                 report_type=report_type
             )
 
-            if result:
+            if result and result.success:
                 result_data = {
                     "code": result.code,
                     "name": result.name,
@@ -210,15 +210,18 @@ class TaskService:
                 logger.info(f"[TaskService] 股票 {code} 分析完成: {result.operation_advice}")
                 return {"success": True, "task_id": task_id, "result": result_data}
             else:
+                fail_message = "分析返回空结果"
+                if result is not None:
+                    fail_message = result.error_message or fail_message
                 with self._tasks_lock:
                     self._tasks[task_id].update({
                         "status": "failed",
                         "end_time": datetime.now().isoformat(),
-                        "error": "分析返回空结果"
+                        "error": fail_message
                     })
 
-                logger.warning(f"[TaskService] 股票 {code} 分析失败: 返回空结果")
-                return {"success": False, "task_id": task_id, "error": "分析返回空结果"}
+                logger.warning(f"[TaskService] 股票 {code} 分析失败: {fail_message}")
+                return {"success": False, "task_id": task_id, "error": fail_message}
 
         except Exception as e:
             error_msg = str(e)

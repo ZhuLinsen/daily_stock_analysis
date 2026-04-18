@@ -5,7 +5,11 @@ import os
 import unittest
 from unittest.mock import patch
 
-from src.config import Config
+from src.config import (
+    Config,
+    get_effective_agent_models_to_try,
+    get_effective_agent_primary_model,
+)
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
@@ -62,6 +66,23 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
         self.assertEqual(config.llm_channels[0]["models"], ["vertex_ai/gemini-2.5-flash"])
         self.assertEqual(config.llm_model_list[0]["litellm_params"]["model"], "vertex_ai/gemini-2.5-flash")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_minimax_prefixed_models_are_not_rewritten_for_openai_compatible_channels(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-test-value",
+            "LLM_PRIMARY_MODELS": "minimax/MiniMax-M1",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_channels[0]["models"], ["minimax/MiniMax-M1"])
+        self.assertEqual(config.llm_model_list[0]["litellm_params"]["model"], "minimax/MiniMax-M1")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -192,6 +213,103 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         params = config.llm_model_list[0]["litellm_params"]
         self.assertEqual(params["model"], "openai/my-model")
         self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_model_empty_inherits_primary_model(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test-value",
+            "OPENAI_MODEL": "gpt-4o-mini",
+            "AGENT_LITELLM_MODEL": "",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_litellm_model, "")
+        self.assertEqual(get_effective_agent_primary_model(config), "openai/gpt-4o-mini")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_model_without_provider_prefix_is_normalized(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test-value",
+            "OPENAI_MODEL": "gpt-4o-mini",
+            "AGENT_LITELLM_MODEL": "deepseek-chat",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_litellm_model, "openai/deepseek-chat")
+        self.assertEqual(get_effective_agent_primary_model(config), "openai/deepseek-chat")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_models_to_try_are_deduped_in_order(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test-value",
+            "LITELLM_MODEL": "gemini/gemini-2.5-flash",
+            "AGENT_LITELLM_MODEL": "openai/gpt-4o-mini",
+            "LITELLM_FALLBACK_MODELS": "openai/gpt-4o-mini,openai/gpt-4o-mini,gemini/gemini-2.5-flash",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(
+            get_effective_agent_models_to_try(config),
+            ["openai/gpt-4o-mini", "gemini/gemini-2.5-flash"],
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_models_to_try_dedupes_semantically_equivalent_openai_models(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test-value",
+            "LITELLM_MODEL": "gemini/gemini-2.5-flash",
+            "AGENT_LITELLM_MODEL": "gpt-4o-mini",
+            "LITELLM_FALLBACK_MODELS": "openai/gpt-4o-mini,gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(
+            get_effective_agent_models_to_try(config),
+            ["openai/gpt-4o-mini"],
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(
+        Config,
+        "_parse_litellm_yaml",
+        return_value=[
+            {
+                "model_name": "gpt4o",
+                "litellm_params": {
+                    "model": "openai/gpt-4o-mini",
+                    "api_key": "sk-test-value",
+                },
+            }
+        ],
+    )
+    def test_agent_model_preserves_yaml_alias_without_provider_prefix(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LITELLM_CONFIG": "/tmp/litellm.yaml",
+            "AGENT_LITELLM_MODEL": "gpt4o",
+            "LITELLM_FALLBACK_MODELS": "openai/gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_litellm_model, "gpt4o")
+        self.assertEqual(get_effective_agent_primary_model(config), "gpt4o")
+        self.assertEqual(
+            get_effective_agent_models_to_try(config),
+            ["gpt4o", "openai/gpt-4o-mini"],
+        )
 
 
 if __name__ == "__main__":

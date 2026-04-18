@@ -14,7 +14,12 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from api.v1.endpoints import system_config
-from api.v1.schemas.system_config import TestLLMChannelRequest, UpdateSystemConfigRequest
+from api.v1.schemas.system_config import (
+    DiscoverLLMChannelModelsRequest,
+    ImportSystemConfigRequest,
+    TestLLMChannelRequest,
+    UpdateSystemConfigRequest,
+)
 from src.config import Config
 from src.core.config_manager import ConfigManager
 from src.services.system_config_service import SystemConfigService
@@ -40,6 +45,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         os.environ["ENV_FILE"] = str(self.env_path)
+        os.environ["DSA_DESKTOP_MODE"] = "true"
         Config.reset_instance()
 
         self.manager = ConfigManager(env_path=self.env_path)
@@ -47,6 +53,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         Config.reset_instance()
+        os.environ.pop("DSA_DESKTOP_MODE", None)
         os.environ.pop("ENV_FILE", None)
         self.temp_dir.cleanup()
 
@@ -124,6 +131,137 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertIn("\n\n# Secrets\n", env_content)
         self.assertIn("STOCK_LIST=600519,300750\n", env_content)
 
+    def test_put_config_returns_startup_only_schedule_warning(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+        payload = system_config.update_system_config(
+            request=UpdateSystemConfigRequest(
+                config_version=current["config_version"],
+                reload_now=True,
+                items=[
+                    {"key": "RUN_IMMEDIATELY", "value": "false"},
+                    {"key": "SCHEDULE_RUN_IMMEDIATELY", "value": "true"},
+                ],
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        run_warning = next(
+            warning
+            for warning in payload["warnings"]
+            if "RUN_IMMEDIATELY 已写入 .env" in warning
+        )
+        schedule_warning = next(
+            warning
+            for warning in payload["warnings"]
+            if "SCHEDULE_RUN_IMMEDIATELY" in warning
+        )
+
+        self.assertIn("非 schedule 模式", run_warning)
+        self.assertNotIn("以 schedule 模式", run_warning)
+        self.assertIn("不会自动重建 scheduler", schedule_warning)
+        self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
+        self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
+
+    def test_export_desktop_system_config_returns_raw_env_content(self) -> None:
+        self.env_path.write_text(
+            "# Desktop config\nSTOCK_LIST=600519,000001\nGEMINI_API_KEY=secret-key-value\n",
+            encoding="utf-8",
+        )
+
+        payload = system_config.export_desktop_system_config(service=self.service).model_dump()
+
+        self.assertEqual(
+            payload["content"],
+            "# Desktop config\nSTOCK_LIST=600519,000001\nGEMINI_API_KEY=secret-key-value\n",
+        )
+        self.assertEqual(payload["config_version"], self.manager.get_config_version())
+
+    def test_import_desktop_system_config_merges_updates(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        payload = system_config.import_desktop_system_config(
+            request=ImportSystemConfigRequest(
+                config_version=current["config_version"],
+                content="STOCK_LIST=300750\nCUSTOM_NOTE=desktop backup\n",
+                reload_now=False,
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        env_content = self.env_path.read_text(encoding="utf-8")
+        self.assertIn("STOCK_LIST=300750\n", env_content)
+        self.assertIn("CUSTOM_NOTE=desktop backup\n", env_content)
+        self.assertIn("GEMINI_API_KEY=secret-key-value\n", env_content)
+
+    def test_import_desktop_system_config_returns_conflict_when_version_is_stale(self) -> None:
+        with self.assertRaises(HTTPException) as context:
+            system_config.import_desktop_system_config(
+                request=ImportSystemConfigRequest(
+                    config_version="stale-version",
+                    content="STOCK_LIST=300750\n",
+                    reload_now=False,
+                ),
+                service=self.service,
+            )
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(context.exception.detail["error"], "config_version_conflict")
+
+    def test_import_desktop_system_config_returns_bad_request_for_invalid_content(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        with self.assertRaises(HTTPException) as context:
+            system_config.import_desktop_system_config(
+                request=ImportSystemConfigRequest(
+                    config_version=current["config_version"],
+                    content="# comments only\n\n",
+                    reload_now=False,
+                ),
+                service=self.service,
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.detail["error"], "invalid_import_file")
+
+    def test_import_desktop_system_config_returns_bad_request_for_empty_content(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        with self.assertRaises(HTTPException) as context:
+            system_config.import_desktop_system_config(
+                request=ImportSystemConfigRequest(
+                    config_version=current["config_version"],
+                    content="",
+                    reload_now=False,
+                ),
+                service=self.service,
+            )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.detail["error"], "invalid_import_file")
+
+    def test_desktop_env_endpoints_return_forbidden_outside_desktop_mode(self) -> None:
+        os.environ["DSA_DESKTOP_MODE"] = "false"
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        with self.assertRaises(HTTPException) as export_context:
+            system_config.export_desktop_system_config(service=self.service)
+        with self.assertRaises(HTTPException) as import_context:
+            system_config.import_desktop_system_config(
+                request=ImportSystemConfigRequest(
+                    config_version=current["config_version"],
+                    content="STOCK_LIST=300750\n",
+                    reload_now=False,
+                ),
+                service=self.service,
+            )
+
+        self.assertEqual(export_context.exception.status_code, 403)
+        self.assertEqual(export_context.exception.detail["error"], "desktop_only_feature")
+        self.assertEqual(import_context.exception.status_code, 403)
+        self.assertEqual(import_context.exception.detail["error"], "desktop_only_feature")
+
     def test_test_llm_channel_endpoint_returns_service_payload(self) -> None:
         with patch.object(
             self.service,
@@ -151,6 +289,50 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["resolved_model"], "openai/gpt-4o-mini")
         mock_test.assert_called_once()
+
+    def test_validate_returns_user_facing_model_message_without_internal_env_key_name(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "primary"},
+                {"key": "LLM_PRIMARY_PROTOCOL", "value": "openai"},
+                {"key": "LLM_PRIMARY_API_KEY", "value": "sk-test-value"},
+                {"key": "LLM_PRIMARY_MODELS", "value": "gpt-4o-mini"},
+                {"key": "LITELLM_MODEL", "value": "openai/gpt-4o"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issue = next(issue for issue in validation["issues"] if issue["key"] == "LITELLM_MODEL")
+        self.assertEqual(issue["code"], "unknown_model")
+        self.assertNotIn("LITELLM_MODEL", issue["message"])
+        self.assertIn("primary model", issue["message"].lower())
+
+    def test_discover_llm_channel_models_endpoint_returns_service_payload(self) -> None:
+        with patch.object(
+            self.service,
+            "discover_llm_channel_models",
+            return_value={
+                "success": True,
+                "message": "LLM channel model discovery succeeded",
+                "error": None,
+                "resolved_protocol": "openai",
+                "models": ["qwen-plus", "qwen-turbo"],
+                "latency_ms": 88,
+            },
+        ) as mock_discover:
+            payload = system_config.discover_llm_channel_models(
+                request=DiscoverLLMChannelModelsRequest(
+                    name="dashscope",
+                    protocol="openai",
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    api_key="sk-test",
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["models"], ["qwen-plus", "qwen-turbo"])
+        mock_discover.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -98,6 +98,16 @@ class TestNormalizeStockCode(unittest.TestCase):
         self.assertEqual(normalize_stock_code("BJ920748"), "920748")
         self.assertEqual(normalize_stock_code("bj920748"), "920748")
 
+    def test_hk_suffix_normalized_to_canonical_prefix(self):
+        """港股 .HK 后缀格式应归一为 HK+5 位数字。"""
+        self.assertEqual(normalize_stock_code("1810.HK"), "HK01810")
+        self.assertEqual(normalize_stock_code("0700.hk"), "HK00700")
+
+    def test_hk_prefix_is_zero_padded(self):
+        """HK 前缀的短数字格式应补足到 5 位，便于后续缓存与去重。"""
+        self.assertEqual(normalize_stock_code("hk1810"), "HK01810")
+        self.assertEqual(normalize_stock_code("HK700"), "HK00700")
+
 
 @unittest.skipIf(not _TUSHARE_IMPORTS_OK, f"tushare fetcher imports failed: {_TUSHARE_IMPORT_ERROR}")
 class TestTushareConvertStockCode(unittest.TestCase):

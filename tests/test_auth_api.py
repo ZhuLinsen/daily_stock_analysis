@@ -143,6 +143,30 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 204)
         self.assertIn("dsa_session=", response.headers["set-cookie"])
 
+    def test_logout_invalidates_existing_session(self) -> None:
+        login_response = asyncio.run(
+            auth_endpoint.auth_login(
+                self._build_request(),
+                auth_endpoint.LoginRequest(password="passwd6", passwordConfirm="passwd6"),
+            )
+        )
+        self.assertEqual(login_response.status_code, 200)
+        cookie_header = login_response.headers["set-cookie"]
+        session_cookie = cookie_header.split("dsa_session=", 1)[1].split(";", 1)[0]
+        self.assertTrue(auth.verify_session(session_cookie))
+
+        logout_response = asyncio.run(auth_endpoint.auth_logout(self._build_request()))
+
+        self.assertEqual(logout_response.status_code, 204)
+        self.assertFalse(auth.verify_session(session_cookie))
+
+    def test_logout_returns_500_when_session_invalidation_fails(self) -> None:
+        with patch.object(auth_endpoint, "rotate_session_secret", return_value=False):
+            response = asyncio.run(auth_endpoint.auth_logout(self._build_request()))
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn(b'"error":"internal_error"', response.body)
+
     def test_change_password_requires_session(self) -> None:
         first_response = asyncio.run(
             auth_endpoint.auth_login(
@@ -202,6 +226,28 @@ class AuthApiTestCase(unittest.TestCase):
             response = asyncio.run(middleware.dispatch(request, AsyncMock(return_value=Response(status_code=200))))
 
         self.assertEqual(response.status_code, 401)
+
+    def test_logout_requires_session_when_auth_enabled(self) -> None:
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/auth/logout",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "http",
+            "client": ("127.0.0.1", 1234),
+            "server": ("testserver", 80),
+            "root_path": "",
+        }
+        request = Request(scope)
+        middleware = AuthMiddleware(app=MagicMock())
+        call_next = AsyncMock(return_value=Response(status_code=204))
+
+        with patch("api.middlewares.auth.is_auth_enabled", return_value=True):
+            response = asyncio.run(middleware.dispatch(request, call_next))
+
+        self.assertEqual(response.status_code, 401)
+        call_next.assert_not_awaited()
 
     def test_protected_api_accessible_with_session(self) -> None:
         scope = {

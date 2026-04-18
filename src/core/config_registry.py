@@ -10,7 +10,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "2026-02-09"
+from src.config import AGENT_MAX_STEPS_DEFAULT
+
+SCHEMA_VERSION = "2026-03-29"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -46,7 +48,7 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "category": "agent",
         "title": "Agent",
-        "description": "Agent mode and strategy settings.",
+        "description": "Agent mode and strategy-skill settings.",
         "display_order": 55,
     },
     {
@@ -82,8 +84,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # AI Model – LiteLLM unified config
     # ------------------------------------------------------------------
     "LITELLM_MODEL": {
-        "title": "Primary Model (LiteLLM)",
-        "description": "Unified primary model in provider/model format (e.g. gemini/gemini-3-flash-preview, openai/deepseek-chat, anthropic/claude-3-5-sonnet-20241022). If empty, auto-inferred from available API keys.",
+        "title": "Primary Model",
+        "description": "Primary model in provider/model format (e.g. gemini/gemini-3-flash-preview, openai/deepseek-chat, anthropic/claude-3-5-sonnet-20241022). If empty, it is auto-inferred from available API keys or channel declarations.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -95,9 +97,23 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 1,
     },
+    "AGENT_LITELLM_MODEL": {
+        "title": "Agent Primary Model",
+        "description": "Optional Agent-only primary model in provider/model format. When empty, Agent inherits the primary model. Bare model names are normalized to openai/<model>.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 2,
+    },
     "LITELLM_FALLBACK_MODELS": {
-        "title": "Fallback Models (LiteLLM)",
-        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini). Enables cross-provider redundancy.",
+        "title": "Fallback Models",
+        "description": "Comma-separated fallback models tried when the primary model fails (e.g. anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini). Useful for cross-provider redundancy.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -113,8 +129,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # AI Model – Multi-channel LLM configuration
     # ------------------------------------------------------------------
     "LITELLM_CONFIG": {
-        "title": "LiteLLM Config File",
-        "description": "Path to litellm_config.yaml (advanced). Takes priority over channels and legacy keys.",
+        "title": "Advanced Model Routing Config",
+        "description": "Path to an advanced model routing YAML file (expert use). When valid/parseable and yields a model_list, it takes priority over channels and legacy keys; otherwise channels/legacy are used as fallback.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "text",
@@ -213,6 +229,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 10,
     },
+    "TICKFLOW_API_KEY": {
+        "title": "TickFlow API Key",
+        "description": "API key for TickFlow market review enhancement (A-share indices, plus market stats when universe queries are enabled).",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 15,
+    },
     "REALTIME_SOURCE_PRIORITY": {
         "title": "Realtime Source Priority",
         "description": "Comma-separated priority for realtime quote providers.",
@@ -240,6 +270,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 21,
+    },
+    "ANSPIRE_API_KEYS": {
+        "title": "Anspire API Keys",
+        "description": "Comma-separated Anspire Search API keys.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {"multi_value": True, "delimiter": ","},
+        "display_order": 22,
     },
     "TAVILY_API_KEYS": {
         "title": "Tavily API Keys",
@@ -330,6 +374,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         },
         "display_order": 52,
     },
+    "SEARXNG_PUBLIC_INSTANCES_ENABLED": {
+        "title": "SearXNG Public Instances",
+        "description": "Auto-discover public SearXNG instances from searx.space when SEARXNG_BASE_URLS is empty. Default: true; set false to disable.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 53,
+    },
     "ENABLE_REALTIME_QUOTE": {
         "title": "Enable Realtime Quote",
         "description": "Enable realtime market quotes. Disable to only use historical close prices.",
@@ -372,6 +430,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {"min": 1, "max": 30},
         "display_order": 60,
     },
+    "NEWS_STRATEGY_PROFILE": {
+        "title": "News Strategy Profile",
+        "description": "News window profile: ultra_short(1d), short(3d), medium(7d), long(30d). Effective window = min(profile, NEWS_MAX_AGE_DAYS).",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "short",
+        "options": ["ultra_short", "short", "medium", "long"],
+        "validation": {"enum": ["ultra_short", "short", "medium", "long"]},
+        "display_order": 61,
+    },
     "BIAS_THRESHOLD": {
         "title": "Bias Threshold (%)",
         "description": "Deviation threshold from MA5 (%). Exceeding this triggers 'do not chase' warning. Strong trend stocks auto-widen to 1.5x.",
@@ -384,7 +456,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "5.0",
         "options": [],
         "validation": {"min": 0.0, "max": 50.0},
-        "display_order": 61,
+        "display_order": 62,
     },
     "PYTDX_HOST": {
         "title": "Pytdx Host",
@@ -769,7 +841,24 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     "FEISHU_WEBHOOK_URL": {
         "title": "Feishu Webhook URL",
-        "description": "Webhook URL for Feishu (Lark) bot notifications.",
+        "description": "Feishu custom bot webhook URL for group notifications. This is the webhook push channel; FEISHU_APP_ID / FEISHU_APP_SECRET do not enable webhook delivery by themselves.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {
+            "item_type": "url",
+            "allowed_schemes": ["http", "https"],
+        },
+        "display_order": 12,
+    },
+    "FEISHU_WEBHOOK_SECRET": {
+        "title": "Feishu Webhook Secret",
+        "description": "Optional signing secret from Feishu custom bot security settings. Only used for webhook push mode.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "password",
@@ -779,11 +868,11 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 12,
+        "display_order": 13,
     },
-    "FEISHU_APP_ID": {
-        "title": "Feishu App ID",
-        "description": "Feishu app bot App ID (for event-driven bot mode).",
+    "FEISHU_WEBHOOK_KEYWORD": {
+        "title": "Feishu Webhook Keyword",
+        "description": "Optional keyword required by Feishu custom bot security settings. The sender prepends it to every webhook message.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "text",
@@ -793,11 +882,25 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 13,
+        "display_order": 14,
+    },
+    "FEISHU_APP_ID": {
+        "title": "Feishu App ID",
+        "description": "Feishu app bot App ID for app/stream bot mode or cloud documents. It does not enable group webhook push by itself.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 15,
     },
     "FEISHU_APP_SECRET": {
         "title": "Feishu App Secret",
-        "description": "Feishu app bot App Secret.",
+        "description": "Feishu app bot App Secret for app/stream bot mode or cloud documents. It does not enable group webhook push by itself.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "password",
@@ -807,7 +910,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 14,
+        "display_order": 16,
     },
     # ------------------------------------------------------------------
     # Notification – Telegram
@@ -824,7 +927,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 15,
+        "display_order": 17,
     },
     "TELEGRAM_CHAT_ID": {
         "title": "Telegram Chat ID",
@@ -838,7 +941,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 16,
+        "display_order": 18,
     },
     "TELEGRAM_MESSAGE_THREAD_ID": {
         "title": "Telegram Thread ID",
@@ -852,7 +955,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": None,
         "options": [],
         "validation": {},
-        "display_order": 17,
+        "display_order": 19,
     },
     # ------------------------------------------------------------------
     # Notification – Email
@@ -944,6 +1047,65 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 35,
     },
+    "DISCORD_INTERACTIONS_PUBLIC_KEY": {
+        "title": "Discord Interactions Public Key",
+        "description": "Discord public key used to verify inbound interaction/webhook signatures.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 36,
+    },
+    # ------------------------------------------------------------------
+    # Notification – Slack  (Bot > Webhook when both configured)
+    # ------------------------------------------------------------------
+    "SLACK_BOT_TOKEN": {
+        "title": "Slack Bot Token",
+        "description": "Slack Bot Token (xoxb-...). Recommended; supports image upload. Takes priority over Webhook when both are configured.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 37,
+    },
+    "SLACK_CHANNEL_ID": {
+        "title": "Slack Channel ID",
+        "description": "Slack channel ID (required when using Bot Token).",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 38,
+    },
+    "SLACK_WEBHOOK_URL": {
+        "title": "Slack Incoming Webhook URL",
+        "description": "Slack Incoming Webhook URL (text only, no image support).",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 39,
+    },
     # ------------------------------------------------------------------
     # Notification – Pushover
     # ------------------------------------------------------------------
@@ -1034,6 +1196,23 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {"enum": ["simple", "full", "brief"]},
         "display_order": 55,
     },
+    "REPORT_LANGUAGE": {
+        "title": "Report Language",
+        "description": "Default output language for reports and notification templates. Supported values: zh, en.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "zh",
+        "options": [
+            {"label": "Chinese", "value": "zh"},
+            {"label": "English", "value": "en"},
+        ],
+        "validation": {"enum": ["zh", "en"]},
+        "display_order": 56,
+    },
     "REPORT_TEMPLATES_DIR": {
         "title": "Report Templates Dir",
         "description": "Directory for Jinja2 report templates (relative to project root).",
@@ -1046,7 +1225,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "templates",
         "options": [],
         "validation": {},
-        "display_order": 56,
+        "display_order": 57,
     },
     "REPORT_RENDERER_ENABLED": {
         "title": "Report Renderer Enabled",
@@ -1060,7 +1239,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "false",
         "options": [],
         "validation": {},
-        "display_order": 57,
+        "display_order": 58,
     },
     "REPORT_INTEGRITY_ENABLED": {
         "title": "Report Integrity Enabled",
@@ -1386,35 +1565,35 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_MAX_STEPS": {
         "title": "Agent Max Steps",
-        "description": "Maximum number of steps the agent can take.",
+        "description": f"Maximum reasoning-step limit for Agent mode. At the default ({AGENT_MAX_STEPS_DEFAULT}), each sub-agent keeps its own preset. When raised above {AGENT_MAX_STEPS_DEFAULT}, all sub-agents adopt this value. When lowered below a sub-agent's preset, that sub-agent is capped at this value.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "10",
+        "default_value": str(AGENT_MAX_STEPS_DEFAULT),
         "options": [],
         "validation": {"min": 1, "max": 50},
         "display_order": 20,
     },
     "AGENT_SKILLS": {
-        "title": "Agent Skills",
-        "description": "Comma-separated list of active agent strategies. When set to specific strategies (not 'all'), scheduled tasks will automatically use the Agent pipeline.",
+        "title": "Agent Strategies",
+        "description": "Comma-separated list of active agent strategy skills. Leave empty to use the primary default strategy skill declared in metadata (built-in default: bull_trend). When set to specific skills (not 'all'), scheduled tasks will automatically use the Agent pipeline.",
         "category": "agent",
         "data_type": "string",
         "ui_control": "text",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "bull_trend,ma_golden_cross,volume_breakout,shrink_pullback",
+        "default_value": "",
         "options": [],
         "validation": {},
         "display_order": 30,
     },
-    "AGENT_STRATEGY_DIR": {
+    "AGENT_SKILL_DIR": {
         "title": "Agent Strategy Dir",
-        "description": "Directory containing agent strategy YAML files.",
+        "description": "Directory containing agent strategy-skill definition files (YAML or SKILL.md bundles).",
         "category": "agent",
         "data_type": "string",
         "ui_control": "text",
@@ -1459,7 +1638,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_ORCHESTRATOR_MODE": {
         "title": "Orchestrator Mode",
-        "description": "Pipeline mode when AGENT_ARCH=multi. 'quick' (tech→decision), 'standard' (tech→intel→decision), 'full' (tech→intel→risk→decision), 'strategy' (full + per-strategy agents).",
+        "description": "Pipeline mode when AGENT_ARCH=multi. 'quick' (tech→decision), 'standard' (tech→intel→decision), 'full' (tech→intel→risk→decision), 'specialist' (full + per-strategy specialist agents).",
         "category": "agent",
         "data_type": "string",
         "ui_control": "select",
@@ -1471,21 +1650,21 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Quick", "value": "quick"},
             {"label": "Standard", "value": "standard"},
             {"label": "Full", "value": "full"},
-            {"label": "Strategy", "value": "strategy"},
+            {"label": "Specialist", "value": "specialist"},
         ],
-        "validation": {},
+        "validation": {"enum": ["quick", "standard", "full", "specialist", "strategy", "skill"]},
         "display_order": 61,
     },
     "AGENT_ORCHESTRATOR_TIMEOUT_S": {
-        "title": "Orchestrator Timeout",
-        "description": "Cooperative timeout budget in seconds for the whole multi-agent pipeline when AGENT_ARCH=multi. Set to 0 to disable.",
+        "title": "Agent Timeout",
+        "description": "Shared timeout budget in seconds for Agent execution. Single-agent runs use it as the overall ReAct loop budget; multi-agent mode uses it as the cooperative pipeline budget. Set to 0 to disable.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "120",
+        "default_value": "600",
         "options": [],
         "validation": {"min": 0, "max": 3600},
         "display_order": 62,
@@ -1506,7 +1685,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_DEEP_RESEARCH_BUDGET": {
         "title": "Deep Research Token Budget",
-        "description": "Maximum token budget for the deep research agent (/research command).",
+        "description": "Maximum token budget for Deep Research planning, follow-up research, and final synthesis.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -1520,7 +1699,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_DEEP_RESEARCH_TIMEOUT": {
         "title": "Deep Research Timeout",
-        "description": "Maximum seconds for the /research command before returning a timeout response. Prevents indefinite blocking on Bot platforms.",
+        "description": "Maximum seconds allowed for a Deep Research request before returning a timeout response.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -1546,9 +1725,9 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 66,
     },
-    "AGENT_STRATEGY_AUTOWEIGHT": {
+    "AGENT_SKILL_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
-        "description": "Automatically weight strategy opinions by their historical backtest performance.",
+        "description": "Automatically weight strategy-skill opinions by their historical backtest performance.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",
@@ -1560,9 +1739,9 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 67,
     },
-    "AGENT_STRATEGY_ROUTING": {
+    "AGENT_SKILL_ROUTING": {
         "title": "Strategy Routing",
-        "description": "Strategy selection mode. 'auto' detects market regime and picks relevant strategies; 'manual' uses AGENT_SKILLS list only.",
+        "description": "Strategy-skill selection mode. 'auto' detects market regime and picks relevant skills; 'manual' uses AGENT_SKILLS list only.",
         "category": "agent",
         "data_type": "string",
         "ui_control": "select",
@@ -1579,7 +1758,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_EVENT_MONITOR_ENABLED": {
         "title": "Event Monitor",
-        "description": "Enable periodic EventMonitor checks in schedule mode. Triggered alerts are sent through the configured notification channels.",
+        "description": "Enable background Event Monitor polling in schedule mode.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",
@@ -1593,7 +1772,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_EVENT_MONITOR_INTERVAL_MINUTES": {
         "title": "Event Monitor Interval",
-        "description": "Polling interval in minutes for EventMonitor background checks when schedule mode is running.",
+        "description": "Polling interval, in minutes, for background Event Monitor checks.",
         "category": "agent",
         "data_type": "integer",
         "ui_control": "number",
@@ -1607,7 +1786,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_EVENT_ALERT_RULES_JSON": {
         "title": "Event Alert Rules",
-        "description": "JSON array of serialized EventMonitor rules. Example: [{\"stock_code\":\"600519\",\"alert_type\":\"price_cross\",\"direction\":\"above\",\"price\":1800}]",
+        "description": "JSON array of Event Monitor rules loaded by schedule mode for background alert polling.",
         "category": "agent",
         "data_type": "json",
         "ui_control": "textarea",
@@ -1717,6 +1896,7 @@ def _infer_category(key: str) -> str:
     if key.endswith("_PRIORITY") or key.startswith(
         (
             "TUSHARE",
+            "TICKFLOW",
             "AKSHARE",
             "EFINANCE",
             "PYTDX",
@@ -1726,6 +1906,7 @@ def _infer_category(key: str) -> str:
             "SERPAPI",
             "BRAVE",
             "BOCHA",
+            "ANSPIRE",
             "SEARXNG",
             "NEWS_",
             "BIAS_",
@@ -1742,6 +1923,7 @@ def _infer_category(key: str) -> str:
         "SERVERCHAN",
         "DINGTALK",
         "DISCORD",
+        "SLACK",
         "CUSTOM_WEBHOOK",
         "WECOM",
         "ASTRBOT",

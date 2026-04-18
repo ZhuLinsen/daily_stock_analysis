@@ -374,7 +374,7 @@ def chunk_content_by_max_bytes(content: str, max_bytes: int, add_page_marker: bo
     return chunks
 
 
-def slice_at_max_bytes(text: str, max_bytes: int) -> str:
+def slice_at_max_bytes(text: str, max_bytes: int) -> tuple[str, str]:
     """
     按字节数截断字符串，确保不会在多字节字符中间截断
 
@@ -383,7 +383,7 @@ def slice_at_max_bytes(text: str, max_bytes: int) -> str:
         max_bytes: 最大字节数
 
     Returns:
-        截断后的字符串
+        (截断后的字符串, 剩余未截断内容)
     """
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:

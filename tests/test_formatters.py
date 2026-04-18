@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.formatters import (
     chunk_content_by_max_words,
     chunk_content_by_max_bytes,
+    slice_at_max_bytes,
     TRUNCATION_SUFFIX,
     MIN_MAX_WORDS,
     MIN_MAX_BYTES,
@@ -170,3 +171,8 @@ class TestChunkContentByMaxBytes(unittest.TestCase):
             s.encode("utf-8").decode("utf-8")  # must not raise
         joined = "".join(c.replace(TRUNCATION_SUFFIX, "") for c in result)
         self.assertEqual(joined, text)
+
+    def test_slice_at_max_bytes_returns_truncated_and_remaining_parts(self):
+        chunk, remaining = slice_at_max_bytes("测试ABC", 7)
+        self.assertEqual(chunk, "测试A")
+        self.assertEqual(remaining, "BC")

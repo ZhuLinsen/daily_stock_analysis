@@ -22,8 +22,8 @@ export function formatSessionAsMarkdown(messages: Message[]): string {
 
   for (const msg of messages) {
     const heading = msg.role === 'user' ? '## 用户' : '## AI';
-    if (msg.role === 'assistant' && msg.strategyName) {
-      lines.push(`${heading} (${msg.strategyName})`);
+    if (msg.role === 'assistant' && msg.skillName) {
+      lines.push(`${heading} (${msg.skillName})`);
     } else {
       lines.push(heading);
     }

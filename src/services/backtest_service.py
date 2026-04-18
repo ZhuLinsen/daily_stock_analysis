@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 class BacktestService:
     """Service layer to run and query backtests."""
 
+    MAX_DYNAMIC_SUMMARY_ROWS = 2000
+
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
         self.repo = BacktestRepository(self.db)
@@ -211,16 +213,87 @@ class BacktestService:
             "errors": errors,
         }
 
-    def get_recent_evaluations(self, *, code: Optional[str], eval_window_days: Optional[int] = None, limit: int = 50, page: int = 1) -> Dict[str, Any]:
+    def get_recent_evaluations(
+        self,
+        *,
+        code: Optional[str],
+        eval_window_days: Optional[int] = None,
+        limit: int = 50,
+        page: int = 1,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        config = get_config()
+        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+
+        # When date filters are active and no explicit window is requested,
+        # infer the smallest available window to stay aligned with summary metrics.
+        if eval_window_days is None and (analysis_date_from is not None or analysis_date_to is not None):
+            windows = self.repo.get_distinct_eval_windows(
+                code=code,
+                engine_version=engine_version,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+            if windows:
+                eval_window_days = windows[0]
+
         offset = max(page - 1, 0) * limit
-        rows, total = self.repo.get_results_paginated(code=code, eval_window_days=eval_window_days, days=None, offset=offset, limit=limit)
-        items = [self._result_to_dict(r) for r in rows]
+        rows, total = self.repo.get_results_paginated(
+            code=code,
+            eval_window_days=eval_window_days,
+            engine_version=engine_version,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+            days=None,
+            offset=offset,
+            limit=limit,
+        )
+        items = [self._result_to_dict(result, stock_name, trend_prediction) for result, stock_name, trend_prediction, _ in rows]
         return {"total": total, "page": page, "limit": limit, "items": items}
 
-    def get_summary(self, *, scope: str, code: Optional[str], eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def get_summary(
+        self,
+        *,
+        scope: str,
+        code: Optional[str],
+        eval_window_days: Optional[int] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+    ) -> Optional[Dict[str, Any]]:
         config = get_config()
         engine_version = str(getattr(config, "backtest_engine_version", "v1"))
         lookup_code = OVERALL_SENTINEL_CODE if scope == "overall" else code
+
+        if analysis_date_from is not None or analysis_date_to is not None:
+            ew = int(eval_window_days) if eval_window_days is not None else None
+            count = self.repo.count_results(
+                code=code,
+                eval_window_days=ew,
+                engine_version=engine_version,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+            if count > self.MAX_DYNAMIC_SUMMARY_ROWS:
+                raise ValueError(
+                    "Date-filtered summary matches too many rows; narrow the analysis date range or stock code."
+                )
+            rows = self.repo.list_results(
+                code=code,
+                eval_window_days=ew,
+                engine_version=engine_version,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+            return self._build_dynamic_summary(
+                rows=rows,
+                scope=scope,
+                code=lookup_code,
+                eval_window_days=int(eval_window_days) if eval_window_days is not None else None,
+                engine_version=engine_version,
+                max_rows=self.MAX_DYNAMIC_SUMMARY_ROWS,
+            )
+
         summary = self.repo.get_summary(
             scope=scope,
             code=lookup_code,
@@ -243,20 +316,23 @@ class BacktestService:
             self.get_summary(scope="stock", code=code, eval_window_days=eval_window_days)
         )
 
-    def get_strategy_summary(self, strategy_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        """Return strategy-like summary metrics for Agent memory consumers.
+    def get_skill_summary(self, skill_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Return skill-like summary metrics for Agent memory consumers.
 
         The current backtest storage layer only persists overall / per-stock rollups.
-        Until strategy-tagged backtest summaries are available, use the overall rollup
-        so memory and calibration features can still consume real historical metrics.
+        Re-using the overall rollup here would fabricate skill-specific performance
+        and mislead auto-weighting. Until real skill-tagged summaries exist, return
+        ``None`` so downstream callers fall back to neutral weighting.
         """
-        summary = self.get_global_summary(eval_window_days=eval_window_days)
+        return None
+
+    def get_strategy_summary(self, strategy_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Compatibility wrapper for legacy strategy-based callers."""
+        summary = self.get_skill_summary(strategy_id, eval_window_days=eval_window_days)
         if summary is None:
             return None
-
         normalized = dict(summary)
         normalized["strategy_id"] = strategy_id
-        normalized["source_scope"] = summary.get("scope", "overall")
         return normalized
 
     def _resolve_analysis_date(self, analysis) -> Optional[date]:
@@ -358,22 +434,30 @@ class BacktestService:
         )
 
     @staticmethod
-    def _result_to_dict(row: BacktestResult) -> Dict[str, Any]:
+    def _result_to_dict(
+        row: BacktestResult,
+        stock_name: Optional[str] = None,
+        trend_prediction: Optional[str] = None,
+    ) -> Dict[str, Any]:
         return {
             "analysis_history_id": row.analysis_history_id,
             "code": row.code,
+            "stock_name": stock_name,
             "analysis_date": row.analysis_date.isoformat() if row.analysis_date else None,
             "eval_window_days": row.eval_window_days,
             "engine_version": row.engine_version,
             "eval_status": row.eval_status,
             "evaluated_at": row.evaluated_at.isoformat() if row.evaluated_at else None,
             "operation_advice": row.operation_advice,
+            "trend_prediction": trend_prediction,
             "position_recommendation": row.position_recommendation,
             "start_price": row.start_price,
             "end_close": row.end_close,
             "max_high": row.max_high,
             "min_low": row.min_low,
             "stock_return_pct": row.stock_return_pct,
+            "actual_return_pct": row.stock_return_pct,
+            "actual_movement": BacktestService._actual_movement_from_return(row.stock_return_pct),
             "direction_expected": row.direction_expected,
             "direction_correct": row.direction_correct,
             "outcome": row.outcome,
@@ -444,3 +528,69 @@ class BacktestService:
             return float(value) / 100.0
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _actual_movement_from_return(value: Optional[float]) -> Optional[str]:
+        if value is None:
+            return None
+        try:
+            actual_return = float(value)
+        except (TypeError, ValueError):
+            return None
+        if actual_return > 0:
+            return "up"
+        if actual_return < 0:
+            return "down"
+        return "flat"
+
+    @staticmethod
+    def _build_dynamic_summary(
+        *,
+        rows: List[BacktestResult],
+        scope: str,
+        code: Optional[str],
+        eval_window_days: Optional[int],
+        engine_version: str,
+        max_rows: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        filtered_rows = [row for row in rows if getattr(row, "engine_version", None) == engine_version]
+        if eval_window_days is not None:
+            summary_window_days = int(eval_window_days)
+        else:
+            window_values = sorted({
+                int(row.eval_window_days)
+                for row in filtered_rows
+                if getattr(row, "eval_window_days", None) is not None
+            })
+            if len(window_values) > 1:
+                logger.warning(
+                    "Multiple eval_window_days values found for dynamic summary; using %s for engine_version=%s, scope=%s, code=%s",
+                    window_values[0],
+                    engine_version,
+                    scope,
+                    code,
+                )
+            if window_values:
+                summary_window_days = window_values[0]
+            else:
+                summary_window_days = int(getattr(get_config(), "backtest_eval_window_days", 10))
+
+        filtered_rows = [
+            row for row in filtered_rows if getattr(row, "eval_window_days", None) == summary_window_days
+        ]
+
+        if max_rows is not None and len(filtered_rows) > max_rows:
+            raise ValueError(
+                "Date-filtered summary matches too many rows; narrow the analysis date range or stock code."
+            )
+
+        summary = BacktestEngine.compute_summary(
+            results=filtered_rows,
+            scope=scope,
+            code=code,
+            eval_window_days=summary_window_days,
+            engine_version=engine_version,
+        )
+        summary["code"] = None if summary.get("code") == OVERALL_SENTINEL_CODE else summary.get("code")
+        summary["computed_at"] = datetime.now().isoformat()
+        return summary

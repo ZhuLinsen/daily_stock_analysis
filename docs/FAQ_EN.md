@@ -92,12 +92,18 @@ This document compiles common issues encountered by users and their solutions.
 
 **Solution**:
 1. Ensure `.env` file is in project root directory
-2. **Docker deployment**: Restart container after modification
+2. **Docker deployment / WebUI Settings**:
+   - WebUI saves `STOCK_LIST`, `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, `SCHEDULE_RUN_IMMEDIATELY`, and `RUN_IMMEDIATELY` back into the container's `.env`
+   - Saving from WebUI triggers a config reload for the current process, and runtime reads continue from the latest persisted `.env`; for example, scheduled runs keep hot-reading the saved `STOCK_LIST`
+   - If you also pass these keys explicitly as container process env vars (`docker run -e ...` or Compose `environment:`), those explicit process env overrides still win on later restarts; update or remove them if you want the WebUI-saved `.env` values to take over
+   - `SCHEDULE_*` and `RUN_IMMEDIATELY` are still **startup-time scheduling settings**: saving them does not immediately trigger an analysis run and does not hot-rebuild the scheduler inside the current process
+   - To make schedule changes take over the current container, restart it and make sure the process is started in schedule mode
+3. **Manual `.env` edits in Docker**: Restart the container after changes
    ```bash
    docker-compose down && docker-compose up -d
    ```
-3. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
-4. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
+4. **GitHub Actions**: `.env` file doesn't work, must configure in Secrets/Variables
+5. Check if there are multiple `.env` files (e.g., `.env.local`) causing override
 
 ---
 
@@ -122,15 +128,15 @@ PROXY_PORT=10809
 
 **Q: Configured both GEMINI_API_KEY and LLM_CHANNELS, why does it only use channels?**
 
-The system uses exactly one mode by priority: `LITELLM_CONFIG` (YAML) > `LLM_CHANNELS` > legacy keys. Once channels or YAML are configured, the legacy section (`GEMINI_API_KEY`, etc.) is not used.
+The system uses exactly one mode by priority: advanced YAML routing (`LITELLM_CONFIG`) > `LLM_CHANNELS` > legacy keys. However, YAML routing only takes effect when the file can be parsed successfully and yields a non-empty `model_list`; if the YAML path is invalid or the content is empty, the system automatically falls back to `LLM_CHANNELS` or legacy keys. Once a tier is active, lower-priority tiers are not used.
 
-**Q: test_env outputs ✗ No LLM configured, what to do?**
+**Q: test_env says no usable AI model is configured, what should I do?**
 
-Configure `LITELLM_CONFIG` / `LLM_CHANNELS` or at least one `*_API_KEY` (e.g. `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `AIHUBMIX_KEY`). Run `python test_env.py --config` to validate config, `python test_env.py --llm` to actually call the API.
+Start with one provider and its API key. If you want to pin a primary model, add `LITELLM_MODEL=provider/model`. If you need multi-model switching, configure `LLM_CHANNELS` or advanced YAML routing. Run `python test_env.py --config` to validate config and `python test_env.py --llm` to actually call the API.
 
 **Q: How to use multiple models at once (e.g. AIHubmix + DeepSeek + Gemini)?**
 
-Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure visually in Web Settings → AI Model → Channel Editor.
+Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure this visually in Web Settings → AI Model → AI Model Access.
 
 ---
 
@@ -213,6 +219,51 @@ Supported model services:
 
 ---
 
+### Q12b: How to use Ollama local models?
+
+**Configuration**: Use `OLLAMA_API_BASE` + `LITELLM_MODEL`, or channel mode (`LLM_CHANNELS=ollama` + `LLM_OLLAMA_BASE_URL` + `LLM_OLLAMA_MODELS`).
+
+**Pitfall**: Do not use `OPENAI_BASE_URL` for Ollama, or the system will concatenate URLs incorrectly (e.g. 404, `api/generate/api/show`). See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) Example 4 and channel examples.
+
+---
+
+### Q12c: Getting `OllamaException / APIConnectionError` (All LLM models failed)?
+
+**Symptom**: Log shows `litellm.APIConnectionError: OllamaException` or `Analysis failed: All LLM models failed (tried 1 model(s))`.
+
+Work through the following 5 checkpoints in order:
+
+1. **Is the Ollama service running?**
+   ```bash
+   # Check process
+   pgrep -a ollama
+   # If no output, start it first
+   ollama serve
+   ```
+   Verify it is listening: `curl http://localhost:11434` should return `Ollama is running`.
+
+2. **Is `OLLAMA_API_BASE` set correctly?**
+   - ✅ Correct: `OLLAMA_API_BASE=http://localhost:11434`
+   - ❌ Wrong: Putting the Ollama address in `OPENAI_BASE_URL` causes the URL path to be mangled (e.g. `…/api/generate/api/show`).
+
+3. **Does the model name include the `ollama/` prefix?**
+   - ✅ Correct: `LITELLM_MODEL=ollama/qwen3:8b`
+   - ❌ Wrong: `LITELLM_MODEL=qwen3:8b` (missing prefix — litellm cannot route to Ollama)
+
+4. **Has the model been pulled locally?**
+   ```bash
+   ollama list           # list downloaded models
+   ollama pull qwen3:8b  # pull if missing
+   ```
+
+5. **Network / firewall for remote or Docker deployments**
+   - If Ollama runs on a different host, set `OLLAMA_API_BASE` to its actual IP, e.g. `http://192.168.1.100:11434`.
+   - Make sure port 11434 is open and Ollama binds the right address (`OLLAMA_HOST=0.0.0.0:11434`).
+
+> See [LLM Config Guide → Example 4 (Ollama)](LLM_CONFIG_GUIDE_EN.md#example-4-ollama) for a complete configuration example.
+
+---
+
 ## Docker Related
 
 ### Q13: Docker container exits immediately after starting?
@@ -273,4 +324,4 @@ If the above content doesn't solve your issue, welcome to:
 
 ---
 
-*Last updated: 2026-02-01*
+*Last updated: 2026-04-01*

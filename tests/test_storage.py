@@ -2,11 +2,20 @@
 import unittest
 import sys
 import os
+import tempfile
+import threading
+from datetime import date
+from unittest.mock import patch
+
+import pandas as pd
+from sqlalchemy import and_, select
+from sqlalchemy.sql import func
 
 # Ensure src module can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.storage import DatabaseManager
+from src.config import Config
+from src.storage import DatabaseManager, StockDaily
 
 class TestStorage(unittest.TestCase):
     
@@ -90,6 +99,118 @@ class TestStorage(unittest.TestCase):
         self.assertEqual({item["session_id"] for item in sessions}, {"feishu_u1", "feishu_u1:ask_600519"})
 
         DatabaseManager.reset_instance()
+
+    def test_file_sqlite_enables_wal_and_busy_timeout(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "sqlite_pragmas.db")
+        original_env = {
+            "DATABASE_PATH": os.environ.get("DATABASE_PATH"),
+            "SQLITE_BUSY_TIMEOUT_MS": os.environ.get("SQLITE_BUSY_TIMEOUT_MS"),
+            "SQLITE_WAL_ENABLED": os.environ.get("SQLITE_WAL_ENABLED"),
+        }
+
+        try:
+            os.environ["DATABASE_PATH"] = db_path
+            os.environ["SQLITE_BUSY_TIMEOUT_MS"] = "1234"
+            os.environ["SQLITE_WAL_ENABLED"] = "true"
+            Config.reset_instance()
+            DatabaseManager.reset_instance()
+
+            db = DatabaseManager.get_instance()
+            with db.get_session() as session:
+                journal_mode = session.connection().exec_driver_sql("PRAGMA journal_mode").scalar()
+                busy_timeout = session.connection().exec_driver_sql("PRAGMA busy_timeout").scalar()
+
+            self.assertEqual(str(journal_mode).lower(), "wal")
+            self.assertEqual(int(busy_timeout), 1234)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            temp_dir.cleanup()
+
+    def test_sqlite_write_transactions_begin_immediate(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        session = db.get_session()
+        connection = session.connection()
+
+        try:
+            with patch.object(db, "get_session", return_value=session):
+                with patch.object(connection, "exec_driver_sql", wraps=connection.exec_driver_sql) as mock_exec:
+                    result = db._run_write_transaction("unit-test", lambda current_session: 7)
+
+            self.assertEqual(result, 7)
+            self.assertTrue(
+                any(call.args == ("BEGIN IMMEDIATE",) for call in mock_exec.call_args_list)
+            )
+        finally:
+            DatabaseManager.reset_instance()
+
+    def test_save_daily_data_sqlite_concurrent_same_code_date_counts_only_new_rows(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "sqlite_daily_concurrency.db")
+        db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+        results = []
+        results_lock = threading.Lock()
+        start_barrier = threading.Barrier(2)
+
+        def worker() -> None:
+            start_barrier.wait()
+            count = db.save_daily_data(
+                pd.DataFrame(
+                    [
+                        {
+                            'date': date(2026, 4, 1),
+                            'open': 10,
+                            'high': 11,
+                            'low': 9,
+                            'close': 10.5,
+                            'volume': 100,
+                            'amount': 1050,
+                            'pct_chg': 1.2,
+                            'ma5': 10.1,
+                            'ma10': 10.2,
+                            'ma20': 10.3,
+                            'volume_ratio': 1.0,
+                        }
+                    ]
+                ),
+                code='600519',
+                data_source='test',
+            )
+            with results_lock:
+                results.append(count)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        try:
+            self.assertCountEqual(results, [1, 0])
+
+            with db.get_session() as session:
+                total = session.execute(
+                    select(func.count()).select_from(StockDaily).where(
+                        and_(
+                            StockDaily.code == '600519',
+                            StockDaily.date == date(2026, 4, 1),
+                        )
+                    )
+                ).scalar()
+
+            self.assertEqual(total, 1)
+        finally:
+            temp_dir.cleanup()
+            DatabaseManager.reset_instance()
 
 if __name__ == '__main__':
     unittest.main()

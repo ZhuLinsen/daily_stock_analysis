@@ -28,7 +28,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
+from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
 import os
 
 logger = logging.getLogger(__name__)
@@ -274,7 +274,11 @@ class PytdxFetcher(BaseFetcher):
         # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_us_code(stock_code):
             raise DataFetchError(f"PytdxFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
-        
+
+        # 港股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"PytdxFetcher 不支持港股 {stock_code}，请使用 AkshareFetcher")
+
         # 北交所不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if is_bse_code(stock_code):
             raise DataFetchError(
@@ -366,6 +370,10 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             股票名称，失败返回 None
         """
+        # 港股不支持（pytdx 不含港股数据）
+        if _is_hk_market(stock_code):
+            return None
+
         # 先检查缓存
         if stock_code in self._stock_name_cache:
             return self._stock_name_cache[stock_code]

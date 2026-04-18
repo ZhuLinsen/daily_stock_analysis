@@ -76,7 +76,7 @@ class StatusCommand(BotCommand):
         status["search_brave"] = len(config.brave_api_keys) > 0
         status["search_serpapi"] = len(config.serpapi_keys) > 0
         status["search_minimax"] = len(config.minimax_api_keys) > 0
-        status["search_searxng"] = len(config.searxng_base_urls) > 0
+        status["search_searxng"] = config.has_searxng_enabled()
         
         # 通知渠道状态
         status["notify_wechat"] = bool(config.wechat_webhook_url)

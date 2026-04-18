@@ -2,6 +2,8 @@
 """Tests for market strategy blueprints."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.market_analyzer import MarketAnalyzer, MarketOverview
@@ -43,6 +45,18 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
 
         self.assertIn("Strategy Plan", prompt)
         self.assertIn("US Market Regime Strategy", prompt)
+
+    def test_cn_prompt_uses_english_shell_when_report_language_is_en(self):
+        with patch("src.market_analyzer.get_config", return_value=SimpleNamespace(report_language="en")):
+            analyzer = MarketAnalyzer(region="cn")
+
+        prompt = analyzer._build_review_prompt(MarketOverview(date="2026-02-24"), [])
+
+        self.assertIn("# Today's Market Data", prompt)
+        self.assertIn("### 1. Market Summary", prompt)
+        self.assertIn("A-share Three-Phase Recap Strategy", prompt)
+        self.assertNotIn("### 一、市场总结", prompt)
+        self.assertNotIn("A股市场三段式复盘策略", prompt)
 
 
 if __name__ == "__main__":

@@ -31,8 +31,19 @@ from api.v1.schemas.history import (
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
+from src.report_language import (
+    get_sentiment_label,
+    get_localized_stock_name,
+    localize_operation_advice,
+    localize_trend_prediction,
+    normalize_report_language,
+)
 from src.services.history_service import HistoryService, MarkdownReportGenerationError
-from src.utils.data_processing import normalize_model_used
+from src.utils.data_processing import (
+    normalize_model_used,
+    extract_fundamental_detail_fields,
+    extract_board_detail_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,13 +237,32 @@ def get_history_detail(
                 current_price = realtime_quote_raw.get("price")
                 change_pct = change_pct or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
         
+        raw_result = result.get("raw_result")
+        if not isinstance(raw_result, dict):
+            raw_result = {}
+        report_language = normalize_report_language(
+            result.get("report_language")
+            or raw_result.get("report_language")
+            or (
+                context_snapshot.get("report_language")
+                if isinstance(context_snapshot, dict)
+                else None
+            )
+        )
+        stock_name = get_localized_stock_name(
+            result.get("stock_name"),
+            result.get("stock_code", ""),
+            report_language,
+        )
+
         # 构建响应模型
         meta = ReportMeta(
             id=result.get("id"),
             query_id=result.get("query_id", ""),
             stock_code=result.get("stock_code", ""),
-            stock_name=result.get("stock_name"),
+            stock_name=stock_name,
             report_type=result.get("report_type"),
+            report_language=report_language,
             created_at=result.get("created_at"),
             current_price=current_price,
             change_pct=change_pct,
@@ -241,10 +271,20 @@ def get_history_detail(
         
         summary = ReportSummary(
             analysis_summary=result.get("analysis_summary"),
-            operation_advice=result.get("operation_advice"),
-            trend_prediction=result.get("trend_prediction"),
+            operation_advice=localize_operation_advice(
+                result.get("operation_advice"),
+                report_language,
+            ),
+            trend_prediction=localize_trend_prediction(
+                result.get("trend_prediction"),
+                report_language,
+            ),
             sentiment_score=result.get("sentiment_score"),
-            sentiment_label=result.get("sentiment_label")
+            sentiment_label=(
+                get_sentiment_label(result.get("sentiment_score"), report_language)
+                if result.get("sentiment_score") is not None
+                else result.get("sentiment_label")
+            )
         )
         
         strategy = ReportStrategy(
@@ -254,10 +294,27 @@ def get_history_detail(
             take_profit=result.get("take_profit")
         )
         
+        fallback_fundamental = db_manager.get_latest_fundamental_snapshot(
+            query_id=result.get("query_id", ""),
+            code=result.get("stock_code", ""),
+        )
+        extracted_fundamental = extract_fundamental_detail_fields(
+            context_snapshot=result.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+        )
+        extracted_boards = extract_board_detail_fields(
+            context_snapshot=result.get("context_snapshot"),
+            fallback_fundamental_payload=fallback_fundamental,
+        )
+
         details = ReportDetails(
             news_content=result.get("news_content"),
             raw_result=result.get("raw_result"),
-            context_snapshot=result.get("context_snapshot")
+            context_snapshot=result.get("context_snapshot"),
+            financial_report=extracted_fundamental.get("financial_report"),
+            dividend_metrics=extracted_fundamental.get("dividend_metrics"),
+            belong_boards=extracted_boards.get("belong_boards"),
+            sector_rankings=extracted_boards.get("sector_rankings"),
         )
         
         return AnalysisReport(

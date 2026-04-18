@@ -1,18 +1,19 @@
 import type React from 'react';
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback, useEffect, useId } from 'react';
 import type { HistoryItem } from '../../types/analysis';
-import { getSentimentColor } from '../../types/analysis';
-import { formatDateTime } from '../../utils/format';
+import { Badge, Button, ScrollArea } from '../common';
+import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
+import { HistoryListItem } from './HistoryListItem';
 
 interface HistoryListProps {
   items: HistoryItem[];
   isLoading: boolean;
   isLoadingMore: boolean;
   hasMore: boolean;
-  selectedId?: number;  // Selected history record ID
+  selectedId?: number;  // 当前选中的历史记录 ID
   selectedIds: Set<number>;
   isDeleting?: boolean;
-  onItemClick: (recordId: number) => void;  // Callback with record ID
+  onItemClick: (recordId: number) => void;  // 点击记录的回调
   onLoadMore: () => void;
   onToggleItemSelection: (recordId: number) => void;
   onToggleSelectAll: () => void;
@@ -21,9 +22,8 @@ interface HistoryListProps {
 }
 
 /**
- * History record list component.
- * Displays recent stock analysis history, supports clicking for details, scroll-to-load-more, 
- * and batch selection for deletion.
+ * 历史记录列表组件 (升级版)
+ * 使用新设计系统组件实现，支持批量选择和滚动加载
  */
 export const HistoryList: React.FC<HistoryListProps> = ({
   items,
@@ -43,18 +43,17 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const selectAllId = useId();
 
   const selectedCount = items.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected = items.length > 0 && selectedCount === items.length;
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
 
-  // Use IntersectionObserver to detect scrolling to bottom
+  // 使用 IntersectionObserver 检测滚动到底部
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
       const target = entries[0];
-      // Only load when trigger is truly visible and more data exists
       if (target.isIntersecting && hasMore && !isLoading && !isLoadingMore) {
-        // Ensure container has scroll capacity (content exceeds container height)
         const container = scrollContainerRef.current;
         if (container && container.scrollHeight > container.clientHeight) {
           onLoadMore();
@@ -71,15 +70,12 @@ export const HistoryList: React.FC<HistoryListProps> = ({
 
     const observer = new IntersectionObserver(handleObserver, {
       root: container,
-      rootMargin: '20px', // Reduce pre-load distance
-      threshold: 0.1, // Trigger only when at least 10% of trigger is visible
+      rootMargin: '20px',
+      threshold: 0.1,
     });
 
     observer.observe(trigger);
-
-    return () => {
-      observer.disconnect();
-    };
+    return () => observer.disconnect();
   }, [handleObserver]);
 
   useEffect(() => {
@@ -90,137 +86,110 @@ export const HistoryList: React.FC<HistoryListProps> = ({
 
   return (
     <aside className={`glass-card overflow-hidden flex flex-col ${className}`}>
-      <div ref={scrollContainerRef} className="p-3 flex-1 overflow-y-auto">
-        <div className="mb-3 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xs font-medium text-purple uppercase tracking-wider flex items-center gap-1.5">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      <ScrollArea
+        viewportRef={scrollContainerRef}
+        viewportClassName="p-4"
+        testId="home-history-list-scroll"
+      >
+        <div className="mb-4 space-y-3">
+          <DashboardPanelHeader
+            className="mb-1"
+            title="历史分析"
+            titleClassName="text-sm font-medium"
+            leading={(
+              <svg className="h-4 w-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              历史记录
-            </h2>
-            {selectedCount > 0 && (
-              <span className="text-xs text-muted">
-                已选 {selectedCount} 项
-              </span>
             )}
-          </div>
+            headingClassName="items-center"
+            actions={
+              selectedCount > 0 ? (
+                <Badge variant="info" size="sm" className="history-selection-badge animate-in fade-in zoom-in duration-200">
+                  已选 {selectedCount}
+                </Badge>
+              ) : undefined
+            }
+          />
 
           {items.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <label className="inline-flex items-center gap-2 text-muted cursor-pointer">
+            <div className="flex items-center gap-2">
+              <label
+                className="flex flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 py-1"
+                htmlFor={selectAllId}
+              >
                 <input
+                  id={selectAllId}
                   ref={selectAllRef}
                   type="checkbox"
                   checked={allVisibleSelected}
-                  disabled={isDeleting}
                   onChange={onToggleSelectAll}
+                  disabled={isDeleting}
+                  aria-label="全选当前已加载历史记录"
+                  className="history-select-all-checkbox h-3.5 w-3.5 cursor-pointer bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
                 />
-                <span>全选当前已加载</span>
+                <span className="text-[11px] text-muted-text select-none">全选当前</span>
               </label>
-              <button
-                type="button"
-                className="btn-secondary !px-3 !py-1.5 !text-xs"
+              <Button
+                variant="danger-subtle"
+                size="xsm"
                 onClick={onDeleteSelected}
                 disabled={selectedCount === 0 || isDeleting}
+                isLoading={isDeleting}
+                className="history-batch-delete-button disabled:!border-transparent disabled:!bg-transparent"
               >
-                {isDeleting ? '删除中...' : '删除已选'}
-              </button>
+                {isDeleting ? '删除中' : '删除'}
+              </Button>
             </div>
           )}
         </div>
 
         {isLoading ? (
-          <div className="flex justify-center py-6">
-            <div className="w-5 h-5 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
-          </div>
+          <DashboardStateBlock
+            loading
+            compact
+            title="加载历史记录中..."
+          />
         ) : items.length === 0 ? (
-          <div className="text-center py-6 text-muted text-xs">
-            暂无历史记录
-          </div>
+          <DashboardStateBlock
+            title="暂无历史分析记录"
+            description="完成首次分析后，这里会保留最近结果。"
+            icon={(
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+          />
         ) : (
-          <div className="space-y-1.5">
-            {items.map((item) => {
-              const checked = selectedIds.has(item.id);
-              return (
-                <div key={item.id} className="flex items-start gap-2">
-                  <label className="pt-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={isDeleting}
-                      onChange={() => onToggleItemSelection(item.id)}
-                      aria-label={`选择历史记录 ${item.stockName || item.stockCode}`}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => onItemClick(item.id)}
-                    className={`history-item w-full text-left ${selectedId === item.id ? 'active' : ''}`}
-                  >
-                    <div className="flex items-center gap-2 w-full">
-                      {/* Sentiment score indicator bar */}
-                      {item.sentimentScore !== undefined && (
-                        <span
-                          className="w-0.5 h-8 rounded-full flex-shrink-0"
-                          style={{
-                            backgroundColor: getSentimentColor(item.sentimentScore),
-                            boxShadow: `0 0 6px ${getSentimentColor(item.sentimentScore)}40`
-                          }}
-                        />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span className="font-medium text-white truncate text-xs">
-                            {item.stockName || item.stockCode}
-                          </span>
-                          {item.sentimentScore !== undefined && (
-                            <span
-                              className="text-xs font-mono font-semibold px-1 py-0.5 rounded"
-                              style={{
-                                color: getSentimentColor(item.sentimentScore),
-                                backgroundColor: `${getSentimentColor(item.sentimentScore)}15`
-                              }}
-                            >
-                              {item.sentimentScore}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="text-xs text-muted font-mono">
-                            {item.stockCode}
-                          </span>
-                          <span className="text-xs text-muted/50">·</span>
-                          <span className="text-xs text-muted">
-                            {formatDateTime(item.createdAt)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                </div>
-              );
-            })}
+          <div className="space-y-2">
+            {items.map((item) => (
+              <HistoryListItem
+                key={item.id}
+                item={item}
+                isViewing={selectedId === item.id}
+                isChecked={selectedIds.has(item.id)}
+                isDeleting={isDeleting}
+                onToggleChecked={onToggleItemSelection}
+                onClick={onItemClick}
+              />
+            ))}
 
-            {/* 加载更多触发器 */}
             <div ref={loadMoreTriggerRef} className="h-4" />
-
-            {/* 加载更多状态 */}
+            
             {isLoadingMore && (
-              <div className="flex justify-center py-3">
-                <div className="w-4 h-4 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
+              <div className="flex justify-center py-4">
+                <div className="home-spinner h-5 w-5 animate-spin border-2" />
               </div>
             )}
 
-            {/* 没有更多数据提示 */}
             {!hasMore && items.length > 0 && (
-              <div className="text-center py-2 text-muted/50 text-xs">
-                已加载全部
+              <div className="text-center py-5">
+                <div className="h-px bg-subtle w-full mb-3" />
+                <span className="text-[10px] text-secondary-text uppercase tracking-[0.2em]">已到底部</span>
               </div>
             )}
           </div>
         )}
-      </div>
+      </ScrollArea>
     </aside>
   );
 };
