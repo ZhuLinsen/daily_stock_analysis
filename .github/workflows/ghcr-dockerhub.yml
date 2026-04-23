@@ -1,4 +1,4 @@
-name: Build and Push Multi-Arch Docker Images 2026.1.26同时推送镜像至ghcr和dockerhub
+name: Docker Manual Publish
 
 on:
   workflow_dispatch:
@@ -6,14 +6,16 @@ on:
       image_tag:
         description: 'Image tag version (e.g., v1.0.0, latest)'
         required: true
-        default: 'latest'
+        default: 'v1.0.0'
+
+concurrency:
+  group: docker-manual-publish-${{ github.ref }}-${{ inputs.image_tag }}
+  cancel-in-progress: true
 
 env:
   GHCR_REGISTRY: ghcr.io
   DOCKERHUB_REGISTRY: docker.io
-  # GitHub 仓库全名作为 GHCR 镜像名
   GHCR_IMAGE_NAME: ${{ github.repository }}
-  # Docker Hub 镜像名（需要根据实际情况设置）
   DOCKERHUB_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
 
 jobs:
@@ -26,7 +28,16 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        run: |
+          if [[ "${{ inputs.image_tag }}" =~ [[:space:]] ]]; then
+            echo "image_tag must not contain spaces"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -54,7 +65,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 为 GHCR 生成元数据
       - name: Extract metadata for GHCR
         id: meta-ghcr
         uses: docker/metadata-action@v5
@@ -62,11 +72,10 @@ jobs:
           images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
           tags: |
             type=raw,value=${{ inputs.image_tag }}
-            type=raw,value=latest,enable=${{ inputs.image_tag != 'latest' }}
+            type=raw,value=latest
           flavor: |
-            latest=true
+            latest=false
 
-      # 为 Docker Hub 生成元数据
       - name: Extract metadata for Docker Hub
         id: meta-dockerhub
         uses: docker/metadata-action@v5
@@ -74,11 +83,22 @@ jobs:
           images: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}
           tags: |
             type=raw,value=${{ inputs.image_tag }}
-            type=raw,value=latest,enable=${{ inputs.image_tag != 'latest' }}
+            type=raw,value=latest
           flavor: |
-            latest=true
+            latest=false
 
-      # 构建并推送多架构镜像到两个注册表
+      - name: Pre-publish docker smoke
+        run: |
+          docker build -t stock-analysis:manual -f docker/Dockerfile .
+          docker run --rm stock-analysis:manual python -c "
+          from src.config import get_config; print('ok-config')
+          from src.storage import DatabaseManager; print('ok-storage')
+          from src.notification import NotificationService; print('ok-notification')
+          from data_provider import DataFetcherManager; print('ok-data-provider')
+          from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          print('manual-smoke-ok')
+          "
+
       - name: Build and push multi-arch images
         uses: docker/build-push-action@v5
         with:
@@ -95,25 +115,15 @@ jobs:
 
       - name: Generate summary
         run: |
-          echo "### Docker Images Built and Pushed Successfully 🎉" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**GitHub Container Registry (GHCR):**" >> $GITHUB_STEP_SUMMARY
-          echo "- Image: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Tags: ${{ inputs.image_tag }}${{ inputs.image_tag != 'latest' && ', latest' || '' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Docker Hub:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Image: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Tags: ${{ inputs.image_tag }}${{ inputs.image_tag != 'latest' && ', latest' || '' }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pull Commands:" >> $GITHUB_STEP_SUMMARY
-          echo "**GHCR:**" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ inputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Docker Hub:**" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}:${{ inputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### Docker images built and pushed successfully" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tags: ${{ inputs.image_tag }}, latest" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Platforms: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull commands" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ inputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "docker pull ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}:${{ inputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

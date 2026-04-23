@@ -1,0 +1,78 @@
+## 🎯 {{ report_date }} {{ labels.dashboard_title }}
+
+> {{ results|length }} {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+
+{% if summary_only %}
+**📊 {{ labels.summary_heading }}**
+{% for e in enriched %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% endfor %}
+{% else %}
+{% for e in enriched %}
+{% set result = e.result %}
+{% set dashboard = result.dashboard if result.dashboard else {} %}
+{% set core = dashboard.get('core_conclusion') or {} %}
+{% set battle = dashboard.get('battle_plan') or {} %}
+{% set intel = dashboard.get('intelligence') or {} %}
+
+### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
+
+{% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
+{% if one_sentence %}
+📌 **{{ one_sentence[:80] }}**
+{% endif %}
+
+{% if intel.get('earnings_outlook') %}
+📊 {{ labels.earnings_outlook_label }}: {{ intel.earnings_outlook[:60] }}
+{% endif %}
+{% if intel.get('sentiment_summary') %}
+💭 {{ labels.sentiment_summary_label }}: {{ intel.sentiment_summary[:50] }}
+{% endif %}
+
+{% if intel.get('risk_alerts') %}
+🚨 **{{ labels.risk_alerts_label }}**:
+{% for risk in intel.risk_alerts[:2] %}
+   • {{ risk[:50] }}{{ '...' if risk|length > 50 else '' }}
+{% endfor %}
+{% endif %}
+
+{% if intel.get('positive_catalysts') %}
+✨ **{{ labels.positive_catalysts_label }}**:
+{% for cat in intel.positive_catalysts[:2] %}
+   • {{ cat[:50] }}{{ '...' if cat|length > 50 else '' }}
+{% endfor %}
+{% endif %}
+
+{% set sniper = battle.get('sniper_points', {}) if battle else {} %}
+{% if sniper.ideal_buy or sniper.stop_loss or sniper.take_profit %}
+{% set ns = namespace(parts=[]) %}
+{% if sniper.ideal_buy %}{% set ns.parts = ns.parts + ['🎯' ~ labels.ideal_buy_label ~ ':' ~ (sniper.ideal_buy|string)[:15]] %}{% endif %}
+{% if sniper.stop_loss %}{% set ns.parts = ns.parts + ['🛑' ~ labels.stop_loss_label ~ ':' ~ (sniper.stop_loss|string)[:15]] %}{% endif %}
+{% if sniper.take_profit %}{% set ns.parts = ns.parts + ['🎊' ~ labels.take_profit_label ~ ':' ~ (sniper.take_profit|string)[:15]] %}{% endif %}
+{{ ns.parts|join(' | ') }}
+{% endif %}
+
+{% set pos_advice = core.get('position_advice', {}) if core else {} %}
+{% if pos_advice %}
+{% if pos_advice.get('no_position') %}
+🆕 {{ labels.no_position_label }}: {{ pos_advice.no_position[:50] }}
+{% endif %}
+{% if pos_advice.get('has_position') %}
+💼 {{ labels.has_position_label }}: {{ pos_advice.has_position[:50] }}
+{% endif %}
+{% endif %}
+
+{% set checklist = battle.get('action_checklist', []) if battle else [] %}
+{% set fc = failed_checks(checklist) %}
+{% if fc %}
+**{{ labels.failed_checks_heading }}**:
+{% for check in fc[:3] %}
+   {{ check[:40] }}
+{% endfor %}
+{% endif %}
+
+---
+{% endfor %}
+{% endif %}
+
+*{{ labels.report_time_label }}: {{ report_timestamp[11:16] }}*

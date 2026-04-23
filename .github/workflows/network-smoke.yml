@@ -1,0 +1,53 @@
+name: Network Smoke
+
+on:
+  schedule:
+    - cron: '0 2 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: network-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: 🌐 Run pytest network smoke (non-blocking)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m pytest -m network -q | tee pytest-network.log
+
+      - name: 🚀 Run quick smoke (non-blocking)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./test.sh quick --no-notify | tee quick-smoke.log
+
+      - name: 📤 Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: network-smoke-logs-${{ github.run_number }}
+          path: |
+            pytest-network.log
+            quick-smoke.log
+          if-no-files-found: ignore

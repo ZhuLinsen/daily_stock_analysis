@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 分析服务层
 4. 统一管理分析流程和配置
 """
 
+import uuid
 from typing import List, Optional
 
 from src.analyzer import AnalysisResult
@@ -44,7 +45,11 @@ def analyze_stock(
         config = get_config()
     
     # 创建分析流水线
-    pipeline = StockAnalysisPipeline(config=config)
+    pipeline = StockAnalysisPipeline(
+        config=config,
+        query_id=uuid.uuid4().hex,
+        query_source="cli"
+    )
     
     # 使用通知服务（如果提供）
     if notifier:
@@ -110,7 +115,11 @@ def perform_market_review(
         config = get_config()
     
     # 创建分析流水线以获取analyzer和search_service
-    pipeline = StockAnalysisPipeline(config=config)
+    pipeline = StockAnalysisPipeline(
+        config=config,
+        query_id=uuid.uuid4().hex,
+        query_source="cli"
+    )
     
     # 使用提供的通知服务或创建新的
     review_notifier = notifier or pipeline.notifier

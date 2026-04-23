@@ -8,10 +8,20 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - '**.py'
+      - '**.md'
+      - '**.ts'
+      - '**.tsx'
+      - 'docs/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'apps/dsa-web/**'
       - 'requirements.txt'
       - 'pyproject.toml'
       - 'setup.cfg'
-      - 'Dockerfile'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
+      - '.github/workflows/**'
+      - '.github/scripts/**'
+      - 'docker/Dockerfile'
       - 'docker-compose.yml'
   # 支持手动触发（用于重新审查）
   workflow_dispatch:
@@ -33,10 +43,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       safe_to_run: ${{ steps.check_sensitive.outputs.safe_to_run }}
+      sensitive_files_changed: ${{ steps.check_sensitive.outputs.sensitive_files_changed }}
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -48,7 +59,7 @@ jobs:
         id: check_sensitive
         run: |
           BASE_REF="${{ github.base_ref || 'main' }}"
-          SENSITIVE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD | grep -E '\.(github/workflows/.*\.yml|\.github/scripts/.*\.py)$' || echo "")
+          SENSITIVE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD | grep -E '^(\.github/workflows/.*\.yml|\.github/scripts/.*\.py)$' || echo "")
           
           if [ -n "$SENSITIVE_FILES" ]; then
             echo "⚠️ **检测到敏感文件修改，需要人工审核！**" >> $GITHUB_STEP_SUMMARY
@@ -58,12 +69,12 @@ jobs:
             echo "$SENSITIVE_FILES" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "为了安全，自动审查已暂停。请仓库维护者人工检查这些文件后，可通过 workflow_dispatch 手动触发审查。" >> $GITHUB_STEP_SUMMARY
-            
-            echo "safe_to_run=false" >> $GITHUB_OUTPUT
-            exit 1
+            echo "已标记为敏感变更，请重点人工复核；自动流程继续执行。" >> $GITHUB_STEP_SUMMARY
+            echo "sensitive_files_changed=true" >> $GITHUB_OUTPUT
+            echo "safe_to_run=true" >> $GITHUB_OUTPUT
           else
             echo "✅ 未检测到敏感文件修改" >> $GITHUB_STEP_SUMMARY
+            echo "sensitive_files_changed=false" >> $GITHUB_OUTPUT
             echo "safe_to_run=true" >> $GITHUB_OUTPUT
           fi
 
@@ -76,10 +87,11 @@ jobs:
     outputs:
       syntax_ok: ${{ steps.syntax.outputs.syntax_ok }}
       has_py_changes: ${{ steps.check_files.outputs.has_py_changes }}
+      has_reviewable_changes: ${{ steps.check_files.outputs.has_reviewable_changes }}
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -88,7 +100,7 @@ jobs:
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
       
       - name: 🐍 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -103,6 +115,14 @@ jobs:
         run: |
           BASE_REF="${{ github.base_ref || 'main' }}"
           CHANGED_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' 2>/dev/null || echo "")
+          REVIEWABLE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' '*.md' 'docs/**' 'README.md' 'AGENTS.md' 'requirements.txt' 'pyproject.toml' 'setup.cfg' '.github/PULL_REQUEST_TEMPLATE.md' '.github/workflows/**' '.github/scripts/**' 2>/dev/null || echo "")
+
+          if [ -z "$REVIEWABLE_FILES" ]; then
+            echo "has_reviewable_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_reviewable_changes=true" >> $GITHUB_OUTPUT
+          fi
+
           if [ -z "$CHANGED_FILES" ]; then
             echo "has_py_changes=false" >> $GITHUB_OUTPUT
             echo "✅ 没有修改 Python 文件" >> $GITHUB_STEP_SUMMARY
@@ -142,7 +162,6 @@ jobs:
       
       - name: 🔎 Flake8 检查（严重错误）
         if: steps.check_files.outputs.has_py_changes == 'true'
-        continue-on-error: true
         run: |
           echo "## 🔎 代码质量检查" >> $GITHUB_STEP_SUMMARY
           RESULT=$(flake8 $CHANGED_FILES --select=E9,F63,F7,F82 --format='%(path)s:%(row)d: %(code)s %(text)s' 2>/dev/null || true)
@@ -151,6 +170,7 @@ jobs:
             echo '```' >> $GITHUB_STEP_SUMMARY
             echo "$RESULT" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
           else
             echo "✅ 未发现严重代码问题" >> $GITHUB_STEP_SUMMARY
           fi
@@ -171,13 +191,13 @@ jobs:
     if: |
       needs.security-check.outputs.safe_to_run == 'true' &&
       needs.auto-check.result == 'success' &&
-      needs.auto-check.outputs.has_py_changes == 'true' &&
+      needs.auto-check.outputs.has_reviewable_changes == 'true' &&
       vars.ENABLE_AI_REVIEW != 'false'
     
     steps:
       # 先检出主分支（获取最新的 .github/scripts）
       - name: 📥 检出主分支脚本
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: |
@@ -187,7 +207,7 @@ jobs:
       
       # 再检出 PR 代码（用于 diff 分析）
       - name: 📥 检出 PR 代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -198,7 +218,7 @@ jobs:
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
       
       - name: 🐍 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
@@ -211,14 +231,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_BASE_REF: ${{ github.base_ref || 'main' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          AI_REVIEW_STRICT: ${{ vars.AI_REVIEW_STRICT || 'false' }}
+          CI_SYNTAX_OK: ${{ needs.auto-check.outputs.syntax_ok || '' }}
+          CI_HAS_PY_CHANGES: ${{ needs.auto-check.outputs.has_py_changes || 'false' }}
+          CI_AUTO_CHECK_RESULT: ${{ needs.auto-check.result || '' }}
         run: python ../main-scripts/.github/scripts/ai_review.py
       
       - name: 📤 上传审查结果
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ai-review-result
@@ -232,11 +257,11 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       
       - name: 🏷️ 添加标签
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request_target'
+        uses: actions/github-script@v8
         with:
           script: |
             const { data: files } = await github.rest.pulls.listFiles({
@@ -313,12 +338,12 @@ jobs:
     
     steps:
       - name: 📥 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
       
       - name: 📥 下载 AI 审查结果
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         if: needs.ai-review.result == 'success'
         continue-on-error: true
         with:
@@ -329,7 +354,7 @@ jobs:
         env:
           AUTO_CHECK_RESULT: ${{ needs.auto-check.result }}
           AI_REVIEW_RESULT: ${{ needs.ai-review.result }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const fs = require('fs');
