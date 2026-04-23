@@ -1,0 +1,42 @@
+name: Create GitHub Release from Tag
+
+# Trigger: annotated tag pushed (vX.Y.Z)
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Extract tag annotation message
+        id: tag_body
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Get full annotation message (body only, strip first line if it's just the version)
+          BODY="$(git tag -l --format='%(contents)' "$TAG")"
+          if [[ -z "${BODY// }" ]]; then
+            echo "No annotation message found for $TAG, using default."
+            BODY="See CHANGELOG for details."
+          fi
+          # Write to file to safely handle multi-line content
+          printf '%s' "$BODY" > /tmp/release_body.txt
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_body.outputs.tag }}
+          name: ${{ steps.tag_body.outputs.tag }}
+          body_path: /tmp/release_body.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: false

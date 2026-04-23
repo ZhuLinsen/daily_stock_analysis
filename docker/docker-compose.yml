@@ -4,9 +4,10 @@
 # 
 # 使用方式:
 #   定时模式: docker-compose -f ./docker/docker-compose.yml up -d
-#   WebUI模式: docker-compose -f ./docker/docker-compose.yml up -d webui
-#   同时启动: docker-compose -f ./docker/docker-compose.yml up -d analyzer webui
+#   FastAPI模式: docker-compose -f ./docker/docker-compose.yml up -d server
+#   同时启动: docker-compose -f ./docker/docker-compose.yml up -d analyzer server
 
+name: daily-stock-analysis
 version: '3.8'
 
 x-common: &common
@@ -24,14 +25,16 @@ x-common: &common
     - ../logs:/app/logs
     - ../reports:/app/reports
     - ../.env:/app/.env
+    - ../strategies:/app/strategies:ro
+    # 如需覆盖前端静态资源，可挂载本地 static 目录
+    # - ../static:/app/static:ro
 
   environment:
     - TZ=Asia/Shanghai
 
-    # 注意：容器内如果绑定到 127.0.0.1，宿主机端口映射将无法访问 WebUI。
-    # 即使 .env 里设置了 WEBUI_HOST=127.0.0.1，这里也会强制覆盖。
+    # Web/API service bind address (must be 0.0.0.0 inside container)
     - WEBUI_HOST=0.0.0.0
-    - WEBUI_PORT=8000
+    # API_PORT 从 .env 文件读取，无需在此硬编码
 
     # 代理设置（如果需要）
     # - http_proxy=http://host.docker.internal:10809
@@ -55,10 +58,11 @@ services:
     <<: *common
     container_name: stock-analyzer
 
-  # WebUI 模式
-  webui:
+  # FastAPI 模式
+  server:
     <<: *common
-    container_name: stock-webui
-    command: ["python", "main.py", "--webui-only"]
+    container_name: stock-server
+    command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
+    # 若使用 network_mode: host，则以下 ports 映射无效，端口由 command 中的 --port 指定
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:${API_PORT:-8000}"

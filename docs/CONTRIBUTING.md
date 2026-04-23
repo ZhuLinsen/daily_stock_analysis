@@ -78,28 +78,24 @@ docs: 更新 README 部署说明
 
 | 检查项 | 说明 | 必须通过 |
 |--------|------|:--------:|
-| 🐍 语法检查 | Python 语法正确性 | ✅ |
-| 📦 依赖安装 | Python 3.10/3.11/3.12 多版本测试 | ✅ |
-| 🐳 Docker 构建 | Docker 镜像能正常构建 | ✅ |
-| 🔍 代码规范 | Black/Flake8/isort 格式检查 | ⚠️ 警告 |
-| 🔒 安全检查 | Bandit/Safety 漏洞扫描 | ⚠️ 警告 |
-| 🧪 单元测试 | pytest 测试（如有） | ✅ |
+| backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |
+| docker-build | Docker 镜像构建与关键模块导入 smoke | ✅ |
+| web-gate | 前端变更时执行 `npm run lint` + `npm run build` | ✅（触发时） |
+| network-smoke | 定时/手动执行 `pytest -m network` + `test.sh quick`（非阻断） | ❌（观测项） |
 
 **本地运行检查：**
 
 ```bash
-# 安装检查工具
-pip install black flake8 isort bandit
+# backend gate（推荐）
+pip install -r requirements.txt
+pip install flake8 pytest
+./scripts/ci_gate.sh
 
-# 代码格式化
-black .
-isort .
-
-# 静态检查
-flake8 .
-
-# 安全扫描
-bandit -r . -x ./test_*.py
+# 前端 gate（如修改了 apps/dsa-web）
+cd apps/dsa-web
+npm ci
+npm run lint
+npm run build
 ```
 
 ## 📋 优先贡献方向

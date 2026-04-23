@@ -1,16 +1,27 @@
-name: Docker Publish
+name: Docker Release Publish
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*.*.*'
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - 'LICENSE'
-      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag in semver format, e.g. v3.0.6'
+        required: true
+        type: string
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
+  GHCR_IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
+  HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' && 'true' || 'false' }}
+  HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && 'true' || 'false' }}
 
 jobs:
   build-and-push:
@@ -21,33 +32,134 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
+      - name: Resolve release ref
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="${{ inputs.release_tag }}"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --tags --force
+            git rev-parse "$RELEASE_TAG" >/dev/null
+            git checkout "$RELEASE_TAG"
+            echo "Using manual release tag: $RELEASE_TAG"
+          else
+            echo "Using event ref: ${GITHUB_REF_NAME}"
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install backend gate dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest
+
+      - name: Run backend gate before publish
+        run: ./scripts/ci_gate.sh
+
+      - name: Validate release docs
+        run: |
+          test -f README.md
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "${{ inputs.release_tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            VERSION="${{ inputs.release_tag }}"
+          elif [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            echo "Unsupported trigger type"
+            exit 1
+          fi
+          # Validate using annotated tag message instead of CHANGELOG entry.
+          # Requires: git tag -a <version> -m "<release notes>"
+          TAG_BODY="$(git tag -l --format='%(contents)' "$VERSION")"
+          if [[ -z "${TAG_BODY// }" ]]; then
+            echo "ERROR: Tag $VERSION has no annotation message."
+            echo "Use: git tag -a $VERSION -m '<release notes>' (annotated tag required)"
+            exit 1
+          fi
+          echo "Tag annotation found for $VERSION ($(echo "$TAG_BODY" | wc -l) lines). Gate passed."
+
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
-        id: meta
+      - name: Log in to Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        uses: docker/login-action@v3
         with:
-          images: ghcr.io/${{ github.repository }}
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for GHCR
+        id: meta-ghcr
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{ is_default_branch }}
+            type=raw,value=latest
+            type=ref,event=tag
+            type=raw,value=${{ inputs.release_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=sha,format=short
             type=sha,format=long
 
-      - uses: docker/build-push-action@v5
+      - name: Extract metadata for Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        id: meta-dockerhub
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=tag
+            type=raw,value=${{ inputs.release_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,format=short
+            type=sha,format=long
+
+      - name: Pre-publish docker smoke
+        run: |
+          docker build -t stock-analysis:release -f docker/Dockerfile .
+          docker run --rm stock-analysis:release python -c "
+          from src.config import get_config; print('ok-config')
+          from src.storage import DatabaseManager; print('ok-storage')
+          from src.notification import NotificationService; print('ok-notification')
+          from data_provider import DataFetcherManager; print('ok-data-provider')
+          from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          print('release-smoke-ok')
+          "
+
+      - name: Build and push release images
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ steps.meta-ghcr.outputs.tags }}
+            ${{ steps.meta-dockerhub.outputs.tags }}
+          labels: ${{ steps.meta-ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Publish summary
+        run: |
+          echo "### Docker release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
+            echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
+          fi

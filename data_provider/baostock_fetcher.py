@@ -29,7 +29,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
 import os
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,11 @@ class BaostockFetcher(BaseFetcher):
             Baostock 格式代码，如 'sh.600519', 'sz.000001'
         """
         code = stock_code.strip()
-        
+
+        # HK stocks are not supported by Baostock
+        if _is_hk_market(code):
+            raise DataFetchError(f"BaostockFetcher 不支持港股 {code}，请使用 AkshareFetcher")
+
         # 已经包含前缀的情况
         if code.startswith(('sh.', 'sz.')):
             return code.lower()
@@ -145,6 +149,13 @@ class BaostockFetcher(BaseFetcher):
         # 去除可能的后缀
         code = code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '')
         
+        # ETF: Shanghai ETF (51xx, 52xx, 56xx, 58xx) -> sh; Shenzhen ETF (15xx, 16xx, 18xx) -> sz
+        if len(code) == 6:
+            if code.startswith(('51', '52', '56', '58')):
+                return f"sh.{code}"
+            if code.startswith(('15', '16', '18')):
+                return f"sz.{code}"
+
         # 根据代码前缀判断市场
         if code.startswith(('600', '601', '603', '688')):
             return f"sh.{code}"
@@ -176,6 +187,16 @@ class BaostockFetcher(BaseFetcher):
         # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_us_code(stock_code):
             raise DataFetchError(f"BaostockFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+
+        # 港股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"BaostockFetcher 不支持港股 {stock_code}，请使用 AkshareFetcher")
+
+        # 北交所不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if is_bse_code(stock_code):
+            raise DataFetchError(
+                f"BaostockFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
+            )
         
         # 转换代码格式
         bs_code = self._convert_stock_code(stock_code)
