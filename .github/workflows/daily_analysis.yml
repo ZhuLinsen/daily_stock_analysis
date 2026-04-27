@@ -66,9 +66,17 @@ jobs:
           LITELLM_CONFIG_YAML: ${{ vars.LITELLM_CONFIG_YAML || secrets.LITELLM_CONFIG_YAML }}
           LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
+          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS }}
+          AGENT_LITELLM_MODEL: ${{ vars.AGENT_LITELLM_MODEL || secrets.AGENT_LITELLM_MODEL }}
+          VISION_MODEL: ${{ vars.VISION_MODEL || secrets.VISION_MODEL }}
+          OPENAI_VISION_MODEL: ${{ vars.OPENAI_VISION_MODEL || secrets.OPENAI_VISION_MODEL }}
+          VISION_PROVIDER_PRIORITY: ${{ vars.VISION_PROVIDER_PRIORITY || secrets.VISION_PROVIDER_PRIORITY }}
+          LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || secrets.LLM_TEMPERATURE }}
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || secrets.LLM_CHANNELS }}
 
           # Gemini AI（主选）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
           GEMINI_REQUEST_DELAY: '3.0'
@@ -78,15 +86,91 @@ jobs:
 
           # OpenAI 兼容 API（备选）
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEYS: ${{ secrets.OPENAI_API_KEYS }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || secrets.OPENAI_MODEL }}
 
           # DeepSeek
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_API_KEYS: ${{ secrets.DEEPSEEK_API_KEYS }}
           
           # Anthropic / Claude
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEYS: ${{ secrets.ANTHROPIC_API_KEYS }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || secrets.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022' }}
+
+          # LLM 渠道模式（常见渠道名需显式映射，GitHub Actions 不会自动导入任意 Secret/Variable）
+          LLM_PRIMARY_PROTOCOL: ${{ vars.LLM_PRIMARY_PROTOCOL || secrets.LLM_PRIMARY_PROTOCOL }}
+          LLM_PRIMARY_BASE_URL: ${{ vars.LLM_PRIMARY_BASE_URL || secrets.LLM_PRIMARY_BASE_URL }}
+          LLM_PRIMARY_API_KEY: ${{ secrets.LLM_PRIMARY_API_KEY }}
+          LLM_PRIMARY_API_KEYS: ${{ secrets.LLM_PRIMARY_API_KEYS }}
+          LLM_PRIMARY_MODELS: ${{ vars.LLM_PRIMARY_MODELS || secrets.LLM_PRIMARY_MODELS }}
+          LLM_PRIMARY_ENABLED: ${{ vars.LLM_PRIMARY_ENABLED || secrets.LLM_PRIMARY_ENABLED }}
+          LLM_PRIMARY_EXTRA_HEADERS: ${{ vars.LLM_PRIMARY_EXTRA_HEADERS || secrets.LLM_PRIMARY_EXTRA_HEADERS }}
+
+          LLM_SECONDARY_PROTOCOL: ${{ vars.LLM_SECONDARY_PROTOCOL || secrets.LLM_SECONDARY_PROTOCOL }}
+          LLM_SECONDARY_BASE_URL: ${{ vars.LLM_SECONDARY_BASE_URL || secrets.LLM_SECONDARY_BASE_URL }}
+          LLM_SECONDARY_API_KEY: ${{ secrets.LLM_SECONDARY_API_KEY }}
+          LLM_SECONDARY_API_KEYS: ${{ secrets.LLM_SECONDARY_API_KEYS }}
+          LLM_SECONDARY_MODELS: ${{ vars.LLM_SECONDARY_MODELS || secrets.LLM_SECONDARY_MODELS }}
+          LLM_SECONDARY_ENABLED: ${{ vars.LLM_SECONDARY_ENABLED || secrets.LLM_SECONDARY_ENABLED }}
+          LLM_SECONDARY_EXTRA_HEADERS: ${{ vars.LLM_SECONDARY_EXTRA_HEADERS || secrets.LLM_SECONDARY_EXTRA_HEADERS }}
+
+          LLM_GEMINI_PROTOCOL: ${{ vars.LLM_GEMINI_PROTOCOL || secrets.LLM_GEMINI_PROTOCOL }}
+          LLM_GEMINI_BASE_URL: ${{ vars.LLM_GEMINI_BASE_URL || secrets.LLM_GEMINI_BASE_URL }}
+          LLM_GEMINI_API_KEY: ${{ secrets.LLM_GEMINI_API_KEY }}
+          LLM_GEMINI_API_KEYS: ${{ secrets.LLM_GEMINI_API_KEYS }}
+          LLM_GEMINI_MODELS: ${{ vars.LLM_GEMINI_MODELS || secrets.LLM_GEMINI_MODELS }}
+          LLM_GEMINI_ENABLED: ${{ vars.LLM_GEMINI_ENABLED || secrets.LLM_GEMINI_ENABLED }}
+          LLM_GEMINI_EXTRA_HEADERS: ${{ vars.LLM_GEMINI_EXTRA_HEADERS || secrets.LLM_GEMINI_EXTRA_HEADERS }}
+
+          LLM_DEEPSEEK_PROTOCOL: ${{ vars.LLM_DEEPSEEK_PROTOCOL || secrets.LLM_DEEPSEEK_PROTOCOL }}
+          LLM_DEEPSEEK_BASE_URL: ${{ vars.LLM_DEEPSEEK_BASE_URL || secrets.LLM_DEEPSEEK_BASE_URL }}
+          LLM_DEEPSEEK_API_KEY: ${{ secrets.LLM_DEEPSEEK_API_KEY }}
+          LLM_DEEPSEEK_API_KEYS: ${{ secrets.LLM_DEEPSEEK_API_KEYS }}
+          LLM_DEEPSEEK_MODELS: ${{ vars.LLM_DEEPSEEK_MODELS || secrets.LLM_DEEPSEEK_MODELS }}
+          LLM_DEEPSEEK_ENABLED: ${{ vars.LLM_DEEPSEEK_ENABLED || secrets.LLM_DEEPSEEK_ENABLED }}
+          LLM_DEEPSEEK_EXTRA_HEADERS: ${{ vars.LLM_DEEPSEEK_EXTRA_HEADERS || secrets.LLM_DEEPSEEK_EXTRA_HEADERS }}
+
+          LLM_AIHUBMIX_PROTOCOL: ${{ vars.LLM_AIHUBMIX_PROTOCOL || secrets.LLM_AIHUBMIX_PROTOCOL }}
+          LLM_AIHUBMIX_BASE_URL: ${{ vars.LLM_AIHUBMIX_BASE_URL || secrets.LLM_AIHUBMIX_BASE_URL }}
+          LLM_AIHUBMIX_API_KEY: ${{ secrets.LLM_AIHUBMIX_API_KEY }}
+          LLM_AIHUBMIX_API_KEYS: ${{ secrets.LLM_AIHUBMIX_API_KEYS }}
+          LLM_AIHUBMIX_MODELS: ${{ vars.LLM_AIHUBMIX_MODELS || secrets.LLM_AIHUBMIX_MODELS }}
+          LLM_AIHUBMIX_ENABLED: ${{ vars.LLM_AIHUBMIX_ENABLED || secrets.LLM_AIHUBMIX_ENABLED }}
+          LLM_AIHUBMIX_EXTRA_HEADERS: ${{ vars.LLM_AIHUBMIX_EXTRA_HEADERS || secrets.LLM_AIHUBMIX_EXTRA_HEADERS }}
+
+          LLM_OPENAI_PROTOCOL: ${{ vars.LLM_OPENAI_PROTOCOL || secrets.LLM_OPENAI_PROTOCOL }}
+          LLM_OPENAI_BASE_URL: ${{ vars.LLM_OPENAI_BASE_URL || secrets.LLM_OPENAI_BASE_URL }}
+          LLM_OPENAI_API_KEY: ${{ secrets.LLM_OPENAI_API_KEY }}
+          LLM_OPENAI_API_KEYS: ${{ secrets.LLM_OPENAI_API_KEYS }}
+          LLM_OPENAI_MODELS: ${{ vars.LLM_OPENAI_MODELS || secrets.LLM_OPENAI_MODELS }}
+          LLM_OPENAI_ENABLED: ${{ vars.LLM_OPENAI_ENABLED || secrets.LLM_OPENAI_ENABLED }}
+          LLM_OPENAI_EXTRA_HEADERS: ${{ vars.LLM_OPENAI_EXTRA_HEADERS || secrets.LLM_OPENAI_EXTRA_HEADERS }}
+
+          LLM_ANTHROPIC_PROTOCOL: ${{ vars.LLM_ANTHROPIC_PROTOCOL || secrets.LLM_ANTHROPIC_PROTOCOL }}
+          LLM_ANTHROPIC_BASE_URL: ${{ vars.LLM_ANTHROPIC_BASE_URL || secrets.LLM_ANTHROPIC_BASE_URL }}
+          LLM_ANTHROPIC_API_KEY: ${{ secrets.LLM_ANTHROPIC_API_KEY }}
+          LLM_ANTHROPIC_API_KEYS: ${{ secrets.LLM_ANTHROPIC_API_KEYS }}
+          LLM_ANTHROPIC_MODELS: ${{ vars.LLM_ANTHROPIC_MODELS || secrets.LLM_ANTHROPIC_MODELS }}
+          LLM_ANTHROPIC_ENABLED: ${{ vars.LLM_ANTHROPIC_ENABLED || secrets.LLM_ANTHROPIC_ENABLED }}
+          LLM_ANTHROPIC_EXTRA_HEADERS: ${{ vars.LLM_ANTHROPIC_EXTRA_HEADERS || secrets.LLM_ANTHROPIC_EXTRA_HEADERS }}
+
+          LLM_MOONSHOT_PROTOCOL: ${{ vars.LLM_MOONSHOT_PROTOCOL || secrets.LLM_MOONSHOT_PROTOCOL }}
+          LLM_MOONSHOT_BASE_URL: ${{ vars.LLM_MOONSHOT_BASE_URL || secrets.LLM_MOONSHOT_BASE_URL }}
+          LLM_MOONSHOT_API_KEY: ${{ secrets.LLM_MOONSHOT_API_KEY }}
+          LLM_MOONSHOT_API_KEYS: ${{ secrets.LLM_MOONSHOT_API_KEYS }}
+          LLM_MOONSHOT_MODELS: ${{ vars.LLM_MOONSHOT_MODELS || secrets.LLM_MOONSHOT_MODELS }}
+          LLM_MOONSHOT_ENABLED: ${{ vars.LLM_MOONSHOT_ENABLED || secrets.LLM_MOONSHOT_ENABLED }}
+          LLM_MOONSHOT_EXTRA_HEADERS: ${{ vars.LLM_MOONSHOT_EXTRA_HEADERS || secrets.LLM_MOONSHOT_EXTRA_HEADERS }}
+
+          LLM_OLLAMA_PROTOCOL: ${{ vars.LLM_OLLAMA_PROTOCOL || secrets.LLM_OLLAMA_PROTOCOL }}
+          LLM_OLLAMA_BASE_URL: ${{ vars.LLM_OLLAMA_BASE_URL || secrets.LLM_OLLAMA_BASE_URL }}
+          LLM_OLLAMA_API_KEY: ${{ secrets.LLM_OLLAMA_API_KEY }}
+          LLM_OLLAMA_API_KEYS: ${{ secrets.LLM_OLLAMA_API_KEYS }}
+          LLM_OLLAMA_MODELS: ${{ vars.LLM_OLLAMA_MODELS || secrets.LLM_OLLAMA_MODELS }}
+          LLM_OLLAMA_ENABLED: ${{ vars.LLM_OLLAMA_ENABLED || secrets.LLM_OLLAMA_ENABLED }}
+          LLM_OLLAMA_EXTRA_HEADERS: ${{ vars.LLM_OLLAMA_EXTRA_HEADERS || secrets.LLM_OLLAMA_EXTRA_HEADERS }}
 
           # ==========================================
           # 数据源
@@ -108,6 +192,7 @@ jobs:
           # ==========================================
           # 搜索服务
           # ==========================================
+          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }} 
           BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
           TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}

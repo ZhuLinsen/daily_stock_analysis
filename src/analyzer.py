@@ -29,6 +29,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    normalize_litellm_temperature,
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
@@ -1149,7 +1150,7 @@ class GeminiAnalyzer:
             or generation_config.get('max_tokens')
             or 8192
         )
-        temperature = generation_config.get('temperature', 0.7)
+        requested_temperature = generation_config.get('temperature', 0.7)
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -1162,16 +1163,21 @@ class GeminiAnalyzer:
         for model in models_to_try:
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
+                extra = get_thinking_extra_body(model_short)
                 call_kwargs: Dict[str, Any] = {
                     "model": model,
                     "messages": [
                         {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": temperature,
+                    "temperature": normalize_litellm_temperature(
+                        model,
+                        requested_temperature,
+                        model_list=config.llm_model_list,
+                        request_overrides={"extra_body": extra} if extra else None,
+                    ),
                     "max_tokens": max_tokens,
                 }
-                extra = get_thinking_extra_body(model_short)
                 if extra:
                     call_kwargs["extra_body"] = extra
 

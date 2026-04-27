@@ -207,13 +207,13 @@ Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each
 ```bash
 # No need to configure GEMINI_API_KEY
 OPENAI_API_KEY=sk-xxxxxxxx
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-# Thinking mode: deepseek-reasoner, deepseek-r1, qwq auto-detected; deepseek-chat enabled by model name
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+# deepseek-chat / deepseek-reasoner remain compatible, but DeepSeek marks them deprecated after 2026/07/24
 ```
 
 Supported model services:
-- DeepSeek: `https://api.deepseek.com/v1`
+- DeepSeek: `https://api.deepseek.com`
 - Qwen (Tongyi Qianwen): `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Moonshot: `https://api.moonshot.cn/v1`
 
@@ -286,9 +286,28 @@ Work through the following 5 checkpoints in order:
 1. Ensure startup command includes `--host 0.0.0.0` (cannot be 127.0.0.1)
 2. Check port mapping is correct:
    ```yaml
-   ports:
-     - "8000:8000"
-   ```
+    ports:
+      - "8000:8000"
+    ```
+
+---
+
+### Q14.1: Where is the software version stored when I install with Docker?
+
+**Short answer**: For Docker users, the authoritative version is **the image tag you actually deployed**, not a hardcoded constant in a Python source file.
+
+**Why**:
+1. Docker publishing is driven by `.github/workflows/docker-publish.yml`, which only publishes release images for Git tags matching `v*.*.*` (for example, `v3.12.0`).
+2. So the Docker image version follows the **GitHub Release / Git tag**, rather than a fixed value in `main.py`, `server.py`, or another backend module.
+3. The `version` field in `apps/dsa-web/package.json` is currently a placeholder `0.0.0`. The WebUI version/build card is useful for checking whether frontend assets were rebuilt, but it is not the Docker release version.
+4. The desktop app has its own version in `apps/dsa-desktop/package.json`, and that only applies to the Electron desktop build, not the Docker image.
+
+**How to check your current Docker version**:
+1. **Check the image tag in your deploy command or Compose file**. For example, in `ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0`, the deployed version is `v3.12.0`.
+2. **If you used `latest`**, check your original `docker pull`, `docker-compose.yml`, or deployment script, then compare with [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases).
+3. **If you only want to confirm the frontend was refreshed**, open WebUI → Settings and inspect `Build ID` / `Build Time`; that confirms static asset freshness, not the Docker release version.
+
+**Recommendation**: To avoid repeated updates, prefer a pinned version tag such as `v3.12.0` instead of relying on `latest`.
 
 ---
 
@@ -324,4 +343,4 @@ If the above content doesn't solve your issue, welcome to:
 
 ---
 
-*Last updated: 2026-04-01*
+*Last updated: 2026-04-20*

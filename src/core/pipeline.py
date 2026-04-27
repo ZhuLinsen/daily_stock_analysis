@@ -344,8 +344,10 @@ class StockAnalysisPipeline:
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
             try:
+                from src.services.history_loader import get_frozen_target_date
                 _mkt = get_market_for_stock(normalize_stock_code(code))
-                end_date = get_market_now(_mkt).date()
+                frozen = get_frozen_target_date()
+                end_date = frozen if frozen else get_market_now(_mkt).date()
                 start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
@@ -736,6 +738,26 @@ class StockAnalysisPipeline:
         enriched_context["belong_boards"] = boards
         return enriched_context
 
+    def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
+        """Ensure at least *min_days* of K-line history is in DB for agent tools."""
+        from src.services.history_loader import get_frozen_target_date
+
+        target = get_frozen_target_date()
+        if target is None:
+            target = self._resolve_resume_target_date(code)
+        start = target - timedelta(days=int(min_days * 1.8))
+        bars = self.db.get_data_range(code, start, target)
+        if bars and len(bars) >= min(min_days, 200):
+            logger.debug("[%s] Agent history: %d bars in DB, sufficient", code, len(bars))
+            return
+        try:
+            df, source = self.fetcher_manager.get_daily_data(code, days=min_days)
+            if df is not None and not df.empty:
+                self.db.save_daily_data(df, code, source)
+                logger.info("[%s] Prefetched %d rows of history for agent (source: %s)", code, len(df), source)
+        except Exception as e:
+            logger.warning("[%s] Agent history prefetch failed: %s", code, e)
+
     def _analyze_with_agent(
         self, 
         code: str, 
@@ -788,6 +810,9 @@ class StockAnalysisPipeline:
                         logger.info(f"[{code}] Agent mode: social sentiment data injected into news_context")
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
+
+            # Issue #1066: ensure deep history is in DB before agent tools run
+            self._ensure_agent_history(code)
 
             # 运行 Agent
             if report_language == "en":
@@ -1206,7 +1231,10 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
-        
+
+        from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
+        frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
+        token = set_frozen_target_date(frozen_td)
         try:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
@@ -1252,6 +1280,8 @@ class StockAnalysisPipeline:
             # 捕获所有异常，确保单股失败不影响整体
             logger.exception(f"[{code}] 处理过程发生未知异常: {e}")
             return None
+        finally:
+            reset_frozen_target_date(token)
     
     def run(
         self,

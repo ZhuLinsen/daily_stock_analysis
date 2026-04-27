@@ -23,9 +23,23 @@ from src.config import (
     get_configured_llm_models,
     get_effective_agent_models_to_try,
     get_effective_agent_primary_model,
+    normalize_litellm_temperature,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_litellm_exception(name: str) -> type[BaseException]:
+    """Return a catchable LiteLLM exception class even in stubbed test environments."""
+    exc = getattr(litellm, name, None)
+    if isinstance(exc, type) and issubclass(exc, BaseException):
+        return exc
+
+    class _FallbackLiteLLMError(Exception):
+        pass
+
+    _FallbackLiteLLMError.__name__ = f"Fallback{name}"
+    return _FallbackLiteLLMError
 
 
 # ============================================================
@@ -322,31 +336,31 @@ class LLMToolAdapter:
                     max_tokens=max_tokens,
                     timeout=remaining_timeout,
                 )
-            except litellm.RateLimitError as e:
-                logger.warning("Agent LLM rate-limited on %s: %s", model, e)
-                last_error = e
-                hit_rate_limit = True
-
-                # Avoid blind backoff across different providers; cross-provider
-                # fallback usually means different accounts/rate-limit buckets.
-                should_backoff = (
-                    idx + 1 < len(models_to_try)
-                    and providers[idx] == providers[idx + 1]
-                )
-                if should_backoff:
-                    backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
-                    if timeout is not None and timeout > 0:
-                        remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
-                        if remaining_timeout > 0:
-                            time.sleep(min(backoff_sleep, remaining_timeout))
-                    else:
-                        time.sleep(backoff_sleep)
-                continue
-            except litellm.ContextWindowExceededError as e:
-                logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
-                last_error = e
-                continue
             except Exception as e:
+                if isinstance(e, _resolve_litellm_exception("RateLimitError")):
+                    logger.warning("Agent LLM rate-limited on %s: %s", model, e)
+                    last_error = e
+                    hit_rate_limit = True
+
+                    # Avoid blind backoff across different providers; cross-provider
+                    # fallback usually means different accounts/rate-limit buckets.
+                    should_backoff = (
+                        idx + 1 < len(models_to_try)
+                        and providers[idx] == providers[idx + 1]
+                    )
+                    if should_backoff:
+                        backoff_sleep = min(2.0, (time.time() - started_at) * 0.1 + 0.5)
+                        if timeout is not None and timeout > 0:
+                            remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
+                            if remaining_timeout > 0:
+                                time.sleep(min(backoff_sleep, remaining_timeout))
+                        else:
+                            time.sleep(backoff_sleep)
+                    continue
+                if isinstance(e, _resolve_litellm_exception("ContextWindowExceededError")):
+                    logger.warning("Agent LLM context window exceeded on %s: %s", model, e)
+                    last_error = e
+                    continue
                 logger.warning("Agent LLM call failed with %s: %s", model, e)
                 last_error = e
                 continue
@@ -378,18 +392,23 @@ class LLMToolAdapter:
 
         # Use short model name (without provider prefix) for thinking model lookup
         model_short = model.split("/")[-1] if "/" in model else model
+        extra = get_thinking_extra_body(model_short)
 
         call_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": openai_messages,
-            "temperature": self._get_temperature(model) if temperature is None else temperature,
+            "temperature": normalize_litellm_temperature(
+                model,
+                self._get_temperature() if temperature is None else temperature,
+                model_list=self._config.llm_model_list,
+                request_overrides={"extra_body": extra} if extra else None,
+            ),
         }
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
         if timeout is not None:
             call_kwargs["timeout"] = timeout
 
-        extra = get_thinking_extra_body(model_short)
         if extra:
             call_kwargs["extra_body"] = extra
 
@@ -418,9 +437,9 @@ class LLMToolAdapter:
 
         return self._parse_litellm_response(response, model)
 
-    def _get_temperature(self, model: str) -> float:
-        """Return unified temperature from config."""
-        return self._config.llm_temperature
+    def _get_temperature(self) -> float:
+        """Return the raw configured temperature before per-model normalization."""
+        return float(self._config.llm_temperature)
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal message format to OpenAI-compatible format for litellm."""

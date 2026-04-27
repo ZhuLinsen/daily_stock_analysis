@@ -1,4 +1,4 @@
-name: Docker Publish
+name: Docker Release Publish
 
 on:
   push:
@@ -14,6 +14,14 @@ on:
 concurrency:
   group: docker-publish-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  DOCKERHUB_REGISTRY: docker.io
+  GHCR_IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ github.event.repository.name }}
+  HAS_DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN != '' && 'true' || 'false' }}
+  HAS_DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME != '' && 'true' || 'false' }}
 
 jobs:
   build-and-push:
@@ -79,18 +87,41 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.GHCR_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
-        id: meta
+      - name: Log in to Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        uses: docker/login-action@v3
         with:
-          images: ghcr.io/${{ github.repository }}
+          registry: ${{ env.DOCKERHUB_REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata for GHCR
+        id: meta-ghcr
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{ is_default_branch }}
+            type=raw,value=latest
+            type=ref,event=tag
+            type=raw,value=${{ inputs.release_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,format=short
+            type=sha,format=long
+
+      - name: Extract metadata for Docker Hub
+        if: ${{ env.HAS_DOCKERHUB_TOKEN == 'true' && env.HAS_DOCKERHUB_USERNAME == 'true' }}
+        id: meta-dockerhub
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
             type=ref,event=tag
             type=raw,value=${{ inputs.release_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=sha,format=short
@@ -108,12 +139,27 @@ jobs:
           print('release-smoke-ok')
           "
 
-      - uses: docker/build-push-action@v5
+      - name: Build and push release images
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ steps.meta-ghcr.outputs.tags }}
+            ${{ steps.meta-dockerhub.outputs.tags }}
+          labels: ${{ steps.meta-ghcr.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Publish summary
+        run: |
+          echo "### Docker release published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GHCR: \`${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ env.HAS_DOCKERHUB_TOKEN }}" == "true" && "${{ env.HAS_DOCKERHUB_USERNAME }}" == "true" ]]; then
+            echo "- Docker Hub: \`${{ env.DOCKERHUB_REGISTRY }}/${{ env.DOCKERHUB_IMAGE_NAME }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Docker Hub: skipped (missing \`DOCKERHUB_TOKEN\` / \`DOCKERHUB_USERNAME\` secret)" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -141,6 +141,124 @@ class TestAnalyzerGenerateText:
         assert dispatch_calls[0]["stream"] is True
         assert "stream" not in dispatch_calls[1]
 
+    def test_call_litellm_normalizes_kimi_k26_temperature(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "openai/kimi-k2.6"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 1.0
+
+    def test_call_litellm_normalizes_kimi_k26_temperature_for_yaml_alias(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {"model": "openai/kimi-k2.6"},
+                }
+            ],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "kimi_router"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 1.0
+
+    def test_call_litellm_normalizes_kimi_k26_temperature_for_non_thinking_yaml_alias(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="kimi_router",
+            litellm_fallback_models=[],
+            llm_model_list=[
+                {
+                    "model_name": "kimi_router",
+                    "litellm_params": {
+                        "model": "openai/kimi-k2.6",
+                        "extra_body": {"thinking": {"type": "disabled"}},
+                    },
+                }
+            ],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response) as mock_dispatch:
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "ok"
+        assert model_used == "kimi_router"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        call_kwargs = mock_dispatch.call_args.args[1]
+        assert call_kwargs["temperature"] == 0.6
+
+    def test_call_litellm_keeps_user_temperature_for_non_kimi_fallback(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/kimi-k2.6",
+            litellm_fallback_models=["openai/gpt-4o-mini"],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok"))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+        temperatures = []
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            temperatures.append((model, call_kwargs["temperature"]))
+            if model == "openai/kimi-k2.6":
+                raise RuntimeError("primary failed")
+            return response
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            text, model_used, usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == "fallback ok"
+        assert model_used == "openai/gpt-4o-mini"
+        assert usage == {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        assert temperatures == [
+            ("openai/kimi-k2.6", 1.0),
+            ("openai/gpt-4o-mini", 0.2),
+        ]
+
     def test_call_litellm_stream_falls_back_to_non_stream_after_partial_and_falls_back_model(self):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(
@@ -460,8 +578,8 @@ class TestMarketAnalyzerBypassFix:
         result = ma.generate_market_review(overview, [])
 
         assert "## 2026-03-05 大盘复盘" in result
-        assert "### 一、市场总结" in result
-        assert "今日美股市场整体呈现**小幅下跌**态势。" in result
+        assert "### 一、盘面总览" in result
+        assert "今日美股市场整体呈现**小幅下跌**态势" in result
         assert "### 1. Market Summary" not in result
         assert "US Market Recap" not in result
 
@@ -507,9 +625,67 @@ Sector text.
 
         assert "Advancers **3200**" in result
         assert "Turnover **14567** (CNY 100m)" in result
-        assert "| Index | Last | Change % | Turnover (CNY 100m) |" in result
-        assert "Leaders: **AI算力**(+3.25%)" in result
-        assert "Laggards: **煤炭**(-1.12%)" in result
+        assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
+        assert "#### Leading Sectors" in result
+        assert "| 1 | AI算力 | +3.25% |" in result
+        assert "#### Lagging Sectors" in result
+        assert "| 1 | 煤炭 | -1.12% |" in result
+
+    def test_inject_data_into_review_matches_reference_style_chinese_headings(self):
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        overview = MarketOverview(
+            date="2026-03-05",
+            indices=[
+                MarketIndex(
+                    code="000001",
+                    name="上证指数",
+                    current=3300.0,
+                    change=12.0,
+                    change_pct=0.36,
+                    open=3288.0,
+                    high=3312.0,
+                    low=3276.0,
+                    amount=145000000000.0,
+                    amplitude=1.1,
+                )
+            ],
+            up_count=3200,
+            down_count=1800,
+            flat_count=100,
+            limit_up_count=88,
+            limit_down_count=5,
+            total_amount=14567.0,
+            top_sectors=[{"name": "AI算力", "change_pct": 3.25}],
+            bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+        )
+        news = [{"title": "AI算力板块走强", "snippet": "算力产业链延续活跃，成交额放大"}]
+        review = """## 2026-03-05 大盘复盘
+
+### 一、盘面总览
+总结。
+
+### 二、指数结构
+指数。
+
+### 三、板块主线
+板块。
+
+### 五、消息催化
+新闻。
+"""
+
+        result = ma._inject_data_into_review(review, overview, news)
+
+        assert "盘面温度" in result
+        assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
+        assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
+        assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
+        assert "#### 领涨板块 Top 5" in result
+        assert "| 1 | AI算力 | +3.25% |" in result
+        assert "#### 近三日催化线索" in result
+        assert "AI算力板块走强" in result
 
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE

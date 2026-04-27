@@ -35,8 +35,8 @@ def _build_optional_module_stubs() -> dict[str, ModuleType]:
     return stubs
 
 
-with patch.dict(sys.modules, _build_optional_module_stubs()):
-    import src.core.market_review as market_review_module
+sys.modules.update(_build_optional_module_stubs())
+import src.core.market_review as market_review_module
 
 run_market_review = market_review_module.run_market_review
 

@@ -22,6 +22,7 @@ from src.config import (
     channel_allows_empty_api_key,
     get_configured_llm_models,
     normalize_agent_litellm_model,
+    normalize_litellm_temperature,
     normalize_news_strategy_profile,
     normalize_llm_channel_model,
     parse_env_bool,
@@ -415,7 +416,10 @@ class SystemConfigService:
         call_kwargs: Dict[str, Any] = {
             "model": resolved_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
-            "temperature": 0,
+            "temperature": normalize_litellm_temperature(
+                resolved_model,
+                self._get_runtime_llm_temperature(),
+            ),
             "max_tokens": 256,  # Increased to allow MiniMax-M2.7 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
         }
@@ -953,6 +957,15 @@ class SystemConfigService:
         else:
             models_path = f"{normalized}/models" if normalized else "/models"
         return urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
+
+    @staticmethod
+    def _get_runtime_llm_temperature() -> float:
+        """Return the current configured LLM temperature for ad-hoc channel tests."""
+        config = Config._load_from_env()
+        try:
+            return float(getattr(config, "llm_temperature", 0.7))
+        except (TypeError, ValueError):
+            return 0.7
 
     @staticmethod
     def _extract_llm_discovery_error(response: requests.Response) -> str:

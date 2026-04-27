@@ -59,8 +59,8 @@ daily_stock_analysis/
 |------------|------|:----:|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) 获取免费 Key | ✅* |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
-| `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com/v1`） | 可选 |
-| `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-chat`、`gpt-5.2`） | 可选 |
+| `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com`） | 可选 |
+| `OPENAI_MODEL` | 模型名称（如 `gemini-3.1-pro-preview`、`deepseek-v4-flash`、`gpt-5.2`） | 可选 |
 
 > *注：`GEMINI_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
 
@@ -308,6 +308,7 @@ daily_stock_analysis/
 > - TickFlow 能力按套餐权限分层：有限权限套餐仍可使用主指数查询；支持 `CN_Equity_A` 标的池查询的套餐才会启用 TickFlow 市场统计。
 > - 官方 quickstart 已文档化 `quotes.get(universes=["CN_Equity_A"])`，但线上 smoke test 进一步确认：`TICKFLOW_API_KEY` 不等于一定具备该权限，且 `quotes.get(symbols=[...])` 单次存在标的数量限制。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
+> - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面温度、指数明细、板块 Top 表、新闻催化、明日交易计划和风险提示；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
 > - 字段契约：
 >   - `fundamental_context.belong_boards` = 个股关联板块列表（当前仅 A 股写入；无数据时为 `[]`）；
 >   - `fundamental_context.boards.data` = `sector_rankings`（板块涨跌榜，结构 `{top, bottom}`）；
@@ -346,6 +347,11 @@ Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内
 如需覆盖静态资源，可挂载本地 `static/` 到容器内 `/app/static`。
 运行中的 `server` 容器默认直接复用 `/app/static` 里的预构建产物，不要求容器内保留 `apps/dsa-web` 源码目录或运行时安装 `npm`；若 WebUI 无法打开，请优先确认 `/app/static/index.html` 是否存在。
 
+当前官方镜像发布地址：
+
+- GHCR：`ghcr.io/zhulinsen/daily_stock_analysis:<tag>`
+- Docker Hub：`<DOCKERHUB_USERNAME>/daily_stock_analysis:<tag>`（由发布者的 `DOCKERHUB_USERNAME` secret 决定，官方发布为 `zhulinsen/daily_stock_analysis`）
+
 ### 快速启动
 
 ```bash
@@ -368,6 +374,37 @@ docker-compose -f ./docker/docker-compose.yml up -d            # 同时启动两
 # 5. 查看日志
 docker-compose -f ./docker/docker-compose.yml logs -f server
 ```
+
+### 直接拉官方镜像运行
+
+如果你不打算在目标机器上保留源码，可以直接拉取官方镜像：
+
+```bash
+# Web/API 模式
+docker pull zhulinsen/daily_stock_analysis:latest
+docker run -d \
+  --name dsa-server \
+  --env-file .env \
+  -p 8000:8000 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/logs:/app/logs" \
+  -v "$(pwd)/reports:/app/reports" \
+  -v "$(pwd)/.env:/app/.env" \
+  zhulinsen/daily_stock_analysis:latest \
+  python main.py --serve-only --host 0.0.0.0 --port 8000
+
+# 定时任务模式
+docker run -d \
+  --name dsa-analyzer \
+  --env-file .env \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/logs:/app/logs" \
+  -v "$(pwd)/reports:/app/reports" \
+  -v "$(pwd)/.env:/app/.env" \
+  zhulinsen/daily_stock_analysis:latest
+```
+
+如需固定版本或便于回滚，请将 `latest` 替换为具体版本 tag，例如 `v3.13.0`。
 
 ### 运行模式说明
 
@@ -414,6 +451,26 @@ services:
       - "8000:8000"
 ```
 
+### `.env` 与数据目录映射说明
+
+无论你使用 `docker run` 还是 Compose，建议同时保留下面两种映射：
+
+- 环境变量注入：`--env-file .env` 或 Compose 的 `env_file`
+  作用：把 `.env` 中的键值作为容器启动时的环境变量传入 Python 进程。
+- 文件映射：`-v "$(pwd)/.env:/app/.env"` 或 Compose 的 `../.env:/app/.env`
+  作用：让容器内的 Web 设置页和后端读写同一份 `.env` 文件，修改后可持久化到宿主机。
+
+推荐同时映射这几个目录：
+
+- `./data:/app/data`：数据库、缓存和运行时数据
+- `./logs:/app/logs`：日志输出
+- `./reports:/app/reports`：生成的分析报告
+- `./strategies:/app/strategies:ro`：自定义策略 YAML（只读挂载）
+
+如果你需要覆盖内置静态资源，还可以额外挂载：
+
+- `./static:/app/static:ro`
+
 ### 常用命令
 
 ```bash
@@ -435,7 +492,16 @@ docker-compose -f ./docker/docker-compose.yml up -d server
 
 ```bash
 docker build -f docker/Dockerfile -t stock-analysis .
-docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
+docker run -d \
+  --name dsa-server-local \
+  --env-file .env \
+  -p 8000:8000 \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/logs:/app/logs" \
+  -v "$(pwd)/reports:/app/reports" \
+  -v "$(pwd)/.env:/app/.env" \
+  stock-analysis \
+  python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
 ---
@@ -829,9 +895,9 @@ GEMINI_MODEL=gemini-3-flash-preview
 
 # OpenAI 兼容（备选）
 OPENAI_API_KEY=xxx
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-# 思考模式：deepseek-reasoner、deepseek-r1、qwq 等自动识别；deepseek-chat 系统按模型名自动启用
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-v4-flash
+# deepseek-chat / deepseek-reasoner 仍兼容，但官方已标记为 2026/07/24 后废弃
 ```
 
 ### 高级模型路由（底层由 LiteLLM 驱动）
@@ -951,7 +1017,11 @@ python main.py --debug
 
 ---
 
-## FastAPI API 服务
+## 本地 WebUI 管理界面
+
+WebUI 与 FastAPI API 服务共用同一服务进程，启动后可在浏览器中完成配置管理、手动分析、任务进度查看、历史报告、回测、持仓管理和智能导入等操作。认证、云服务器访问和 API 调用细节见下方说明。
+
+### FastAPI API 服务
 
 FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 
@@ -979,6 +1049,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/analysis/tasks/stream` | GET (SSE) | 订阅任务实时状态流 |
 | `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
 | `/api/v1/history` | GET | 查询分析历史 |
+| `/api/v1/usage/summary?period=today|month|all` | GET | 按调用类型与模型维度汇总 LLM 调用次数和 Token 用量 |
 | `/api/v1/backtest/run` | POST | 触发回测 |
 | `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
 | `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
@@ -1007,6 +1078,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
 
 # 查询任务状态
 curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
+
+# 查询今日 LLM 用量
+curl "http://127.0.0.1:8000/api/v1/usage/summary?period=today"
 
 # 触发回测（全部股票）
 curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
@@ -1074,133 +1148,53 @@ A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是
 
 更多问题请 [提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
 
-## Portfolio P0 PR1 (Core Ledger and Snapshot)
+## Agent 工具数据缓存与持久化
 
-### Scope
-- Core portfolio domain models:
-  - account, trade, cash ledger, corporate action, position cache, lot cache, daily snapshot, fx cache
-- Core service capability:
-  - account CRUD
-  - event writes
-  - read-time replay snapshot for one account or all active accounts
+- `get_daily_history` 会先尝试复用本地 `stock_daily` 日线缓存；缓存新鲜且至少覆盖首页默认的 30 条记录时，不再重复请求外部数据源。
+- 当 Agent 请求的天数多于本地缓存记录数时，工具会返回实际可用记录，并通过 `partial_cache=true`、`requested_days`、`actual_records` 标明这是部分缓存命中。
+- 缓存缺失或过期时，工具仍会按原逻辑从数据源获取日线数据；获取成功后会 best-effort 写回 `stock_daily`，保存失败不会阻断 Agent 回复。
+- `search_stock_news` 与 `search_comprehensive_intel` 成功返回后会 best-effort 写入 `news_intel`，复用现有 URL / fallback key 去重逻辑。
+- `get_realtime_quote` 不复用 `stock_daily` 作为实时行情缓存，也不会把盘中实时行情写入日线表；如需实时行情缓存，应单独设计实时行情存储。
 
-### Accounting semantics
-- Cost method:
-  - `fifo` (default)
-  - `avg`
-- Same-day event ordering:
-  - `cash -> corporate action -> trade`
-- Corporate action effective-date rule:
-  - `effective_date` is treated as effective before market trading on that day.
+## 持仓管理说明
 
-### Error and stability semantics
-- `trade_uid` unique conflict returns `409` (API conflict semantics).
-- sell writes now validate available quantity before insert; oversell is rejected with `409 portfolio_oversell`.
-- portfolio source-event writes now serialize through a SQLite write lock; direct write/delete endpoints may return `409 portfolio_busy` when another ledger mutation is in progress.
-- Snapshot write path is atomic for positions/lots/daily snapshot.
-- FX conversion keeps fail-open behavior (fallback 1:1 with stale marker) to avoid pipeline interruption.
+### `/portfolio` 页面可做什么
 
-### Test coverage in PR1
-- FIFO/AVG partial sell replay
-- Dividend and split replay
-- Same-day ordering (dividend/trade, split/trade)
-- API account/event/snapshot contract
-- API duplicate trade_uid conflict
+- 查看全量持仓或切换到单个账户视角。
+- 在 `fifo` / `avg` 两种成本法之间切换，查看快照 KPI、风险摘要和 Top Positions 集中度图表。
+- 直接在 Web 页面新增账户，或录入交易、现金流水、公司行动等事件。
+- 通过 CSV 导入持仓记录，支持先 `dry_run` 预览，再决定是否正式写入。
+- 在事件列表中按账户、日期、方向、代码等条件筛选，并对单账户事件做删除修正。
 
-## Portfolio P0 PR2 (Import and Risk)
+### 相关接口
 
-### CSV import
-- Supported broker ids: `huatai`, `citic`, `cmb`.
-- Unified workflow: parse CSV into normalized records, then commit into portfolio trades.
-- Commit remains row-by-row instead of one long transaction; busy rows count into `failed_count` rather than converting the whole request to `409`.
-- Dedup policy:
-  - First key: `trade_uid` (account-scoped)
-  - Fallback key: deterministic hash of date/symbol/side/qty/price/fee/tax/currency
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/portfolio/snapshot` | GET | 查询持仓快照 |
+| `/api/v1/portfolio/risk` | GET | 查询风险摘要 |
+| `/api/v1/portfolio/trades` | GET | 分页查询交易记录 |
+| `/api/v1/portfolio/cash-ledger` | GET | 分页查询现金流水 |
+| `/api/v1/portfolio/corporate-actions` | GET | 分页查询公司行动 |
+| `/api/v1/portfolio/imports/csv/brokers` | GET | 查询内建 CSV 券商解析器 |
+| `/api/v1/portfolio/fx/refresh` | POST | 手动刷新汇率缓存 |
+| `/api/v1/portfolio/trades/{trade_id}` | DELETE | 删除交易记录 |
+| `/api/v1/portfolio/cash-ledger/{entry_id}` | DELETE | 删除现金流水 |
+| `/api/v1/portfolio/corporate-actions/{action_id}` | DELETE | 删除公司行动 |
 
-### Risk report
-- Concentration monitoring: top position weight alert by config threshold.
-- Drawdown monitoring: max/current drawdown computed from daily snapshots.
-- Stop-loss proximity warning: mark near-alert and triggered items with threshold echo.
+> 查询类接口统一支持 `account_id`、`date_from`、`date_to`、`page`、`page_size` 等常见筛选参数；事件列表会返回统一的 `items`、`total`、`page`、`page_size` 结构。
 
-### FX fail-open
-- FX refresh first tries online source (YFinance).
-- On online failure, fallback to latest cached rate and mark `is_stale=true`.
-- Main snapshot/risk pipeline stays available even when online FX fetch is unavailable.
+### 使用行为说明
 
-## Portfolio P0 PR3 (Web + Agent Consumption)
+- CSV 导入内建 `huatai`、`citic`、`cmb` 解析器；若券商列表接口失败，Web 端会自动回退到这些内建选项。
+- 导入流程会先把 CSV 解析成标准化记录，再逐条提交到持仓账本；遇到忙碌行会计入 `failed_count`，不会因为单行冲突让整批请求整体失败。
+- 交易去重优先使用账户内唯一的 `trade_uid`，缺失时回退到基于日期、代码、方向、数量、价格、费用、税费、币种的确定性哈希。
+- 卖出会先校验可用数量，超卖返回 `409 portfolio_oversell`；并发写入冲突时可能返回 `409 portfolio_busy`。
+- 汇率刷新会先尝试在线源；若在线获取失败，则回退到最近一次缓存并标记 `is_stale=true`，避免快照和风险页整体不可用。
+- 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，手动刷新接口会明确返回“在线刷新已禁用”，页面不会误导为“当前没有可刷新的汇率对”。
+- 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 会优先尝试按板块归类，失败时降级到 `UNCLASSIFIED`，不会阻断风险结果返回。
 
-### Web consumption page
-- Added Web page route: `/portfolio` (`apps/dsa-web/src/pages/PortfolioPage.tsx`).
-- Data sources:
-  - `GET /api/v1/portfolio/snapshot`
-  - `GET /api/v1/portfolio/risk`
-- Supports:
-  - full portfolio / single account switch
-  - cost method switch (`fifo` / `avg`)
-  - concentration pie chart (Top Positions) with Recharts
-  - snapshot KPI cards and risk summary cards
+### Agent 读取持仓
 
-### Agent tool
-- Added `get_portfolio_snapshot` data tool for account-aware LLM suggestions.
-- Default behavior:
-  - compact summary output (token-friendly)
-  - includes optional compact risk block
-- Optional parameters:
-  - `account_id`
-  - `cost_method` (`fifo` / `avg`)
-  - `as_of` (`YYYY-MM-DD`)
-  - `include_positions` (default `false`)
-  - `include_risk` (default `true`)
-
-### Stability and compatibility
-- New capability is additive only; no removal of existing keys/routes.
-- Fail-open semantics:
-  - If risk block fails, snapshot is still returned.
-  - If portfolio module is unavailable, tool returns structured `not_supported`.
-
-## Portfolio P0 PR4 (Gap Closure)
-
-### API query closure
-- Added event query endpoints:
-  - `GET /api/v1/portfolio/trades`
-  - `GET /api/v1/portfolio/cash-ledger`
-  - `GET /api/v1/portfolio/corporate-actions`
-- Added event delete endpoints:
-  - `DELETE /api/v1/portfolio/trades/{trade_id}`
-  - `DELETE /api/v1/portfolio/cash-ledger/{entry_id}`
-  - `DELETE /api/v1/portfolio/corporate-actions/{action_id}`
-- Unified query parameters:
-  - `account_id`, `date_from`, `date_to`, `page`, `page_size`
-- Trade/cash/corporate-action specific filters:
-  - trades: `symbol`, `side`
-  - cash-ledger: `direction`
-  - corporate-actions: `symbol`, `action_type`
-- Unified response shape:
-  - `items`, `total`, `page`, `page_size`
-
-### CSV import framework
-- Reworked parser logic into extensible parser registry.
-- Built-in adapters remain: `huatai`, `citic`, `cmb` with alias mapping.
-- Added parser discovery endpoint:
-  - `GET /api/v1/portfolio/imports/csv/brokers`
-
-### Web closure
-- `/portfolio` page now includes:
-  - inline account creation entry with empty-state guide and auto-switch to created account
-  - manual event entry forms: trade / cash / corporate action
-  - CSV parse + commit operations (supports `dry_run`)
-  - event list panel with filters and pagination
-  - single-account scoped event deletion for trade / cash / corporate action correction
-  - broker selector fallback to built-in brokers (`huatai/citic/cmb`) when broker list API fails or returns empty
-  - FX status card manual refresh action that calls existing `POST /api/v1/portfolio/fx/refresh`; if upstream FX fetch fails, the page may still show stale after refresh and will explain the result inline
-  - when `PORTFOLIO_FX_UPDATE_ENABLED=false`, the refresh API now returns explicit disabled status and the page will show “汇率在线刷新已被禁用” instead of “当前范围无可刷新的汇率对”
-
-### Risk sector concentration semantics
-- Added `sector_concentration` in `GET /api/v1/portfolio/risk`.
-- Mapping rules:
-  - CN positions try board mapping from `get_belong_boards`.
-  - Non-CN or mapping failure falls back to `UNCLASSIFIED`.
-  - Uses single primary board per symbol to avoid duplicate weighting.
-- Fail-open:
-  - board lookup errors do not interrupt risk response.
-  - response returns coverage/error details for explainability.
+- Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
+- 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
+- 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。

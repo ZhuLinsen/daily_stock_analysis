@@ -79,9 +79,24 @@ class FeishuSender:
         
         飞书自定义机器人 Webhook 消息格式：
         {
-            "msg_type": "text",
-            "content": {
-                "text": "文本内容"
+            "msg_type": "interactive",
+            "card": {
+                "config": { "wide_screen_mode": true },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "..."
+                        }
+                    }
+                ],
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "A股智能分析报告"
+                    }
+                }
             }
         }
         

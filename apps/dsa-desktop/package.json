@@ -1,11 +1,12 @@
 {
   "name": "daily-stock-analysis-desktop",
-  "version": "0.1.0",
+  "version": "3.14.1",
   "private": true,
   "main": "main.js",
   "scripts": {
     "dev": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "test": "node --test tests/preload.test.js"
   },
   "devDependencies": {
     "electron": "^31.4.0",

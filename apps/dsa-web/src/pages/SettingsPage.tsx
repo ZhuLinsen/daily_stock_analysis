@@ -21,9 +21,114 @@ import type { SystemConfigCategory } from '../types/systemConfig';
 
 type DesktopWindow = Window & {
   dsaDesktop?: {
-    version?: string;
+    version?: unknown;
+    getUpdateState?: () => Promise<RawDesktopUpdateState>;
+    checkForUpdates?: () => Promise<RawDesktopUpdateState>;
+    openReleasePage?: (releaseUrl?: string) => Promise<boolean>;
+    onUpdateStateChange?: (listener: (state: RawDesktopUpdateState) => void) => (() => void) | void;
   };
 };
+
+type DesktopUpdateState = {
+  status?: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  checkedAt?: string;
+  publishedAt?: string;
+  message?: string;
+  releaseName?: string;
+  tagName?: string;
+};
+
+type RawDesktopUpdateState = {
+  status?: unknown;
+  currentVersion?: unknown;
+  latestVersion?: unknown;
+  releaseUrl?: unknown;
+  checkedAt?: unknown;
+  publishedAt?: unknown;
+  message?: unknown;
+  releaseName?: unknown;
+  tagName?: unknown;
+};
+
+function trimDesktopRuntimeString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getDesktopRuntimeApi() {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  return (window as DesktopWindow).dsaDesktop;
+}
+
+function getDesktopAppVersion() {
+  return trimDesktopRuntimeString(getDesktopRuntimeApi()?.version);
+}
+
+function normalizeDesktopUpdateState(state: RawDesktopUpdateState | null | undefined) {
+  if (!state || typeof state !== 'object') {
+    return null;
+  }
+
+  return {
+    status: trimDesktopRuntimeString(state.status) || 'idle',
+    currentVersion: trimDesktopRuntimeString(state.currentVersion),
+    latestVersion: trimDesktopRuntimeString(state.latestVersion),
+    releaseUrl: trimDesktopRuntimeString(state.releaseUrl),
+    checkedAt: trimDesktopRuntimeString(state.checkedAt),
+    publishedAt: trimDesktopRuntimeString(state.publishedAt),
+    message: trimDesktopRuntimeString(state.message),
+    releaseName: trimDesktopRuntimeString(state.releaseName),
+    tagName: trimDesktopRuntimeString(state.tagName),
+  };
+}
+
+function getDesktopUpdateNotice(state: DesktopUpdateState | null) {
+  if (!state) {
+    return null;
+  }
+
+  if (state.status === 'update-available') {
+    const latestLabel = state.latestVersion || state.tagName || '最新版本';
+    const currentLabel = state.currentVersion || getDesktopAppVersion() || '当前版本';
+    return {
+      title: '发现新版本',
+      message: `当前 ${currentLabel}，最新 ${latestLabel}。${state.message || '可前往 GitHub Releases 下载更新。'}`,
+      variant: 'warning' as const,
+      actionLabel: '前往下载',
+    };
+  }
+
+  if (state.status === 'up-to-date') {
+    return {
+      title: '已是最新版本',
+      message: state.message || '当前桌面端已是最新版本。',
+      variant: 'success' as const,
+    };
+  }
+
+  if (state.status === 'checking') {
+    return {
+      title: '正在检查更新',
+      message: state.message || '正在检查 GitHub Releases 中是否有可用新版本。',
+      variant: 'warning' as const,
+    };
+  }
+
+  if (state.status === 'error') {
+    return {
+      title: '检查更新失败',
+      message: state.message || '无法完成更新检查，请稍后重试。',
+      variant: 'error' as const,
+    };
+  }
+
+  return null;
+}
 
 function formatDesktopEnvFilename() {
   const now = new Date();
@@ -40,8 +145,16 @@ const SettingsPage: React.FC = () => {
   const [isExportingEnv, setIsExportingEnv] = useState(false);
   const [isImportingEnv, setIsImportingEnv] = useState(false);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
   const desktopImportRef = useRef<HTMLInputElement | null>(null);
-  const isDesktopRuntime = typeof window !== 'undefined' && Boolean((window as DesktopWindow).dsaDesktop);
+  const desktopRuntimeApi = getDesktopRuntimeApi();
+  const isDesktopRuntime = Boolean(desktopRuntimeApi);
+  const canCheckDesktopUpdate = Boolean(
+    desktopRuntimeApi?.getUpdateState && desktopRuntimeApi?.checkForUpdates && desktopRuntimeApi?.openReleasePage
+  );
+  const desktopAppVersion = getDesktopAppVersion();
+  const shouldShowDesktopVersionCard = Boolean(desktopAppVersion);
 
   // Set page title
   useEffect(() => {
@@ -90,6 +203,50 @@ const SettingsPage: React.FC = () => {
       window.clearTimeout(timer);
     };
   }, [clearToast, toast]);
+
+  useEffect(() => {
+    if (!canCheckDesktopUpdate) {
+      setDesktopUpdateState(null);
+      setIsCheckingDesktopUpdate(false);
+      return;
+    }
+
+    let active = true;
+
+    const syncDesktopUpdateState = async () => {
+      try {
+        const state = await desktopRuntimeApi?.getUpdateState?.();
+        if (active) {
+          setDesktopUpdateState(normalizeDesktopUpdateState(state));
+        }
+      } catch (error: unknown) {
+        if (!active) {
+          return;
+        }
+        setDesktopUpdateState({
+          status: 'error',
+          message: error instanceof Error ? error.message : '读取桌面端更新状态失败。',
+        });
+      }
+    };
+
+    void syncDesktopUpdateState();
+
+    const unsubscribe = desktopRuntimeApi?.onUpdateStateChange?.((state) => {
+      if (!active) {
+        return;
+      }
+      setDesktopUpdateState(normalizeDesktopUpdateState(state));
+      setIsCheckingDesktopUpdate(false);
+    });
+
+    return () => {
+      active = false;
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [canCheckDesktopUpdate, desktopRuntimeApi]);
 
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
@@ -217,6 +374,41 @@ const SettingsPage: React.FC = () => {
     }
   };
 
+  const handleDesktopUpdateCheck = async () => {
+    if (!desktopRuntimeApi?.checkForUpdates) {
+      return;
+    }
+
+    setIsCheckingDesktopUpdate(true);
+    setDesktopUpdateState((current) => ({
+      ...(current || {}),
+      status: 'checking',
+      message: '正在检查 GitHub Releases 中是否有可用新版本。',
+    }));
+
+    try {
+      const state = await desktopRuntimeApi.checkForUpdates();
+      setDesktopUpdateState(normalizeDesktopUpdateState(state));
+    } catch (error: unknown) {
+      setDesktopUpdateState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '检查更新失败，请稍后重试。',
+      });
+    } finally {
+      setIsCheckingDesktopUpdate(false);
+    }
+  };
+
+  const openDesktopReleasePage = async () => {
+    if (!desktopRuntimeApi?.openReleasePage) {
+      return;
+    }
+
+    await desktopRuntimeApi.openReleasePage(desktopUpdateState?.releaseUrl);
+  };
+
+  const desktopUpdateNotice = getDesktopUpdateNotice(desktopUpdateState);
+
   return (
     <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
       <div className="mb-5 rounded-[1.5rem] border settings-border bg-card/94 px-5 py-5 shadow-soft-card-strong backdrop-blur-sm">
@@ -289,7 +481,9 @@ const SettingsPage: React.FC = () => {
                 title="版本信息"
                 description="用于确认当前 WebUI 静态资源是否已经切换到最新构建。"
               >
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div
+                  className={`grid grid-cols-1 gap-3 ${shouldShowDesktopVersionCard ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}
+                >
                   <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
                       WebUI 版本
@@ -314,10 +508,57 @@ const SettingsPage: React.FC = () => {
                       {WEB_BUILD_INFO.buildTime}
                     </p>
                   </div>
+                  {shouldShowDesktopVersionCard ? (
+                    <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
+                        桌面端版本
+                      </p>
+                      <p className="mt-2 break-all font-mono text-sm text-foreground">
+                        {desktopAppVersion}
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
                 <p className="text-xs leading-6 text-muted-text">
                   重新执行前端构建或 Docker 镜像构建后，此处的构建标识和构建时间会更新，可用来确认当前页面资源是否已切换。
                 </p>
+                {canCheckDesktopUpdate ? (
+                  <div className="mt-4 space-y-3 rounded-2xl border settings-border bg-background/30 px-4 py-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">桌面端更新</p>
+                        <p className="text-xs leading-6 text-muted-text">
+                          启动后会自动检查 GitHub Releases 最新正式版；发现更新时仅提醒并跳转下载页，不会静默下载或自动安装。
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="settings-secondary"
+                        onClick={() => void handleDesktopUpdateCheck()}
+                        disabled={isCheckingDesktopUpdate}
+                        isLoading={isCheckingDesktopUpdate}
+                        loadingText="检查中..."
+                      >
+                        检查更新
+                      </Button>
+                    </div>
+                    {desktopUpdateNotice ? (
+                      <SettingsAlert
+                        title={desktopUpdateNotice.title}
+                        message={desktopUpdateNotice.message}
+                        variant={desktopUpdateNotice.variant}
+                        actionLabel={desktopUpdateNotice.actionLabel}
+                        onAction={desktopUpdateNotice.actionLabel ? () => {
+                          void openDesktopReleasePage();
+                        } : undefined}
+                      />
+                    ) : (
+                      <p className="text-xs leading-6 text-muted-text">
+                        当前尚无更新状态，应用启动后会在后台自动检查。
+                      </p>
+                    )}
+                  </div>
+                ) : null}
                 {WEB_BUILD_INFO.isFallbackVersion ? (
                   <p className="text-xs leading-6 text-amber-700 dark:text-amber-300">
                     当前 package.json 仍为占位版本 0.0.0，页面已自动回退展示构建标识，避免误判旧资源仍在生效。

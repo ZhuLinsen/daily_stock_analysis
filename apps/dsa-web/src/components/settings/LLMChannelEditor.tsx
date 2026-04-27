@@ -24,8 +24,8 @@ const CHANNEL_PRESETS: Record<string, ChannelPreset> = {
   deepseek: {
     label: 'DeepSeek 官方',
     protocol: 'deepseek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    placeholder: 'deepseek-chat,deepseek-reasoner',
+    baseUrl: 'https://api.deepseek.com',
+    placeholder: 'deepseek-v4-flash,deepseek-v4-pro',
   },
   dashscope: {
     label: '通义千问（Dashscope）',
@@ -99,8 +99,8 @@ const PROTOCOL_OPTIONS: Array<{ value: ChannelProtocol; label: string }> = [
 ];
 
 const MODEL_PLACEHOLDERS: Record<ChannelProtocol, string> = {
-  openai: 'gpt-4o-mini,deepseek-chat,qwen-plus',
-  deepseek: 'deepseek-chat,deepseek-reasoner',
+  openai: 'gpt-4o-mini,qwen-plus',
+  deepseek: 'deepseek-v4-flash,deepseek-v4-pro',
   gemini: 'gemini-2.5-flash,gemini-2.5-pro',
   anthropic: 'claude-3-5-sonnet-20241022',
   vertex_ai: 'gemini-2.5-flash',
@@ -617,6 +617,43 @@ function usesDirectEnvProvider(model: string): boolean {
   return Boolean(provider) && !MANAGED_PROVIDERS.has(provider);
 }
 
+function isRuntimeModelAvailable(model: string, availableModels: string[]): boolean {
+  return availableModels.includes(model) || usesDirectEnvProvider(model);
+}
+
+function sanitizeRuntimeConfigForSave(runtimeConfig: RuntimeConfig, availableModels: string[]): RuntimeConfig {
+  if (availableModels.length === 0) {
+    return runtimeConfig;
+  }
+
+  const primaryModel = runtimeConfig.primaryModel && !isRuntimeModelAvailable(runtimeConfig.primaryModel, availableModels)
+    ? ''
+    : runtimeConfig.primaryModel;
+  const agentPrimaryModel = runtimeConfig.agentPrimaryModel && !isRuntimeModelAvailable(runtimeConfig.agentPrimaryModel, availableModels)
+    ? ''
+    : runtimeConfig.agentPrimaryModel;
+  const visionModel = runtimeConfig.visionModel && !isRuntimeModelAvailable(runtimeConfig.visionModel, availableModels)
+    ? ''
+    : runtimeConfig.visionModel;
+  const fallbackModels = runtimeConfig.fallbackModels.filter((model) => isRuntimeModelAvailable(model, availableModels));
+
+  return {
+    ...runtimeConfig,
+    primaryModel,
+    agentPrimaryModel,
+    fallbackModels,
+    visionModel,
+  };
+}
+
+function runtimeConfigsAreEqual(left: RuntimeConfig, right: RuntimeConfig): boolean {
+  return left.primaryModel === right.primaryModel
+    && left.agentPrimaryModel === right.agentPrimaryModel
+    && left.visionModel === right.visionModel
+    && left.temperature === right.temperature
+    && left.fallbackModels.join(',') === right.fallbackModels.join(',');
+}
+
 function resolveTemperatureFromItems(itemMap: Map<string, string>): string {
   const unified = itemMap.get('LLM_TEMPERATURE');
   if (unified) return unified;
@@ -949,24 +986,31 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       return;
     }
 
+    const runtimeConfigForSave = managesRuntimeConfig
+      ? sanitizeRuntimeConfigForSave(runtimeConfig, availableModels)
+      : runtimeConfig;
+    if (!runtimeConfigsAreEqual(runtimeConfigForSave, runtimeConfig)) {
+      setRuntimeConfig(runtimeConfigForSave);
+    }
+
     if (managesRuntimeConfig && availableModels.length > 0) {
-      const invalidPrimaryModel = runtimeConfig.primaryModel
-        && !availableModels.includes(runtimeConfig.primaryModel)
-        && !usesDirectEnvProvider(runtimeConfig.primaryModel);
+      const invalidPrimaryModel = runtimeConfigForSave.primaryModel
+        && !availableModels.includes(runtimeConfigForSave.primaryModel)
+        && !usesDirectEnvProvider(runtimeConfigForSave.primaryModel);
       if (invalidPrimaryModel) {
         setSaveMessage({ type: 'local-error', text: '当前主模型不在已启用渠道的模型列表中，请重新选择。' });
         return;
       }
 
-      const invalidAgentPrimaryModel = runtimeConfig.agentPrimaryModel
-        && !availableModels.includes(runtimeConfig.agentPrimaryModel)
-        && !usesDirectEnvProvider(runtimeConfig.agentPrimaryModel);
+      const invalidAgentPrimaryModel = runtimeConfigForSave.agentPrimaryModel
+        && !availableModels.includes(runtimeConfigForSave.agentPrimaryModel)
+        && !usesDirectEnvProvider(runtimeConfigForSave.agentPrimaryModel);
       if (invalidAgentPrimaryModel) {
         setSaveMessage({ type: 'local-error', text: '当前 Agent 主模型不在已启用渠道的模型列表中，请重新选择。' });
         return;
       }
 
-      const invalidFallbackModel = runtimeConfig.fallbackModels.some(
+      const invalidFallbackModel = runtimeConfigForSave.fallbackModels.some(
         (model) => !availableModels.includes(model) && !usesDirectEnvProvider(model),
       );
       if (invalidFallbackModel) {
@@ -974,9 +1018,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         return;
       }
 
-      const invalidVisionModel = runtimeConfig.visionModel
-        && !availableModels.includes(runtimeConfig.visionModel)
-        && !usesDirectEnvProvider(runtimeConfig.visionModel);
+      const invalidVisionModel = runtimeConfigForSave.visionModel
+        && !availableModels.includes(runtimeConfigForSave.visionModel)
+        && !usesDirectEnvProvider(runtimeConfigForSave.visionModel);
       if (invalidVisionModel) {
         setSaveMessage({ type: 'local-error', text: '当前 Vision 模型不在已启用渠道的模型列表中，请重新选择。' });
         return;
@@ -987,7 +1031,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     setSaveMessage(null);
 
     try {
-      const updateItems = channelsToUpdateItems(channels, initialNames, runtimeConfig, managesRuntimeConfig);
+      const updateItems = channelsToUpdateItems(channels, initialNames, runtimeConfigForSave, managesRuntimeConfig);
       await systemConfigApi.update({
         configVersion,
         maskToken,

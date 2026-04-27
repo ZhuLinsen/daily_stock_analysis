@@ -48,6 +48,7 @@ const REPORT_TEXT = {
     leadingBoard: '领涨',
     laggingBoard: '领跌',
     neutralBoard: '中性',
+    reanalyze: '重新分析',
   },
   en: {
     keyInsights: 'KEY INSIGHTS',
@@ -93,6 +94,7 @@ const REPORT_TEXT = {
     leadingBoard: 'Leading',
     laggingBoard: 'Lagging',
     neutralBoard: 'Neutral',
+    reanalyze: 'Reanalyze',
   },
 } as const;
 

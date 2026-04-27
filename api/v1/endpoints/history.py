@@ -221,21 +221,28 @@ def get_history_detail(
             )
         
         # 从 context_snapshot 中提取价格信息
+        # 注意：使用 `is None` 而非 `or`，避免把 0.0（平盘）误判为缺失值；
+        # 同时不混用 `change_60d`（60 日累计涨跌幅）作为日内 change_pct 的兜底。
         current_price = None
         change_pct = None
         context_snapshot = result.get("context_snapshot")
         if context_snapshot and isinstance(context_snapshot, dict):
-            # 尝试从 enhanced_context.realtime 获取
+            # 优先从 enhanced_context.realtime 获取
             enhanced_context = context_snapshot.get("enhanced_context") or {}
             realtime = enhanced_context.get("realtime") or {}
             current_price = realtime.get("price")
-            change_pct = realtime.get("change_pct") or realtime.get("change_60d")
-            
-            # 也尝试从 realtime_quote_raw 获取
+            change_pct = realtime.get("change_pct")
+
+            # 缺失时再从 realtime_quote_raw 兜底
+            realtime_quote_raw = context_snapshot.get("realtime_quote_raw")
+            if not isinstance(realtime_quote_raw, dict):
+                realtime_quote_raw = {}
             if current_price is None:
-                realtime_quote_raw = context_snapshot.get("realtime_quote_raw") or {}
                 current_price = realtime_quote_raw.get("price")
-                change_pct = change_pct or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
+            if change_pct is None:
+                change_pct = realtime_quote_raw.get("change_pct")
+            if change_pct is None:
+                change_pct = realtime_quote_raw.get("pct_chg")
         
         raw_result = result.get("raw_result")
         if not isinstance(raw_result, dict):
