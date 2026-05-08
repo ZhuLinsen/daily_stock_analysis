@@ -50,6 +50,24 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+# Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
+# These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
+ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
+ANSPIRE_LLM_MODEL_DEFAULT = "Doubao-Seed-2.0-lite"
+# Kimi K2.6 is consumed through Moonshot's OpenAI-compatible API in this
+# repository. Official references:
+# - https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart
+# - https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body
+# - https://huggingface.co/moonshotai/Kimi-K2.6
+# - https://docs.litellm.ai/docs/providers/openai_compatible
+# Only the strict Kimi K2.6 family is normalized here; other models and
+# fallbacks continue using the configured runtime temperature.
+_FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
+    "kimi-k2.6": {
+        "thinking": 1.0,
+        "non_thinking": 0.6,
+    },
+}
 AGENT_MAX_STEPS_DEFAULT = 10
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
@@ -292,8 +310,148 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
+def resolve_litellm_wire_model(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resolve a router alias to its underlying LiteLLM wire model."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return normalized_model
+
+    model_entry = _resolve_litellm_model_list_entry(normalized_model, model_list)
+    if not model_entry:
+        return normalized_model
+
+    params = model_entry.get("litellm_params", {}) or {}
+    wire_model = str(params.get("model") or "").strip()
+    if wire_model:
+        return wire_model
+    return normalized_model
+
+
+def _resolve_litellm_model_list_entry(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the Router model_list entry matching the configured alias."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return None
+
+    for entry in model_list:
+        model_name = str(entry.get("model_name") or "").strip()
+        if not model_name:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(params.get("model") or "").strip()
+        if model_name == normalized_model:
+            return entry
+    return None
+
+
+def _extract_thinking_config(payload: Optional[Dict[str, Any]]) -> Any:
+    """Extract a thinking-mode flag from LiteLLM-style request kwargs."""
+    if not isinstance(payload, dict):
+        return None
+    extra_body = payload.get("extra_body")
+    if isinstance(extra_body, dict) and "thinking" in extra_body:
+        return extra_body.get("thinking")
+    if "thinking" in payload:
+        return payload.get("thinking")
+    return None
+
+
+def _parse_thinking_enabled(value: Any) -> Optional[bool]:
+    """Parse thinking-mode config into True/False/unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"enabled", "enable", "true", "1", "on", "thinking"}:
+            return True
+        if normalized in {"disabled", "disable", "false", "0", "off", "none", "non-thinking", "non_thinking"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        if "enabled" in value:
+            return _parse_thinking_enabled(value.get("enabled"))
+        if "type" in value:
+            return _parse_thinking_enabled(value.get("type"))
+    return None
+
+
+def resolve_litellm_thinking_enabled(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Resolve whether the outgoing LiteLLM request explicitly enables thinking."""
+    thinking_config = None
+    model_entry = _resolve_litellm_model_list_entry(model, model_list)
+    if model_entry:
+        thinking_config = _extract_thinking_config(model_entry)
+        entry_params = model_entry.get("litellm_params", {}) or {}
+        entry_thinking_config = _extract_thinking_config(entry_params)
+        if entry_thinking_config is not None:
+            thinking_config = entry_thinking_config
+
+    override_thinking_config = _extract_thinking_config(request_overrides)
+    if override_thinking_config is not None:
+        thinking_config = override_thinking_config
+    return _parse_thinking_enabled(thinking_config)
+
+
+def get_fixed_litellm_temperature(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Return a provider-mandated temperature for known strict models."""
+    normalized_model = resolve_litellm_wire_model(model, model_list).lower()
+    if not normalized_model:
+        return None
+    thinking_enabled = resolve_litellm_thinking_enabled(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    model_parts = [part for part in re.split(r"[/:\s]+", normalized_model) if part]
+    for model_name, temperatures in _FIXED_TEMPERATURE_LITELLM_MODELS.items():
+        if any(part == model_name or part.startswith(f"{model_name}-") for part in model_parts):
+            if thinking_enabled is False and temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+            if temperatures.get("thinking") is not None:
+                return temperatures["thinking"]
+            if temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+    return None
+
+
+def normalize_litellm_temperature(
+    model: str,
+    temperature: Optional[float],
+    *,
+    default: float = 0.7,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Normalize temperature before sending a LiteLLM request."""
+    fixed_temperature = get_fixed_litellm_temperature(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    if fixed_temperature is not None:
+        return fixed_temperature
+    if temperature is None:
+        return default
+    return float(temperature)
+
+
 def resolve_unified_llm_temperature(model: str) -> float:
-    """Resolve the unified LLM temperature with backward-compatible fallbacks."""
+    """Resolve the raw unified LLM temperature with backward-compatible fallbacks."""
     llm_temperature_raw = os.getenv("LLM_TEMPERATURE")
     if llm_temperature_raw and llm_temperature_raw.strip():
         try:
@@ -444,7 +602,7 @@ class Config:
     longbridge_access_token: Optional[str] = None
 
     # === AI 分析配置 ===
-    # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
+    # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
 
@@ -469,8 +627,8 @@ class Config:
 
     # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
     gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-3-flash-preview"  # 主模型
-    gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
+    gemini_model: str = "gemini-3.1-pro-preview"  # 主模型
+    gemini_model_fallback: str = "gemini-3-flash-preview"  # 备选模型
     gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
 
     # Gemini API 请求配置（防止 429 限流）
@@ -480,14 +638,14 @@ class Config:
 
     # Anthropic Claude API（备选，当 Gemini 不可用时使用）
     anthropic_api_key: Optional[str] = None
-    anthropic_model: str = "claude-3-5-sonnet-20241022"  # Claude model name
+    anthropic_model: str = "claude-sonnet-4-6"  # Claude model name
     anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
     anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
 
     # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
-    openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
+    openai_model: str = "gpt-5.5"  # OpenAI 兼容模型名称
     openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
     openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
 
@@ -571,6 +729,7 @@ class Config:
     # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
     custom_webhook_urls: List[str] = field(default_factory=list)
     custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
+    custom_webhook_body_template: Optional[str] = None  # 自定义 Webhook JSON body 模板
     webhook_verify_ssl: bool = True  # Webhook HTTPS 证书校验，false 可支持自签名（有 MITM 风险）
 
     # Discord 通知配置
@@ -915,14 +1074,17 @@ class Config:
             anthropic_api_keys = [_single_anthropic]
 
         # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
+        _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
         _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
         openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
         if not openai_api_keys:
-            _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
             _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
             _fallback_key = _aihubmix or _single_openai
             if _fallback_key:
                 openai_api_keys = [_fallback_key]
+        openai_base_url = os.getenv('OPENAI_BASE_URL') or (
+            'https://aihubmix.com/v1' if _aihubmix else None
+        )
 
         # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
         _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
@@ -932,18 +1094,55 @@ class Config:
             if _single_deepseek:
                 deepseek_api_keys = [_single_deepseek]
 
+        # Anspire Open shares the same key as Anspire Search and exposes an
+        # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
+        # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
+        # provider so "one key" setups work without LLM_CHANNELS.
+        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
+        anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
+        anspire_llm_enabled = parse_env_bool(os.getenv('ANSPIRE_LLM_ENABLED'), default=True)
+        anspire_llm_base_url = (
+            os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
+        ).strip()
+        _anspire_llm_model_env = os.getenv('ANSPIRE_LLM_MODEL', '').strip()
+        anspire_channel_disabled = False
+        for _raw_channel in os.getenv('LLM_CHANNELS', '').split(','):
+            if _raw_channel.strip().lower() != "anspire":
+                continue
+            _channel_enabled_raw = os.getenv('LLM_ANSPIRE_ENABLED')
+            if _channel_enabled_raw is not None and _channel_enabled_raw.strip():
+                anspire_channel_disabled = not parse_env_bool(_channel_enabled_raw, default=True)
+            else:
+                anspire_channel_disabled = not anspire_llm_enabled
+            break
+        using_anspire_llm_legacy = bool(
+            anspire_llm_enabled
+            and not anspire_channel_disabled
+            and anspire_api_keys
+            and not openai_api_keys
+        )
+        if using_anspire_llm_legacy:
+            openai_api_keys = list(anspire_api_keys)
+            openai_base_url = anspire_llm_base_url
+
         # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
         litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        inferred_legacy_deepseek_model = False
+        _openai_model_env = os.getenv('OPENAI_MODEL', '').strip()
+        if using_anspire_llm_legacy:
+            _openai_model_name = _anspire_llm_model_env or _openai_model_env or ANSPIRE_LLM_MODEL_DEFAULT
+        else:
+            _openai_model_name = _openai_model_env or 'gpt-5.5'
         if not litellm_model:
-            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
-            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
-            _openai_model_name = os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip()
+            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6').strip()
             if gemini_api_keys:
                 litellm_model = f'gemini/{_gemini_model_name}'
             elif anthropic_api_keys:
                 litellm_model = f'anthropic/{_anthropic_model_name}'
             elif deepseek_api_keys:
                 litellm_model = 'deepseek/deepseek-chat'
+                inferred_legacy_deepseek_model = True
             elif openai_api_keys:
                 # For openai-compatible models, add prefix only if not already prefixed
                 if '/' not in _openai_model_name:
@@ -957,7 +1156,7 @@ class Config:
             litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
         else:
             # Backward compat: use gemini_model_fallback when primary is gemini
-            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash').strip()
+            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview').strip()
             if litellm_model.startswith('gemini/') and _gemini_fallback:
                 _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
                 litellm_fallback_models = [_fb]
@@ -989,13 +1188,22 @@ class Config:
         if not llm_model_list:
             llm_model_list = cls._legacy_keys_to_model_list(
                 gemini_api_keys, anthropic_api_keys, openai_api_keys,
-                os.getenv('OPENAI_BASE_URL') or (
-                    'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
-                ),
+                openai_base_url,
                 deepseek_api_keys,
             )
             if llm_model_list:
                 llm_models_source = "legacy_env"
+
+        if (
+            inferred_legacy_deepseek_model
+            and llm_models_source == "legacy_env"
+            and litellm_model == 'deepseek/deepseek-chat'
+        ):
+            logger.warning(
+                "Deprecation warning:\n"
+                "deepseek-chat will be deprecated on 2026-07-24,\n"
+                "please migrate to deepseek-v4-flash."
+            )
 
         # Auto-infer LITELLM_MODEL from channels when not explicitly set
         if not litellm_model and llm_channels:
@@ -1021,10 +1229,6 @@ class Config:
         )
 
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
-        # Anspire Search
-        anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
-        anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
-
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
@@ -1127,14 +1331,14 @@ class Config:
             openai_api_keys=openai_api_keys,
             deepseek_api_keys=deepseek_api_keys,
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
-            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-pro-preview'),
+            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-3-flash-preview'),
             gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
             gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
             gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
             gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
             anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
-            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
+            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
             anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
             anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
@@ -1142,12 +1346,10 @@ class Config:
             # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
             # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
             # OPENAI_BASE_URL override is provided.
-            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-4o, gpt-4o-free, deepseek-chat).
-            openai_api_key=os.getenv('AIHUBMIX_KEY') or os.getenv('OPENAI_API_KEY') or None,
-            openai_base_url=os.getenv('OPENAI_BASE_URL') or (
-                'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
-            ),  # noqa: E501
-            openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
+            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-5.5, deepseek-v4-flash).
+            openai_api_key=openai_api_keys[0] if openai_api_keys else None,
+            openai_base_url=openai_base_url,
+            openai_model=_openai_model_name,
             openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
             openai_temperature=parse_env_float(os.getenv('OPENAI_TEMPERATURE'), 0.7, field_name='OPENAI_TEMPERATURE'),
             # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
@@ -1241,6 +1443,7 @@ class Config:
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            custom_webhook_body_template=os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE'),
             webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=(
@@ -1489,7 +1692,7 @@ class Config:
             LLM_AIHUBMIX_PROTOCOL=openai
             LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
             LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
-            LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
+            LLM_AIHUBMIX_MODELS=gpt-5.5,claude-sonnet-4-6
             LLM_AIHUBMIX_ENABLED=true
         """
         import logging
@@ -1500,11 +1703,21 @@ class Config:
             ch_name = raw_name.strip()
             if not ch_name:
                 continue
+            ch_lower = ch_name.lower()
             ch_upper = ch_name.upper()
 
             base_url = os.getenv(f'LLM_{ch_upper}_BASE_URL', '').strip() or None
+            if ch_lower == "anspire" and not base_url:
+                base_url = (
+                    os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
+                ).strip() or None
             protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
-            enabled = parse_env_bool(os.getenv(f'LLM_{ch_upper}_ENABLED'), default=True)
+            if ch_lower == "anspire" and not protocol_raw:
+                protocol_raw = "openai"
+            enabled_raw = os.getenv(f'LLM_{ch_upper}_ENABLED')
+            if ch_lower == "anspire" and (enabled_raw is None or not enabled_raw.strip()):
+                enabled_raw = os.getenv('ANSPIRE_LLM_ENABLED')
+            enabled = parse_env_bool(enabled_raw, default=True)
 
             # API keys: LLM_{NAME}_API_KEYS (multi) > LLM_{NAME}_API_KEY (single)
             api_keys_raw = os.getenv(f'LLM_{ch_upper}_API_KEYS', '')
@@ -1513,10 +1726,19 @@ class Config:
                 single_key = os.getenv(f'LLM_{ch_upper}_API_KEY', '').strip()
                 if single_key:
                     api_keys = [single_key]
+            if not api_keys and ch_lower == "anspire":
+                anspire_keys_raw = os.getenv('ANSPIRE_API_KEYS', '')
+                api_keys = [k.strip() for k in anspire_keys_raw.split(',') if k.strip()]
 
             # Models
             models_raw = os.getenv(f'LLM_{ch_upper}_MODELS', '')
             raw_models = [m.strip() for m in models_raw.split(',') if m.strip()]
+            if not raw_models and ch_lower == "anspire":
+                anspire_model = (
+                    os.getenv('ANSPIRE_LLM_MODEL') or ANSPIRE_LLM_MODEL_DEFAULT
+                ).strip()
+                if anspire_model:
+                    raw_models = [anspire_model]
             protocol = resolve_llm_channel_protocol(protocol_raw, base_url=base_url, models=raw_models, channel_name=ch_name)
             models = [normalize_llm_channel_model(m, protocol, base_url) for m in raw_models]
 
@@ -1846,10 +2068,10 @@ class Config:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
         import logging
         v = (value or 'cn').strip().lower()
-        if v in ('cn', 'us', 'both'):
+        if v in ('cn', 'us', 'hk', 'both'):
             return v
         logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / us / both）"
+            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / both）"
         )
         return 'cn'
 
@@ -2059,7 +2281,7 @@ class Config:
                 severity="info",
                 message=(
                     "尚未明确指定主模型，系统将自动从可用 API Key 推断。"
-                    "建议尽早配置主模型（格式如 gemini/gemini-2.5-flash）"
+                    "建议尽早配置主模型（格式如 gemini/gemini-3.1-pro-preview）"
                 ),
                 field="LITELLM_MODEL",
             ))
@@ -2174,6 +2396,7 @@ class Config:
             or self.pushplus_token
             or self.serverchan3_sendkey
             or self.custom_webhook_urls
+            or self.astrbot_url
             or (self.discord_bot_token and self.discord_main_channel_id)
             or self.discord_webhook_url
             or self.slack_webhook_url

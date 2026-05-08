@@ -6,6 +6,8 @@ Discord 发送提醒服务
 1. 通过 webhook 或 Discord bot API 发送 Discord 消息
 """
 import logging
+from typing import Optional
+
 import requests
 
 from src.config import Config
@@ -39,7 +41,7 @@ class DiscordSender:
         webhook_ok = bool(self._discord_config['webhook_url'])
         return bot_ok or webhook_ok
     
-    def send_to_discord(self, content: str) -> bool:
+    def send_to_discord(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到 Discord（支持 Webhook 和 Bot API）
         
@@ -58,17 +60,17 @@ class DiscordSender:
 
         # 优先使用 Webhook（配置简单，权限低）
         if self._discord_config['webhook_url']:
-            return all(self._send_discord_webhook(chunk) for chunk in chunks)
+            return all(self._send_discord_webhook(chunk, timeout_seconds=timeout_seconds) for chunk in chunks)
 
         # 其次使用 Bot API（权限高，需要 channel_id）
         if self._discord_config['bot_token'] and self._discord_config['channel_id']:
-            return all(self._send_discord_bot(chunk) for chunk in chunks)
+            return all(self._send_discord_bot(chunk, timeout_seconds=timeout_seconds) for chunk in chunks)
 
         logger.warning("Discord 配置不完整，跳过推送")
         return False
 
   
-    def _send_discord_webhook(self, content: str) -> bool:
+    def _send_discord_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         使用 Webhook 发送消息到 Discord
         
@@ -90,7 +92,7 @@ class DiscordSender:
             response = requests.post(
                 self._discord_config['webhook_url'],
                 json=payload,
-                timeout=10,
+                timeout=timeout_seconds or 10,
                 verify=self._webhook_verify_ssl
             )
             
@@ -104,7 +106,7 @@ class DiscordSender:
             logger.error(f"Discord Webhook 发送异常: {e}")
             return False
     
-    def _send_discord_bot(self, content: str) -> bool:
+    def _send_discord_bot(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         使用 Bot API 发送消息到 Discord
         
@@ -125,7 +127,7 @@ class DiscordSender:
             }
             
             url = f'https://discord.com/api/v10/channels/{self._discord_config["channel_id"]}/messages'
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds or 10)
             
             if response.status_code == 200:
                 logger.info("Discord Bot 消息发送成功")

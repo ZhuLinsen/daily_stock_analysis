@@ -120,6 +120,25 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_post.assert_called_once()
 
     @mock.patch("src.notification.get_config")
+    def test_send_isolates_channel_exceptions(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.WECHAT, service.get_available_channels())
+        self.assertIn(NotificationChannel.CUSTOM, service.get_available_channels())
+
+        with mock.patch.object(service, "send_to_wechat", side_effect=RuntimeError("boom")), \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content")
+
+        self.assertTrue(ok)
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
     def test_send_to_discord_via_notification_service_with_webhook(
         self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock

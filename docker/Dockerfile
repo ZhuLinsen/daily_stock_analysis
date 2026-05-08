@@ -34,6 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
+# 创建非 root 用户 (UID 1000)
+RUN groupadd -g 1000 dsa && \
+    useradd -u 1000 -g dsa -m dsa
+
 # 复制依赖文件
 COPY requirements.txt .
 
@@ -50,8 +54,9 @@ COPY src/ ./src/
 COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
 
-# 创建数据目录
-RUN mkdir -p /app/data /app/logs /app/reports
+# 确保数据目录存在并授权给 non-root 用户
+RUN mkdir -p /app/data /app/logs /app/reports && \
+    chown -R dsa:dsa /app
 
 # 设置环境变量默认值
 ENV PYTHONUNBUFFERED=1
@@ -60,6 +65,9 @@ ENV DATABASE_PATH=/app/data/stock_analysis.db
 # Web/API service
 ENV WEBUI_HOST=0.0.0.0
 ENV API_PORT=8000
+
+# 切换到 non-root 用户
+USER dsa
 
 # 暴露 API 端口
 EXPOSE 8000

@@ -1,30 +1,28 @@
 # -*- coding: utf-8 -*-
-"""
-Shared test helper to ensure imports work when litellm is unavailable.
-"""
+"""Shared test helper to keep litellm imports lightweight in unit tests."""
 
-import importlib.util
 import sys
 import types
 
 
 def ensure_litellm_stub() -> None:
-    """Install a minimal litellm stub only when litellm is unavailable."""
+    """Install a minimal litellm stub unless a test already provided one."""
     if "litellm" in sys.modules:
         return
-
-    try:
-        if importlib.util.find_spec("litellm") is not None:
-            return
-    except ValueError:
-        # A previously injected incomplete stub may leave __spec__ unset.
-        pass
 
     litellm_stub = types.ModuleType("litellm")
 
     class _DummyRouter:  # pragma: no cover
         pass
 
+    class _DummyRateLimitError(Exception):
+        pass
+
+    class _DummyContextWindowExceededError(Exception):
+        pass
+
     litellm_stub.Router = _DummyRouter
+    litellm_stub.RateLimitError = _DummyRateLimitError
+    litellm_stub.ContextWindowExceededError = _DummyContextWindowExceededError
     litellm_stub.completion = lambda **kwargs: None
     sys.modules["litellm"] = litellm_stub

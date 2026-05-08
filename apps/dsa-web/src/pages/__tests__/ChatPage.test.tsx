@@ -246,6 +246,161 @@ describe('ChatPage', () => {
     expect(skillBadge).toHaveTextContent('趋势分析');
   });
 
+  it('renders assistant multi-skill labels with shared badge semantics', async () => {
+    mockStoreState.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: '趋势偏强',
+        skills: ['bull_trend', 'ma_golden_cross'],
+        skillNames: ['趋势分析', '均线金叉'],
+      },
+    ];
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const skillBadge = await screen.findByLabelText('技能 趋势分析、均线金叉');
+    expect(skillBadge).toBeInTheDocument();
+    expect(skillBadge).toHaveTextContent('趋势分析、均线金叉');
+  });
+
+  it('selects the default skill after loading skills', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByRole('checkbox', { name: '趋势分析' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '通用分析' })).not.toBeChecked();
+  });
+
+  it('sends multiple selected skills in order', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '均线金叉' }));
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '分析 600519',
+          skills: ['bull_trend', 'ma_golden_cross'],
+        }),
+        expect.objectContaining({
+          skillNames: ['趋势分析', '均线金叉'],
+          skillName: '趋势分析、均线金叉',
+        }),
+      );
+    });
+  });
+
+  it('omits skills when all concrete skills are cleared', async () => {
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '趋势分析' }));
+    expect(screen.getByRole('checkbox', { name: '通用分析' })).toBeChecked();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 AAPL' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalled();
+    });
+    const lastCall = mockStartStream.mock.calls[mockStartStream.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual(expect.objectContaining({ message: '分析 AAPL' }));
+    expect(lastCall[0]).not.toHaveProperty('skills');
+    expect(lastCall[1]).toEqual(expect.objectContaining({
+      skillNames: ['通用'],
+      skillName: '通用',
+    }));
+  });
+
+  it('caps concrete skill selection at three and re-enables choices after unselecting', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+        { id: 'chan_theory', name: '缠论', description: '结构分析' },
+        { id: 'wave_theory', name: '波浪理论', description: '波浪分析' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '均线金叉' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '缠论' }));
+
+    const wave = screen.getByRole('checkbox', { name: '波浪理论' });
+    expect(wave).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '均线金叉' }));
+    expect(wave).not.toBeDisabled();
+  });
+
+  it('quick questions override the current multi-skill selection', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+        { id: 'chan_theory', name: '缠论', description: '结构分析' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '均线金叉' }));
+    fireEvent.click(screen.getByRole('button', { name: '用缠论分析茅台' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '用缠论分析茅台',
+          skills: ['chan_theory'],
+        }),
+        expect.objectContaining({
+          skillNames: ['缠论'],
+          skillName: '缠论',
+        }),
+      );
+    });
+  });
+
   it('keeps assistant message actions directly activatable in the DOM', async () => {
     mockStoreState.messages = [
       { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },

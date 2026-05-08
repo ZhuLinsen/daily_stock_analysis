@@ -15,6 +15,12 @@ if ([string]::IsNullOrWhiteSpace($pythonBin)) {
 
 Write-Host "Using Python: $pythonBin"
 
+Write-Host 'Verifying static asset references (source)...'
+& $pythonBin "${PSScriptRoot}\check_static_assets.py" 'static'
+if ($LASTEXITCODE -ne 0) {
+  throw "Static asset sanity check failed for source static/. See GitHub #1064."
+}
+
 function Test-PythonCode {
   param(
     [string]$Python,
@@ -123,5 +129,19 @@ if (!(Test-Path 'dist\stock_analysis')) {
 }
 
 Copy-Item -Path 'dist\stock_analysis' -Destination 'dist\backend\stock_analysis' -Recurse -Force
+
+Write-Host 'Verifying static asset references (packaged)...'
+$packagedStatic = Join-Path 'dist\backend\stock_analysis' '_internal\static'
+if (-not (Test-Path $packagedStatic)) {
+  $packagedStatic = Join-Path 'dist\backend\stock_analysis' 'static'
+}
+if (Test-Path $packagedStatic) {
+  & $pythonBin "${PSScriptRoot}\check_static_assets.py" $packagedStatic
+  if ($LASTEXITCODE -ne 0) {
+    throw "Static asset sanity check failed for packaged $packagedStatic. See GitHub #1064."
+  }
+} else {
+  Write-Warning "Could not locate packaged static directory under dist\backend\stock_analysis; skipping post-package check."
+}
 
 Write-Host 'Backend build completed.'

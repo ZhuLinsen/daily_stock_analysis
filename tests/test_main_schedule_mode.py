@@ -68,6 +68,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "schedule": False,
             "no_run_immediately": False,
             "no_notify": False,
+            "check_notify": False,
             "no_market_review": False,
             "dry_run": False,
             "workers": 1,
@@ -171,6 +172,33 @@ class MainScheduleModeTestCase(unittest.TestCase):
             {"schedule_time": "18:00", "resolved_schedule_time": "09:30"},
         )
         run_full_analysis.assert_called_once_with(runtime_config, args, None)
+
+    def test_check_notify_returns_before_other_modes(self) -> None:
+        args = self._make_args(check_notify=True, serve=True, schedule=True, market_review=True)
+        config = self._make_config(webui_enabled=False)
+        diagnostic_result = SimpleNamespace(ok=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main.start_api_server") as start_api_server, \
+             patch("main.run_full_analysis") as run_full_analysis, \
+             patch(
+                 "src.services.notification_diagnostics.run_notification_diagnostics",
+                 return_value=diagnostic_result,
+             ) as run_diagnostics, \
+             patch(
+                 "src.services.notification_diagnostics.format_notification_diagnostics",
+                 return_value="通知配置诊断",
+             ), \
+             patch("builtins.print") as print_output:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_diagnostics.assert_called_once_with(config)
+        print_output.assert_called_once_with("通知配置诊断")
+        start_api_server.assert_not_called()
+        run_full_analysis.assert_not_called()
 
     def test_reload_runtime_config_preserves_process_env_overrides(self) -> None:
         self.env_path.write_text(

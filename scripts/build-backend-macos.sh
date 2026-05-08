@@ -30,6 +30,9 @@ fi
 npm run build
 popd >/dev/null
 
+log "Verifying static asset references (source)..."
+"${PYTHON_BIN}" "${SCRIPT_DIR}/check_static_assets.py" "${ROOT_DIR}/static"
+
 log "Building backend executable..."
 if ! "${PYTHON_BIN}" -m PyInstaller --version >/dev/null 2>&1; then
   "${PYTHON_BIN}" -m pip install pyinstaller
@@ -108,5 +111,16 @@ echo "Running: ${cmd[*]}"
 popd >/dev/null
 
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
+
+log "Verifying static asset references (packaged)..."
+packaged_static="${ROOT_DIR}/dist/backend/stock_analysis/_internal/static"
+if [[ ! -d "${packaged_static}" ]]; then
+  packaged_static="${ROOT_DIR}/dist/backend/stock_analysis/static"
+fi
+if [[ -d "${packaged_static}" ]]; then
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/check_static_assets.py" "${packaged_static}"
+else
+  log "WARNING: could not locate packaged static directory under dist/backend/stock_analysis; skipping post-package check."
+fi
 
 log "Backend build completed."

@@ -74,12 +74,41 @@ class MarketCommand(BotCommand):
         try:
             from src.config import get_config
             from src.notification import NotificationService
-            from src.market_analyzer import MarketAnalyzer
+            from src.core.market_review import run_market_review
             from src.search_service import SearchService
             from src.analyzer import GeminiAnalyzer
 
             config = get_config()
             notifier = NotificationService(source_message=message)
+
+            # 交易日过滤：与 main.py 行为一致，避免在所有相关市场休市时仍调用复盘 / 推送
+            override_region: "str | None" = None
+            if getattr(config, "trading_day_check_enabled", True):
+                try:
+                    from src.core.trading_calendar import (
+                        get_open_markets_today,
+                        compute_effective_region,
+                    )
+
+                    open_markets = get_open_markets_today()
+                    override_region = compute_effective_region(
+                        getattr(config, "market_review_region", "cn") or "cn",
+                        open_markets,
+                    )
+                except Exception as calendar_err:
+                    logger.warning(
+                        "[MarketCommand] 交易日过滤 fail-open: %s", calendar_err
+                    )
+                    override_region = None
+
+                if override_region == "":
+                    logger.info("[MarketCommand] 今日相关市场休市，跳过大盘复盘")
+                    if notifier.is_available():
+                        notifier.send(
+                            "🎯 大盘复盘\n\n今日相关市场休市，已跳过大盘复盘。",
+                            email_send_to_all=True,
+                        )
+                    return
 
             # 初始化搜索服务
             search_service = None
@@ -101,22 +130,16 @@ class MarketCommand(BotCommand):
             if config.gemini_api_key or config.openai_api_key:
                 analyzer = GeminiAnalyzer()
 
-            # 读取配置中的市场区域，与定时任务/CLI 保持一致
-            region = getattr(config, 'market_review_region', 'cn')
-
-            # 执行复盘
-            market_analyzer = MarketAnalyzer(
-                search_service=search_service,
+            # 委托给 run_market_review，正确处理 both / 逗号分隔等多市场路由
+            review_report = run_market_review(
+                notifier=notifier,
                 analyzer=analyzer,
-                region=region,
+                search_service=search_service,
+                send_notification=True,
+                override_region=override_region,
             )
 
-            review_report = market_analyzer.run_daily_review()
-
             if review_report:
-                # 推送结果
-                report_content = f"🎯 **大盘复盘**\n\n{review_report}"
-                notifier.send(report_content, email_send_to_all=True)
                 logger.info("[MarketCommand] 大盘复盘完成并已推送")
             else:
                 logger.warning("[MarketCommand] 大盘复盘返回空结果")

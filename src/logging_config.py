@@ -11,15 +11,24 @@
 """
 
 import logging
+import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(pathname)s:%(lineno)d | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+_ALLOWED_LOG_LEVELS = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+    'CRITICAL': logging.CRITICAL,
+}
+_DEFAULT_LITELLM_LOG_LEVEL = 'WARNING'
 
 
 class RelativePathFormatter(logging.Formatter):
@@ -47,6 +56,28 @@ DEFAULT_QUIET_LOGGERS = [
     'google',
     'httpx',
 ]
+
+LITELLM_LOGGERS = [
+    'LiteLLM',
+    'LiteLLM Router',
+    'LiteLLM Proxy',
+    'litellm',
+]
+
+
+def _resolve_litellm_log_level(raw_level: Optional[str] = None) -> Tuple[int, Optional[str]]:
+    """Resolve LiteLLM logger level from env, returning invalid raw value if any."""
+    if raw_level is None:
+        raw_level = os.getenv('LITELLM_LOG_LEVEL', '')
+
+    normalized = (raw_level or '').strip().upper()
+    if not normalized:
+        normalized = _DEFAULT_LITELLM_LOG_LEVEL
+
+    level = _ALLOWED_LOG_LEVELS.get(normalized)
+    if level is None:
+        return _ALLOWED_LOG_LEVELS[_DEFAULT_LITELLM_LOG_LEVEL], raw_level
+    return level, None
 
 
 def setup_logging(
@@ -134,6 +165,10 @@ def setup_logging(
     for logger_name in quiet_loggers:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
+    litellm_level, invalid_litellm_level = _resolve_litellm_log_level()
+    for logger_name in LITELLM_LOGGERS:
+        logging.getLogger(logger_name).setLevel(litellm_level)
+
     # 输出初始化完成信息（使用相对路径）
     try:
         rel_log_path = log_path.resolve().relative_to(project_root)
@@ -153,3 +188,10 @@ def setup_logging(
     logging.info(f"日志系统初始化完成，日志目录: {rel_log_path}")
     logging.info(f"常规日志: {rel_log_file}")
     logging.info(f"调试日志: {rel_debug_log_file}")
+    if invalid_litellm_level is not None:
+        logging.warning(
+            "LITELLM_LOG_LEVEL=%r 无效，已回退为 %s；可选值：%s",
+            invalid_litellm_level,
+            _DEFAULT_LITELLM_LOG_LEVEL,
+            ", ".join(_ALLOWED_LOG_LEVELS),
+        )

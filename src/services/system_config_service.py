@@ -6,14 +6,19 @@ from __future__ import annotations
 import io
 import logging
 import json
+import os
 import re
 import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 
 from src.config import (
+    ANSPIRE_LLM_BASE_URL_DEFAULT,
+    ANSPIRE_LLM_MODEL_DEFAULT,
     SUPPORTED_LLM_CHANNEL_PROTOCOLS,
     Config,
     _get_litellm_provider,
@@ -22,9 +27,11 @@ from src.config import (
     channel_allows_empty_api_key,
     get_configured_llm_models,
     normalize_agent_litellm_model,
+    normalize_litellm_temperature,
     normalize_news_strategy_profile,
     normalize_llm_channel_model,
     parse_env_bool,
+    parse_env_int,
     resolve_news_window_days,
     resolve_llm_channel_protocol,
     setup_env,
@@ -64,8 +71,26 @@ class ConfigImportError(Exception):
         self.message = message
 
 
+@dataclass(frozen=True)
+class _LLMDiagnostic:
+    """Internal structured diagnosis for LLM test and discovery failures."""
+
+    error_code: str
+    retryable: bool
+    message: str
+    reason: Optional[str] = None
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
 class SystemConfigService:
     """Service layer for reading, validating, and updating runtime configuration."""
+
+    _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
+    _LLM_STREAM_CHUNK_LIMIT = 8
+    _LLM_CAPABILITY_PROBE_IMAGE = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
 
     _DISPLAY_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
         "AGENT_SKILL_DIR": ("AGENT_SKILL_DIR", "AGENT_STRATEGY_DIR"),
@@ -77,6 +102,80 @@ class SystemConfigService:
             "strategy": "specialist",
             "skill": "specialist",
         }
+    }
+    _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
+        "wechat",
+        "feishu",
+        "telegram",
+        "email",
+        "pushover",
+        "pushplus",
+        "serverchan3",
+        "custom",
+        "discord",
+        "slack",
+        "astrbot",
+    )
+    _NOTIFICATION_TEST_KEY_MAP: Dict[str, Tuple[str, str]] = {
+        "WECHAT_WEBHOOK_URL": ("wechat_webhook_url", "string"),
+        "WECHAT_MSG_TYPE": ("wechat_msg_type", "string"),
+        "WECHAT_MAX_BYTES": ("wechat_max_bytes", "int"),
+        "FEISHU_WEBHOOK_URL": ("feishu_webhook_url", "string"),
+        "FEISHU_WEBHOOK_SECRET": ("feishu_webhook_secret", "string"),
+        "FEISHU_WEBHOOK_KEYWORD": ("feishu_webhook_keyword", "string"),
+        "FEISHU_MAX_BYTES": ("feishu_max_bytes", "int"),
+        "TELEGRAM_BOT_TOKEN": ("telegram_bot_token", "string"),
+        "TELEGRAM_CHAT_ID": ("telegram_chat_id", "string"),
+        "TELEGRAM_MESSAGE_THREAD_ID": ("telegram_message_thread_id", "string"),
+        "EMAIL_SENDER": ("email_sender", "string"),
+        "EMAIL_SENDER_NAME": ("email_sender_name", "string"),
+        "EMAIL_PASSWORD": ("email_password", "string"),
+        "EMAIL_RECEIVERS": ("email_receivers", "csv"),
+        "PUSHOVER_USER_KEY": ("pushover_user_key", "string"),
+        "PUSHOVER_API_TOKEN": ("pushover_api_token", "string"),
+        "PUSHPLUS_TOKEN": ("pushplus_token", "string"),
+        "PUSHPLUS_TOPIC": ("pushplus_topic", "string"),
+        "SERVERCHAN3_SENDKEY": ("serverchan3_sendkey", "string"),
+        "CUSTOM_WEBHOOK_URLS": ("custom_webhook_urls", "csv"),
+        "CUSTOM_WEBHOOK_BEARER_TOKEN": ("custom_webhook_bearer_token", "string"),
+        "CUSTOM_WEBHOOK_BODY_TEMPLATE": ("custom_webhook_body_template", "string"),
+        "WEBHOOK_VERIFY_SSL": ("webhook_verify_ssl", "bool"),
+        "DISCORD_WEBHOOK_URL": ("discord_webhook_url", "string"),
+        "DISCORD_BOT_TOKEN": ("discord_bot_token", "string"),
+        "DISCORD_MAIN_CHANNEL_ID": ("discord_main_channel_id", "string"),
+        "DISCORD_CHANNEL_ID": ("discord_main_channel_id", "string"),
+        "DISCORD_MAX_WORDS": ("discord_max_words", "int"),
+        "SLACK_WEBHOOK_URL": ("slack_webhook_url", "string"),
+        "SLACK_BOT_TOKEN": ("slack_bot_token", "string"),
+        "SLACK_CHANNEL_ID": ("slack_channel_id", "string"),
+        "ASTRBOT_URL": ("astrbot_url", "string"),
+        "ASTRBOT_TOKEN": ("astrbot_token", "string"),
+    }
+    _NOTIFICATION_REQUIRED_KEY_GROUPS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+        "wechat": (("WECHAT_WEBHOOK_URL",),),
+        "feishu": (("FEISHU_WEBHOOK_URL",),),
+        "telegram": (("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"),),
+        "email": (("EMAIL_SENDER", "EMAIL_PASSWORD"),),
+        "pushover": (("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN"),),
+        "pushplus": (("PUSHPLUS_TOKEN",),),
+        "serverchan3": (("SERVERCHAN3_SENDKEY",),),
+        "custom": (("CUSTOM_WEBHOOK_URLS",),),
+        "discord": (("DISCORD_WEBHOOK_URL",), ("DISCORD_BOT_TOKEN", "DISCORD_MAIN_CHANNEL_ID"), ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID")),
+        "slack": (("SLACK_WEBHOOK_URL",), ("SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID")),
+        "astrbot": (("ASTRBOT_URL",),),
+    }
+    _NOTIFICATION_TEST_TARGET_KEYS: Dict[str, Tuple[str, ...]] = {
+        "wechat": ("WECHAT_WEBHOOK_URL",),
+        "feishu": ("FEISHU_WEBHOOK_URL",),
+        "telegram": ("TELEGRAM_BOT_TOKEN",),
+        "email": ("EMAIL_RECEIVERS", "EMAIL_SENDER"),
+        "pushover": ("PUSHOVER_USER_KEY",),
+        "pushplus": ("PUSHPLUS_TOPIC",),
+        "serverchan3": ("SERVERCHAN3_SENDKEY",),
+        "custom": ("CUSTOM_WEBHOOK_URLS",),
+        "discord": ("DISCORD_WEBHOOK_URL", "DISCORD_MAIN_CHANNEL_ID", "DISCORD_CHANNEL_ID"),
+        "slack": ("SLACK_WEBHOOK_URL", "SLACK_CHANNEL_ID"),
+        "astrbot": ("ASTRBOT_URL",),
     }
 
     def __init__(self, manager: Optional[ConfigManager] = None):
@@ -205,6 +304,97 @@ class SystemConfigService:
             "issues": issues,
         }
 
+    def test_notification_channel(
+        self,
+        *,
+        channel: str,
+        items: Sequence[Dict[str, str]],
+        mask_token: str = "******",
+        title: str = "DSA 通知测试",
+        content: str = "这是一条来自 DSA Web 设置页的通知测试消息。",
+        timeout_seconds: float = 20.0,
+    ) -> Dict[str, Any]:
+        """Send one real notification test without persisting submitted values."""
+        normalized_channel = (channel or "").strip().lower()
+        if normalized_channel not in self._NOTIFICATION_TEST_CHANNELS:
+            raise ValueError(f"Unsupported notification channel: {channel}")
+
+        effective_map = self._build_notification_test_effective_map(
+            items=items,
+            mask_token=mask_token,
+        )
+        missing = self._get_missing_notification_test_keys(normalized_channel, effective_map)
+        if missing:
+            return self._build_notification_test_result(
+                success=False,
+                message=f"通知渠道配置不完整，缺少: {', '.join(missing)}",
+                error_code="config_missing",
+                stage="config_validation",
+                retryable=False,
+                latency_ms=None,
+                attempts=[],
+            )
+
+        config = self._build_notification_test_config(effective_map)
+        try:
+            return self._dispatch_notification_test(
+                channel=normalized_channel,
+                config=config,
+                effective_map=effective_map,
+                title=title.strip(),
+                content=content.strip(),
+                timeout_seconds=float(timeout_seconds),
+            )
+        except Exception as exc:
+            logger.warning("Notification channel test failed for %s: %s", normalized_channel, exc)
+            error_code, retryable = self._classify_notification_exception(exc)
+            return self._build_notification_test_result(
+                success=False,
+                message=f"通知测试异常: {exc}",
+                error_code=error_code,
+                stage="notification_send",
+                retryable=retryable,
+                latency_ms=None,
+                attempts=[
+                    {
+                        "channel": normalized_channel,
+                        "success": False,
+                        "message": str(exc),
+                        "target": self._resolve_notification_test_target(normalized_channel, effective_map),
+                        "error_code": error_code,
+                        "stage": "notification_send",
+                        "retryable": retryable,
+                        "latency_ms": None,
+                    }
+                ],
+            )
+
+    def get_setup_status(self) -> Dict[str, Any]:
+        """Return read-only first-run setup status without mutating runtime state."""
+        effective_map = self._build_setup_effective_config_map()
+        llm_check = self._build_setup_primary_llm_check(effective_map)
+        agent_check = self._build_setup_agent_llm_check(effective_map, llm_check)
+        checks = [
+            llm_check,
+            agent_check,
+            self._build_setup_stock_list_check(effective_map),
+            self._build_setup_notification_check(effective_map),
+            self._build_setup_storage_check(effective_map),
+        ]
+
+        required_missing = [
+            check["key"]
+            for check in checks
+            if check["required"] and check["status"] == "needs_action"
+        ]
+        return {
+            "is_complete": not required_missing,
+            "ready_for_smoke": not required_missing,
+            "required_missing_keys": required_missing,
+            "next_step_key": required_missing[0] if required_missing else None,
+            "checks": checks,
+        }
+
     def export_desktop_env(self) -> Dict[str, Any]:
         """Return the raw active `.env` content for desktop-only backup."""
         if self._manager.env_path.exists():
@@ -269,27 +459,39 @@ class SystemConfigService:
             )
         errors = [issue for issue in validation_issues if issue["severity"] == "error"]
         if errors:
-            return {
-                "success": False,
-                "message": "LLM channel configuration is invalid",
-                "error": errors[0]["message"],
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": None,
-            }
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=errors[0]["message"],
+                stage="model_discovery",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": errors[0]["key"],
+                    "issue_code": errors[0]["code"],
+                    "reason": errors[0]["code"],
+                },
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=None,
+            )
 
         if resolved_protocol not in {"openai", "deepseek"}:
-            return {
-                "success": False,
-                "message": "Model discovery is not supported for this protocol",
-                "error": (
+            return self._build_llm_channel_result(
+                success=False,
+                message="Model discovery is not supported for this protocol",
+                error=(
                     f"LLM channel '{channel_name}' protocol '{resolved_protocol}' "
                     "does not support /models discovery yet"
                 ),
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": None,
-            }
+                stage="model_discovery",
+                error_code="unsupported_protocol",
+                retryable=False,
+                details={"protocol": resolved_protocol or None},
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=None,
+            )
 
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
@@ -310,66 +512,99 @@ class SystemConfigService:
             latency_ms = int((time.perf_counter() - started_at) * 1000)
         except requests.RequestException as exc:
             logger.warning("LLM channel model discovery failed for %s: %s", channel_name, exc)
-            return {
-                "success": False,
-                "message": "Failed to discover models",
-                "error": str(exc),
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": None,
-            }
+            diagnostic = self._classify_llm_exception(exc)
+            return self._build_llm_channel_result(
+                success=False,
+                message=diagnostic.message,
+                error=str(exc),
+                stage="model_discovery",
+                error_code=diagnostic.error_code,
+                retryable=diagnostic.retryable,
+                details=self._merge_llm_diagnostic_details({"endpoint": models_url}, diagnostic),
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=None,
+            )
 
         if 300 <= response.status_code < 400:
-            return {
-                "success": False,
-                "message": "Model discovery request was redirected",
-                "error": "Redirect responses are not allowed for model discovery",
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": latency_ms,
-            }
+            return self._build_llm_channel_result(
+                success=False,
+                message="Model discovery request was redirected",
+                error="Redirect responses are not allowed for model discovery",
+                stage="model_discovery",
+                error_code="network_error",
+                retryable=False,
+                details={"endpoint": models_url, "http_status": response.status_code},
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=latency_ms,
+            )
 
         if not response.ok:
-            return {
-                "success": False,
-                "message": "Model discovery request failed",
-                "error": self._extract_llm_discovery_error(response),
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": latency_ms,
-            }
+            error_text = self._extract_llm_discovery_error(response)
+            diagnostic = self._classify_llm_http_error(
+                status_code=response.status_code,
+                error_text=error_text,
+            )
+            return self._build_llm_channel_result(
+                success=False,
+                message=diagnostic.message,
+                error=error_text,
+                stage="model_discovery",
+                error_code=diagnostic.error_code,
+                retryable=diagnostic.retryable,
+                details=self._merge_llm_diagnostic_details(
+                    {"endpoint": models_url, "http_status": response.status_code},
+                    diagnostic,
+                ),
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=latency_ms,
+            )
 
         try:
             payload = response.json()
         except ValueError:
-            return {
-                "success": False,
-                "message": "Model discovery returned invalid JSON",
-                "error": "The /models endpoint did not return valid JSON",
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": latency_ms,
-            }
+            return self._build_llm_channel_result(
+                success=False,
+                message="Model discovery returned invalid JSON",
+                error="The /models endpoint did not return valid JSON",
+                stage="response_parse",
+                error_code="format_error",
+                retryable=False,
+                details={"endpoint": models_url, "http_status": response.status_code, "reason": "non_json"},
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=latency_ms,
+            )
 
         models = self._extract_discovered_llm_models(payload)
         if not models:
-            return {
-                "success": False,
-                "message": "Model discovery returned no models",
-                "error": "The /models endpoint did not return any model IDs",
-                "resolved_protocol": resolved_protocol or None,
-                "models": [],
-                "latency_ms": latency_ms,
-            }
+            return self._build_llm_channel_result(
+                success=False,
+                message="Model discovery returned no models",
+                error="The /models endpoint did not return any model IDs",
+                stage="response_parse",
+                error_code="empty_response",
+                retryable=False,
+                details={"endpoint": models_url, "http_status": response.status_code, "reason": "empty_models"},
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=latency_ms,
+            )
 
-        return {
-            "success": True,
-            "message": "LLM channel model discovery succeeded",
-            "error": None,
-            "resolved_protocol": resolved_protocol or None,
-            "models": models,
-            "latency_ms": latency_ms,
-        }
+        return self._build_llm_channel_result(
+            success=True,
+            message="LLM channel model discovery succeeded",
+            error=None,
+            stage="model_discovery",
+            error_code=None,
+            retryable=False,
+            details={"endpoint": models_url, "model_count": len(models)},
+            resolved_protocol=resolved_protocol or None,
+            models=models,
+            latency_ms=latency_ms,
+        )
 
     def test_llm_channel(
         self,
@@ -381,8 +616,10 @@ class SystemConfigService:
         models: Sequence[str],
         enabled: bool = True,
         timeout_seconds: float = 20.0,
+        capability_checks: Sequence[str] = (),
     ) -> Dict[str, Any]:
         """Run a minimal completion call against one channel definition."""
+        requested_capabilities = self._normalize_llm_capability_checks(capability_checks)
         raw_models = [str(model).strip() for model in models if str(model).strip()]
         channel_name = name.strip() or "channel"
         validation_issues = self._validate_llm_channel_definition(
@@ -397,14 +634,27 @@ class SystemConfigService:
         )
         errors = [issue for issue in validation_issues if issue["severity"] == "error"]
         if errors:
-            return {
-                "success": False,
-                "message": "LLM channel configuration is invalid",
-                "error": errors[0]["message"],
-                "resolved_protocol": None,
-                "resolved_model": None,
-                "latency_ms": None,
-            }
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=errors[0]["message"],
+                stage="chat_completion",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": errors[0]["key"],
+                    "issue_code": errors[0]["code"],
+                    "reason": errors[0]["code"],
+                },
+                resolved_protocol=None,
+                resolved_model=None,
+                latency_ms=None,
+                capability_results=self._build_skipped_capability_results(
+                    requested_capabilities,
+                    "base_test_failed",
+                    "Skipped because the base channel test did not pass",
+                ),
+            )
 
         resolved_protocol = resolve_llm_channel_protocol(protocol, base_url=base_url, models=raw_models, channel_name=name)
         resolved_models = [normalize_llm_channel_model(model, resolved_protocol, base_url) for model in raw_models]
@@ -415,7 +665,10 @@ class SystemConfigService:
         call_kwargs: Dict[str, Any] = {
             "model": resolved_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
-            "temperature": 0,
+            "temperature": normalize_litellm_temperature(
+                resolved_model,
+                self._get_runtime_llm_temperature(),
+            ),
             "max_tokens": 256,  # Increased to allow MiniMax-M2.7 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
         }
@@ -436,63 +689,529 @@ class SystemConfigService:
             started_at = time.perf_counter()
             response = litellm.completion(**call_kwargs)
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            content = ""
-            if response and getattr(response, "choices", None):
-                choice = response.choices[0]
-                # MiniMax-M2.7 uses content_blocks format directly on choice (not inside message)
-                # Check both possible locations for content_blocks
-                content_blocks = None
-                if hasattr(choice, "content_blocks"):
-                    content_blocks = choice.content_blocks
-                elif hasattr(choice.message, "content_blocks"):
-                    content_blocks = choice.message.content_blocks
+            content, parse_error_code, parse_error, parse_reason = self._extract_llm_completion_content(response)
+            if parse_error_code:
+                message = (
+                    "LLM channel returned an empty response"
+                    if parse_error_code == "empty_response"
+                    else "LLM channel returned an unexpected response format"
+                )
+                return self._build_llm_channel_result(
+                    success=False,
+                    message=message,
+                    error=parse_error,
+                    stage="response_parse",
+                    error_code=parse_error_code,
+                    retryable=False,
+                    details={"response_error": parse_error, "reason": parse_reason},
+                    resolved_protocol=resolved_protocol or None,
+                    resolved_model=resolved_model,
+                    latency_ms=latency_ms,
+                    capability_results=self._build_skipped_capability_results(
+                        requested_capabilities,
+                        "base_test_failed",
+                        "Skipped because the base channel test did not pass",
+                    ),
+                )
 
-                if content_blocks:
-                    # MiniMax response format: concatenate ALL text blocks
-                    # Handle both type=="text" with .text and .content fields
-                    text_parts = []
-                    for block in content_blocks:
-                        if getattr(block, "type", None) == "text":
-                            text = getattr(block, "text", "") or ""
-                            if text:
-                                text_parts.append(text)
-                        elif hasattr(block, "content") and block.content:
-                            text_parts.append(block.content)
-                    content = "".join(text_parts).strip()
-                else:
-                    # Standard OpenAI format
-                    message = getattr(choice, "message", None)
-                    if message:
-                        content = str(message.content or "").strip()
-
-            if not content:
-                return {
-                    "success": False,
-                    "message": "LLM channel returned an empty response",
-                    "error": "Empty response",
-                    "resolved_protocol": resolved_protocol or None,
-                    "resolved_model": resolved_model,
-                    "latency_ms": latency_ms,
-                }
-
-            return {
-                "success": True,
-                "message": "LLM channel test succeeded",
-                "error": None,
-                "resolved_protocol": resolved_protocol or None,
-                "resolved_model": resolved_model,
-                "latency_ms": latency_ms,
-            }
+            capability_results = (
+                self._run_llm_capability_checks(
+                    litellm_module=litellm,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    capability_checks=requested_capabilities,
+                )
+                if requested_capabilities
+                else {}
+            )
+            return self._build_llm_channel_result(
+                success=True,
+                message="LLM channel test succeeded",
+                error=None,
+                stage="chat_completion",
+                error_code=None,
+                retryable=False,
+                details={"response_preview": content[:80]},
+                resolved_protocol=resolved_protocol or None,
+                resolved_model=resolved_model,
+                latency_ms=latency_ms,
+                capability_results=capability_results,
+            )
         except Exception as exc:
             logger.warning("LLM channel test failed for %s: %s", channel_name, exc)
-            return {
-                "success": False,
-                "message": "LLM channel test failed",
-                "error": str(exc),
-                "resolved_protocol": resolved_protocol or None,
-                "resolved_model": resolved_model,
-                "latency_ms": None,
+            diagnostic = self._classify_llm_exception(exc)
+            return self._build_llm_channel_result(
+                success=False,
+                message=diagnostic.message,
+                error=str(exc),
+                stage="chat_completion",
+                error_code=diagnostic.error_code,
+                retryable=diagnostic.retryable,
+                details=self._merge_llm_diagnostic_details({"model": resolved_model}, diagnostic),
+                resolved_protocol=resolved_protocol or None,
+                resolved_model=resolved_model,
+                latency_ms=None,
+                capability_results=self._build_skipped_capability_results(
+                    requested_capabilities,
+                    "base_test_failed",
+                    "Skipped because the base channel test did not pass",
+                ),
+            )
+
+    @classmethod
+    def _normalize_llm_capability_checks(cls, capability_checks: Sequence[str]) -> List[str]:
+        requested = {str(check).strip().lower() for check in capability_checks if str(check).strip()}
+        return [check for check in cls._LLM_CAPABILITY_ORDER if check in requested]
+
+    @classmethod
+    def _build_skipped_capability_results(
+        cls,
+        capability_checks: Sequence[str],
+        reason: str,
+        message: str,
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            capability: cls._build_llm_capability_result(
+                capability=capability,
+                status="skipped",
+                message=message,
+                error_code="skipped",
+                retryable=False,
+                details={"reason": reason},
+            )
+            for capability in capability_checks
+        }
+
+    @classmethod
+    def _run_llm_capability_checks(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+        capability_checks: Sequence[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        results: Dict[str, Dict[str, Any]] = {}
+        for capability in capability_checks:
+            if capability == "json":
+                results[capability] = cls._run_json_capability_check(
+                    litellm_module=litellm_module,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif capability == "tools":
+                results[capability] = cls._run_tools_capability_check(
+                    litellm_module=litellm_module,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif capability == "stream":
+                results[capability] = cls._run_stream_capability_check(
+                    litellm_module=litellm_module,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif capability == "vision":
+                results[capability] = cls._run_vision_capability_check(
+                    litellm_module=litellm_module,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+        return results
+
+    @classmethod
+    def _run_json_capability_check(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        try:
+            started_at = time.perf_counter()
+            response = litellm_module.completion(
+                **cls._build_llm_capability_completion_kwargs(
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
+                    max_tokens=64,
+                    extra={"response_format": {"type": "json_object"}},
+                )
+            )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
+            if parse_error_code:
+                return cls._build_llm_capability_result(
+                    capability="json",
+                    status="failed",
+                    message="JSON capability check returned no parseable content",
+                    error_code=parse_error_code,
+                    retryable=False,
+                    latency_ms=latency_ms,
+                    details={"reason": parse_reason, "response_error": parse_error},
+                )
+            try:
+                payload = json.loads(content)
+            except ValueError:
+                return cls._build_llm_capability_result(
+                    capability="json",
+                    status="failed",
+                    message="JSON capability check returned non-JSON content",
+                    error_code="format_error",
+                    retryable=False,
+                    latency_ms=latency_ms,
+                    details={"reason": "non_json", "response_preview": content[:80]},
+                )
+            if not isinstance(payload, dict) or payload.get("status") != "ok":
+                return cls._build_llm_capability_result(
+                    capability="json",
+                    status="failed",
+                    message="JSON capability check returned unexpected JSON",
+                    error_code="format_error",
+                    retryable=False,
+                    latency_ms=latency_ms,
+                    details={"reason": "non_json", "response_preview": content[:80]},
+                )
+            return cls._build_llm_capability_result(
+                capability="json",
+                status="passed",
+                message="JSON output capability check passed",
+                latency_ms=latency_ms,
+                details={"reason": "json_valid"},
+            )
+        except Exception as exc:
+            diagnostic = cls._classify_llm_capability_exception(exc, "json")
+            return cls._build_llm_capability_result_from_diagnostic("json", diagnostic, str(exc))
+
+    @classmethod
+    def _run_tools_capability_check(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "dsa_probe_echo",
+                    "description": "Return the provided text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
             }
+        ]
+        try:
+            started_at = time.perf_counter()
+            response = litellm_module.completion(
+                **cls._build_llm_capability_completion_kwargs(
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    messages=[{"role": "user", "content": "Call the dsa_probe_echo tool with text set to ok."}],
+                    max_tokens=64,
+                    extra={
+                        "tools": tools,
+                        "tool_choice": {"type": "function", "function": {"name": "dsa_probe_echo"}},
+                    },
+                )
+            )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            tool_names = cls._extract_llm_tool_call_names(response)
+            if "dsa_probe_echo" not in tool_names:
+                return cls._build_llm_capability_result(
+                    capability="tools",
+                    status="failed",
+                    message="Tool calling capability check did not return the probe tool call",
+                    error_code="capability_unsupported",
+                    retryable=False,
+                    latency_ms=latency_ms,
+                    details={"reason": "tool_calls_missing", "tool_calls": tool_names},
+                )
+            return cls._build_llm_capability_result(
+                capability="tools",
+                status="passed",
+                message="Tool calling capability check passed",
+                latency_ms=latency_ms,
+                details={"reason": "tool_call_returned"},
+            )
+        except Exception as exc:
+            diagnostic = cls._classify_llm_capability_exception(exc, "tools")
+            return cls._build_llm_capability_result_from_diagnostic("tools", diagnostic, str(exc))
+
+    @classmethod
+    def _run_stream_capability_check(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        stream = None
+        started_at = time.perf_counter()
+        try:
+            stream = litellm_module.completion(
+                **cls._build_llm_capability_completion_kwargs(
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    messages=[{"role": "user", "content": "Reply with OK"}],
+                    max_tokens=32,
+                    extra={"stream": True},
+                )
+            )
+            for index, chunk in enumerate(stream):
+                content = cls._extract_llm_stream_chunk_content(chunk)
+                if content:
+                    latency_ms = int((time.perf_counter() - started_at) * 1000)
+                    return cls._build_llm_capability_result(
+                        capability="stream",
+                        status="passed",
+                        message="Streaming capability check passed",
+                        latency_ms=latency_ms,
+                        details={"reason": "stream_chunk_received"},
+                    )
+                if index + 1 >= cls._LLM_STREAM_CHUNK_LIMIT:
+                    break
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            return cls._build_llm_capability_result(
+                capability="stream",
+                status="failed",
+                message="Streaming capability check returned no content chunks",
+                error_code="empty_response",
+                retryable=False,
+                latency_ms=latency_ms,
+                details={"reason": "stream_no_content"},
+            )
+        except Exception as exc:
+            diagnostic = cls._classify_llm_capability_exception(exc, "stream")
+            return cls._build_llm_capability_result_from_diagnostic("stream", diagnostic, str(exc))
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception as exc:
+                    logger.debug("Failed to close LLM stream capability probe: %s", exc)
+
+    @classmethod
+    def _run_vision_capability_check(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        try:
+            started_at = time.perf_counter()
+            response = litellm_module.completion(
+                **cls._build_llm_capability_completion_kwargs(
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Reply with OK if this image is visible."},
+                                {"type": "image_url", "image_url": {"url": cls._LLM_CAPABILITY_PROBE_IMAGE}},
+                            ],
+                        }
+                    ],
+                    max_tokens=32,
+                )
+            )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
+            if parse_error_code:
+                return cls._build_llm_capability_result(
+                    capability="vision",
+                    status="failed",
+                    message="Vision capability check returned no parseable content",
+                    error_code=parse_error_code,
+                    retryable=False,
+                    latency_ms=latency_ms,
+                    details={"reason": parse_reason, "response_error": parse_error},
+                )
+            return cls._build_llm_capability_result(
+                capability="vision",
+                status="passed",
+                message="Vision capability check passed",
+                latency_ms=latency_ms,
+                details={"reason": "vision_response_received", "response_preview": content[:80]},
+            )
+        except Exception as exc:
+            diagnostic = cls._classify_llm_capability_exception(exc, "vision")
+            return cls._build_llm_capability_result_from_diagnostic("vision", diagnostic, str(exc))
+
+    @classmethod
+    def _build_llm_capability_completion_kwargs(
+        cls,
+        *,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+        messages: List[Dict[str, Any]],
+        max_tokens: int,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            timeout = float(timeout_seconds)
+        except (TypeError, ValueError):
+            timeout = 10.0
+        call_kwargs: Dict[str, Any] = {
+            "model": resolved_model,
+            "messages": messages,
+            "temperature": normalize_litellm_temperature(resolved_model, 0.0),
+            "max_tokens": max_tokens,
+            "timeout": min(max(5.0, timeout), 10.0),
+        }
+        if selected_api_key:
+            call_kwargs["api_key"] = selected_api_key
+        if base_url.strip():
+            call_kwargs["api_base"] = base_url.strip()
+        if extra:
+            call_kwargs.update(extra)
+        return call_kwargs
+
+    @classmethod
+    def _build_llm_capability_result(
+        cls,
+        *,
+        capability: str,
+        status: str,
+        message: str,
+        error_code: Optional[str] = None,
+        retryable: bool = False,
+        latency_ms: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "status": status,
+            "message": cls._sanitize_llm_error_text(message),
+            "error_code": error_code,
+            "stage": f"capability_{capability}",
+            "retryable": retryable,
+            "latency_ms": latency_ms,
+            "details": cls._sanitize_llm_details({"capability": capability, **(details or {})}),
+        }
+
+    @classmethod
+    def _build_llm_capability_result_from_diagnostic(
+        cls,
+        capability: str,
+        diagnostic: _LLMDiagnostic,
+        error: str,
+    ) -> Dict[str, Any]:
+        details = cls._merge_llm_diagnostic_details({"error": error}, diagnostic)
+        return cls._build_llm_capability_result(
+            capability=capability,
+            status="failed",
+            message=diagnostic.message,
+            error_code=diagnostic.error_code,
+            retryable=diagnostic.retryable,
+            details=details,
+        )
+
+    @staticmethod
+    def _extract_llm_tool_call_names(response: Any) -> List[str]:
+        choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+        if not choices:
+            return []
+        choice = choices[0]
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+        else:
+            tool_calls = getattr(message, "tool_calls", None) if message is not None else None
+        names: List[str] = []
+        for call in tool_calls or []:
+            function = call.get("function") if isinstance(call, dict) else getattr(call, "function", None)
+            if isinstance(function, dict):
+                name = str(function.get("name") or "").strip()
+            else:
+                name = str(getattr(function, "name", "") or "").strip()
+            if name:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _extract_llm_stream_chunk_content(chunk: Any) -> str:
+        choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+        if not choices:
+            return ""
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+        for container in (delta, message):
+            if not container:
+                continue
+            content = container.get("content") if isinstance(container, dict) else getattr(container, "content", None)
+            if content:
+                return str(content)
+        content = choice.get("text") if isinstance(choice, dict) else getattr(choice, "text", None)
+        return str(content or "")
+
+    @classmethod
+    def _classify_llm_capability_exception(cls, exc: Exception, capability: str) -> _LLMDiagnostic:
+        text = str(exc).lower()
+        capability_tokens = {
+            "json": ("response_format", "json_object", "json mode"),
+            "tools": ("tool_choice", "tools", "function calling", "tool call"),
+            "stream": ("stream", "streaming"),
+            "vision": ("image", "image_url", "vision", "multimodal", "multi-modal"),
+        }
+        unsupported_markers = (
+            "unsupported",
+            "not support",
+            "not supported",
+            "unknown parameter",
+            "unrecognized parameter",
+            "invalid parameter",
+            "unexpected keyword",
+            "not allowed",
+        )
+        has_unsupported_marker = any(marker in text for marker in unsupported_markers)
+        has_capability_token = any(token in text for token in capability_tokens.get(capability, ()))
+        if has_unsupported_marker and (has_capability_token or capability in text):
+            return _LLMDiagnostic(
+                "capability_unsupported",
+                False,
+                f"LLM channel does not support {capability} capability",
+                "capability_unsupported",
+                {"capability": capability},
+            )
+        return cls._classify_llm_exception(exc)
 
     def update(
         self,
@@ -511,6 +1230,7 @@ class SystemConfigService:
         if errors:
             raise ConfigValidationError(issues=errors)
 
+        previous_map = self._manager.read_config_map()
         submitted_keys: Set[str] = set()
         updates: List[Tuple[str, str]] = []
         sensitive_keys: Set[str] = set()
@@ -548,6 +1268,12 @@ class SystemConfigService:
             self._build_explainability_warnings(
                 submitted_keys=submitted_keys,
                 reload_now=reload_now,
+            )
+        )
+        warnings.extend(
+            self._build_runtime_model_cleanup_warnings(
+                previous_map=previous_map,
+                updates=dict(updates),
             )
         )
 
@@ -642,6 +1368,53 @@ class SystemConfigService:
             )
 
         return warnings
+
+    @staticmethod
+    def _build_runtime_model_cleanup_warnings(
+        *,
+        previous_map: Dict[str, str],
+        updates: Dict[str, str],
+    ) -> List[str]:
+        """Explain when save payload clears stale runtime model references."""
+        runtime_labels = {
+            "LITELLM_MODEL": "主模型",
+            "AGENT_LITELLM_MODEL": "Agent 主模型",
+            "VISION_MODEL": "Vision 模型",
+        }
+        cleared_labels: List[str] = []
+        for key, label in runtime_labels.items():
+            if previous_map.get(key, "").strip() and key in updates and not updates[key].strip():
+                cleared_labels.append(label)
+
+        removed_fallbacks: List[str] = []
+        if "LITELLM_FALLBACK_MODELS" in updates:
+            previous_fallbacks = [
+                item.strip()
+                for item in previous_map.get("LITELLM_FALLBACK_MODELS", "").split(",")
+                if item.strip()
+            ]
+            next_fallbacks = {
+                item.strip()
+                for item in updates["LITELLM_FALLBACK_MODELS"].split(",")
+                if item.strip()
+            }
+            removed_fallbacks = [item for item in previous_fallbacks if item not in next_fallbacks]
+
+        if not cleared_labels and not removed_fallbacks:
+            return []
+
+        cleaned_targets = list(cleared_labels)
+        if removed_fallbacks:
+            cleaned_targets.append("备选模型中的失效项")
+
+        cleaned_text = " / ".join(cleaned_targets)
+        warning = (
+            f"检测到已同步清理失效的运行时模型引用：{cleaned_text}。"
+            "如需恢复，请先补回对应渠道模型列表后重新选择；"
+            "也可用桌面端导出备份或手动 .env 还原之前的 LLM_* / "
+            "LITELLM_MODEL / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE。"
+        )
+        return [warning]
 
     def apply_simple_updates(
         self,
@@ -909,6 +1682,739 @@ class SystemConfigService:
         return parsed.scheme in allowed_schemes and bool(parsed.netloc)
 
     @staticmethod
+    def _split_csv(value: str) -> List[str]:
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    def _build_notification_test_effective_map(
+        self,
+        *,
+        items: Sequence[Dict[str, str]],
+        mask_token: str,
+    ) -> Dict[str, str]:
+        """Merge saved/runtime config with unsaved notification test items."""
+        allowed_keys = set(self._NOTIFICATION_TEST_KEY_MAP)
+        effective = {
+            key: value
+            for key, value in self._build_display_config_map(self._manager.read_config_map()).items()
+            if key in allowed_keys
+        }
+
+        for raw_key, raw_value in os.environ.items():
+            key = str(raw_key).upper()
+            if key in allowed_keys:
+                effective[key] = "" if raw_value is None else str(raw_value)
+
+        for item in items:
+            key = str(item.get("key", "")).strip().upper()
+            if key not in allowed_keys:
+                continue
+            value = "" if item.get("value") is None else str(item.get("value"))
+            if value == mask_token:
+                continue
+            effective[key] = value
+
+        return effective
+
+    def _get_missing_notification_test_keys(
+        self,
+        channel: str,
+        effective_map: Dict[str, str],
+    ) -> List[str]:
+        """Return missing keys for a channel, honoring alternative key groups."""
+        groups = self._NOTIFICATION_REQUIRED_KEY_GROUPS.get(channel, ())
+        if not groups:
+            return []
+
+        missing_by_group: List[List[str]] = []
+        for group in groups:
+            missing = [key for key in group if not (effective_map.get(key) or "").strip()]
+            if not missing:
+                return []
+            missing_by_group.append(missing)
+
+        return missing_by_group[0] if missing_by_group else []
+
+    def _build_notification_test_config(self, effective_map: Dict[str, str]) -> Config:
+        """Build an isolated Config instance for notification testing."""
+        kwargs: Dict[str, Any] = {"stock_list": []}
+        for key, (attr, value_type) in self._NOTIFICATION_TEST_KEY_MAP.items():
+            if key not in effective_map:
+                continue
+            if key == "DISCORD_CHANNEL_ID" and (effective_map.get("DISCORD_MAIN_CHANNEL_ID") or "").strip():
+                continue
+            raw_value = effective_map.get(key, "")
+            kwargs[attr] = self._parse_notification_test_value(key, raw_value, value_type)
+        return Config(**kwargs)
+
+    def _parse_notification_test_value(self, key: str, value: str, value_type: str) -> Any:
+        if value_type == "csv":
+            return self._split_csv(value)
+        if value_type == "bool":
+            return parse_env_bool(value, default=True)
+        if value_type == "int":
+            defaults = {
+                "WECHAT_MAX_BYTES": 4000,
+                "FEISHU_MAX_BYTES": 20000,
+                "DISCORD_MAX_WORDS": 2000,
+            }
+            return parse_env_int(value, defaults.get(key, 0), field_name=key, minimum=1)
+        stripped = (value or "").strip()
+        return stripped or None
+
+    def _dispatch_notification_test(
+        self,
+        *,
+        channel: str,
+        config: Config,
+        effective_map: Dict[str, str],
+        title: str,
+        content: str,
+        timeout_seconds: float,
+    ) -> Dict[str, Any]:
+        from src.notification_sender import (
+            AstrbotSender,
+            CustomWebhookSender,
+            DiscordSender,
+            EmailSender,
+            FeishuSender,
+            PushoverSender,
+            PushplusSender,
+            Serverchan3Sender,
+            SlackSender,
+            TelegramSender,
+            WechatSender,
+        )
+
+        started_at = time.perf_counter()
+        target = self._resolve_notification_test_target(channel, effective_map)
+        titled_content = self._build_notification_test_content(title, content)
+
+        if channel == "custom":
+            attempts = CustomWebhookSender(config).test_custom_webhooks(
+                titled_content,
+                timeout_seconds=timeout_seconds,
+            )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            success = any(bool(attempt.get("success")) for attempt in attempts)
+            return self._build_notification_test_result(
+                success=success,
+                message="自定义 Webhook 通知测试成功" if success else "自定义 Webhook 通知测试失败",
+                error_code=None if success else "send_failed",
+                stage="notification_send",
+                retryable=any(bool(attempt.get("retryable")) for attempt in attempts),
+                latency_ms=latency_ms,
+                attempts=attempts,
+            )
+
+        dispatch = {
+            "wechat": lambda: WechatSender(config).send_to_wechat(titled_content, timeout_seconds=timeout_seconds),
+            "feishu": lambda: FeishuSender(config).send_to_feishu(titled_content, timeout_seconds=timeout_seconds),
+            "telegram": lambda: TelegramSender(config).send_to_telegram(titled_content, timeout_seconds=timeout_seconds),
+            "email": lambda: EmailSender(config).send_to_email(content, subject=title, timeout_seconds=timeout_seconds),
+            "pushover": lambda: PushoverSender(config).send_to_pushover(content, title=title, timeout_seconds=timeout_seconds),
+            "pushplus": lambda: PushplusSender(config).send_to_pushplus(content, title=title, timeout_seconds=timeout_seconds),
+            "serverchan3": lambda: Serverchan3Sender(config).send_to_serverchan3(content, title=title, timeout_seconds=timeout_seconds),
+            "discord": lambda: DiscordSender(config).send_to_discord(titled_content, timeout_seconds=timeout_seconds),
+            "slack": lambda: SlackSender(config).send_to_slack(titled_content, timeout_seconds=timeout_seconds),
+            "astrbot": lambda: AstrbotSender(config).send_to_astrbot(titled_content, timeout_seconds=timeout_seconds),
+        }
+
+        ok = bool(dispatch[channel]())
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        attempt = {
+            "channel": channel,
+            "success": ok,
+            "message": "通知测试发送成功" if ok else "通知测试发送失败",
+            "target": target,
+            "error_code": None if ok else "send_failed",
+            "stage": "notification_send",
+            "retryable": False,
+            "latency_ms": latency_ms,
+        }
+        return self._build_notification_test_result(
+            success=ok,
+            message=f"{channel} 通知测试成功" if ok else f"{channel} 通知测试失败",
+            error_code=None if ok else "send_failed",
+            stage="notification_send",
+            retryable=False,
+            latency_ms=latency_ms,
+            attempts=[attempt],
+        )
+
+    @staticmethod
+    def _build_notification_test_content(title: str, content: str) -> str:
+        title = title.strip()
+        content = content.strip()
+        return f"{title}\n\n{content}" if title else content
+
+    def _resolve_notification_test_target(self, channel: str, effective_map: Dict[str, str]) -> str:
+        for key in self._NOTIFICATION_TEST_TARGET_KEYS.get(channel, ()):
+            raw_value = (effective_map.get(key) or "").strip()
+            if not raw_value:
+                continue
+            if key == "CUSTOM_WEBHOOK_URLS":
+                first_url = self._split_csv(raw_value)[0] if self._split_csv(raw_value) else ""
+                return self._mask_notification_target(first_url, source_key=key)
+            return self._mask_notification_target(raw_value, source_key=key)
+        return channel
+
+    @classmethod
+    def _build_notification_test_result(
+        cls,
+        *,
+        success: bool,
+        message: str,
+        error_code: Optional[str],
+        stage: Optional[str],
+        retryable: bool,
+        latency_ms: Optional[int],
+        attempts: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        sanitized_attempts = [cls._sanitize_notification_attempt(attempt) for attempt in attempts]
+        return {
+            "success": success,
+            "message": cls._sanitize_notification_text(message),
+            "error_code": error_code,
+            "stage": stage,
+            "retryable": retryable,
+            "latency_ms": latency_ms,
+            "attempts": sanitized_attempts,
+        }
+
+    @classmethod
+    def _sanitize_notification_attempt(cls, attempt: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = dict(attempt)
+        if "message" in sanitized:
+            sanitized["message"] = cls._sanitize_notification_text(sanitized["message"])
+        if "target" in sanitized:
+            sanitized["target"] = cls._mask_notification_target(str(sanitized.get("target") or ""))
+        return sanitized
+
+    @classmethod
+    def _sanitize_notification_text(cls, text: Any) -> str:
+        sanitized = cls._sanitize_llm_error_text(text)
+        if not sanitized:
+            return ""
+        sanitized = re.sub(r"(?i)(bearer\s+)[a-z0-9._\-:]+", r"\1[REDACTED]", sanitized)
+        sanitized = re.sub(r"(?i)(token|secret|password|sendkey)([=:]\s*)[^\s,;&]+", r"\1\2[REDACTED]", sanitized)
+        sanitized = re.sub(
+            r"https?://[^\s]+",
+            lambda match: cls._mask_notification_target(match.group(0)),
+            sanitized,
+        )
+        return sanitized[:300]
+
+    @staticmethod
+    def _mask_notification_target(target: str, *, source_key: Optional[str] = None) -> str:
+        value = (target or "").strip()
+        if not value:
+            return ""
+        source_key_upper = (source_key or "").upper()
+        sensitive_source = any(
+            marker in source_key_upper
+            for marker in ("TOKEN", "PASSWORD", "SECRET", "SENDKEY", "USER_KEY", "API_KEY")
+        )
+        parsed = urlparse(value)
+        if not parsed.scheme or not parsed.netloc:
+            if sensitive_source:
+                return "***"
+            if len(value) > 10:
+                return f"{value[:3]}***{value[-2:]}"
+            return value
+
+        safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
+        safe_segments: List[str] = []
+        for segment in parsed.path.split("/"):
+            if not segment:
+                safe_segments.append(segment)
+                continue
+            lower = segment.lower()
+            looks_secret = (
+                len(segment) >= 16
+                or lower.startswith("bot")
+                or "token" in lower
+                or "sendkey" in lower
+                or "secret" in lower
+                or re.search(r"[a-zA-Z].*\d|\d.*[a-zA-Z]", segment) is not None and len(segment) >= 10
+            )
+            if looks_secret:
+                safe_segments.append("***")
+            else:
+                safe_segments.append(segment)
+
+        query = ""
+        if parsed.query:
+            query = "&".join(
+                f"{part.split('=', 1)[0]}=***" if "=" in part else "***"
+                for part in parsed.query.split("&")
+                if part
+            )
+        return urlunparse(parsed._replace(netloc=safe_netloc, path="/".join(safe_segments), query=query, fragment=""))
+
+    @staticmethod
+    def _classify_notification_exception(exc: Exception) -> Tuple[str, bool]:
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "timeout", True
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "network_error", True
+        if isinstance(exc, requests.exceptions.RequestException):
+            return "network_error", True
+        return "unexpected_error", False
+
+    @staticmethod
+    def _setup_check(
+        key: str,
+        title: str,
+        category: str,
+        required: bool,
+        status: str,
+        message: str,
+        next_step: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "key": key,
+            "title": title,
+            "category": category,
+            "required": required,
+            "status": status,
+            "message": message,
+            "next_step": next_step,
+        }
+
+    @staticmethod
+    def _is_setup_relevant_env_key(key: str) -> bool:
+        if key in {
+            "STOCK_LIST",
+            "DATABASE_PATH",
+            "LITELLM_CONFIG",
+            "LITELLM_MODEL",
+            "LITELLM_FALLBACK_MODELS",
+            "AGENT_LITELLM_MODEL",
+            "VISION_MODEL",
+            "OPENAI_BASE_URL",
+            "OLLAMA_API_BASE",
+            "FEISHU_STREAM_ENABLED",
+        }:
+            return True
+        prefixes = (
+            "LLM_",
+            "GEMINI_",
+            "OPENAI_",
+            "ANTHROPIC_",
+            "DEEPSEEK_",
+            "OLLAMA_",
+            "FEISHU_",
+            "TELEGRAM_",
+            "EMAIL_",
+            "DISCORD_",
+            "SLACK_",
+            "DINGTALK_",
+            "WECHAT_",
+            "PUSHOVER_",
+            "PUSHPLUS_",
+            "SERVERCHAN",
+            "CUSTOM_WEBHOOK",
+            "WECOM_",
+            "ASTRBOT_",
+        )
+        return key.startswith(prefixes) or key.endswith("_API_KEY") or key.endswith("_API_KEYS")
+
+    def _build_setup_effective_config_map(self) -> Dict[str, str]:
+        """Combine saved `.env` values with injected runtime env values for status checks."""
+        saved_map = self._build_display_config_map(self._manager.read_config_map())
+        effective_map = dict(saved_map)
+        registered_keys = {key.upper() for key in get_registered_field_keys()}
+
+        for raw_key, raw_value in os.environ.items():
+            key = str(raw_key).upper()
+            value = "" if raw_value is None else str(raw_value)
+            if key in registered_keys or self._is_setup_relevant_env_key(key):
+                effective_map[key] = value
+
+        return self._build_display_config_map(effective_map)
+
+    @staticmethod
+    def _has_any_config_value(effective_map: Dict[str, str], keys: Sequence[str]) -> bool:
+        return any((effective_map.get(key) or "").strip() for key in keys)
+
+    @classmethod
+    def _anspire_legacy_llm_enabled(cls, effective_map: Dict[str, str]) -> bool:
+        if not parse_env_bool(effective_map.get("ANSPIRE_LLM_ENABLED"), default=True):
+            return False
+        for name in cls._split_csv(effective_map.get("LLM_CHANNELS") or ""):
+            if name.strip().lower() != "anspire":
+                continue
+            enabled_raw = effective_map.get("LLM_ANSPIRE_ENABLED")
+            if not (enabled_raw or "").strip():
+                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
+            return parse_env_bool(enabled_raw, default=True)
+        return True
+
+    @classmethod
+    def _provider_has_setup_credentials(cls, provider: str, effective_map: Dict[str, str]) -> bool:
+        normalized = canonicalize_llm_channel_protocol(provider)
+        if normalized == "ollama":
+            return True
+        if normalized == "gemini" or normalized == "vertex_ai":
+            return cls._has_any_config_value(effective_map, ("GEMINI_API_KEYS", "GEMINI_API_KEY"))
+        if normalized == "anthropic":
+            return cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY"))
+        if normalized == "deepseek":
+            return cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY"))
+        if normalized == "openai":
+            if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
+                return True
+            if (
+                cls._anspire_legacy_llm_enabled(effective_map)
+                and cls._has_any_config_value(effective_map, ("ANSPIRE_API_KEYS",))
+            ):
+                return True
+            base_url = (effective_map.get("OPENAI_BASE_URL") or "").strip()
+            return channel_allows_empty_api_key("openai", base_url)
+
+        env_prefix = normalized.upper().replace("-", "_")
+        return cls._has_any_config_value(
+            effective_map,
+            (f"{env_prefix}_API_KEYS", f"{env_prefix}_API_KEY"),
+        )
+
+    @classmethod
+    def _has_setup_runtime_source_for_model(cls, model: str, effective_map: Dict[str, str]) -> bool:
+        normalized_model = (model or "").strip()
+        if not normalized_model:
+            return False
+        provider = _get_litellm_provider(normalized_model)
+        return cls._provider_has_setup_credentials(provider, effective_map)
+
+    @classmethod
+    def _collect_setup_channel_models(cls, effective_map: Dict[str, str]) -> List[str]:
+        models: List[str] = []
+        seen: Set[str] = set()
+        for raw_name in cls._split_csv(effective_map.get("LLM_CHANNELS") or ""):
+            name = raw_name.strip()
+            if not name:
+                continue
+            prefix = f"LLM_{name.upper()}"
+            enabled_raw = effective_map.get(f"{prefix}_ENABLED")
+            if name.lower() == "anspire" and not (enabled_raw or "").strip():
+                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
+            enabled = parse_env_bool(enabled_raw, default=True)
+            if not enabled:
+                continue
+
+            base_url = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
+            if name.lower() == "anspire" and not base_url:
+                base_url = (
+                    effective_map.get("ANSPIRE_LLM_BASE_URL")
+                    or ANSPIRE_LLM_BASE_URL_DEFAULT
+                ).strip()
+            protocol = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
+            if name.lower() == "anspire" and not protocol:
+                protocol = "openai"
+            api_key = (
+                (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
+                or (effective_map.get(f"{prefix}_API_KEY") or "").strip()
+            )
+            if name.lower() == "anspire" and not api_key:
+                api_key = (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
+            raw_models = cls._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
+            if name.lower() == "anspire" and not raw_models:
+                raw_models = [
+                    (
+                        effective_map.get("ANSPIRE_LLM_MODEL")
+                        or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            resolved_protocol = resolve_llm_channel_protocol(
+                protocol,
+                base_url=base_url,
+                models=raw_models,
+                channel_name=name,
+            )
+            if not raw_models or not resolved_protocol:
+                continue
+            if not api_key and not channel_allows_empty_api_key(resolved_protocol, base_url):
+                continue
+
+            for raw_model in raw_models:
+                normalized_model = normalize_llm_channel_model(raw_model, resolved_protocol, base_url)
+                if normalized_model and normalized_model not in seen:
+                    seen.add(normalized_model)
+                    models.append(normalized_model)
+        return models
+
+    @classmethod
+    def _infer_setup_legacy_primary_model(cls, effective_map: Dict[str, str]) -> str:
+        if cls._has_any_config_value(effective_map, ("GEMINI_API_KEYS", "GEMINI_API_KEY")):
+            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.1-pro-preview").strip()
+            return model if "/" in model else f"gemini/{model}"
+        if cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY")):
+            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
+            return model if "/" in model else f"anthropic/{model}"
+        if cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY")):
+            return "deepseek/deepseek-chat"
+        if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
+            model = (effective_map.get("OPENAI_MODEL") or "gpt-5.5").strip()
+            return model if "/" in model else f"openai/{model}"
+        if (
+            cls._anspire_legacy_llm_enabled(effective_map)
+            and cls._has_any_config_value(effective_map, ("ANSPIRE_API_KEYS",))
+        ):
+            model = (
+                effective_map.get("ANSPIRE_LLM_MODEL")
+                or effective_map.get("OPENAI_MODEL")
+                or ANSPIRE_LLM_MODEL_DEFAULT
+            ).strip()
+            return model if "/" in model else f"openai/{model}"
+        if (effective_map.get("OLLAMA_API_BASE") or "").strip():
+            model = (effective_map.get("OLLAMA_MODEL") or "").strip()
+            return model if model.startswith("ollama/") else (f"ollama/{model}" if model else "ollama/local")
+        return ""
+
+    def _resolve_setup_primary_model(self, effective_map: Dict[str, str]) -> Tuple[str, str]:
+        explicit_model = (effective_map.get("LITELLM_MODEL") or "").strip()
+        yaml_models = self._collect_yaml_models_from_map(effective_map)
+        channel_models = self._collect_setup_channel_models(effective_map)
+
+        if explicit_model:
+            if _uses_direct_env_provider(explicit_model):
+                return explicit_model, "explicit"
+            has_direct_source = self._has_setup_runtime_source_for_model(explicit_model, effective_map)
+            if yaml_models and explicit_model not in set(yaml_models):
+                return "", "主模型未出现在当前 LiteLLM YAML model_list 中"
+            if channel_models and explicit_model not in set(channel_models):
+                return "", "主模型未出现在当前启用渠道模型列表中"
+            if yaml_models or channel_models or has_direct_source:
+                return explicit_model, "explicit"
+            return "", "主模型缺少可用渠道或匹配的 API Key"
+
+        if yaml_models:
+            return yaml_models[0], "yaml"
+        if channel_models:
+            return channel_models[0], "channel"
+
+        legacy_model = self._infer_setup_legacy_primary_model(effective_map)
+        if legacy_model:
+            return legacy_model, "legacy"
+
+        return "", "尚未检测到主模型配置"
+
+    def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        model, source = self._resolve_setup_primary_model(effective_map)
+        if model:
+            source_label = {
+                "explicit": "显式主模型",
+                "yaml": "LiteLLM YAML",
+                "channel": "LLM 渠道",
+                "legacy": "legacy provider",
+            }.get(source, source)
+            return self._setup_check(
+                "llm_primary",
+                "LLM 主渠道",
+                "ai_model",
+                True,
+                "configured",
+                f"已检测到 {source_label}: {model}",
+            )
+        return self._setup_check(
+            "llm_primary",
+            "LLM 主渠道",
+            "ai_model",
+            True,
+            "needs_action",
+            source,
+            "请配置 LITELLM_MODEL、LLM_CHANNELS、LITELLM_CONFIG 或 legacy provider API Key。",
+        )
+
+    def _build_setup_agent_llm_check(
+        self,
+        effective_map: Dict[str, str],
+        primary_check: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
+        if not agent_model_raw:
+            if primary_check["status"] == "configured":
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "inherited",
+                    "未单独配置 Agent 主模型，将继承 LLM 主渠道。",
+                )
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                "Agent 未配置独立模型，且 LLM 主渠道尚不可用。",
+                "请先补齐 LLM 主渠道配置。",
+            )
+
+        configured_models = set(
+            self._collect_yaml_models_from_map(effective_map)
+            or self._collect_setup_channel_models(effective_map)
+        )
+        agent_model = normalize_agent_litellm_model(agent_model_raw, configured_models=configured_models)
+        if _uses_direct_env_provider(agent_model):
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "configured",
+                f"已配置 Agent 主模型: {agent_model}",
+            )
+        if (
+            not configured_models
+            and self._has_setup_runtime_source_for_model(agent_model, effective_map)
+        ) or agent_model in configured_models:
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "configured",
+                f"已配置 Agent 主模型: {agent_model}",
+            )
+
+        return self._setup_check(
+            "llm_agent",
+            "Agent 渠道",
+            "agent",
+            True,
+            "needs_action",
+            f"Agent 主模型 {agent_model} 缺少可用渠道或匹配的 API Key。",
+            "请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。",
+        )
+
+    def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        stocks = self._split_csv(effective_map.get("STOCK_LIST") or "")
+        if stocks:
+            return self._setup_check(
+                "stock_list",
+                "自选股",
+                "base",
+                True,
+                "configured",
+                f"已配置 {len(stocks)} 只股票。",
+            )
+        return self._setup_check(
+            "stock_list",
+            "自选股",
+            "base",
+            True,
+            "needs_action",
+            "当前 STOCK_LIST 为空。",
+            "请至少添加 1 只股票用于首次试跑。",
+        )
+
+    def _build_setup_notification_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        configured = (
+            self._has_any_config_value(effective_map, ("WECHAT_WEBHOOK_URL", "FEISHU_WEBHOOK_URL", "DISCORD_WEBHOOK_URL"))
+            or (
+                self._has_any_config_value(effective_map, ("TELEGRAM_BOT_TOKEN",))
+                and self._has_any_config_value(effective_map, ("TELEGRAM_CHAT_ID",))
+            )
+            or (
+                self._has_any_config_value(effective_map, ("EMAIL_SENDER",))
+                and self._has_any_config_value(effective_map, ("EMAIL_PASSWORD",))
+            )
+            or (
+                self._has_any_config_value(effective_map, ("DINGTALK_APP_KEY",))
+                and self._has_any_config_value(effective_map, ("DINGTALK_APP_SECRET",))
+            )
+            or (
+                self._has_any_config_value(effective_map, ("DISCORD_BOT_TOKEN",))
+                and self._has_any_config_value(effective_map, ("DISCORD_MAIN_CHANNEL_ID", "DISCORD_CHANNEL_ID"))
+            )
+            or (
+                self._has_any_config_value(effective_map, ("PUSHOVER_USER_KEY",))
+                and self._has_any_config_value(effective_map, ("PUSHOVER_API_TOKEN",))
+            )
+            or self._has_any_config_value(effective_map, ("SLACK_WEBHOOK_URL",))
+            or (
+                self._has_any_config_value(effective_map, ("SLACK_BOT_TOKEN",))
+                and self._has_any_config_value(effective_map, ("SLACK_CHANNEL_ID",))
+            )
+            or self._has_any_config_value(
+                effective_map,
+                (
+                    "PUSHPLUS_TOKEN",
+                    "SERVERCHAN3_SENDKEY",
+                    "CUSTOM_WEBHOOK_URLS",
+                    "WECOM_WEBHOOK_URL",
+                    "ASTRBOT_URL",
+                ),
+            )
+            or (
+                parse_env_bool(effective_map.get("FEISHU_STREAM_ENABLED"), default=False)
+                and self._has_any_config_value(effective_map, ("FEISHU_APP_ID",))
+                and self._has_any_config_value(effective_map, ("FEISHU_APP_SECRET",))
+            )
+        )
+        if configured:
+            return self._setup_check(
+                "notification",
+                "通知渠道",
+                "notification",
+                False,
+                "configured",
+                "已检测到至少一个通知渠道配置。",
+            )
+        return self._setup_check(
+            "notification",
+            "通知渠道",
+            "notification",
+            False,
+            "optional",
+            "通知为可选项，未配置也不影响首次跑通。",
+            "需要推送时可稍后配置飞书、Telegram、邮件或其他通知渠道。",
+        )
+
+    def _build_setup_storage_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        db_path = Path((effective_map.get("DATABASE_PATH") or "./data/stock_analysis.db").strip()).expanduser()
+        parent = db_path.parent if db_path.parent != Path("") else Path(".")
+        probe = parent
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+
+        if not probe.exists() or not probe.is_dir():
+            return self._setup_check(
+                "storage",
+                "数据库 / 本地存储",
+                "system",
+                True,
+                "needs_action",
+                f"数据库路径父目录不可用: {parent}",
+                "请检查 DATABASE_PATH 或上级目录权限。",
+            )
+
+        if os.access(probe, os.W_OK):
+            detail = f"数据库路径可用: {db_path}"
+            if not parent.exists():
+                detail = f"数据库上级目录可创建: {parent}"
+            return self._setup_check(
+                "storage",
+                "数据库 / 本地存储",
+                "system",
+                True,
+                "configured",
+                detail,
+            )
+
+        return self._setup_check(
+            "storage",
+            "数据库 / 本地存储",
+            "system",
+            True,
+            "needs_action",
+            f"数据库路径上级目录不可写: {probe}",
+            "请调整 DATABASE_PATH 或目录权限。",
+        )
+
+    @staticmethod
     def _is_safe_base_url(value: str) -> bool:
         """Block link-local and cloud metadata addresses to prevent SSRF.
 
@@ -953,6 +2459,318 @@ class SystemConfigService:
         else:
             models_path = f"{normalized}/models" if normalized else "/models"
         return urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
+
+    @staticmethod
+    def _get_runtime_llm_temperature() -> float:
+        """Return the current configured LLM temperature for ad-hoc channel tests."""
+        config = Config._load_from_env()
+        try:
+            return float(getattr(config, "llm_temperature", 0.7))
+        except (TypeError, ValueError):
+            return 0.7
+
+    @classmethod
+    def _build_llm_channel_result(
+        cls,
+        *,
+        success: bool,
+        message: str,
+        error: Optional[str],
+        stage: Optional[str],
+        error_code: Optional[str],
+        retryable: Optional[bool],
+        details: Optional[Dict[str, Any]] = None,
+        resolved_protocol: Optional[str] = None,
+        resolved_model: Optional[str] = None,
+        models: Optional[List[str]] = None,
+        latency_ms: Optional[int] = None,
+        capability_results: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "success": success,
+            "message": cls._sanitize_llm_error_text(message),
+            "error": cls._sanitize_llm_error_text(error) if error else None,
+            "stage": stage,
+            "error_code": error_code,
+            "retryable": retryable,
+            "details": cls._sanitize_llm_details(details),
+            "resolved_protocol": resolved_protocol,
+            "latency_ms": latency_ms,
+        }
+        if resolved_model is not None or models is None:
+            payload["resolved_model"] = resolved_model
+        if models is not None:
+            payload["models"] = models
+        if capability_results is not None:
+            payload["capability_results"] = cls._sanitize_llm_details(capability_results)
+        return payload
+
+    @staticmethod
+    def _merge_llm_diagnostic_details(
+        base_details: Optional[Dict[str, Any]],
+        diagnostic: _LLMDiagnostic,
+    ) -> Dict[str, Any]:
+        details: Dict[str, Any] = dict(base_details or {})
+        if diagnostic.reason:
+            details.setdefault("reason", diagnostic.reason)
+        details.update(diagnostic.details)
+        return details
+
+    @staticmethod
+    def _sanitize_llm_error_text(text: Any) -> str:
+        if text is None:
+            return ""
+        sanitized = str(text).strip()
+        if not sanitized:
+            return ""
+
+        patterns = [
+            (r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)(api[_-]?key\s*[:=]\s*)([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)(cookie\s*[:=]\s*)([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)bearer\s+[a-z0-9._\-]+", "Bearer [REDACTED]"),
+            (r"(?i)sk-[a-z0-9_\-]+", "[REDACTED]"),
+        ]
+        for pattern, replacement in patterns:
+            sanitized = re.sub(pattern, replacement, sanitized)
+        sanitized = " ".join(sanitized.split())
+        return sanitized[:300]
+
+    @classmethod
+    def _sanitize_llm_details(cls, details: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not details:
+            return {}
+        sanitized: Dict[str, Any] = {}
+        for key, value in details.items():
+            if isinstance(value, str):
+                sanitized[key] = cls._sanitize_llm_error_text(value)
+            elif isinstance(value, dict):
+                sanitized[key] = cls._sanitize_llm_details(value)
+            elif isinstance(value, list):
+                sanitized[key] = [
+                    cls._sanitize_llm_error_text(item) if isinstance(item, str) else item
+                    for item in value
+                ]
+            else:
+                sanitized[key] = value
+        return sanitized
+
+    @staticmethod
+    def _classify_llm_http_error(status_code: int, error_text: str) -> _LLMDiagnostic:
+        lowered = (error_text or "").lower()
+        if SystemConfigService._has_model_access_denied_signal(error_text or ""):
+            return _LLMDiagnostic(
+                "model_not_found",
+                False,
+                "Configured model is not available for this channel",
+                "model_access_denied",
+            )
+        if "model" in lowered and any(token in lowered for token in ("not found", "does not exist", "unknown")):
+            return _LLMDiagnostic(
+                "model_not_found",
+                False,
+                "Configured model could not be found on this channel",
+                "model_not_found",
+            )
+        if status_code in {401, 403} or any(token in lowered for token in ("unauthorized", "forbidden", "invalid api key", "authentication")):
+            return _LLMDiagnostic("auth", False, "LLM authentication failed", "api_key_rejected")
+        if status_code == 402 or any(token in lowered for token in ("billing", "balance", "insufficient balance")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or billing limits",
+                "insufficient_balance",
+            )
+        if any(token in lowered for token in ("quota", "insufficient_quota", "quota exceeded")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or rate limiting",
+                "quota_exceeded",
+            )
+        if status_code == 429 or any(token in lowered for token in ("rate limit", "too many requests", "rpm", "tpm")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or rate limiting",
+                "rate_limit",
+            )
+        if status_code == 404:
+            return _LLMDiagnostic(
+                "network_error",
+                False,
+                "LLM model discovery endpoint could not be found",
+                "endpoint_not_found",
+            )
+        if any(token in lowered for token in ("timeout", "timed out")):
+            return _LLMDiagnostic("timeout", True, "LLM request timed out", "timeout")
+        return _LLMDiagnostic(
+            "network_error",
+            status_code >= 500,
+            "LLM request failed before a valid response was returned",
+            "http_error",
+        )
+
+    @staticmethod
+    def _has_model_not_found_signal(text: str) -> bool:
+        lowered = text.lower()
+
+        model_candidates = [
+            re.search(r"model\s+not\s+found\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"model\s*[`\"']?\s*([a-z0-9._/-]{2,})\s*[`\"']?\s+does\s+not\s+exist", lowered),
+            re.search(r"model\s+does\s+not\s+exist\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"unknown\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+            re.search(r"no\s+such\s+model\s*[:：]?\s*[`\"']?\s*([a-z0-9._/-]{2,})", lowered),
+        ]
+
+        for match in model_candidates:
+            if not match:
+                continue
+            model_id = match.group(1).strip()
+            if model_id and not model_id.startswith("/") and "http" not in model_id:
+                return True
+
+        return False
+
+    @staticmethod
+    def _has_model_access_denied_signal(text: str) -> bool:
+        lowered = text.lower()
+        if "model" not in lowered:
+            return False
+
+        # Best-effort classifier for observed provider messages. Keep it gated by
+        # an explicit "model" mention plus access/disabled/unavailable signals so
+        # unrelated provider-specific failures continue to use the fallback path.
+        access_denied_tokens = (
+            "not authorized",
+            "not allowed",
+            "access denied",
+            "permission denied",
+            "model disabled",
+            "model is disabled",
+            "disabled model",
+            "model has been disabled",
+            "model not enabled",
+            "model not available",
+            "model is not available",
+        )
+        return any(token in lowered for token in access_denied_tokens)
+
+    @staticmethod
+    def _has_provider_prefix_mismatch_signal(text: str) -> bool:
+        lowered = text.lower()
+        mismatch_tokens = (
+            "provider prefix",
+            "llm provider not provided",
+            "invalid provider",
+            "unknown provider",
+            "custom_llm_provider",
+            "not a valid llm provider",
+        )
+        return any(token in lowered for token in mismatch_tokens)
+
+    @staticmethod
+    def _classify_llm_exception(exc: Exception) -> _LLMDiagnostic:
+        exc_name = type(exc).__name__.lower()
+        text = str(exc).lower()
+        if isinstance(exc, TimeoutError) or "timeout" in exc_name or "timed out" in text:
+            return _LLMDiagnostic("timeout", True, "LLM request timed out", "timeout")
+        if any(token in text for token in ("billing", "balance", "insufficient balance")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or billing limits",
+                "insufficient_balance",
+            )
+        if any(token in text for token in ("quota", "insufficient_quota", "quota exceeded")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or rate limiting",
+                "quota_exceeded",
+            )
+        if "ratelimit" in exc_name or any(token in text for token in ("rate limit", "too many requests", "rpm", "tpm")):
+            return _LLMDiagnostic(
+                "quota",
+                True,
+                "LLM request was rejected by quota or rate limiting",
+                "rate_limit",
+            )
+        if SystemConfigService._has_provider_prefix_mismatch_signal(text):
+            return _LLMDiagnostic(
+                "model_not_found",
+                False,
+                "Configured model prefix does not match this channel",
+                "provider_prefix_mismatch",
+            )
+        if SystemConfigService._has_model_access_denied_signal(str(exc)):
+            return _LLMDiagnostic(
+                "model_not_found",
+                False,
+                "Configured model is not available for this channel",
+                "model_access_denied",
+            )
+        if any(token in exc_name for token in ("auth", "permission")) or any(token in text for token in ("unauthorized", "forbidden", "invalid api key", "authentication")):
+            return _LLMDiagnostic("auth", False, "LLM authentication failed", "api_key_rejected")
+        if ("notfound" in exc_name or "model" in text) and (
+            "not found" in text or "does not exist" in text or "unknown model" in text
+        ) and SystemConfigService._has_model_not_found_signal(text):
+            return _LLMDiagnostic(
+                "model_not_found",
+                False,
+                "Configured model could not be found on this channel",
+                "model_not_found",
+            )
+        if "dns" in text or "name resolution" in text or "temporary failure in name resolution" in text:
+            return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "dns_error")
+        if "refused" in text or "connection refused" in text:
+            return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "connection_refused")
+        if "ssl" in text or "tls" in text or "certificate" in text:
+            return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "tls_error")
+        if any(token in exc_name for token in ("connection", "network")) or any(token in text for token in ("connection", "network")):
+            return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "network_error")
+        return _LLMDiagnostic("network_error", False, "LLM channel test failed", "unknown_error")
+
+    @staticmethod
+    def _extract_llm_completion_content(response: Any) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+        if response is None:
+            return "", "empty_response", "Completion returned no response object", "null_response"
+
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return "", "format_error", "Completion response did not include choices", "malformed_choices"
+
+        choice = choices[0]
+        content_blocks = getattr(choice, "content_blocks", None)
+        if content_blocks is None:
+            message = getattr(choice, "message", None)
+            if message is not None:
+                content_blocks = getattr(message, "content_blocks", None)
+        message = getattr(choice, "message", None)
+        if content_blocks is not None:
+            text_parts: List[str] = []
+            for block in content_blocks:
+                if getattr(block, "type", None) == "text":
+                    text = getattr(block, "text", "") or ""
+                    if text:
+                        text_parts.append(str(text))
+                elif hasattr(block, "content") and block.content:
+                    text_parts.append(str(block.content))
+            content = "".join(text_parts).strip()
+            if content:
+                return content, None, None, None
+
+        if message is None:
+            return "", "format_error", "Completion response did not include a message object", "malformed_choices"
+        if not hasattr(message, "content"):
+            return "", "format_error", "Completion message did not include a content field", "malformed_choices"
+        raw_content = message.content
+        if raw_content is None:
+            return "", "empty_response", "Completion returned null message content", "null_content"
+        content = str(raw_content).strip()
+        if not content:
+            return "", "empty_response", "Completion returned an empty message content", "empty_content"
+        return content, None, None, None
 
     @staticmethod
     def _extract_llm_discovery_error(response: requests.Response) -> str:
@@ -1144,17 +2962,36 @@ class SystemConfigService:
         for name in normalized_names:
             prefix = f"LLM_{name.upper()}"
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
+            if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
             base_url_value = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
+            if name.lower() == "anspire" and not base_url_value:
+                base_url_value = (
+                    effective_map.get("ANSPIRE_LLM_BASE_URL")
+                    or ANSPIRE_LLM_BASE_URL_DEFAULT
+                ).strip()
             api_key_value = (
                 (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
                 or (effective_map.get(f"{prefix}_API_KEY") or "").strip()
             )
+            if name.lower() == "anspire" and not api_key_value:
+                api_key_value = (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
             models_value = [
                 model.strip()
                 for model in (effective_map.get(f"{prefix}_MODELS") or "").split(",")
                 if model.strip()
             ]
-            enabled = parse_env_bool(effective_map.get(f"{prefix}_ENABLED"), default=True)
+            if name.lower() == "anspire" and not models_value:
+                models_value = [
+                    (
+                        effective_map.get("ANSPIRE_LLM_MODEL")
+                        or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            enabled_raw = effective_map.get(f"{prefix}_ENABLED")
+            if name.lower() == "anspire" and not (enabled_raw or "").strip():
+                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
+            enabled = parse_env_bool(enabled_raw, default=True)
             issues.extend(
                 SystemConfigService._validate_llm_channel_definition(
                     channel_name=name,
@@ -1185,17 +3022,34 @@ class SystemConfigService:
                 continue
 
             prefix = f"LLM_{name.upper()}"
-            enabled = parse_env_bool(effective_map.get(f"{prefix}_ENABLED"), default=True)
+            enabled_raw = effective_map.get(f"{prefix}_ENABLED")
+            if name.lower() == "anspire" and not (enabled_raw or "").strip():
+                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
+            enabled = parse_env_bool(enabled_raw, default=True)
             if not enabled:
                 continue
 
             base_url_value = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
+            if name.lower() == "anspire" and not base_url_value:
+                base_url_value = (
+                    effective_map.get("ANSPIRE_LLM_BASE_URL")
+                    or ANSPIRE_LLM_BASE_URL_DEFAULT
+                ).strip()
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
+            if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
             raw_models = [
                 model.strip()
                 for model in (effective_map.get(f"{prefix}_MODELS") or "").split(",")
                 if model.strip()
             ]
+            if name.lower() == "anspire" and not raw_models:
+                raw_models = [
+                    (
+                        effective_map.get("ANSPIRE_LLM_MODEL")
+                        or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
             resolved_protocol = resolve_llm_channel_protocol(protocol_value, base_url=base_url_value, models=raw_models, channel_name=name)
             for model in raw_models:
                 normalized_model = normalize_llm_channel_model(model, resolved_protocol, base_url_value)
@@ -1246,6 +3100,10 @@ class SystemConfigService:
                 (effective_map.get("OPENAI_API_KEYS") or "").strip()
                 or (effective_map.get("AIHUBMIX_KEY") or "").strip()
                 or (effective_map.get("OPENAI_API_KEY") or "").strip()
+                or (
+                    SystemConfigService._anspire_legacy_llm_enabled(effective_map)
+                    and (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
+                )
             )
         return False
 

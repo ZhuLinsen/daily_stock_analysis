@@ -8,6 +8,7 @@ from src.report_language import (
     get_localized_stock_name,
     get_sentiment_label,
     get_signal_level,
+    localize_trend_prediction,
     localize_bias_status,
 )
 
@@ -38,6 +39,14 @@ class ReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(get_sentiment_label(60, "en"), "Bullish")
         self.assertEqual(get_sentiment_label(40, "zh"), "中性")
         self.assertEqual(get_sentiment_label(20, "zh"), "悲观")
+
+    def test_localize_trend_prediction_preserves_fine_grain_zh_states(self) -> None:
+        self.assertEqual(localize_trend_prediction("多头排列", "zh"), "多头排列")
+        self.assertEqual(localize_trend_prediction("弱势空头", "zh"), "弱势空头")
+
+    def test_localize_trend_prediction_still_translates_english_input_for_zh(self) -> None:
+        self.assertEqual(localize_trend_prediction("bullish", "zh"), "看多")
+        self.assertEqual(localize_trend_prediction("very bearish", "zh"), "强烈看空")
 
     def test_bias_status_helpers_support_english_values(self) -> None:
         self.assertEqual(localize_bias_status("Safe", "en"), "Safe")

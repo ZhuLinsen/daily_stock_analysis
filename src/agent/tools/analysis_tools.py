@@ -16,48 +16,10 @@ logger = logging.getLogger(__name__)
 
 def _fetch_trend_data(stock_code: str):
     """Fetch historical OHLCV (DataFrame) for trend analysis. DB first, then DataFetcher fallback."""
-    from datetime import date, timedelta
-    import pandas as pd
-    from data_provider.base import canonical_stock_code, DataFetchError
-    from data_provider import DataFetcherManager
-    from src.storage import get_db
+    from src.services.history_loader import load_history_df
 
-    code = canonical_stock_code(stock_code)
-    if not code:
-        return None
-    end_date = date.today()
-    start_date = end_date - timedelta(days=89)  # ~60 trading days, mirrors pipeline Step 3
-
-    # 1. Try DB
-    try:
-        db = get_db()
-        bars = db.get_data_range(code, start_date, end_date)
-        if bars:
-            df = pd.DataFrame([b.to_dict() for b in bars])
-            logger.debug("analyze_trend(%s): loaded %d rows from DB", stock_code, len(df))
-            return df
-    except Exception as e:
-        logger.debug(
-            "analyze_trend(%s): DB lookup failed (%s), falling back to DataFetcherManager",
-            stock_code, e
-        )
-
-    # 2. Fallback to DataFetcherManager
-    try:
-        manager = DataFetcherManager()
-        df, _ = manager.get_daily_data(code, days=90)
-        if df is not None and not df.empty:
-            logger.info(
-                "analyze_trend(%s): DB empty, loaded %d rows from DataFetcherManager",
-                stock_code, len(df)
-            )
-            return df
-    except DataFetchError as e:
-        logger.warning("analyze_trend(%s): DataFetcherManager failed: %s", stock_code, e)
-    except Exception as e:
-        logger.warning("analyze_trend(%s): DataFetcherManager unexpected error: %s", stock_code, e)
-
-    return None
+    df, _ = load_history_df(stock_code, days=60)
+    return df
 
 
 def _handle_analyze_trend(stock_code: str) -> dict:
@@ -143,11 +105,9 @@ analyze_trend_tool = ToolDefinition(
 
 def _handle_calculate_ma(stock_code: str, periods: Optional[str] = None, days: int = 120) -> dict:
     """Calculate moving averages for arbitrary periods from historical K-line data."""
-    from data_provider import DataFetcherManager
-    import pandas as pd
+    from src.services.history_loader import load_history_df
 
-    manager = DataFetcherManager()
-    df, source = manager.get_daily_data(stock_code, days=days)
+    df, source = load_history_df(stock_code, days=days)
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
@@ -236,11 +196,10 @@ calculate_ma_tool = ToolDefinition(
 
 def _handle_get_volume_analysis(stock_code: str, days: int = 30) -> dict:
     """Analyse volume-price patterns over recent trading days."""
-    from data_provider import DataFetcherManager
+    from src.services.history_loader import load_history_df
     import pandas as pd
 
-    manager = DataFetcherManager()
-    df, source = manager.get_daily_data(stock_code, days=max(days + 20, 60))
+    df, source = load_history_df(stock_code, days=max(days + 20, 60))
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}
@@ -353,11 +312,9 @@ get_volume_analysis_tool = ToolDefinition(
 
 def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     """Detect common candlestick and chart patterns in recent price history."""
-    from data_provider import DataFetcherManager
-    import pandas as pd
+    from src.services.history_loader import load_history_df
 
-    manager = DataFetcherManager()
-    df, source = manager.get_daily_data(stock_code, days=max(days, 120))
+    df, source = load_history_df(stock_code, days=max(days, 120))
 
     if df is None or df.empty:
         return {"error": f"No historical data for {stock_code}"}

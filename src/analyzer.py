@@ -29,6 +29,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    normalize_litellm_temperature,
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
@@ -49,6 +50,31 @@ from src.market_context import get_market_role, get_market_guidelines
 logger = logging.getLogger(__name__)
 
 
+def _normalize_risk_warning_values(value: Any) -> List[str]:
+    """Normalize arbitrary risk_warning values into a flat list of text alerts."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        normalized: List[str] = []
+        for item in value:
+            normalized.extend(_normalize_risk_warning_values(item))
+        return normalized
+    if isinstance(value, dict):
+        if not value:
+            return []
+        try:
+            dumped = json.dumps(value, ensure_ascii=False)
+            text = dumped.strip()
+        except (TypeError, ValueError):
+            text = str(value).strip()
+        return [text] if text else []
+    text = str(value).strip()
+    return [text] if text else []
+
+
 class _LiteLLMStreamError(RuntimeError):
     """Internal error wrapper that records whether any text was streamed."""
 
@@ -57,28 +83,76 @@ class _LiteLLMStreamError(RuntimeError):
         self.partial_received = partial_received
 
 
+class _AllModelsFailedError(Exception):
+    """Raised when every model in the fallback chain fails.
+
+    This includes both LLM call errors and JSON parse errors (when a
+    ``response_validator`` is provided to :meth:`GeminiAnalyzer._call_litellm`).
+
+    The ``last_response_text`` attribute holds the raw text from the last model
+    that *did* return a response (but whose JSON could not be validated), so
+    callers can still attempt a best-effort text fallback.
+
+    ``last_model`` and ``last_usage`` record the model name and token usage
+    from the last attempt so callers can persist usage even on fallback.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        last_response_text: Optional[str] = None,
+        last_model: Optional[str] = None,
+        last_usage: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.last_response_text = last_response_text
+        self.last_model = last_model
+        self.last_usage = last_usage or {}
+
+
 def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     """
     Check mandatory fields for report content integrity.
     Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
     """
     missing: List[str] = []
+
+    def _is_blank_text(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return True
+
+    def _is_invalid_risk_alerts(value: Any) -> bool:
+        return not isinstance(value, list)
+
+    def _is_invalid_stop_loss(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, (list, tuple, dict)):
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return False
+
     if result.sentiment_score is None:
         missing.append("sentiment_score")
     advice = result.operation_advice
-    if not advice or not isinstance(advice, str) or not advice.strip():
+    if not advice or not isinstance(advice, str) or _is_blank_text(advice):
         missing.append("operation_advice")
     summary = result.analysis_summary
-    if not summary or not isinstance(summary, str) or not summary.strip():
+    if not summary or not isinstance(summary, str) or _is_blank_text(summary):
         missing.append("analysis_summary")
     dash = result.dashboard if isinstance(result.dashboard, dict) else {}
     core = dash.get("core_conclusion")
     core = core if isinstance(core, dict) else {}
-    if not (core.get("one_sentence") or "").strip():
+    if _is_blank_text(core.get("one_sentence")):
         missing.append("dashboard.core_conclusion.one_sentence")
     intel = dash.get("intelligence")
     intel = intel if isinstance(intel, dict) else None
-    if intel is None or "risk_alerts" not in intel:
+    if intel is None or _is_invalid_risk_alerts(intel.get("risk_alerts")):
         missing.append("dashboard.intelligence.risk_alerts")
     if result.decision_type in ("buy", "hold"):
         battle = dash.get("battle_plan")
@@ -86,44 +160,80 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
         sp = battle.get("sniper_points")
         sp = sp if isinstance(sp, dict) else {}
         stop_loss = sp.get("stop_loss")
-        if stop_loss is None or (isinstance(stop_loss, str) and not stop_loss.strip()):
+        if _is_invalid_stop_loss(stop_loss):
             missing.append("dashboard.battle_plan.sniper_points.stop_loss")
     return len(missing) == 0, missing
 
 
 def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:
     """Fill missing mandatory fields with placeholders (in-place). Module-level for pipeline."""
+
+    def _is_blank_text(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return True
+
+    def _is_invalid_risk_alerts(value: Any) -> bool:
+        return not isinstance(value, list)
+
+    def _is_invalid_stop_loss(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, (list, tuple, dict)):
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        return False
+
     placeholder = get_placeholder_text(getattr(result, "report_language", "zh"))
     for field in missing_fields:
         if field == "sentiment_score":
             result.sentiment_score = 50
         elif field == "operation_advice":
-            result.operation_advice = result.operation_advice or placeholder
+            if _is_blank_text(result.operation_advice):
+                result.operation_advice = placeholder
         elif field == "analysis_summary":
-            result.analysis_summary = result.analysis_summary or placeholder
+            if _is_blank_text(result.analysis_summary):
+                result.analysis_summary = placeholder
         elif field == "dashboard.core_conclusion.one_sentence":
             if not result.dashboard:
                 result.dashboard = {}
-            if "core_conclusion" not in result.dashboard:
-                result.dashboard["core_conclusion"] = {}
-            result.dashboard["core_conclusion"]["one_sentence"] = (
-                result.dashboard["core_conclusion"].get("one_sentence") or placeholder
+            core = result.dashboard.get("core_conclusion")
+            if not isinstance(core, dict):
+                core = {}
+                result.dashboard["core_conclusion"] = core
+            fallback_sentence = (
+                result.analysis_summary
+                or result.operation_advice
+                or placeholder
             )
+            if _is_blank_text(core.get("one_sentence")):
+                result.dashboard["core_conclusion"]["one_sentence"] = fallback_sentence
         elif field == "dashboard.intelligence.risk_alerts":
             if not result.dashboard:
                 result.dashboard = {}
-            if "intelligence" not in result.dashboard:
-                result.dashboard["intelligence"] = {}
-            if "risk_alerts" not in result.dashboard["intelligence"]:
-                result.dashboard["intelligence"]["risk_alerts"] = []
+            intelligence = result.dashboard.get("intelligence")
+            if not isinstance(intelligence, dict):
+                intelligence = {}
+                result.dashboard["intelligence"] = intelligence
+            if _is_invalid_risk_alerts(intelligence.get("risk_alerts")):
+                risk_warning_values = _normalize_risk_warning_values(result.risk_warning)
+                intelligence["risk_alerts"] = risk_warning_values
         elif field == "dashboard.battle_plan.sniper_points.stop_loss":
             if not result.dashboard:
                 result.dashboard = {}
-            if "battle_plan" not in result.dashboard:
-                result.dashboard["battle_plan"] = {}
-            if "sniper_points" not in result.dashboard["battle_plan"]:
-                result.dashboard["battle_plan"]["sniper_points"] = {}
-            result.dashboard["battle_plan"]["sniper_points"]["stop_loss"] = placeholder
+            battle_plan = result.dashboard.get("battle_plan")
+            if not isinstance(battle_plan, dict):
+                battle_plan = {}
+                result.dashboard["battle_plan"] = battle_plan
+            sniper_points = battle_plan.get("sniper_points")
+            if not isinstance(sniper_points, dict):
+                sniper_points = {}
+                battle_plan["sniper_points"] = sniper_points
+            if _is_invalid_stop_loss(sniper_points.get("stop_loss")):
+                sniper_points["stop_loss"] = placeholder
 
 
 # ---------- chip_structure fallback (Issue #589) ----------
@@ -154,6 +264,231 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(str(v).strip())
     except (TypeError, ValueError):
         return default
+
+
+_BULLISH_TREND_HINTS: Tuple[str, ...] = (
+    "多头排列",
+    "持续上涨",
+    "趋势向上",
+    "上升趋势",
+    "向上发散",
+    "bullish",
+    "uptrend",
+)
+_WEAK_BULLISH_TREND_HINTS: Tuple[str, ...] = ("弱势多头",)
+_BEARISH_TREND_HINTS: Tuple[str, ...] = (
+    "空头排列",
+    "持续下跌",
+    "趋势向下",
+    "下降趋势",
+    "向下发散",
+    "bearish",
+    "downtrend",
+)
+_WEAK_BEARISH_TREND_HINTS: Tuple[str, ...] = ("弱势空头",)
+_NEGATION_TOKENS: Tuple[str, ...] = (
+    "不是",
+    "并非",
+    "并未",
+    "没有",
+    "尚不",
+    "尚未",
+    "未",
+    "无",
+    "不属",
+    "非",
+    "not ",
+    "no ",
+)
+_NEGATION_BREAK_CHARS: Tuple[str, ...] = (",", ".", ";", ":", "!", "?", "，", "。", "；", "：", "！", "？", "\n")
+_NEGATION_LOOKBACK_CHARS = 16
+_NEGATION_MAX_GAP_CHARS = 8
+_NEGATION_SCOPE_BREAK_TOKENS: Tuple[str, ...] = (
+    "而是",
+    "但是",
+    "但",
+    "反而",
+    "反倒",
+    "转为",
+    "转成",
+    "改为",
+    "改成",
+    " but ",
+    " instead ",
+    " rather ",
+)
+_SINGLE_CHAR_NEGATION_GAP_PREFIXES: Tuple[str, ...] = (
+    "形成",
+    "出现",
+    "进入",
+    "转为",
+    "转成",
+    "构成",
+    "呈现",
+    "显示",
+    "属于",
+    "是",
+    "有",
+    "能",
+    "见",
+    "站",
+    "守",
+    "破",
+)
+
+
+def _normalize_prompt_reason_items(items: Any) -> List[str]:
+    """Normalize prompt reason/risk items into a clean string list."""
+    if not isinstance(items, list):
+        return []
+    normalized: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _contains_trend_hint(text: str, hints: Tuple[str, ...]) -> bool:
+    """Return True when text contains a non-negated strong trend hint."""
+    lowered = text.strip().lower()
+
+    def _has_negation_scope_break(gap: str) -> bool:
+        normalized_gap = gap.lower()
+        for token in _NEGATION_SCOPE_BREAK_TOKENS:
+            token_index = normalized_gap.find(token)
+            if token_index > 0:
+                return True
+        return False
+
+    def _is_valid_negation_gap(token: str, gap: str) -> bool:
+        if not gap:
+            return True
+        if token not in {"未", "无", "非"}:
+            return True
+        return any(gap.startswith(prefix) for prefix in _SINGLE_CHAR_NEGATION_GAP_PREFIXES)
+
+    def _is_negated_match(index: int) -> bool:
+        prefix = lowered[max(0, index - _NEGATION_LOOKBACK_CHARS):index]
+        for token in _NEGATION_TOKENS:
+            token_index = prefix.rfind(token)
+            if token_index < 0:
+                continue
+            gap = prefix[token_index + len(token):]
+            if any(char in gap for char in _NEGATION_BREAK_CHARS):
+                continue
+            stripped_gap = gap.strip()
+            if len(stripped_gap) > _NEGATION_MAX_GAP_CHARS:
+                continue
+            if _has_negation_scope_break(stripped_gap):
+                continue
+            if not _is_valid_negation_gap(token, stripped_gap):
+                continue
+            return True
+        return False
+
+    for hint in hints:
+        keyword = hint.lower()
+        start = 0
+        while True:
+            index = lowered.find(keyword, start)
+            if index < 0:
+                break
+            if not _is_negated_match(index):
+                return True
+            start = index + len(keyword)
+    return False
+
+
+def _infer_trend_direction(trend: Dict[str, Any]) -> str:
+    """Infer the final trend direction from trend_status and ma_alignment."""
+    combined = " ".join(
+        str(trend.get(key, "")).strip()
+        for key in ("trend_status", "ma_alignment")
+        if str(trend.get(key, "")).strip()
+    )
+    if not combined:
+        return "neutral"
+    lowered = combined.lower()
+    normalized = lowered.replace(" ", "")
+    has_bullish = (
+        _contains_trend_hint(combined, _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS)
+        or "ma5>ma10>ma20" in normalized
+        or (
+            "ma5>ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≤ma20", "ma10<=ma20"))
+        )
+    )
+    has_bearish = (
+        _contains_trend_hint(combined, _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS)
+        or "ma5<ma10<ma20" in normalized
+        or (
+            "ma5<ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≥ma20", "ma10>=ma20"))
+        )
+    )
+    if has_bullish and not has_bearish:
+        return "bullish"
+    if has_bearish and not has_bullish:
+        return "bearish"
+    return "neutral"
+
+
+def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
+    """Drop reasons that directly conflict with the final trend direction."""
+    return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
+
+
+def _sanitize_trend_analysis_for_prompt(
+    trend: Any,
+    *,
+    volume_change_ratio: Any = None,
+) -> Dict[str, Any]:
+    """Clean prompt-only trend hints on a derived copy without touching runtime/provider config."""
+    trend_dict = dict(trend) if isinstance(trend, dict) else {}
+    signal_reasons = _normalize_prompt_reason_items(trend_dict.get("signal_reasons"))
+    risk_factors = _normalize_prompt_reason_items(trend_dict.get("risk_factors"))
+    prompt_notes: List[str] = []
+    trend_direction = _infer_trend_direction(trend_dict)
+
+    if trend_direction == "bearish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏空，已剔除与空头主判断直接冲突的看多结构理由。")
+        signal_reasons = filtered_signal_reasons
+        prompt_notes.append(
+            "若新闻、业绩或政策催化偏多，只能表述为“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”，严禁写成确定性买点。"
+        )
+    elif trend_direction == "bullish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构理由。")
+        signal_reasons = filtered_signal_reasons
+        filtered_risk_factors = _filter_conflicting_trend_items(
+            risk_factors,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_risk_factors) != len(risk_factors):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构风险表述。")
+        risk_factors = filtered_risk_factors
+
+    parsed_volume_change = _safe_float(volume_change_ratio, default=math.nan)
+    if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+        prompt_notes.append(
+            f"成交量较昨日变化约 {parsed_volume_change:.2f} 倍，可能存在异常数据或一次性冲量；量能信号必须降权解读，不能机械视为强确认。"
+        )
+
+    trend_dict["signal_reasons"] = signal_reasons
+    trend_dict["risk_factors"] = risk_factors
+    trend_dict["prompt_consistency_notes"] = prompt_notes
+    trend_dict["prompt_trend_direction"] = trend_direction
+    return trend_dict
 
 
 def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
@@ -1127,6 +1462,7 @@ class GeminiAnalyzer:
         system_prompt: Optional[str] = None,
         stream: bool = False,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
@@ -1138,6 +1474,11 @@ class GeminiAnalyzer:
         Args:
             prompt: User prompt text.
             generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            response_validator: Optional callable that accepts the raw response text and raises
+                an exception if the response is unacceptable (e.g. not valid JSON).  When it
+                raises, the current model is treated as failed and the next fallback model is
+                tried.  If all models fail validation, :class:`_AllModelsFailedError` is raised
+                with ``last_response_text`` set to the last raw response received.
 
         Returns:
             Tuple of (response text, model_used, usage). On success model_used is the full model
@@ -1149,7 +1490,7 @@ class GeminiAnalyzer:
             or generation_config.get('max_tokens')
             or 8192
         )
-        temperature = generation_config.get('temperature', 0.7)
+        requested_temperature = generation_config.get('temperature', 0.7)
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -1157,23 +1498,34 @@ class GeminiAnalyzer:
         use_channel_router = self._has_channel_config(config)
 
         last_error = None
+        last_response_text: Optional[str] = None
+        last_model: Optional[str] = None
+        last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
+                extra = get_thinking_extra_body(model_short)
                 call_kwargs: Dict[str, Any] = {
                     "model": model,
                     "messages": [
                         {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": temperature,
+                    "temperature": normalize_litellm_temperature(
+                        model,
+                        requested_temperature,
+                        model_list=config.llm_model_list,
+                        request_overrides={"extra_body": extra} if extra else None,
+                    ),
                     "max_tokens": max_tokens,
                 }
-                extra = get_thinking_extra_body(model_short)
                 if extra:
                     call_kwargs["extra_body"] = extra
+
+                _stream_text: Optional[str] = None
+                _stream_usage: Dict[str, Any] = {}
 
                 if stream:
                     try:
@@ -1184,12 +1536,11 @@ class GeminiAnalyzer:
                             use_channel_router=use_channel_router,
                             router_model_names=router_model_names,
                         )
-                        response_text, usage = self._consume_litellm_stream(
+                        _stream_text, _stream_usage = self._consume_litellm_stream(
                             stream_response,
                             model=model,
                             progress_callback=stream_progress_callback,
                         )
-                        return response_text, model, usage
                     except _LiteLLMStreamError as exc:
                         if exc.partial_received:
                             logger.warning(
@@ -1211,6 +1562,14 @@ class GeminiAnalyzer:
                             exc,
                         )
 
+                if _stream_text is not None:
+                    last_response_text = _stream_text
+                    last_model = model
+                    last_usage = _stream_usage
+                    if response_validator is not None:
+                        response_validator(_stream_text)
+                    return _stream_text, model, _stream_usage
+
                 response = self._dispatch_litellm_completion(
                     model,
                     call_kwargs,
@@ -1220,8 +1579,14 @@ class GeminiAnalyzer:
                 )
 
                 if response and response.choices and response.choices[0].message.content:
+                    content = response.choices[0].message.content
                     usage = self._normalize_usage(getattr(response, "usage", None))
-                    return (response.choices[0].message.content, model, usage)
+                    last_response_text = content
+                    last_model = model
+                    last_usage = usage
+                    if response_validator is not None:
+                        response_validator(content)
+                    return (content, model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
@@ -1229,7 +1594,12 @@ class GeminiAnalyzer:
                 last_error = e
                 continue
 
-        raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
+        raise _AllModelsFailedError(
+            f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",
+            last_response_text=last_response_text,
+            last_model=last_model,
+            last_usage=last_usage,
+        )
 
     def generate_text(
         self,
@@ -1367,13 +1737,27 @@ class GeminiAnalyzer:
 
             while True:
                 start_time = time.time()
-                response_text, model_used, llm_usage = self._call_litellm(
-                    current_prompt,
-                    generation_config,
-                    system_prompt=system_prompt,
-                    stream=True,
-                    stream_progress_callback=stream_progress_callback,
-                )
+                try:
+                    response_text, model_used, llm_usage = self._call_litellm(
+                        current_prompt,
+                        generation_config,
+                        system_prompt=system_prompt,
+                        stream=True,
+                        stream_progress_callback=stream_progress_callback,
+                        response_validator=self._validate_json_response,
+                    )
+                except _AllModelsFailedError as exc:
+                    if exc.last_response_text is not None:
+                        logger.warning(
+                            "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
+                            name,
+                            code,
+                        )
+                        response_text = exc.last_response_text
+                        model_used = exc.last_model
+                        llm_usage = exc.last_usage
+                    else:
+                        raise
                 elapsed = time.time() - start_time
 
                 # 记录响应信息
@@ -1595,7 +1979,11 @@ class GeminiAnalyzer:
         
         # 添加趋势分析结果（仅隐式内建 bull_trend 默认回退保留旧口径）
         if 'trend_analysis' in context:
-            trend = context['trend_analysis']
+            trend = _sanitize_trend_analysis_for_prompt(
+                context['trend_analysis'],
+                volume_change_ratio=context.get('volume_change_ratio'),
+            )
+            consistency_notes = trend.get('prompt_consistency_notes', [])
             if use_legacy_default_prompt:
                 bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
                 prompt += f"""
@@ -1617,6 +2005,12 @@ class GeminiAnalyzer:
 
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
+"""
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
 """
             else:
                 bias_warning = (
@@ -1644,6 +2038,12 @@ class GeminiAnalyzer:
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
+"""
         
         # 添加昨日对比数据
         if 'yesterday' in context:
@@ -1652,6 +2052,11 @@ class GeminiAnalyzer:
 ### 量价变化
 - 成交量较昨日变化：{volume_change}倍
 - 价格较昨日变化：{context.get('price_change_ratio', 'N/A')}%
+"""
+            parsed_volume_change = _safe_float(volume_change, default=math.nan)
+            if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+                prompt += """
+- ⚠️ 量能异常提示：成交量较昨日放大超过10倍，可能受异常数据或一次性冲量影响，必须降权解读，不能机械视为强确认信号
 """
         
         # 添加新闻搜索结果（重点区域）
@@ -1756,7 +2161,8 @@ class GeminiAnalyzer:
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
 - **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
-
+- **技术面一致性**：严禁把“空头排列”和“多头排列”等互斥结论同时当作有效依据；若基本面/事件面与技术面冲突，必须明确写“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”
+ 
 请输出完整的 JSON 格式决策仪表盘。"""
 
         if report_language == "en":
@@ -2064,6 +2470,34 @@ class GeminiAnalyzer:
         json_str = repair_json(json_str)
         
         return json_str
+
+    def _validate_json_response(self, text: str) -> None:
+        """Validate that *text* contains a parseable JSON object.
+
+        Used as the ``response_validator`` argument to :meth:`_call_litellm` so
+        that a JSON-less or unparseable reply from the primary model is treated
+        as a model failure and triggers fallback to the next configured model.
+
+        Raises:
+            ValueError: if no JSON object is found in *text*.
+            json.JSONDecodeError: if the extracted JSON cannot be parsed (after
+                :meth:`_fix_json_string` attempts repair).
+        """
+        cleaned = text
+        if "```json" in cleaned:
+            cleaned = cleaned.replace("```json", "").replace("```", "")
+        elif "```" in cleaned:
+            cleaned = cleaned.replace("```", "")
+
+        json_start = cleaned.find("{")
+        json_end = cleaned.rfind("}") + 1
+
+        if json_start < 0 or json_end <= json_start:
+            raise ValueError("No JSON object found in LLM response")
+
+        json_str = cleaned[json_start:json_end]
+        json_str = self._fix_json_string(json_str)
+        json.loads(json_str)
     
     def _parse_text_response(
         self, 

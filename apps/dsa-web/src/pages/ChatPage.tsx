@@ -35,11 +35,23 @@ const QUICK_QUESTIONS = [
   { label: '用情绪周期分析东方财富', skill: 'emotion_cycle' },
 ];
 
+const MAX_SELECTED_SKILLS = 3;
+
+const getMessageSkillNames = (msg: Message): string[] => {
+  if (msg.skillNames?.length) return msg.skillNames;
+  if (msg.skillName) return [msg.skillName];
+  if (msg.skills?.length) return msg.skills;
+  if (msg.skill) return [msg.skill];
+  return [];
+};
+
+const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg).join('、');
+
 const ChatPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [selectedSkill, setSelectedSkill] = useState<string>('');
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [showSkillDesc, setShowSkillDesc] = useState<string | null>(null);
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -174,7 +186,7 @@ const ChatPage: React.FC = () => {
           res.default_skill_id ||
           res.skills[0]?.id ||
           '';
-        setSelectedSkill(defaultId);
+        setSelectedSkillIds(defaultId ? [defaultId] : []);
       })
       .catch((error) => {
         console.error('Failed to load chat skills:', error);
@@ -183,6 +195,36 @@ const ChatPage: React.FC = () => {
 
   const availableSkillIds = new Set(skills.map((skill) => skill.id));
   const quickQuestions = QUICK_QUESTIONS.filter((question) => availableSkillIds.size === 0 || availableSkillIds.has(question.skill));
+  const selectedSkillIdSet = new Set(selectedSkillIds);
+  const skillLimitReached = selectedSkillIds.length >= MAX_SELECTED_SKILLS;
+
+  const getSkillNames = useCallback(
+    (skillIds: string[]) => skillIds.map((id) => skills.find((s) => s.id === id)?.name || id),
+    [skills],
+  );
+
+  const normalizeSelectedSkillIds = useCallback((skillIds: string[]) => {
+    const normalized: string[] = [];
+    for (const skillId of skillIds) {
+      const cleaned = skillId.trim();
+      if (cleaned && !normalized.includes(cleaned)) {
+        normalized.push(cleaned);
+      }
+    }
+    return normalized.slice(0, MAX_SELECTED_SKILLS);
+  }, []);
+
+  const toggleSkillSelection = useCallback((skillId: string) => {
+    setSelectedSkillIds((prev) => {
+      if (prev.includes(skillId)) {
+        return prev.filter((id) => id !== skillId);
+      }
+      if (prev.length >= MAX_SELECTED_SKILLS) {
+        return prev;
+      }
+      return [...prev, skillId];
+    });
+  }, []);
 
   const handleStartNewChat = useCallback(() => {
     followUpContextRef.current = null;
@@ -250,18 +292,16 @@ const ChatPage: React.FC = () => {
   }, [searchParams, setSearchParams]);
 
   const handleSend = useCallback(
-    async (overrideMessage?: string, overrideSkill?: string) => {
-      const msgText = overrideMessage || input.trim();
+    async (overrideMessage?: string, overrideSkillIds?: string[]) => {
+      const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading) return;
-      const usedSkill = overrideSkill || selectedSkill;
-      const usedSkillName =
-        skills.find((s) => s.id === usedSkill)?.name ||
-        (usedSkill ? usedSkill : '通用');
+      const usedSkillIds = normalizeSelectedSkillIds(overrideSkillIds ?? selectedSkillIds);
+      const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
 
       const payload = {
         message: msgText,
         session_id: sessionId,
-        skills: usedSkill ? [usedSkill] : undefined,
+        ...(usedSkillIds.length > 0 ? { skills: usedSkillIds } : {}),
         context: followUpContextRef.current ?? undefined,
       };
       followUpHydrationTokenRef.current += 1;
@@ -270,9 +310,12 @@ const ChatPage: React.FC = () => {
 
       setInput('');
       requestScrollToBottom('smooth');
-      await startStream(payload, { skillName: usedSkillName });
+      await startStream(payload, {
+        skillNames: usedSkillNames,
+        skillName: usedSkillNames.join('、'),
+      });
     },
-    [input, loading, requestScrollToBottom, selectedSkill, skills, sessionId, startStream],
+    [getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -283,8 +326,8 @@ const ChatPage: React.FC = () => {
   };
 
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
-    setSelectedSkill(q.skill);
-    handleSend(q.label, q.skill);
+    setSelectedSkillIds([q.skill]);
+    handleSend(q.label, [q.skill]);
   };
 
   const showSendFeedback = useCallback((nextToast: { type: 'success' | 'error'; message: string }, durationMs: number) => {
@@ -329,7 +372,8 @@ const ChatPage: React.FC = () => {
   };
 
   const downloadMessageAsMarkdown = useCallback((msg: Message) => {
-    const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${msg.skillName ? ` · ${msg.skillName}` : ''}`;
+    const skillLabel = getMessageSkillLabel(msg);
+    const heading = msg.role === 'user' ? '# 用户消息' : `# AI 回复${skillLabel ? ` · ${skillLabel}` : ''}`;
     const content = [heading, '', msg.content].join('\n');
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -762,7 +806,9 @@ const ChatPage: React.FC = () => {
                 />
               </div>
             ) : (
-              messages.map((msg) => (
+              messages.map((msg) => {
+                const skillLabel = getMessageSkillLabel(msg);
+                return (
                 <div
                   key={msg.id}
                   className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
@@ -781,9 +827,9 @@ const ChatPage: React.FC = () => {
                       msg.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'
                     )}
                   >
-                    {msg.role === 'assistant' && msg.skillName && (
+                    {msg.role === 'assistant' && skillLabel && (
                       <div className="mb-2">
-                        <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`技能 ${msg.skillName}`}>
+                        <Badge variant="info" className="chat-skill-badge shadow-none" aria-label={`技能 ${skillLabel}`}>
                           <svg
                             className="w-3 h-3"
                             fill="none"
@@ -797,7 +843,7 @@ const ChatPage: React.FC = () => {
                               d="M13 10V3L4 14h7v7l9-11h-7z"
                             />
                           </svg>
-                          {msg.skillName}
+                          {skillLabel}
                         </Badge>
                       </div>
                     )}
@@ -846,7 +892,8 @@ const ChatPage: React.FC = () => {
                     )}
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
 
             {loading && (
@@ -919,47 +966,52 @@ const ChatPage: React.FC = () => {
                 </span>
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
                   <input
-                    type="radio"
-                    name="skill"
+                    type="checkbox"
+                    name="general-analysis"
                     value=""
-                    checked={selectedSkill === ''}
-                    onChange={() => setSelectedSkill('')}
-                    className="chat-skill-radio"
+                    checked={selectedSkillIds.length === 0}
+                    onChange={() => setSelectedSkillIds([])}
+                    className="chat-skill-checkbox"
                   />
                   <span
-                    className={`transition-colors text-sm ${selectedSkill === '' ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                    className={`transition-colors text-sm ${selectedSkillIds.length === 0 ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
                   >
                     通用分析
                   </span>
                 </label>
-                {skills.map((s) => (
-                  <label
-                    key={s.id}
-                    className="flex items-center gap-1.5 cursor-pointer group relative mt-0.5"
-                    onMouseEnter={() => setShowSkillDesc(s.id)}
-                    onMouseLeave={() => setShowSkillDesc(null)}
-                  >
-                    <input
-                      type="radio"
-                      name="skill"
-                      value={s.id}
-                      checked={selectedSkill === s.id}
-                      onChange={() => setSelectedSkill(s.id)}
-                      className="chat-skill-radio"
-                    />
-                    <span
-                      className={`transition-colors text-sm ${selectedSkill === s.id ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                {skills.map((s) => {
+                  const checked = selectedSkillIdSet.has(s.id);
+                  const disabled = !checked && skillLimitReached;
+                  return (
+                    <label
+                      key={s.id}
+                      className={`flex items-center gap-1.5 cursor-pointer group relative mt-0.5 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                      onMouseEnter={() => setShowSkillDesc(s.id)}
+                      onMouseLeave={() => setShowSkillDesc(null)}
                     >
-                      {s.name}
-                    </span>
-                    {showSkillDesc === s.id && s.description && (
-                      <div className="skill-desc-tooltip">
-                        <p className="skill-title">{s.name}</p>
-                        <p>{s.description}</p>
-                      </div>
-                    )}
-                  </label>
-                ))}
+                      <input
+                        type="checkbox"
+                        name="skills"
+                        value={s.id}
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => toggleSkillSelection(s.id)}
+                        className="chat-skill-checkbox"
+                      />
+                      <span
+                        className={`transition-colors text-sm ${checked ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                      >
+                        {s.name}
+                      </span>
+                      {showSkillDesc === s.id && s.description && (
+                        <div className="skill-desc-tooltip">
+                          <p className="skill-title">{s.name}</p>
+                          <p>{s.description}</p>
+                        </div>
+                      )}
+                    </label>
+                  );
+                })}
               </div>
             )}
 

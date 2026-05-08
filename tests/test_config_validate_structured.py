@@ -337,6 +337,14 @@ class TestValidateStructuredNotification:
         issues = cfg.validate_structured()
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
 
+    def test_astrbot_url_counts_as_notification_channel(self):
+        cfg = _make_config(
+            wechat_webhook_url=None,
+            astrbot_url="https://astrbot.example/webhook",
+        )
+        issues = cfg.validate_structured()
+        assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
+
     def test_feishu_app_credentials_without_webhook_warns_mode_mismatch(self):
         cfg = _make_config(
             wechat_webhook_url=None,

@@ -132,7 +132,12 @@ class EmailSender:
                 pass
     
     def send_to_email(
-        self, content: str, subject: Optional[str] = None, receivers: Optional[List[str]] = None
+        self,
+        content: str,
+        subject: Optional[str] = None,
+        receivers: Optional[List[str]] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
     ) -> bool:
         """
         通过 SMTP 发送邮件（自动识别 SMTP 服务器）
@@ -194,10 +199,10 @@ class EmailSender:
             # 根据配置选择连接方式
             if use_ssl:
                 # SSL 连接（端口 465）
-                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=timeout_seconds or 30)
             else:
                 # TLS 连接（端口 587）
-                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=timeout_seconds or 30)
                 server.starttls()
             
             server.login(sender, password)

@@ -31,7 +31,13 @@ class PushplusSender:
         self._pushplus_topic = getattr(config, 'pushplus_topic', None)
         self._pushplus_max_bytes = getattr(config, 'pushplus_max_bytes', 20000)
         
-    def send_to_pushplus(self, content: str, title: Optional[str] = None) -> bool:
+    def send_to_pushplus(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         推送消息到 PushPlus
 
@@ -81,12 +87,19 @@ class PushplusSender:
                     self._pushplus_max_bytes,
                 )
 
-            return self._send_pushplus_message(api_url, content, title)
+            return self._send_pushplus_message(api_url, content, title, timeout_seconds=timeout_seconds)
         except Exception as e:
             logger.error(f"发送 PushPlus 消息失败: {e}")
             return False
 
-    def _send_pushplus_message(self, api_url: str, content: str, title: str) -> bool:
+    def _send_pushplus_message(
+        self,
+        api_url: str,
+        content: str,
+        title: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         payload = {
             "token": self._pushplus_token,
             "title": title,
@@ -97,7 +110,7 @@ class PushplusSender:
         if self._pushplus_topic:
             payload["topic"] = self._pushplus_topic
 
-        response = requests.post(api_url, json=payload, timeout=10)
+        response = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
 
         if response.status_code == 200:
             result = response.json()

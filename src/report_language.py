@@ -60,10 +60,17 @@ _OPERATION_ADVICE_TRANSLATIONS = {
 }
 
 _TREND_PREDICTION_CANONICAL_MAP = {
+    "强势空头": "strong_bearish",
     "强烈看多": "strong_bullish",
     "strong bullish": "strong_bullish",
     "very bullish": "strong_bullish",
+    "强势多头": "strong_bullish",
+    "多头排列": "bullish",
+    "空头排列": "bearish",
+    "弱势多头": "bullish",
+    "弱势空头": "bearish",
     "看多": "bullish",
+    "盘整": "sideways",
     "bullish": "bullish",
     "uptrend": "bullish",
     "震荡": "sideways",
@@ -429,9 +436,16 @@ def localize_operation_advice(value: Any, language: Optional[str]) -> str:
 
 def localize_trend_prediction(value: Any, language: Optional[str]) -> str:
     """Translate trend prediction between Chinese and English when recognized."""
+    normalized_language = normalize_report_language(language)
+    raw_text = str(value or "").strip()
+    if not raw_text:
+        return raw_text
+    if normalized_language == "zh":
+        if re.search(r"[\u4e00-\u9fff]", raw_text):
+            return raw_text
     return _translate_from_map(
         value,
-        language,
+        normalized_language,
         canonical_map=_TREND_PREDICTION_CANONICAL_MAP,
         translations=_TREND_PREDICTION_TRANSLATIONS,
     )

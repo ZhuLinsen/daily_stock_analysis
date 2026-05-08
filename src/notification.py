@@ -14,13 +14,14 @@ A股自选股智能分析系统 - 通知层
    - 邮件 SMTP
    - Pushover（手机/桌面推送）
 """
+from __future__ import annotations
+
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
-from src.config import get_config
-from src.analyzer import AnalysisResult
+from src.config import Config, get_config
 from src.enums import ReportType
 from src.report_language import (
     get_localized_stock_name,
@@ -49,6 +50,9 @@ from src.notification_sender import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from src.analyzer import AnalysisResult
 
 
 class NotificationChannel(Enum):
@@ -132,6 +136,7 @@ class NotificationService(
         检测所有已配置的渠道，推送时会向所有渠道发送
         """
         config = get_config()
+        self._config = config
         self._source_message = source_message
         self._context_channels: List[str] = []
 
@@ -256,57 +261,78 @@ class NotificationService(
                 models.append(model)
         return list(dict.fromkeys(models))
     
+    @staticmethod
+    def detect_configured_channels(config: Config) -> List[NotificationChannel]:
+        """
+        Detect statically configured notification channels from Config.
+
+        This intentionally mirrors sender availability without instantiating
+        sender objects, so diagnostics and runtime use the same channel truth.
+        Runtime-only context channels are handled by instance methods.
+        """
+        channels = []
+
+        if getattr(config, "wechat_webhook_url", None):
+            channels.append(NotificationChannel.WECHAT)
+
+        if getattr(config, "feishu_webhook_url", None):
+            channels.append(NotificationChannel.FEISHU)
+
+        if (
+            getattr(config, "telegram_bot_token", None)
+            and getattr(config, "telegram_chat_id", None)
+        ):
+            channels.append(NotificationChannel.TELEGRAM)
+
+        if getattr(config, "email_sender", None) and getattr(config, "email_password", None):
+            channels.append(NotificationChannel.EMAIL)
+
+        if (
+            getattr(config, "pushover_user_key", None)
+            and getattr(config, "pushover_api_token", None)
+        ):
+            channels.append(NotificationChannel.PUSHOVER)
+
+        if getattr(config, "pushplus_token", None):
+            channels.append(NotificationChannel.PUSHPLUS)
+
+        if getattr(config, "serverchan3_sendkey", None):
+            channels.append(NotificationChannel.SERVERCHAN3)
+
+        if getattr(config, "custom_webhook_urls", None):
+            channels.append(NotificationChannel.CUSTOM)
+
+        if (
+            getattr(config, "discord_webhook_url", None)
+            or (
+                getattr(config, "discord_bot_token", None)
+                and getattr(config, "discord_main_channel_id", None)
+            )
+        ):
+            channels.append(NotificationChannel.DISCORD)
+
+        if (
+            getattr(config, "slack_webhook_url", None)
+            or (
+                getattr(config, "slack_bot_token", None)
+                and getattr(config, "slack_channel_id", None)
+            )
+        ):
+            channels.append(NotificationChannel.SLACK)
+
+        if getattr(config, "astrbot_url", None):
+            channels.append(NotificationChannel.ASTRBOT)
+
+        return channels
+
     def _detect_all_channels(self) -> List[NotificationChannel]:
         """
         检测所有已配置的渠道
-        
+
         Returns:
             已配置的渠道列表
         """
-        channels = []
-        
-        # 企业微信
-        if self._wechat_url:
-            channels.append(NotificationChannel.WECHAT)
-        
-        # 飞书
-        if self._feishu_url:
-            channels.append(NotificationChannel.FEISHU)
-        
-        # Telegram
-        if self._is_telegram_configured():
-            channels.append(NotificationChannel.TELEGRAM)
-        
-        # 邮件
-        if self._is_email_configured():
-            channels.append(NotificationChannel.EMAIL)
-        
-        # Pushover
-        if self._is_pushover_configured():
-            channels.append(NotificationChannel.PUSHOVER)
-
-        # PushPlus
-        if self._pushplus_token:
-            channels.append(NotificationChannel.PUSHPLUS)
-
-       # Server酱3
-        if self._serverchan3_sendkey:
-            channels.append(NotificationChannel.SERVERCHAN3)
-       
-        # 自定义 Webhook
-        if self._custom_webhook_urls:
-            channels.append(NotificationChannel.CUSTOM)
-        
-        # Discord
-        if self._is_discord_configured():
-            channels.append(NotificationChannel.DISCORD)
-        # Slack
-        if self._is_slack_configured():
-            channels.append(NotificationChannel.SLACK)
-        # AstrBot
-        if self._is_astrbot_configured():
-            channels.append(NotificationChannel.ASTRBOT)
-        return channels
+        return self.detect_configured_channels(self._config)
 
     def is_available(self) -> bool:
         """检查通知服务是否可用（至少有一个渠道或上下文渠道）"""
@@ -1809,6 +1835,7 @@ def send_daily_report(results: List[AnalysisResult]) -> bool:
 if __name__ == "__main__":
     # 测试代码
     logging.basicConfig(level=logging.DEBUG)
+    from src.analyzer import AnalysisResult
     
     # 模拟分析结果
     test_results = [

@@ -28,7 +28,13 @@ class Serverchan3Sender:
         """
         self._serverchan3_sendkey = getattr(config, 'serverchan3_sendkey', None)
         
-    def send_to_serverchan3(self, content: str, title: Optional[str] = None) -> bool:
+    def send_to_serverchan3(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         推送消息到 Server酱3
 
@@ -87,7 +93,7 @@ class Serverchan3Sender:
             headers = {
                 'Content-Type': 'application/json;charset=utf-8'
             }
-            response = requests.post(url, json=params, headers=headers, timeout=10)
+            response = requests.post(url, json=params, headers=headers, timeout=timeout_seconds or 10)
 
             if response.status_code == 200:
                 result = response.json()
@@ -103,4 +109,3 @@ class Serverchan3Sender:
             import traceback
             logger.debug(traceback.format_exc())
             return False
-

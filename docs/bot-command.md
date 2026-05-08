@@ -195,7 +195,34 @@ class CommandDispatcher:
 
 | /status | /s, 状态 | 系统状态 | `/status` |
 
-## 五、Webhook 路由
+## 五、`/status` 与模型配置诊断说明
+
+### 可配置层级与可用性判断依据
+
+- `/status` 显示的 LLM 可用性遵循系统统一运行时优先级：
+  - `LITELLM_CONFIG`（LiteLLM YAML）
+  - `LLM_CHANNELS`
+  - legacy provider 键（`GEMINI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）
+- 当主模型（`LITELLM_MODEL` 或 `AGENT_LITELLM_MODEL`）在当前激活层无可用来源时，会展示“AI 服务未配置”，并保留用户可见原因行。
+- 本仓库 `requirements.txt` 的运行时依赖约束为 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，该约束内本链路以现有兼容行为为准。
+- 该诊断规则与 `GET /api/v1/system/config/setup/status` 的 LLM 检查保持一致：`LITELLM_CONFIG`/`LLM_CHANNELS` 为高优先级；模式切换时不会做静默迁移，切回旧模式由用户显式恢复历史值或回滚。
+
+### 回退与迁移边界
+
+- `LITELLM_CONFIG` 与 `LLM_CHANNELS` 任一生效时，下层 legacy 配置会被该层忽略（不会继续作为本次调用来源）。
+- 本次修复仅增强诊断，不进行 silent migration：不会主动清空/删除 `GEMINI_*`、`OPENAI_*`、`ANTHROPIC_*`、`LITELLM_*` 的历史值，仅在可用性诊断上提示。
+
+### 官方兼容来源（用于排障核对）
+
+- LiteLLM 官网：<https://docs.litellm.ai/>
+- LiteLLM OpenAI Compatible 说明：<https://docs.litellm.ai/docs/providers/openai_compatible>
+- OpenAI Chat API：<https://platform.openai.com/docs/api-reference/chat>
+- DeepSeek API 文档：<https://api-docs.deepseek.com/>
+- Kimi Moonshot 兼容说明：<https://platform.moonshot.ai/docs/guide/compatibility>
+- Gemini OpenAI 兼容说明：<https://ai.google.dev/gemini-api/docs/openai>
+- Ollama API 文档：<https://github.com/ollama/ollama/blob/main/docs/api.md>
+
+## 六、Webhook 路由
 
 在 [api/v1/router.py](../api/v1/router.py) 中注册路由：
 
@@ -262,4 +289,3 @@ telegram_webhook_secret: str           # 新增：Webhook 密钥
     bot_rate_limit_window: int = 60       # 频率限制：窗口时间（秒）
     bot_admin_users: List[str] = field(default_factory=list)  # 管理员用户 ID 列表，限制敏感操作
 ```
-

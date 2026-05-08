@@ -940,6 +940,38 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             {"error": "not_found", "message": "API endpoint /api not found"},
         )
 
+    def test_spa_fallback_blocks_path_traversal(self) -> None:
+        """SPA fallback must not serve files outside static_dir.
+
+        Starlette's :path converter does not normalize `..` segments, so
+        without an explicit containment check `static_dir / full_path` can
+        resolve to arbitrary files on disk (CVE-class path traversal).
+        """
+        if create_app is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        from fastapi.responses import FileResponse
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            static_dir = root / "static"
+            static_dir.mkdir()
+            (static_dir / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+            secret = root / "secret.txt"
+            secret.write_text("TOPSECRET", encoding="utf-8")
+
+            app = create_app(static_dir=static_dir)
+            serve_spa = next(
+                route.endpoint for route in app.routes
+                if getattr(route, "path", None) == "/{full_path:path}"
+            )
+
+            for traversal in ("../secret.txt", "../../secret.txt", "foo/../../secret.txt"):
+                with self.subTest(traversal=traversal):
+                    response = asyncio.run(serve_spa(None, traversal))
+                    self.assertIsInstance(response, FileResponse)
+                    self.assertEqual(Path(response.path).resolve(), (static_dir / "index.html").resolve())
+
     def test_sse_generator_reraises_cancelled_error(self) -> None:
         """CancelledError must propagate (not be swallowed) from the SSE event generator."""
         try:

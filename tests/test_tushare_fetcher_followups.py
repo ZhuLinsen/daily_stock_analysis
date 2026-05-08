@@ -57,7 +57,54 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
 
         self.assertEqual(fetcher._api.trade_cal.call_count, 2)
         self.assertEqual(rate_limit_mock.call_count, 2)
+    def test_get_trade_time_returns_latest_trade_date_on_non_trade_day(self) -> None:
+        """Non-trade day (e.g. Saturday) should return the most recent trade
+        date (Friday), not the one before it (Thursday).  Fixes #1009."""
+        fetcher = self._make_fetcher()
+        # 2026-03-21 is Saturday; Friday 20 and Thursday 19 are trade dates
+        fetcher._api.trade_cal.return_value = pd.DataFrame(
+            {
+                "cal_date": ["20260314", "20260315", "20260316",
+                             "20260317", "20260318", "20260319",
+                             "20260320", "20260321"],
+                "is_open": [0, 0, 1, 1, 1, 1, 1, 0],
+            }
+        )
 
+        with patch.object(
+            fetcher,
+            "_get_china_now",
+            # called twice: once by get_trade_time, once by _get_trade_dates
+            side_effect=[datetime(2026, 3, 21, 10, 0)] * 2,
+        ), patch.object(fetcher, "_check_rate_limit"):
+            result = fetcher.get_trade_time(early_time="00:00", late_time="19:00")
+
+        # Should be Friday (20th), NOT Thursday (19th)
+        self.assertEqual(result, "20260320")
+
+    def test_get_trade_time_trade_day_before_data_ready_returns_previous(self) -> None:
+        """On a trade day within the early-late window, should return the
+        previous trade date (data not ready yet for today)."""
+        fetcher = self._make_fetcher()
+        fetcher._api.trade_cal.return_value = pd.DataFrame(
+            {
+                "cal_date": ["20260319", "20260320"],
+                "is_open": [1, 1],
+            }
+        )
+
+        with patch.object(
+            fetcher,
+            "_get_china_now",
+            # Friday 10:00 AM - within 00:00~19:00 window, data not ready
+            side_effect=[datetime(2026, 3, 20, 10, 0)] * 2,
+        ), patch.object(fetcher, "_check_rate_limit"):
+            result = fetcher.get_trade_time(early_time="00:00", late_time="19:00")
+
+        # Data not ready, should fall back to Thursday (19th)
+        self.assertEqual(result, "20260319")
+        
+          
     def test_get_sector_rankings_rate_limits_calendar_and_rankings_api(self) -> None:
         fetcher = self._make_fetcher()
         fetcher._api.trade_cal.return_value = pd.DataFrame(

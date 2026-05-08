@@ -6,13 +6,111 @@ import unittest
 from unittest.mock import patch
 
 from src.config import (
+    ANSPIRE_LLM_BASE_URL_DEFAULT,
+    ANSPIRE_LLM_MODEL_DEFAULT,
     Config,
     get_effective_agent_models_to_try,
     get_effective_agent_primary_model,
+    get_fixed_litellm_temperature,
+    normalize_litellm_temperature,
 )
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_key_enables_openai_compatible_legacy_model(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.anspire_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_base_url, ANSPIRE_LLM_BASE_URL_DEFAULT)
+        self.assertEqual(config.litellm_model, f"openai/{ANSPIRE_LLM_MODEL_DEFAULT}")
+        self.assertEqual(config.llm_models_source, "legacy_env")
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["model"], "__legacy_openai__")
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_legacy_overrides_stale_openai_base_url(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+            "OPENAI_BASE_URL": "https://stale-openai-compatible.example/v1",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_base_url, ANSPIRE_LLM_BASE_URL_DEFAULT)
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_channel_reuses_shared_key_and_defaults(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+        self.assertEqual(config.llm_channels[0]["api_keys"], ["sk-anspire-test-value"])
+        self.assertEqual(config.llm_channels[0]["models"], [f"openai/{ANSPIRE_LLM_MODEL_DEFAULT}"])
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_blank_anspire_channel_enabled_uses_shared_disable_flag(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "LLM_ANSPIRE_ENABLED": "   ",
+            "ANSPIRE_LLM_ENABLED": "false",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, [])
+        self.assertEqual(config.llm_channels, [])
+        self.assertEqual(config.llm_model_list, [])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_disabled_anspire_channel_does_not_fall_back_to_legacy(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "LLM_ANSPIRE_ENABLED": "false",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, [])
+        self.assertEqual(config.llm_channels, [])
+        self.assertEqual(config.llm_model_list, [])
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_protocol_prefixes_bare_model_names(self, _mock_parse_yaml, _mock_setup_env) -> None:
@@ -131,8 +229,106 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "gemini/gemini-3-flash-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
         self.assertAlmostEqual(config.llm_temperature, 0.15)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_defaults_to_legacy_chat_model_with_deprecation_warning(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
+        mock_warning.assert_called_once_with(
+            "Deprecation warning:\n"
+            "deepseek-chat will be deprecated on 2026-07-24,\n"
+            "please migrate to deepseek-v4-flash."
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_explicit_deepseek_litellm_model_is_preserved(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LITELLM_MODEL": "deepseek/deepseek-chat",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "deepseek/deepseek-chat")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_does_not_warn_when_channels_take_precedence(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "deepseek",
+            "LLM_PRIMARY_API_KEY": "sk-channel-value",
+            "LLM_PRIMARY_MODELS": "deepseek-v4-flash",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        mock_warning.assert_not_called()
+
+    @patch("src.config.setup_env")
+    @patch.object(
+        Config,
+        "_parse_litellm_yaml",
+        return_value=[
+            {
+                "model_name": "primary",
+                "litellm_params": {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "api_key": "sk-yaml-value",
+                },
+            }
+        ],
+    )
+    @patch("src.config.logger.warning")
+    def test_deepseek_key_does_not_warn_when_litellm_yaml_takes_precedence(
+        self,
+        mock_warning,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "DEEPSEEK_API_KEY": "sk-test-value",
+            "LITELLM_CONFIG": "/tmp/litellm.yaml",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "litellm_config")
+        mock_warning.assert_not_called()
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -195,6 +391,93 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertAlmostEqual(config.llm_temperature, 0.25)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_kimi_k26_keeps_raw_configured_temperature(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-test-value",
+            "OPENAI_MODEL": "kimi-k2.6",
+            "LLM_TEMPERATURE": "0.7",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/kimi-k2.6")
+        self.assertAlmostEqual(config.llm_temperature, 0.7)
+
+    def test_kimi_k26_temperature_normalization_handles_provider_wrappers(self) -> None:
+        self.assertAlmostEqual(get_fixed_litellm_temperature("moonshot/kimi-k2.6"), 1.0)
+        self.assertAlmostEqual(normalize_litellm_temperature("openai/moonshot/kimi-k2.6", 0.2), 1.0)
+        self.assertAlmostEqual(normalize_litellm_temperature("openai/kimi-k2.6-preview", 0.2), 1.0)
+        self.assertAlmostEqual(
+            normalize_litellm_temperature(
+                "openai/kimi-k2.6-preview",
+                0.2,
+                request_overrides={"extra_body": {"thinking": {"type": "disabled"}}},
+            ),
+            0.6,
+        )
+        self.assertAlmostEqual(normalize_litellm_temperature("openai/gpt-4o-mini", 0.2), 0.2)
+
+    def test_kimi_k26_temperature_normalization_resolves_litellm_yaml_alias(self) -> None:
+        model_list = [
+            {
+                "model_name": "kimi_router",
+                "litellm_params": {
+                    "model": "openai/kimi-k2.6",
+                    "api_key": "sk-yaml-value",
+                },
+            }
+        ]
+
+        self.assertAlmostEqual(get_fixed_litellm_temperature("kimi_router", model_list=model_list), 1.0)
+        self.assertAlmostEqual(
+            normalize_litellm_temperature("kimi_router", 0.2, model_list=model_list),
+            1.0,
+        )
+
+    def test_kimi_k26_temperature_normalization_uses_non_thinking_yaml_alias_temperature(self) -> None:
+        model_list = [
+            {
+                "model_name": "kimi_router",
+                "litellm_params": {
+                    "model": "openai/kimi-k2.6",
+                    "api_key": "sk-yaml-value",
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                },
+            }
+        ]
+
+        self.assertAlmostEqual(
+            get_fixed_litellm_temperature("kimi_router", model_list=model_list),
+            0.6,
+        )
+        self.assertAlmostEqual(
+            normalize_litellm_temperature("kimi_router", 0.2, model_list=model_list),
+            0.6,
+        )
+
+    def test_kimi_k26_temperature_normalization_uses_non_thinking_yaml_wire_model_without_model_name(self) -> None:
+        model_list = [
+            {
+                "litellm_params": {
+                    "model": "openai/kimi-k2.6",
+                    "api_key": "sk-yaml-value",
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                },
+            }
+        ]
+
+        self.assertAlmostEqual(
+            get_fixed_litellm_temperature("openai/kimi-k2.6", model_list=model_list),
+            0.6,
+        )
+        self.assertAlmostEqual(
+            normalize_litellm_temperature("openai/kimi-k2.6", 0.2, model_list=model_list),
+            0.6,
+        )
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

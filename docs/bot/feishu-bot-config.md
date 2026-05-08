@@ -107,6 +107,42 @@ FEISHU_APP_SECRET=...
 
 也不会影响 Webhook 推送；但它们本身不能替代 `FEISHU_WEBHOOK_URL`。
 
+### 4. 在飞书自动化里配置 Webhook 触发器
+
+如果你在飞书自动化流程里消费本项目推送的卡片消息，请按下面配置：
+
+1. 在创建 Webhook 触发器时，**参数** 填写下面 JSON（`content` 可按需保留占位符）：
+
+```json
+{
+  "msg_type": "interactive",
+  "card": {
+    "config": { "wide_screen_mode": true },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": "..."
+        }
+      }
+    ],
+    "header": {
+      "title": {
+        "tag": "plain_text",
+        "content": "A股智能分析报告"
+      }
+    }
+  }
+}
+```
+
+2. 在 **操作/消息内容** 部分，不要手填纯文本；点击加号选择 **Webhook 触发**，并映射到：
+
+`card.elements[0].text.content`
+
+![img_11.png](img_11.png)
+
 ## 最常见的失败原因
 
 ### 1. 只填了 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`

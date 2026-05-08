@@ -8,7 +8,13 @@
 # 测试文件（可能包含敏感配置）
 # 仅忽略仓库根目录下的临时 test_*.py 脚本；tests/ 目录下的单元测试需要纳入版本控制。
 /test_*.py
-!test_env.py
+/test.sh
+
+# 本地评审与高级路由配置（可能包含敏感信息或临时分析产物）
+/.codex
+/review.md
+/litellm_config.yaml
+/litellm_config.*.yaml
 
 # Python
 __pycache__/

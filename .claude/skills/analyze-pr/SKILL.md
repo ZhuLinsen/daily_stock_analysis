@@ -41,6 +41,14 @@ gh run view <run_id> --log-failed
 - `Compatibility And Risk`
 - `Rollback Plan`
 
+若 PR 涉及第三方模型 / API 兼容语义、请求参数固定值、OpenAI-compatible 路由、YAML alias、fallback 行为或运行时配置保存 / 清理 / 迁移逻辑，还要额外检查描述里是否明确写出：
+
+- 官方来源链接或公告
+- 当前锁定依赖 / 运行时兼容范围（例如 LiteLLM 版本窗口）
+- 已验证的调用链路覆盖面
+- 旧配置是否会被静默改写、清空、迁移或保持不变
+- 最小回滚路径（通常是 revert 本 PR）
+
 ### Step 3: 优先使用 CI / Diff 证据
 
 - 先根据 `gh pr checks`、PR diff、现有测试与工作流日志判断问题
@@ -98,6 +106,9 @@ gh run view <run_id> --log-failed
 - API / Web / Desktop：
 - 配置 / Docker / GitHub Actions：
 - fallback / 通知 / 报告结构：
+- 第三方依赖 / 官方约束来源：
+- 运行时兼容窗口 / 已覆盖链路：
+- 旧配置迁移或静默改写风险：
 
 ## Draft Review Comment
 

@@ -12,6 +12,8 @@ import type {
   SystemConfigValidationErrorResponse,
   TestLLMChannelRequest,
   TestLLMChannelResponse,
+  TestNotificationChannelRequest,
+  TestNotificationChannelResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
   ValidateSystemConfigRequest,
@@ -84,13 +86,31 @@ function toSnakeImportPayload(payload: ImportSystemConfigRequest): Record<string
 }
 
 function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<string, unknown> {
-  return {
+  const request: Record<string, unknown> = {
     name: payload.name,
     protocol: payload.protocol,
     base_url: payload.baseUrl ?? '',
     api_key: payload.apiKey ?? '',
     models: payload.models,
     enabled: payload.enabled ?? true,
+    timeout_seconds: payload.timeoutSeconds ?? 20,
+  };
+  if (payload.capabilityChecks && payload.capabilityChecks.length > 0) {
+    request.capability_checks = payload.capabilityChecks;
+  }
+  return request;
+}
+
+function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest): Record<string, unknown> {
+  return {
+    channel: payload.channel,
+    items: (payload.items || []).map((item) => ({
+      key: item.key,
+      value: item.value,
+    })),
+    mask_token: payload.maskToken ?? '******',
+    title: payload.title ?? 'DSA 通知测试',
+    content: payload.content ?? '这是一条来自 DSA Web 设置页的通知测试消息。',
     timeout_seconds: payload.timeoutSeconds ?? 20,
   };
 }
@@ -146,6 +166,14 @@ export const systemConfigApi = {
       toSnakeTestChannelPayload(payload),
     );
     return toCamelCase<TestLLMChannelResponse>(response.data);
+  },
+
+  async testNotificationChannel(payload: TestNotificationChannelRequest): Promise<TestNotificationChannelResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/notification/test-channel',
+      toSnakeNotificationTestPayload(payload),
+    );
+    return toCamelCase<TestNotificationChannelResponse>(response.data);
   },
 
   async discoverLLMChannelModels(

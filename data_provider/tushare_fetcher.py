@@ -1035,7 +1035,8 @@ class TushareFetcher(BaseFetcher):
             else:
                 use_today = True
         else:
-            use_today = False
+            # 非交易日： today不在trade_dates中，trade_dates[0]就是最近交易日
+            use_today = True
 
         start_date = self._pick_trade_date(trade_dates, use_today=use_today)
         if start_date is None:
