@@ -428,6 +428,31 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.model, "")
 
+    def test_error_provider_preserves_failure_reason_in_agent_result(self):
+        """LLM adapter error responses must surface as failed Agent results, not final answers."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="No LLM configured. Please set LITELLM_MODEL, LLM_CHANNELS, or provider API keys before using Agent.",
+            tool_calls=[],
+            usage={"total_tokens": 1},
+            provider="error",
+            model="",
+        )
+
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        result = executor.run("Analyze 600519")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.content, "")
+        self.assertEqual(
+            result.error,
+            "No LLM configured. Please set LITELLM_MODEL, LLM_CHANNELS, or provider API keys before using Agent.",
+        )
+        self.assertEqual(result.total_steps, 1)
+        self.assertEqual(result.total_tokens, 1)
+        self.assertEqual(result.model, "")
+
     def test_timeout_budget_aborts_single_agent_loop(self):
         """Single-agent executor should stop once the configured timeout budget is exhausted."""
         registry = _make_registry_with_echo()
@@ -573,7 +598,8 @@ class TestAgentExecutor(unittest.TestCase):
         adapter.call_with_tools.side_effect = _capture_timeout
 
         executor = AgentExecutor(registry, adapter, max_steps=2, timeout_seconds=1.0)
-        result = executor.run("Analyze 600519")
+        with patch("src.agent.runner.time.time", return_value=1000.0):
+            result = executor.run("Analyze 600519")
 
         self.assertTrue(result.success)
         self.assertIsNotNone(captured.get("timeout"))

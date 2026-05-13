@@ -27,12 +27,17 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    gosu \
     wkhtmltopdf \
     fontconfig \
     libjpeg62-turbo \
     libxrender1 \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
+
+# 创建非 root 用户 (UID 1000)
+RUN groupadd -g 1000 dsa && \
+    useradd -u 1000 -g dsa -m dsa
 
 # 复制依赖文件
 COPY requirements.txt .
@@ -45,13 +50,15 @@ COPY *.py ./
 COPY api/ ./api/
 COPY data_provider/ ./data_provider/
 COPY bot/ ./bot/
-COPY patch/ ./patch/
 COPY src/ ./src/
 COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# 创建数据目录
-RUN mkdir -p /app/data /app/logs /app/reports
+# 确保数据目录存在并授权给 non-root 用户
+RUN mkdir -p /app/data /app/logs /app/reports && \
+    chown -R dsa:dsa /app && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # 设置环境变量默认值
 ENV PYTHONUNBUFFERED=1
@@ -71,6 +78,10 @@ VOLUME ["/app/data", "/app/logs", "/app/reports"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || curl -f http://localhost:8000/health \
     || python -c "import sys; sys.exit(0)"
+
+# 启动入口先修复 bind mount 目录权限，再降权为 dsa 执行应用；
+# 文档化 docker-compose exec 命令需显式使用 -u dsa，避免手动进程写入 root-owned 文件。
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # 默认命令（可被覆盖）
 CMD ["python", "main.py", "--schedule"]

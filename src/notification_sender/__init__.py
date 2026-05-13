@@ -12,6 +12,7 @@ from .custom_webhook_sender import CustomWebhookSender
 from .discord_sender import DiscordSender
 from .email_sender import EmailSender
 from .feishu_sender import FeishuSender
+from .ntfy_sender import NtfySender, resolve_ntfy_endpoint
 from .pushover_sender import PushoverSender
 from .pushplus_sender import PushplusSender
 from .serverchan3_sender import Serverchan3Sender

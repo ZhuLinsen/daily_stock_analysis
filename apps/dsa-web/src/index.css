@@ -1504,12 +1504,12 @@ textarea {
   line-height: 1;
 }
 
-.chat-skill-radio {
+.chat-skill-checkbox {
   appearance: none;
   width: 0.875rem;
   height: 0.875rem;
   flex-shrink: 0;
-  border-radius: 9999px;
+  border-radius: 0.25rem;
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card) / 0.96);
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.72);
@@ -1520,49 +1520,51 @@ textarea {
     transform 0.2s ease;
 }
 
-.chat-skill-radio:hover {
+.chat-skill-checkbox:hover {
   border-color: hsl(var(--primary) / 0.45);
   background: hsl(var(--primary) / 0.04);
 }
 
-.chat-skill-radio:checked {
+.chat-skill-checkbox:checked {
   border-color: hsl(var(--primary) / 0.72);
   background:
-    radial-gradient(circle at center, hsl(var(--primary)) 0 35%, transparent 40%),
+    linear-gradient(135deg, transparent 0 36%, hsl(var(--primary)) 37% 48%, transparent 49%),
+    linear-gradient(45deg, transparent 0 52%, hsl(var(--primary)) 53% 66%, transparent 67%),
     hsl(var(--card) / 0.98);
 }
 
-.chat-skill-radio:focus-visible {
+.chat-skill-checkbox:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 3px hsl(var(--primary) / 0.14),
     inset 0 1px 0 hsl(0 0% 100% / 0.76);
 }
 
-.chat-skill-radio:disabled {
+.chat-skill-checkbox:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.dark .chat-skill-radio {
+.dark .chat-skill-checkbox {
   border-color: hsl(var(--foreground) / 0.16);
   background: hsl(var(--card) / 0.84);
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
 }
 
-.dark .chat-skill-radio:hover {
+.dark .chat-skill-checkbox:hover {
   border-color: hsl(var(--primary) / 0.42);
   background: hsl(var(--primary) / 0.09);
 }
 
-.dark .chat-skill-radio:checked {
+.dark .chat-skill-checkbox:checked {
   border-color: hsl(var(--primary) / 0.68);
   background:
-    radial-gradient(circle at center, hsl(var(--primary)) 0 35%, transparent 40%),
+    linear-gradient(135deg, transparent 0 36%, hsl(var(--primary)) 37% 48%, transparent 49%),
+    linear-gradient(45deg, transparent 0 52%, hsl(var(--primary)) 53% 66%, transparent 67%),
     hsl(var(--card) / 0.88);
 }
 
-.dark .chat-skill-radio:focus-visible {
+.dark .chat-skill-checkbox:focus-visible {
   box-shadow:
     0 0 0 3px hsl(var(--primary) / 0.18),
     inset 0 1px 0 hsl(0 0% 100% / 0.06);

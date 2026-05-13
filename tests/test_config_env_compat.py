@@ -122,6 +122,38 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertTrue(config.run_immediately)
 
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_schedule_run_immediately_ignores_persisted_alias_when_only_legacy_env_is_explicit(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "RUN_IMMEDIATELY=true",
+                        "SCHEDULE_RUN_IMMEDIATELY=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "RUN_IMMEDIATELY": "false",
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertFalse(config.run_immediately)
+        self.assertFalse(config.schedule_run_immediately)
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_blank_schedule_time_falls_back_to_default(
         self,
         _mock_parse_yaml,

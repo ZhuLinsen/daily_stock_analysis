@@ -347,6 +347,7 @@ export function parseApiError(error: unknown): ParsedApiError {
     includesAny(matchText, ['all llm models failed']) && includesAny(matchText, ['last error: none'])
   ) || includesAny(matchText, [
     'no llm configured',
+    'no effective primary model configured',
     'litellm_model not configured',
     'ai analysis will be unavailable',
   ]);

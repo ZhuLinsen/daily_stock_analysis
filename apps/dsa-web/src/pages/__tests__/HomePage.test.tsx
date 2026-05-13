@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { historyApi } from '../../api/history';
+import { systemConfigApi } from '../../api/systemConfig';
 import { useStockPoolStore } from '../../stores';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import HomePage from '../HomePage';
@@ -33,9 +34,17 @@ vi.mock('../../api/analysis', async () => {
     ...actual,
     analysisApi: {
       analyzeAsync: vi.fn(),
+      triggerMarketReview: vi.fn(),
+      getStatus: vi.fn(),
     },
   };
 });
+
+vi.mock('../../api/systemConfig', () => ({
+  systemConfigApi: {
+    getSetupStatus: vi.fn(),
+  },
+}));
 
 vi.mock('../../hooks/useTaskStream', () => ({
   useTaskStream: vi.fn(),
@@ -74,6 +83,13 @@ describe('HomePage', () => {
     vi.clearAllMocks();
     navigateMock.mockReset();
     useStockPoolStore.getState().resetDashboardState();
+    vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [],
+    });
   });
 
   it('renders the dashboard workspace and auto-loads the first report', async () => {
@@ -101,6 +117,7 @@ describe('HomePage', () => {
     expect(dashboard.className).toContain('lg:h-[calc(100vh-2rem)]');
     expect(dashboard.firstElementChild?.className).toContain('min-h-0');
     expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
+    expect(screen.getByTestId('home-dashboard-scroll')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeInTheDocument();
     expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
     expect(
@@ -155,6 +172,168 @@ describe('HomePage', () => {
       expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
     });
     expect(screen.getByText(/股票 600519 正在分析中/).closest('[role="alert"]')).toBeInTheDocument();
+  });
+
+  it('submits market review from the home toolbar', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.triggerMarketReview).mockResolvedValue({
+      status: 'accepted',
+      sendNotification: true,
+      message: '大盘复盘任务已提交',
+      taskId: 'task-1',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'task-1',
+      status: 'completed',
+      marketReviewReport: '市场复盘报告示例文本',
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '大盘复盘' }));
+
+    await waitFor(() => {
+      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({ sendNotification: true });
+    });
+    expect(await screen.findByText('大盘复盘已完成')).toBeInTheDocument();
+    expect(await screen.findByText('市场复盘报告示例文本')).toBeInTheDocument();
+    expect(analysisApi.getStatus).toHaveBeenCalledWith('task-1');
+  });
+
+  it('scrolls the dashboard to market review feedback after toolbar clicks', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    vi.mocked(analysisApi.triggerMarketReview).mockResolvedValue({
+      status: 'accepted',
+      sendNotification: true,
+      message: '大盘复盘任务已提交',
+      taskId: 'task-1',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'task-1',
+      status: 'completed',
+      marketReviewReport: '市场复盘报告示例文本',
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('趋势维持强势');
+    const dashboardScroll = screen.getByTestId('home-dashboard-scroll');
+    const scrollToMock = vi.fn(function scrollTo(this: HTMLElement, options?: ScrollToOptions) {
+      if (typeof options?.top === 'number') {
+        this.scrollTop = options.top;
+      }
+    });
+    Object.defineProperty(dashboardScroll, 'scrollTo', {
+      configurable: true,
+      value: scrollToMock,
+    });
+    dashboardScroll.scrollTop = 480;
+
+    fireEvent.click(screen.getByRole('button', { name: '大盘复盘' }));
+
+    await waitFor(() => {
+      expect(scrollToMock).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' });
+    });
+    expect(dashboardScroll.scrollTop).toBe(0);
+    expect(await screen.findByText('大盘复盘已完成')).toBeInTheDocument();
+  });
+
+  it('keeps market review results in the main dashboard scroll area', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.triggerMarketReview).mockResolvedValue({
+      status: 'accepted',
+      sendNotification: true,
+      message: '大盘复盘任务已提交',
+      taskId: 'task-1',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'task-1',
+      status: 'completed',
+      marketReviewReport: Array.from({ length: 30 }, (_, index) => `第 ${index + 1} 行复盘内容`).join('\n'),
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '大盘复盘' }));
+
+    const dashboardScroll = screen.getByTestId('home-dashboard-scroll');
+    const marketReviewReport = await screen.findByTestId('market-review-report');
+    expect(dashboardScroll).toContainElement(marketReviewReport);
+    expect(marketReviewReport.className).not.toContain('max-h-64');
+    expect(marketReviewReport.className).not.toContain('overflow-y-auto');
+    expect(await screen.findByText('开始分析')).toBeInTheDocument();
+  });
+
+  it('shows first-run setup gaps and links to settings', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['llm_primary', 'stock_list'],
+      nextStepKey: 'llm_primary',
+      checks: [
+        {
+          key: 'llm_primary',
+          title: 'LLM 主渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '缺少主模型配置',
+        },
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'needs_action',
+          message: '缺少自选股',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('基础配置未完成')).toBeInTheDocument();
+    expect(screen.getByText(/LLM 主渠道、自选股/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '去配置' }));
+    expect(navigateMock).toHaveBeenCalledWith('/settings');
   });
 
   it('navigates to chat with report context when asking a follow-up question', async () => {

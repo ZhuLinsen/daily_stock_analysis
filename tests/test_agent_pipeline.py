@@ -99,6 +99,46 @@ class TestAgentConfig(unittest.TestCase):
         self.assertEqual(config.agent_litellm_model, 'openai/gpt-4o-mini')
         self.assertTrue(config.is_agent_available())
 
+    def test_agent_models_to_try_inherit_legacy_provider_models(self):
+        """Legacy provider key/model envs should still produce a non-empty Agent model try list."""
+        from src.config import Config, get_effective_agent_models_to_try
+
+        test_cases = [
+            (
+                {
+                    "GEMINI_API_KEY": "gemini-test-key",
+                    "GEMINI_MODEL": "gemini-2.5-flash",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["gemini/gemini-2.5-flash", "gemini/gemini-3-flash-preview"],
+            ),
+            (
+                {
+                    "OPENAI_API_KEY": "sk-test-value",
+                    "OPENAI_MODEL": "gpt-4o-mini",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["openai/gpt-4o-mini"],
+            ),
+            (
+                {
+                    "ANTHROPIC_API_KEY": "anthropic-test-key",
+                    "ANTHROPIC_MODEL": "claude-3-5-sonnet-20241022",
+                    "AGENT_LITELLM_MODEL": "",
+                },
+                ["anthropic/claude-3-5-sonnet-20241022"],
+            ),
+        ]
+
+        with patch("src.config.setup_env"), patch.object(Config, "_parse_litellm_yaml", return_value=[]):
+            for env, expected_models in test_cases:
+                with self.subTest(expected_models=expected_models), patch.dict(os.environ, env, clear=True):
+                    Config._instance = None
+                    config = Config._load_from_env()
+                    self.assertEqual(get_effective_agent_models_to_try(config), expected_models)
+
+        Config._instance = None
+
 
 class TestAgentFactorySkillBaseline(unittest.TestCase):
     """Ensure explicit skill selection does not silently re-apply the default bull-trend baseline."""
@@ -439,6 +479,593 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.operation_advice, "观望")
         self.assertIn("Max steps exceeded", result.error_message)
 
+    def test_convert_invalid_dashboard_preserves_local_trend_result(self):
+        """Invalid Agent dashboard should not erase already-computed trend data."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="LLM returned text but no dashboard JSON",
+            dashboard=None,
+            provider="ollama",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=64,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-trend-fallback",
+            trend_result=trend_result,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 64)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertIn("trend:fallback", result.data_sources)
+
+    def test_convert_empty_dashboard_backfills_local_trend_dashboard(self):
+        """Empty Agent dashboard should still produce an integrity-ready local fallback dashboard."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={},
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=68,
+            support_levels=[112.3],
+            risk_factors=["跌破 MA20 需止损"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-empty-dashboard",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.sentiment_score, 68)
+        self.assertEqual(result.analysis_summary, "趋势结论：多头排列；操作建议：买入。")
+        self.assertEqual(result.dashboard["sentiment_score"], 68)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], result.analysis_summary)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["跌破 MA20 需止损"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], 112.3)
+
+    def test_convert_dict_operation_advice_missing_decision_type_preserves_buy_signal(self):
+        """When operation_advice is dict without decision_type, preserve dict-derived buy/sell hint."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {
+                    "has_position": "买入",
+                    "no_position": "观望",
+                },
+                "trend_prediction": "看多",
+                "sentiment_score": 74,
+            },
+            provider="ollama",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-dict-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+
+    def test_convert_missing_decision_type_preserves_conditional_hold_advice(self):
+        """Condition-hold wording should remain hold when decision_type is not provided."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": "不跌破支撑位继续持有",
+                "sentiment_score": 72,
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.STRONG_BUY,
+            signal_score=78,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-conditional-hold-advice",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.operation_advice, "不跌破支撑位继续持有")
+        self.assertEqual(result.decision_type, "hold")
+
+    def test_convert_empty_top_level_advice_uses_nested_dashboard_advice(self):
+        """Empty top-level advice dict should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {},
+                "dashboard": {
+                    "operation_advice": "减仓",
+                    "trend_prediction": "看空",
+                    "sentiment_score": 42,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-nested-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+        self.assertEqual(result.dashboard["operation_advice"], "减仓")
+
+    def test_convert_placeholder_top_level_advice_uses_nested_dashboard_advice(self):
+        """Placeholder advice dict should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": {
+                    "has_position": "待补充",
+                    "no_position": "TBD",
+                },
+                "dashboard": {
+                    "operation_advice": "减仓",
+                    "trend_prediction": "看空",
+                    "sentiment_score": 42,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-placeholder-advice",
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+        self.assertEqual(result.dashboard["operation_advice"], "减仓")
+
+    def test_convert_malformed_top_level_summary_uses_nested_dashboard_summary(self):
+        """Malformed top-level analysis_summary should not block nested dashboard fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "analysis_summary": [],
+                "dashboard": {
+                    "analysis_summary": "AI 已给出的摘要",
+                    "trend_prediction": "看多",
+                    "operation_advice": "持有",
+                    "sentiment_score": 73,
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-nested-summary",
+        )
+
+        self.assertEqual(result.analysis_summary, "AI 已给出的摘要")
+        self.assertEqual(result.dashboard["analysis_summary"], "AI 已给出的摘要")
+
+    def test_convert_non_string_summary_falls_back_to_nested_or_local_summary(self):
+        """Non-string analysis_summary should trigger fallback to nested summary or local fallback."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        for raw_summary in (0, False):
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "analysis_summary": raw_summary,
+                    "trend_prediction": "看多",
+                    "dashboard": {
+                        "analysis_summary": "AI 已给出的摘要",
+                    },
+                    "operation_advice": "持有",
+                    "sentiment_score": 73,
+                },
+                provider="gemini",
+            )
+
+            result = pipeline._agent_result_to_analysis_result(
+                agent_result,
+                "600519",
+                "贵州茅台",
+                ReportType.SIMPLE,
+                f"q-summary-non-string-{raw_summary}",
+            )
+
+            self.assertEqual(result.analysis_summary, "AI 已给出的摘要")
+            self.assertEqual(result.dashboard["analysis_summary"], "AI 已给出的摘要")
+
+    def test_convert_malformed_scalar_fields_fallback_to_trend_result(self):
+        """Malformed non-scalar scalar fields should not be treated as valid values."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": {"value": ""},
+                "trend_prediction": [],
+                "operation_advice": [],
+                "decision_type": {},
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-malformed-scalars",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.sentiment_score, 66)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertEqual(result.dashboard["sentiment_score"], 66)
+        self.assertEqual(result.dashboard["trend_prediction"], "多头排列")
+        self.assertEqual(result.dashboard["operation_advice"], "买入")
+    def test_convert_empty_dashboard_backfills_localized_trend_fallback_for_en(self):
+        """English reports should keep trend/advice fallback values localized."""
+        pipeline = self._make_pipeline()
+        pipeline.config.report_language = "en"
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={},
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=70,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-en-fallback",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.report_language, "en")
+        self.assertEqual(result.trend_prediction, "Bullish")
+        self.assertEqual(result.operation_advice, "Buy")
+        self.assertEqual(
+            result.analysis_summary,
+            "Trend view: Bullish; action advice: Buy.",
+        )
+        self.assertEqual(result.dashboard["trend_prediction"], "Bullish")
+        self.assertEqual(result.dashboard["operation_advice"], "Buy")
+        self.assertEqual(
+            result.dashboard["core_conclusion"]["one_sentence"],
+            "Trend view: Bullish; action advice: Buy.",
+        )
+
+    def test_convert_non_dict_advice_conflict_keeps_advice_decision(self):
+        """Conflict between trend fallback and explicit non-dict advice should keep advice decision."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 65,
+                "trend_prediction": "看空",
+                "operation_advice": "减仓",
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=70,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-advice-vs-trend",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.operation_advice, "减仓")
+        self.assertEqual(result.decision_type, "sell")
+
+    def test_convert_partial_dashboard_uses_trend_fallback_for_missing_scalars(self):
+        """Partial Agent dashboards should keep AI fields while filling missing scalars locally."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "AI 已给出的核心结论"},
+                    "intelligence": {"risk_alerts": ["AI 风险"]},
+                    "battle_plan": {"sniper_points": {"take_profit": "120元"}},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+            support_levels=[108.5],
+            risk_factors=["跌破 MA20"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-partial-dashboard",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.sentiment_score, 66)
+        self.assertEqual(result.trend_prediction, "多头排列")
+        self.assertEqual(result.operation_advice, "买入")
+        self.assertEqual(result.decision_type, "buy")
+        self.assertEqual(result.dashboard["sentiment_score"], 66)
+        self.assertEqual(result.dashboard["operation_advice"], "买入")
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], "AI 已给出的核心结论")
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["AI 风险"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], 108.5)
+        self.assertIn("trend:fallback", result.data_sources)
+
+    def test_convert_risk_alerts_string_placeholder_uses_local_risk_factors(self):
+        """String-like placeholder risk alerts should be replaced with local trend risk factors."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "AI 已给出的核心结论"},
+                    "intelligence": {"risk_alerts": "待补充"},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=66,
+            support_levels=[108.5],
+            risk_factors=["涨幅过快", "回撤放大"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-risk-alerts-string-placeholder",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["涨幅过快", "回撤放大"])
+
+    def test_convert_placeholder_dashboard_is_completed_from_local_context(self):
+        """Placeholder dashboard blocks should be completed without falling back to neutral defaults."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.analyzer import check_content_integrity
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "dashboard": {
+                    "core_conclusion": {"one_sentence": "待补充"},
+                    "intelligence": {},
+                    "battle_plan": {"sniper_points": {"stop_loss": ""}},
+                },
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.BUY,
+            signal_score=62,
+            risk_factors=["趋势跌破支撑需减仓"],
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-placeholder-dashboard",
+            trend_result=trend_result,
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok, missing)
+        self.assertEqual(result.sentiment_score, 62)
+        self.assertEqual(result.dashboard["sentiment_score"], 62)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], result.analysis_summary)
+        self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["趋势跌破支撑需减仓"])
+        self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], "待补充")
+
+    def test_convert_invalid_dashboard_normalizes_strong_trend_decision_type(self):
+        """Fallback preserves strong advice text while keeping stable decision_type values."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        cases = [
+            (BuySignal.STRONG_BUY, "buy", "强烈买入"),
+            (BuySignal.STRONG_SELL, "sell", "强烈卖出"),
+        ]
+
+        for buy_signal, expected_decision, expected_advice in cases:
+            with self.subTest(buy_signal=buy_signal):
+                agent_result = AgentResult(
+                    success=True,
+                    content="LLM returned text but no dashboard JSON",
+                    dashboard=None,
+                    provider="ollama",
+                )
+                trend_result = TrendAnalysisResult(
+                    code="600519",
+                    trend_status=TrendStatus.BULL,
+                    buy_signal=buy_signal,
+                    signal_score=80,
+                )
+
+                result = pipeline._agent_result_to_analysis_result(
+                    agent_result,
+                    "600519",
+                    "贵州茅台",
+                    ReportType.SIMPLE,
+                    "q-trend-fallback",
+                    trend_result=trend_result,
+                )
+
+                self.assertEqual(result.operation_advice, expected_advice)
+                self.assertEqual(result.decision_type, expected_decision)
+
     def test_convert_uses_dashboard_stock_name_when_input_is_placeholder(self):
         """When input name is placeholder-like, prefer dashboard stock_name."""
         pipeline = self._make_pipeline()
@@ -702,6 +1329,98 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             pipeline.db.save_news_intel.assert_called_once()
             saved_kwargs = pipeline.db.save_news_intel.call_args.kwargs
             self.assertEqual(saved_kwargs["name"], "科创芯片ETF")
+
+    def test_analyze_with_agent_keeps_dashboard_top_level_fields_after_stability(self):
+        """Decision stability downgrade in agent flow should sync dashboard and top-level decision fields."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.agent.executor import AgentResult
+            from src.enums import ReportType
+            from src.stock_analyzer import TrendAnalysisResult, TrendStatus, BuySignal
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 30,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "卖出",
+                    "decision_type": "sell",
+                    "analysis_summary": "原始建议",
+                    "dashboard": {
+                        "core_conclusion": {"one_sentence": "初始结论"},
+                    },
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            trend_result = TrendAnalysisResult(
+                code="002812",
+                trend_status=TrendStatus.BULL,
+                buy_signal=BuySignal.SELL,
+                signal_score=30,
+                support_levels=[30.0],
+                resistance_levels=[34.0],
+            )
+            fundamental_context = {
+                "capital_flow": {
+                    "status": "ok",
+                    "data": {
+                        "stock_flow": {
+                            "main_net_inflow": 800_000,
+                        }
+                    },
+                }
+            }
+
+            result = pipeline._analyze_with_agent(
+                code="002812",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-stability",
+                stock_name="恩捷股份",
+                realtime_quote={"price": 30.4, "change_pct": -2.1},
+                chip_data=None,
+                fundamental_context=fundamental_context,
+                trend_result=trend_result,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.operation_advice, "洗盘观察")
+            self.assertEqual(result.dashboard.get("decision_type"), "hold")
+            self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
+            self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
 
 
 # ============================================================
@@ -1199,6 +1918,33 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertIn("All LLM models failed (rate-limit encountered during fallback).", result.content)
         self.assertIn("window exceeded", result.content)
         mock_sleep.assert_not_called()
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_reports_missing_configuration_without_generic_none_error(self, _mock_router):
+        """Missing Agent model config should return a stable, actionable error message."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.7,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+
+        result = adapter.call_completion(messages=[{"role": "user", "content": "hi"}], tools=[])
+
+        self.assertEqual(result.provider, "error")
+        self.assertEqual(
+            result.content,
+            "No LLM configured. Please set LITELLM_MODEL, LLM_CHANNELS, or provider API keys before using Agent.",
+        )
 
 
 # ============================================================

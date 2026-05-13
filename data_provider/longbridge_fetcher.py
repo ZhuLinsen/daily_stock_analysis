@@ -36,6 +36,7 @@ from .us_index_mapping import is_us_stock_code, is_us_index_code
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STATIC_INFO_TTL = 86400  # 24h
+_DEFAULT_CONNECTION_COOLDOWN_SECONDS = 15
 
 
 def _static_info_ttl_seconds() -> int:
@@ -47,6 +48,17 @@ def _static_info_ttl_seconds() -> int:
         return max(0, int(raw))
     except ValueError:
         return _DEFAULT_STATIC_INFO_TTL
+
+
+def _connection_cooldown_seconds() -> int:
+    """Cooldown after connection-close errors to avoid reconnect thrashing."""
+    raw = os.getenv("LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS", "").strip()
+    if raw == "":
+        return _DEFAULT_CONNECTION_COOLDOWN_SECONDS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_CONNECTION_COOLDOWN_SECONDS
 
 
 _REGION_URL_MAP: Dict[str, Dict[str, str]] = {
@@ -271,6 +283,7 @@ class LongbridgeFetcher(BaseFetcher):
         self._config = None
         self._ctx_lock = threading.Lock()
         self._available = None
+        self._cooldown_until = 0.0
         # {symbol: (StaticInfo, timestamp)}
         self._static_cache: Dict[str, Any] = {}
         self._static_cache_lock = threading.Lock()
@@ -284,6 +297,33 @@ class LongbridgeFetcher(BaseFetcher):
         with self._ctx_lock:
             self._ctx = None
             self._config = None
+
+    def _mark_connection_cooldown(self, exc: Exception) -> None:
+        cooldown_seconds = _connection_cooldown_seconds()
+        self._invalidate_ctx()
+        if cooldown_seconds <= 0:
+            return
+        self._cooldown_until = time.time() + cooldown_seconds
+        logger.warning(
+            "[Longbridge] 检测到连接异常，进入 %ss 冷却期以避免频繁重连: %s",
+            cooldown_seconds,
+            exc,
+        )
+
+    def is_available_for_request(self, capability: str = "") -> bool:
+        """Report request-time availability including temporary cooldown."""
+        if not self._is_available():
+            return False
+        if self._cooldown_until > time.time():
+            logger.debug(
+                "[Longbridge] %s 冷却中，暂时跳过请求，剩余 %.1fs",
+                capability or "request",
+                self._cooldown_until - time.time(),
+            )
+            return False
+        if self._cooldown_until:
+            self._cooldown_until = 0.0
+        return True
 
     def _is_available(self) -> bool:
         """Check if Longbridge credentials are configured."""
@@ -417,7 +457,7 @@ class LongbridgeFetcher(BaseFetcher):
         except Exception as e:
             logger.debug(f"[Longbridge] static_info({symbol}) 失败: {e}")
             if self._is_connection_error(e):
-                self._invalidate_ctx()
+                self._mark_connection_cooldown(e)
         return None
 
     # ------------------------------------------------------------------
@@ -499,7 +539,7 @@ class LongbridgeFetcher(BaseFetcher):
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """Fetch realtime quote from Longbridge, computing derived fields."""
-        if not self._is_available():
+        if not self.is_available_for_request("realtime_quote"):
             return None
 
         symbol = _to_longbridge_symbol(stock_code)
@@ -519,8 +559,7 @@ class LongbridgeFetcher(BaseFetcher):
         except Exception as e:
             logger.info(f"[Longbridge] quote({symbol}) 失败: {e}")
             if self._is_connection_error(e):
-                logger.warning("[Longbridge] 检测到连接已断开，将在下次调用时重建连接")
-                self._invalidate_ctx()
+                self._mark_connection_cooldown(e)
             return None
 
         price = safe_float(getattr(q, "last_done", None))
@@ -627,6 +666,9 @@ class LongbridgeFetcher(BaseFetcher):
         self, stock_code: str, start_date: str, end_date: str
     ) -> pd.DataFrame:
         """Fetch historical candlesticks from Longbridge."""
+        if not self.is_available_for_request("daily_data"):
+            raise RuntimeError("Longbridge temporarily unavailable for daily_data")
+
         symbol = _to_longbridge_symbol(stock_code)
         if symbol is None:
             raise ValueError(f"Cannot convert {stock_code} to Longbridge symbol")
@@ -650,8 +692,7 @@ class LongbridgeFetcher(BaseFetcher):
             )
         except Exception as e:
             if self._is_connection_error(e):
-                logger.warning("[Longbridge] 检测到连接已断开，将在下次调用时重建连接")
-                self._invalidate_ctx()
+                self._mark_connection_cooldown(e)
             raise
 
         if not candles:

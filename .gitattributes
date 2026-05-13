@@ -2,3 +2,20 @@
 # 多个并发 PR 向 [Unreleased] 末尾追加条目时，Git 直接取两边所有行而不产生冲突标记。
 # 适用于 append-only 的 changelog 文件。
 docs/CHANGELOG.md merge=union
+
+# Documentation image/design assets are binary. Keep GitHub review diffs from
+# trying to decode moved binary files as UTF-8.
+sources/**/*.ai binary
+sources/**/*.gif binary
+sources/**/*.ico binary
+sources/**/*.jpg binary
+sources/**/*.jpeg binary
+sources/**/*.png binary
+sources/**/*.psd binary
+docs/assets/**/*.ai binary
+docs/assets/**/*.gif binary
+docs/assets/**/*.ico binary
+docs/assets/**/*.jpg binary
+docs/assets/**/*.jpeg binary
+docs/assets/**/*.png binary
+docs/assets/**/*.psd binary

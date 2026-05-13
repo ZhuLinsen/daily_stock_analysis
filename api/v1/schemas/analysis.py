@@ -87,6 +87,27 @@ class AnalyzeRequest(BaseModel):
         }
 
 
+class MarketReviewRequest(BaseModel):
+    """Market review trigger parameters."""
+
+    send_notification: bool = Field(
+        True,
+        description="是否在大盘复盘完成后发送推送通知",
+    )
+
+
+class MarketReviewAccepted(BaseModel):
+    """Market review background task accepted response."""
+
+    status: str = Field("accepted", description="提交状态")
+    message: str = Field(..., description="提示信息")
+    send_notification: bool = Field(..., description="是否发送通知")
+    task_id: Optional[str] = Field(
+        None,
+        description="任务 ID（仅当任务实际提交时返回）",
+    )
+
+
 class AnalysisResultResponse(BaseModel):
     """分析结果响应模型"""
     
@@ -223,6 +244,10 @@ class TaskStatus(BaseModel):
         None, 
         description="分析结果（仅在 completed 时存在）"
     )
+    market_review_report: Optional[str] = Field(
+        None,
+        description="大盘复盘任务返回的报告文本（仅大盘复盘任务）",
+    )
     error: Optional[str] = Field(
         None, 
         description="错误信息（仅在 failed 时存在）"
@@ -242,6 +267,7 @@ class TaskStatus(BaseModel):
                 "status": "completed",
                 "progress": 100,
                 "result": None,
+                "market_review_report": None,
                 "error": None,
                 "stock_name": "贵州茅台",
                 "original_query": "茅台",

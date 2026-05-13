@@ -37,7 +37,7 @@ class TelegramSender:
         """检查 Telegram 配置是否完整"""
         return bool(self._telegram_config['bot_token'] and self._telegram_config['chat_id'])
    
-    def send_to_telegram(self, content: str) -> bool:
+    def send_to_telegram(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到 Telegram 机器人
         
@@ -72,10 +72,10 @@ class TelegramSender:
             
             if len(content) <= max_length:
                 # 单条消息发送
-                return self._send_telegram_message(api_url, chat_id, content, message_thread_id)
+                return self._send_telegram_message(api_url, chat_id, content, message_thread_id, timeout_seconds=timeout_seconds)
             else:
                 # 分段发送长消息
-                return self._send_telegram_chunked(api_url, chat_id, content, max_length, message_thread_id)
+                return self._send_telegram_chunked(api_url, chat_id, content, max_length, message_thread_id, timeout_seconds=timeout_seconds)
                 
         except Exception as e:
             logger.error(f"发送 Telegram 消息失败: {e}")
@@ -83,7 +83,15 @@ class TelegramSender:
             logger.debug(traceback.format_exc())
             return False
     
-    def _send_telegram_message(self, api_url: str, chat_id: str, text: str, message_thread_id: Optional[str] = None) -> bool:
+    def _send_telegram_message(
+        self,
+        api_url: str,
+        chat_id: str,
+        text: str,
+        message_thread_id: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """Send a single Telegram message with exponential backoff retry (Fixes #287)"""
         # Convert Markdown to Telegram-compatible format
         telegram_text = self._convert_to_telegram_markdown(text)
@@ -101,7 +109,7 @@ class TelegramSender:
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                response = requests.post(api_url, json=payload, timeout=10)
+                response = requests.post(api_url, json=payload, timeout=timeout_seconds or 10)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                 if attempt < max_retries:
                     delay = 2 ** attempt  # 2s, 4s
@@ -124,7 +132,7 @@ class TelegramSender:
                     
                     # If Markdown parsing failed, fall back to plain text
                     if self._should_fallback_to_plain_text(error_desc=error_desc):
-                        if self._send_plain_text_fallback(api_url, payload, text):
+                        if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
                             return True
                     
                     return False
@@ -147,7 +155,7 @@ class TelegramSender:
                     time.sleep(delay)
                     continue
                 if self._should_fallback_to_plain_text(response_text=response.text):
-                    if self._send_plain_text_fallback(api_url, payload, text):
+                    if self._send_plain_text_fallback(api_url, payload, text, timeout_seconds=timeout_seconds):
                         return True
                 logger.error(f"Telegram 请求失败: HTTP {response.status_code}")
                 logger.error(f"响应内容: {response.text}")
@@ -169,7 +177,14 @@ class TelegramSender:
         )
         return any(marker in haystack for marker in markers)
 
-    def _send_plain_text_fallback(self, api_url: str, payload: dict, text: str) -> bool:
+    def _send_plain_text_fallback(
+        self,
+        api_url: str,
+        payload: dict,
+        text: str,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """Retry Telegram send without parse_mode when Markdown parsing fails."""
         logger.info("Telegram Markdown 解析失败，尝试使用纯文本格式重新发送...")
         plain_payload = dict(payload)
@@ -177,7 +192,7 @@ class TelegramSender:
         plain_payload['text'] = text
 
         try:
-            response = requests.post(api_url, json=plain_payload, timeout=10)
+            response = requests.post(api_url, json=plain_payload, timeout=timeout_seconds or 10)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             logger.error(f"Telegram plain-text fallback failed: {e}")
             return False
@@ -202,7 +217,16 @@ class TelegramSender:
         logger.error(f"响应内容: {response.text}")
         return False
     
-    def _send_telegram_chunked(self, api_url: str, chat_id: str, content: str, max_length: int, message_thread_id: Optional[str] = None) -> bool:
+    def _send_telegram_chunked(
+        self,
+        api_url: str,
+        chat_id: str,
+        content: str,
+        max_length: int,
+        message_thread_id: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """分段发送长 Telegram 消息"""
         # 按段落分割
         sections = content.split("\n---\n")
@@ -220,7 +244,7 @@ class TelegramSender:
                 if current_chunk:
                     chunk_content = "\n---\n".join(current_chunk)
                     logger.info(f"发送 Telegram 消息块 {chunk_index}...")
-                    if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id):
+                    if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id, timeout_seconds=timeout_seconds):
                         all_success = False
                     chunk_index += 1
                 
@@ -235,7 +259,7 @@ class TelegramSender:
         if current_chunk:
             chunk_content = "\n---\n".join(current_chunk)
             logger.info(f"发送 Telegram 消息块 {chunk_index}...")
-            if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id):
+            if not self._send_telegram_message(api_url, chat_id, chunk_content, message_thread_id, timeout_seconds=timeout_seconds):
                 all_success = False
                 
         return all_success

@@ -6,6 +6,8 @@ import unittest
 from unittest.mock import patch
 
 from src.config import (
+    ANSPIRE_LLM_BASE_URL_DEFAULT,
+    ANSPIRE_LLM_MODEL_DEFAULT,
     Config,
     get_effective_agent_models_to_try,
     get_effective_agent_primary_model,
@@ -15,6 +17,100 @@ from src.config import (
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_key_enables_openai_compatible_legacy_model(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.anspire_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_base_url, ANSPIRE_LLM_BASE_URL_DEFAULT)
+        self.assertEqual(config.litellm_model, f"openai/{ANSPIRE_LLM_MODEL_DEFAULT}")
+        self.assertEqual(config.llm_models_source, "legacy_env")
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["model"], "__legacy_openai__")
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_legacy_overrides_stale_openai_base_url(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+            "OPENAI_BASE_URL": "https://stale-openai-compatible.example/v1",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.openai_base_url, ANSPIRE_LLM_BASE_URL_DEFAULT)
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_anspire_channel_reuses_shared_key_and_defaults(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+        self.assertEqual(config.llm_channels[0]["api_keys"], ["sk-anspire-test-value"])
+        self.assertEqual(config.llm_channels[0]["models"], [f"openai/{ANSPIRE_LLM_MODEL_DEFAULT}"])
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["api_base"], ANSPIRE_LLM_BASE_URL_DEFAULT)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_blank_anspire_channel_enabled_uses_shared_disable_flag(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "LLM_ANSPIRE_ENABLED": "   ",
+            "ANSPIRE_LLM_ENABLED": "false",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, [])
+        self.assertEqual(config.llm_channels, [])
+        self.assertEqual(config.llm_model_list, [])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_disabled_anspire_channel_does_not_fall_back_to_legacy(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "anspire",
+            "LLM_ANSPIRE_ENABLED": "false",
+            "ANSPIRE_API_KEYS": "sk-anspire-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.openai_api_keys, [])
+        self.assertEqual(config.llm_channels, [])
+        self.assertEqual(config.llm_model_list, [])
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_protocol_prefixes_bare_model_names(self, _mock_parse_yaml, _mock_setup_env) -> None:
@@ -133,7 +229,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             config = Config._load_from_env()
 
-        self.assertEqual(config.litellm_model, "gemini/gemini-3-flash-preview")
+        self.assertEqual(config.litellm_model, "gemini/gemini-3.1-pro-preview")
         self.assertAlmostEqual(config.llm_temperature, 0.15)
 
     @patch("src.config.setup_env")

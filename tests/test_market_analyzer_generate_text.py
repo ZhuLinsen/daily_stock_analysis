@@ -416,6 +416,155 @@ class TestAnalyzerGenerateText:
         assert result.success is True
         assert result.error_message is None
 
+    def test_json_parse_failure_triggers_fallback_model(self):
+        """When the primary model returns non-JSON, _call_litellm must try the fallback model."""
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="provider/primary-model",
+            litellm_fallback_models=["provider/fallback-model"],
+            llm_model_list=[],
+        )
+
+        import json as _json
+        valid_json = _json.dumps({"sentiment_score": 70, "trend_prediction": "看多"})
+        dispatch_calls = []
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            dispatch_calls.append(model)
+            if "primary" in model:
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="这不是 JSON 格式的响应"))],
+                    usage=None,
+                )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=valid_json))],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+            )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            text, model_used, usage = analyzer._call_litellm(
+                "test prompt",
+                {"max_tokens": 128, "temperature": 0.7},
+                response_validator=analyzer._validate_json_response,
+            )
+
+        assert "primary" in dispatch_calls[0], "primary model should be tried first"
+        assert len(dispatch_calls) == 2, "fallback model should be tried after primary JSON failure"
+        assert "fallback" in model_used
+        assert valid_json == text
+
+    def test_all_models_invalid_json_raises_all_models_failed_error(self):
+        """When all models return non-JSON, _AllModelsFailedError is raised with last_response_text."""
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="provider/primary-model",
+            litellm_fallback_models=["provider/fallback-model"],
+            llm_model_list=[],
+        )
+
+        from src.analyzer import _AllModelsFailedError
+
+        def fake_dispatch(model, call_kwargs, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="这不是 JSON 格式的响应"))],
+                usage=None,
+            )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", side_effect=fake_dispatch):
+            with pytest.raises(_AllModelsFailedError) as exc_info:
+                analyzer._call_litellm(
+                    "test prompt",
+                    {"max_tokens": 128, "temperature": 0.7},
+                    response_validator=analyzer._validate_json_response,
+                )
+
+        assert exc_info.value.last_response_text == "这不是 JSON 格式的响应"
+
+    def test_analyze_all_models_invalid_json_goes_through_post_processing(self):
+        """When all models return non-JSON, analyze() must still run integrity
+        checks, placeholder fill, and persist_llm_usage — no early return.
+
+        With report_integrity_retry=1, the retry loop runs once (re-prompting
+        with complement instructions); when that also yields invalid JSON the
+        exhausted-retries path fires placeholder fill.
+        """
+        from src.analyzer import AnalysisResult, _AllModelsFailedError
+
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            gemini_request_delay=0,
+            report_language="zh",
+            litellm_model="provider/primary-model",
+            litellm_fallback_models=["provider/fallback-model"],
+            llm_temperature=0.7,
+            llm_model_list=[],
+            report_integrity_enabled=True,
+            report_integrity_retry=1,
+        )
+
+        # _parse_response on non-JSON text produces a text fallback result
+        text_fallback_result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="持有",
+            analysis_summary="部分文本摘要",
+            success=False,
+            error_message="LLM response is not valid JSON; analysis result will not be persisted",
+        )
+
+        all_models_error = _AllModelsFailedError(
+            "all failed",
+            last_response_text="这不是 JSON，而是纯文本分析结果",
+            last_model="provider/fallback-model",
+            last_usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        )
+
+        with patch.object(analyzer, "is_available", return_value=True), \
+             patch.object(analyzer, "_get_analysis_system_prompt", return_value="system"), \
+             patch.object(analyzer, "_format_prompt", return_value="prompt"), \
+             patch.object(
+                 analyzer,
+                 "_call_litellm",
+                 side_effect=all_models_error,
+             ) as mock_call, \
+             patch.object(analyzer, "_parse_response", return_value=text_fallback_result) as mock_parse, \
+             patch.object(analyzer, "_build_market_snapshot", return_value={}), \
+             patch.object(analyzer, "_check_content_integrity", return_value=(False, ["dashboard.core_conclusion.one_sentence"])), \
+             patch.object(analyzer, "_build_integrity_retry_prompt", return_value="retry prompt"), \
+             patch.object(analyzer, "_apply_placeholder_fill") as mock_fill, \
+             patch("src.analyzer.persist_llm_usage") as mock_usage:
+
+            result = analyzer.analyze(
+                {"code": "600519", "stock_name": "贵州茅台"},
+                news_context="some news",
+            )
+
+        # _call_litellm called twice: initial + 1 retry
+        assert mock_call.call_count == 2
+
+        # _parse_response called twice (initial + retry)
+        assert mock_parse.call_count == 2
+        mock_parse.assert_called_with("这不是 JSON，而是纯文本分析结果", "600519", "贵州茅台")
+
+        # Placeholder fill was applied after retry exhaustion
+        mock_fill.assert_called_once()
+        assert "dashboard.core_conclusion.one_sentence" in mock_fill.call_args[0][1]
+
+        # persist_llm_usage was called with the last model and usage
+        mock_usage.assert_called_once()
+        usage_args = mock_usage.call_args
+        assert usage_args[0][0] == {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+        assert usage_args[0][1] == "provider/fallback-model"
+        assert usage_args[1]["call_type"] == "analysis"
+        assert usage_args[1]["stock_code"] == "600519"
+
+        # Result is success=False (text fallback), but all fields exist
+        assert result.success is False
+        assert result.code == "600519"
+        assert result.search_performed is True
+
 
 # ---------------------------------------------------------------------------
 # market_analyzer uses generate_text(), not private attributes
@@ -678,6 +827,10 @@ Sector text.
 
         result = ma._inject_data_into_review(review, overview, news)
 
+        assert "大盘红绿灯" in result
+        assert "green（可进攻）" in result
+        assert "核心原因" in result
+        assert "操作建议" in result
         assert "盘面温度" in result
         assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
         assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
@@ -686,6 +839,127 @@ Sector text.
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日催化线索" in result
         assert "AI算力板块走强" in result
+
+    def test_news_block_labels_snippets_and_preserves_source_url(self):
+        from src.market_analyzer import MarketAnalyzer
+
+        ma = MarketAnalyzer.__new__(MarketAnalyzer)
+        ma.config = SimpleNamespace(report_language="zh")
+        ma.region = "cn"
+        long_snippet = (
+            "复盘必读 2026-05-06 复盘的意义在于更清晰地把握市场脉搏，"
+            "综合描述 A 股三大指数今日集体反弹，成交额放大，科技成长方向领涨。"
+        )
+
+        result = ma._build_news_block([
+            {
+                "title": "A股收评：科创50指数放量反弹涨5.47% 两市成交额重回3万亿元",
+                "snippet": long_snippet,
+                "source": "东方财富",
+                "published_date": "2026-05-06",
+                "url": "https://example.com/news/1",
+            }
+        ])
+
+        assert "摘要/线索片段" in result
+        assert "关注点" not in result
+        assert "成交额放大" in result
+        assert "[东方财富 / 2026-05-06](https://example.com/news/1)" in result
+
+    def test_news_block_uses_dash_when_source_metadata_missing(self):
+        from src.market_analyzer import MarketAnalyzer
+
+        ma = MarketAnalyzer.__new__(MarketAnalyzer)
+        ma.config = SimpleNamespace(report_language="zh")
+        ma.region = "cn"
+
+        result = ma._build_news_block([
+            {
+                "title": "政策利好带动板块活跃",
+                "snippet": "相关主题成交放大",
+            }
+        ])
+
+        assert "| 1 | 政策利好带动板块活跃 | 相关主题成交放大 | - |" in result
+        assert "| 1 | 政策利好带动板块活跃 | 相关主题成交放大 | source |" not in result
+
+    def test_review_prompt_caps_news_url_context(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        long_url = "https://example.com/redirect?" + "utm_campaign=" + ("x" * 420)
+
+        prompt = ma._build_review_prompt(
+            MarketOverview(date="2026-05-06"),
+            [
+                {
+                    "title": "A股收评：指数放量反弹",
+                    "snippet": "科技成长方向领涨",
+                    "source": "测试来源",
+                    "published_date": "2026-05-06",
+                    "url": long_url,
+                }
+            ],
+        )
+
+        assert long_url not in prompt
+        assert "URL: https://example.com/redirect?" in prompt
+        assert ("x" * 220) not in prompt
+
+    def test_market_light_snapshot_marks_defensive_market_red(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[
+                MarketIndex(code="000001", name="上证指数", current=3200, change_pct=-1.8),
+                MarketIndex(code="399001", name="深证成指", current=9800, change_pct=-2.4),
+            ],
+            up_count=900,
+            down_count=4100,
+            limit_up_count=10,
+            limit_down_count=80,
+            total_amount=9800.0,
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["status"] == "red"
+        assert snapshot["label"] == "偏防守"
+        assert snapshot["score"] < 40
+        assert any("亏钱效应" in reason for reason in snapshot["reasons"])
+
+    def test_market_light_snapshot_uses_english_labels_and_reasons(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[
+                MarketIndex(code="000001", name="SSE Composite", current=3200, change_pct=-1.8),
+                MarketIndex(code="399001", name="SZSE Component", current=9800, change_pct=-2.4),
+            ],
+            up_count=900,
+            down_count=4100,
+            limit_up_count=10,
+            limit_down_count=80,
+            total_amount=9800.0,
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["status"] == "red"
+        assert snapshot["label"] == "defensive"
+        assert snapshot["guidance"] == (
+            "Risk is elevated; prioritize drawdown control and avoid chasing weak rebounds."
+        )
+        assert snapshot["reasons"][0].startswith("market temperature ")
+        assert any(
+            reason.startswith("advancers ratio ") and "downside pressure dominates" in reason
+            for reason in snapshot["reasons"]
+        )
 
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE

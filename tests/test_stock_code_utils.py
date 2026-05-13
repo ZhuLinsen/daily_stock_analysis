@@ -27,6 +27,12 @@ class TestIsCodeLike:
     def test_suffix_sz(self):
         assert is_code_like("000001.SZ") is True
 
+    def test_suffix_bj(self):
+        assert is_code_like("920493.BJ") is True
+
+    def test_suffix_bj_rejects_non_bse_base(self):
+        assert is_code_like("600519.BJ") is False
+
     def test_suffix_lowercase(self):
         assert is_code_like("600519.sh") is True
 
@@ -55,6 +61,12 @@ class TestIsCodeLike:
 
     def test_prefix_sz(self):
         assert is_code_like("SZ000001") is True
+
+    def test_prefix_bj(self):
+        assert is_code_like("BJ920493") is True
+
+    def test_prefix_bj_rejects_non_bse_base(self):
+        assert is_code_like("BJ600519") is False
 
     def test_prefix_hk(self):
         assert is_code_like("HK00700") is True
@@ -104,6 +116,12 @@ class TestNormalizeCode:
     def test_suffix_sz_strips(self):
         assert normalize_code("000001.SZ") == "000001"
 
+    def test_suffix_bj_strips(self):
+        assert normalize_code("920493.BJ") == "920493"
+
+    def test_suffix_bj_rejects_non_bse_base(self):
+        assert normalize_code("600519.BJ") is None
+
     def test_suffix_ss_strips(self):
         assert normalize_code("600000.SS") == "600000"
 
@@ -131,6 +149,12 @@ class TestNormalizeCode:
 
     def test_prefix_sz(self):
         assert normalize_code("SZ000001") == "000001"
+
+    def test_prefix_bj(self):
+        assert normalize_code("BJ920493") == "920493"
+
+    def test_prefix_bj_rejects_non_bse_base(self):
+        assert normalize_code("BJ600519") is None
 
     def test_prefix_hk(self):
         assert normalize_code("HK00700") == "00700"

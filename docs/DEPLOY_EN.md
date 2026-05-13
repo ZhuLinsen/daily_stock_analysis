@@ -70,10 +70,10 @@ docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d
 
 # Enter container for debugging
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer bash
 
 # Manually run analysis once
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python main.py --no-notify
 ```
 
 ### 5. Data Persistence
@@ -82,6 +82,12 @@ Data is automatically saved to host directories:
 - `./data/` - Database files
 - `./logs/` - Log files
 - `./reports/` - Analysis reports
+
+### 6. Permissions
+
+The Docker image startup entrypoint automatically creates and fixes ownership for the mounted `./data`, `./logs`, and `./reports` directories, then drops privileges to the non-root `dsa` user (UID 1000). Normal deployments do not require manual host-side `chown` / `chmod`.
+
+If you explicitly set `--user` / Compose `user:`, or use read-only mounts, rootless Docker, NFS, or another environment that prevents the container from fixing ownership, make sure the actual runtime user can write to these directories.
 
 ---
 
@@ -184,9 +190,9 @@ journalctl -u stock-analyzer -f
 
 | Config Item | Description | How to Get |
 |--------|------|----------|
-| `GEMINI_API_KEY` | Required for AI analysis | [Google AI Studio](https://aistudio.google.com/) |
+| `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Configure at least one AI model key; Anspire or AIHubMix is recommended first | Provider console |
 | `STOCK_LIST` | Watchlist | Comma-separated stock codes |
-| `WECHAT_WEBHOOK_URL` | WeChat push | WeChat Work group bot |
+| Notification channel | Configure at least one, such as WeChat Work, Feishu, Telegram, or email | Notification provider |
 
 ### Optional Configuration
 
@@ -195,7 +201,10 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
-| `TAVILY_API_KEYS` | - | News search (optional) |
+| `ANSPIRE_API_KEYS` | - | Anspire LLM and news search (recommended) |
+| `AIHUBMIX_KEY` | - | AIHubMix one-key multi-model access (recommended) |
+| `SERPAPI_API_KEYS` | - | SerpAPI realtime financial news search (recommended) |
+| `TAVILY_API_KEYS` | - | Tavily news search (optional) |
 | `MINIMAX_API_KEYS` | - | MiniMax search (optional) |
 
 ---
@@ -349,7 +358,11 @@ Add these Secrets:
 
 | Secret Name | Description | Required |
 |------------|------|------|
-| `GEMINI_API_KEY` | Gemini AI API Key | ✅ |
+| `ANSPIRE_API_KEYS` | Anspire Open API Key (one key for LLM and search) | Recommended |
+| `AIHUBMIX_KEY` | AIHubMix API Key (one key for multiple model families) | Recommended |
+| `ANTHROPIC_API_KEY` | Anthropic API Key | Optional |
+| `GEMINI_API_KEY` | Gemini AI API Key | Optional |
+| `OPENAI_API_KEY` | OpenAI-compatible API Key | Optional |
 | `WECHAT_WEBHOOK_URL` | WeChat Work Bot Webhook | Optional* |
 | `FEISHU_WEBHOOK_URL` | Feishu Bot Webhook | Optional* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | Optional* |
@@ -360,9 +373,11 @@ Add these Secrets:
 | `SERVERCHAN3_SENDKEY` | ServerChan v3 Sendkey | Optional* |
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated for multiple) | Optional* |
 | `STOCK_LIST` | Watchlist, e.g., `600519,300750` | ✅ |
-| `TAVILY_API_KEYS` | Tavily Search API Key | Recommended |
+| `SERPAPI_API_KEYS` | SerpAPI Key | Recommended |
+| `TAVILY_API_KEYS` | Tavily Search API Key | Optional |
+| `BOCHA_API_KEYS` | Bocha Search API Key | Optional |
+| `BRAVE_API_KEYS` | Brave Search API Key | Optional |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | Optional |
-| `SERPAPI_API_KEYS` | SerpAPI Key | Optional |
 | `TUSHARE_TOKEN` | Tushare Token | Optional |
 | `GEMINI_MODEL` | Model name (default gemini-2.0-flash) | Optional |
 

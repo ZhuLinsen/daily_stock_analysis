@@ -27,12 +27,21 @@ from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
-from src.analyzer import GeminiAnalyzer, AnalysisResult, fill_chip_structure_if_needed, fill_price_position_if_needed
+from src.analyzer import (
+    GeminiAnalyzer,
+    AnalysisResult,
+    fill_chip_structure_if_needed,
+    fill_price_position_if_needed,
+    stabilize_decision_with_structure,
+)
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.report_language import (
     get_unknown_text,
+    infer_decision_type_from_advice,
     localize_confidence_level,
+    localize_operation_advice,
+    localize_trend_prediction,
     normalize_report_language,
 )
 from src.search_service import SearchService
@@ -492,6 +501,7 @@ class StockAnalysisPipeline:
             # Step 7.7: price_position fallback
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                stabilize_decision_with_structure(result, trend_result, fundamental_context)
 
             # Step 8: 保存分析历史记录
             if result and result.success:
@@ -822,7 +832,14 @@ class StockAnalysisPipeline:
             agent_result = executor.run(message, context=initial_context)
 
             # 转换为 AnalysisResult
-            result = self._agent_result_to_analysis_result(agent_result, code, stock_name, report_type, query_id)
+            result = self._agent_result_to_analysis_result(
+                agent_result,
+                code,
+                stock_name,
+                report_type,
+                query_id,
+                trend_result=trend_result,
+            )
             if result:
                 result.query_id = query_id
             # Agent weak integrity: placeholder fill only, no LLM retry
@@ -843,6 +860,11 @@ class StockAnalysisPipeline:
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                realtime_data = initial_context.get("realtime_quote", {})
+                if isinstance(realtime_data, dict):
+                    result.current_price = realtime_data.get("price")
+                    result.change_pct = realtime_data.get("change_pct")
+                stabilize_decision_with_structure(result, trend_result, fundamental_context)
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -892,7 +914,13 @@ class StockAnalysisPipeline:
             return None
 
     def _agent_result_to_analysis_result(
-        self, agent_result, code: str, stock_name: str, report_type: ReportType, query_id: str
+        self,
+        agent_result,
+        code: str,
+        stock_name: str,
+        report_type: ReportType,
+        query_id: str,
+        trend_result: Optional[TrendAnalysisResult] = None,
     ) -> AnalysisResult:
         """
         将 AgentResult 转换为 AnalysisResult。
@@ -917,47 +945,417 @@ class StockAnalysisPipeline:
             ai_stock_name = str(dash.get("stock_name", "")).strip()
             if ai_stock_name and self._is_placeholder_stock_name(stock_name, code):
                 result.name = ai_stock_name
-            result.sentiment_score = self._safe_int(dash.get("sentiment_score"), 50)
-            result.trend_prediction = dash.get("trend_prediction", "Unknown" if report_language == "en" else "未知")
-            raw_advice = dash.get("operation_advice", "Watch" if report_language == "en" else "观望")
+
+            nested_dashboard = dash.get("dashboard") if isinstance(dash, dict) else None
+
+            raw_score = self._agent_dashboard_value(
+                dash,
+                nested_dashboard,
+                "sentiment_score",
+                scalar=True,
+            )
+            if self._is_agent_field_missing(raw_score, scalar=True):
+                fallback_score = self._trend_score_fallback(trend_result)
+                if fallback_score is not None:
+                    result.sentiment_score = fallback_score
+                    self._mark_trend_fallback_source(result)
+            else:
+                result.sentiment_score = self._safe_int(raw_score, 50)
+
+            raw_trend = self._agent_dashboard_value(
+                dash,
+                nested_dashboard,
+                "trend_prediction",
+                scalar=True,
+                expect_text=True,
+            )
+            if self._is_agent_field_missing(raw_trend, scalar=True, expect_text=True):
+                trend_label = self._trend_label_fallback(
+                    trend_result,
+                    report_language,
+                )
+                if trend_label:
+                    result.trend_prediction = trend_label
+                    self._mark_trend_fallback_source(result)
+            else:
+                result.trend_prediction = str(raw_trend)
+
+            raw_advice = self._agent_dashboard_value(
+                dash,
+                nested_dashboard,
+                "operation_advice",
+                scalar=True,
+                allow_dict=True,
+                expect_text=True,
+            )
+            extracted_advice = ""
             if isinstance(raw_advice, dict):
                 # LLM may return {"no_position": "...", "has_position": "..."}
-                # Derive a short string from decision_type for the scalar field
-                _signal_to_advice = {
-                    "buy": "Buy" if report_language == "en" else "买入",
-                    "sell": "Sell" if report_language == "en" else "卖出",
-                    "hold": "Hold" if report_language == "en" else "持有",
-                    "strong_buy": "Strong Buy" if report_language == "en" else "强烈买入",
-                    "strong_sell": "Strong Sell" if report_language == "en" else "强烈卖出",
-                }
-                # Normalize decision_type (strip/lower) before lookup so
-                # variants like "BUY" or " Buy " map correctly.
-                raw_dt = str(dash.get("decision_type") or "hold").strip().lower()
-                result.operation_advice = _signal_to_advice.get(raw_dt, "Watch" if report_language == "en" else "观望")
-            else:
+                extracted_advice = self._extract_advice_text_from_dict(raw_advice)
+                if extracted_advice:
+                    result.operation_advice = localize_operation_advice(
+                        extracted_advice,
+                        report_language,
+                    )
+                else:
+                    signal_label = self._trend_signal_fallback(
+                        trend_result,
+                        report_language,
+                    )
+                    if signal_label:
+                        result.operation_advice = signal_label
+                        self._mark_trend_fallback_source(result)
+            elif not self._is_agent_field_missing(
+                raw_advice,
+                scalar=True,
+                allow_dict=True,
+                expect_text=True,
+            ):
                 result.operation_advice = str(raw_advice) if raw_advice else ("Watch" if report_language == "en" else "观望")
+            else:
+                signal_label = self._trend_signal_fallback(trend_result, report_language)
+                if signal_label:
+                    result.operation_advice = signal_label
+                    self._mark_trend_fallback_source(result)
             from src.agent.protocols import normalize_decision_signal
 
-            result.decision_type = normalize_decision_signal(
-                dash.get("decision_type", "hold")
+            raw_decision = self._agent_dashboard_value(
+                dash,
+                nested_dashboard,
+                "decision_type",
+                scalar=True,
+                expect_text=True,
             )
+            if self._is_agent_field_missing(raw_decision, scalar=True, expect_text=True):
+                trend_decision = self._trend_decision_fallback(trend_result)
+                decision_from_advice = infer_decision_type_from_advice(
+                    result.operation_advice,
+                    default="",
+                )
+                if decision_from_advice:
+                    result.decision_type = decision_from_advice
+                    if (
+                        self._is_agent_field_missing(
+                            raw_advice,
+                            scalar=True,
+                            allow_dict=True,
+                            expect_text=True,
+                        )
+                        and not extracted_advice
+                        and trend_decision
+                    ):
+                        self._mark_trend_fallback_source(result)
+                else:
+                    result.decision_type = trend_decision or "hold"
+                    if trend_decision:
+                        self._mark_trend_fallback_source(result)
+            else:
+                result.decision_type = normalize_decision_signal(raw_decision)
             result.confidence_level = localize_confidence_level(
-                dash.get("confidence_level", result.confidence_level),
+                self._agent_dashboard_value(dash, nested_dashboard, "confidence_level")
+                or result.confidence_level,
                 report_language,
             )
-            result.analysis_summary = dash.get("analysis_summary", "")
+            raw_summary = self._agent_dashboard_value(
+                dash,
+                nested_dashboard,
+                "analysis_summary",
+                scalar=True,
+                expect_text=True,
+            )
+            if not self._is_agent_field_missing(raw_summary, scalar=True, expect_text=True):
+                result.analysis_summary = str(raw_summary)
+            else:
+                result.analysis_summary = self._summary_fallback_from_result(result, report_language)
             # The AI returns a top-level dict that contains a nested 'dashboard' sub-key
             # with core_conclusion / battle_plan / intelligence.  AnalysisResult's helper
             # methods (get_sniper_points, get_core_conclusion, etc.) expect that inner
             # structure, so we unwrap it here.
-            result.dashboard = dash.get("dashboard") or dash
+            result.dashboard = nested_dashboard or dash
+            self._backfill_agent_dashboard_fields(result, trend_result, report_language)
         else:
-            result.sentiment_score = 50
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            self._apply_trend_fallback(result, trend_result, report_language)
+            if trend_result is not None:
+                result.analysis_summary = (
+                    result.analysis_summary
+                    or self._summary_fallback_from_result(result, report_language)
+                )
+                self._backfill_agent_dashboard_fields(result, trend_result, report_language)
             if not result.error_message:
                 result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
 
         return result
+
+    @staticmethod
+    def _agent_dashboard_value(
+        dash: Dict[str, Any],
+        nested_dashboard: Any,
+        key: str,
+        *,
+        scalar: bool = False,
+        allow_dict: bool = False,
+        expect_text: bool = False,
+    ) -> Any:
+        """Read a scalar from top-level agent payload, then nested dashboard fallback."""
+        value = dash.get(key) if isinstance(dash, dict) else None
+        if isinstance(nested_dashboard, dict) and StockAnalysisPipeline._is_agent_field_missing(
+            value,
+            scalar=scalar,
+            allow_dict=allow_dict,
+            expect_text=expect_text,
+        ):
+            nested_value = nested_dashboard.get(key)
+            if not StockAnalysisPipeline._is_agent_field_missing(
+                nested_value,
+                scalar=scalar,
+                allow_dict=allow_dict,
+                expect_text=expect_text,
+            ):
+                value = nested_value
+        return value
+
+    @staticmethod
+    def _extract_advice_text_from_dict(raw_advice: dict) -> str:
+        for field in ("has_position", "no_position"):
+            if isinstance(raw_advice.get(field), str):
+                text = raw_advice[field].strip()
+                if not StockAnalysisPipeline._is_agent_placeholder_text(text):
+                    return text
+
+        for value in raw_advice.values():
+            if isinstance(value, str):
+                text = value.strip()
+                if not StockAnalysisPipeline._is_agent_placeholder_text(text):
+                    return text
+
+        return ""
+
+    @staticmethod
+    def _is_agent_placeholder_text(text: str) -> bool:
+        if not text:
+            return True
+        return text.lower() in {"n/a", "na", "none", "null", "unknown", "tbd"} or text in {
+            "未知",
+            "待补充",
+            "数据缺失",
+            "无",
+        }
+
+    @staticmethod
+    def _is_agent_field_missing(
+        value: Any,
+        *,
+        scalar: bool = False,
+        allow_dict: bool = False,
+        expect_text: bool = False,
+    ) -> bool:
+        if scalar and isinstance(value, dict):
+            if not allow_dict or not value:
+                return True
+            return not StockAnalysisPipeline._extract_advice_text_from_dict(value)
+        if value is None:
+            return True
+        if expect_text and scalar:
+            if not isinstance(value, str):
+                return True
+        if isinstance(value, str):
+            text = value.strip()
+            return StockAnalysisPipeline._is_agent_placeholder_text(text)
+        if isinstance(value, dict):
+            if scalar:
+                return not allow_dict
+            return not value
+        if scalar and isinstance(value, (list, tuple, set)):
+            return True
+        return False
+
+    @staticmethod
+    def _trend_score_fallback(trend_result: Optional[TrendAnalysisResult]) -> Optional[int]:
+        if trend_result is None:
+            return None
+        try:
+            score = int(getattr(trend_result, "signal_score", 0))
+        except (TypeError, ValueError):
+            return None
+        return score if score > 0 else None
+
+    @staticmethod
+    def _trend_label_fallback(
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str = "zh",
+    ) -> str:
+        if trend_result is None:
+            return ""
+        trend_status = getattr(trend_result, "trend_status", None)
+        value = getattr(trend_status, "value", None) or str(trend_status or "").strip()
+        if report_language != "en":
+            return value
+        return localize_trend_prediction(value, report_language)
+
+    @staticmethod
+    def _trend_signal_fallback(
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str = "zh",
+    ) -> str:
+        if trend_result is None:
+            return ""
+        buy_signal = getattr(trend_result, "buy_signal", None)
+        value = getattr(buy_signal, "value", None) or str(buy_signal or "").strip()
+        return localize_operation_advice(value, report_language)
+
+    @staticmethod
+    def _trend_decision_fallback(trend_result: Optional[TrendAnalysisResult]) -> Optional[str]:
+        if trend_result is None:
+            return None
+        signal_name = getattr(getattr(trend_result, "buy_signal", None), "name", "").lower()
+        return {
+            "strong_buy": "buy",
+            "buy": "buy",
+            "hold": "hold",
+            "wait": "hold",
+            "sell": "sell",
+            "strong_sell": "sell",
+        }.get(signal_name)
+
+    @staticmethod
+    def _mark_trend_fallback_source(result: AnalysisResult) -> None:
+        if "trend:fallback" in (result.data_sources or ""):
+            return
+        result.data_sources = (
+            f"{result.data_sources},trend:fallback"
+            if result.data_sources
+            else "trend:fallback"
+        )
+
+    @staticmethod
+    def _summary_fallback_from_result(result: AnalysisResult, report_language: str) -> str:
+        trend = (result.trend_prediction or "").strip()
+        advice = (result.operation_advice or "").strip()
+        if trend and advice:
+            if report_language == "en":
+                return f"Trend view: {trend}; action advice: {advice}."
+            return f"趋势结论：{trend}；操作建议：{advice}。"
+        return ""
+
+    def _backfill_agent_dashboard_fields(
+        self,
+        result: AnalysisResult,
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str,
+    ) -> None:
+        if not isinstance(result.dashboard, dict):
+            result.dashboard = {}
+        dashboard = result.dashboard
+
+        for key in (
+            "sentiment_score",
+            "trend_prediction",
+            "operation_advice",
+            "decision_type",
+            "confidence_level",
+            "analysis_summary",
+        ):
+            current = dashboard.get(key)
+            if key == "sentiment_score":
+                if self._is_agent_field_missing(current, scalar=True):
+                    dashboard[key] = getattr(result, key)
+            elif self._is_agent_field_missing(current, scalar=True, expect_text=True):
+                dashboard[key] = getattr(result, key)
+
+        core = dashboard.get("core_conclusion")
+        if not isinstance(core, dict):
+            core = {}
+            dashboard["core_conclusion"] = core
+        if self._is_agent_field_missing(core.get("one_sentence"), scalar=True):
+            core["one_sentence"] = result.analysis_summary or self._summary_fallback_from_result(
+                result,
+                report_language,
+            ) or ("Analysis pending" if report_language == "en" else "分析待补充")
+
+        intelligence = dashboard.get("intelligence")
+        if not isinstance(intelligence, dict):
+            intelligence = {}
+            dashboard["intelligence"] = intelligence
+        risk_alerts = intelligence.get("risk_alerts")
+        if (
+            "risk_alerts" not in intelligence
+            or self._is_agent_field_missing(risk_alerts)
+            or not isinstance(risk_alerts, list)
+        ):
+            risk_factors = getattr(trend_result, "risk_factors", None) or []
+            intelligence["risk_alerts"] = list(risk_factors)
+
+        if result.decision_type in ("buy", "hold"):
+            battle = dashboard.get("battle_plan")
+            if not isinstance(battle, dict):
+                battle = {}
+                dashboard["battle_plan"] = battle
+            sniper_points = battle.get("sniper_points")
+            if not isinstance(sniper_points, dict):
+                sniper_points = {}
+                battle["sniper_points"] = sniper_points
+            if self._is_agent_field_missing(sniper_points.get("stop_loss"), scalar=True):
+                sniper_points["stop_loss"] = self._stop_loss_fallback_from_trend(
+                    trend_result,
+                    report_language,
+                )
+
+    @staticmethod
+    def _stop_loss_fallback_from_trend(
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str,
+    ) -> Any:
+        levels = getattr(trend_result, "support_levels", None) if trend_result else None
+        if levels:
+            return levels[0]
+        return "To be completed" if report_language == "en" else "待补充"
+
+    @staticmethod
+    def _apply_trend_fallback(
+        result: AnalysisResult,
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str,
+    ) -> None:
+        if trend_result is None:
+            result.sentiment_score = 50
+            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            return
+
+        score = getattr(trend_result, "signal_score", None)
+        try:
+            numeric_score = int(score)
+        except (TypeError, ValueError):
+            numeric_score = 50
+        result.sentiment_score = numeric_score if numeric_score > 0 else 50
+
+        trend_label = StockAnalysisPipeline._trend_label_fallback(trend_result, report_language)
+        if trend_label:
+            result.trend_prediction = trend_label
+
+        buy_signal = getattr(trend_result, "buy_signal", None)
+        signal_label = StockAnalysisPipeline._trend_signal_fallback(
+            trend_result,
+            report_language,
+        )
+        if signal_label:
+            result.operation_advice = signal_label
+        else:
+            result.operation_advice = "Watch" if report_language == "en" else "观望"
+
+        from src.agent.protocols import normalize_decision_signal
+
+        signal_name = getattr(buy_signal, "name", "").lower()
+        signal_to_decision = {
+            "strong_buy": "buy",
+            "buy": "buy",
+            "hold": "hold",
+            "wait": "hold",
+            "sell": "sell",
+            "strong_sell": "sell",
+        }
+        result.decision_type = signal_to_decision.get(signal_name, result.decision_type or "hold")
+        result.decision_type = normalize_decision_signal(result.decision_type)
+        result.data_sources = f"{result.data_sources},trend:fallback" if result.data_sources else "trend:fallback"
 
     @staticmethod
     def _is_placeholder_stock_name(name: str, code: str) -> bool:
@@ -1481,7 +1879,14 @@ class StockAnalysisPipeline:
                     report_content = self.notifier.generate_single_stock_report(result)
                     logger.info(f"[{stock_code}] 使用精简报告格式")
 
-                if self.notifier.send(report_content, email_stock_codes=[stock_code]):
+                if self.notifier.send(
+                    report_content,
+                    email_stock_codes=[stock_code],
+                    route_type="report",
+                    severity="info",
+                    dedup_key=f"report:single:{stock_code}:{report_type.value}",
+                    cooldown_key=f"report:single:{stock_code}:{report_type.value}",
+                ):
                     logger.info(f"[{stock_code}] 单股推送成功")
                 else:
                     logger.warning(f"[{stock_code}] 单股推送失败")
@@ -1516,6 +1921,8 @@ class StockAnalysisPipeline:
             results: 分析结果列表
             skip_push: 是否跳过推送（仅保存到本地，用于单股推送模式）
         """
+        noise_decision = None
+        noise_finalized = False
         try:
             logger.info("生成决策仪表盘日报...")
             report = self._generate_aggregate_report(results, report_type)
@@ -1527,7 +1934,24 @@ class StockAnalysisPipeline:
             # 推送通知
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
+                channels = self.notifier.get_channels_for_route("report", channels=channels)
                 context_success = self.notifier.send_to_context(report)
+                if channels and hasattr(self.notifier, "evaluate_noise_control"):
+                    report_type_key = report_type.value if isinstance(report_type, ReportType) else str(report_type)
+                    codes_key = ",".join(
+                        sorted(str(getattr(result, "code", "") or "") for result in results)
+                    )
+                    noise_key = f"report:aggregate:{report_type_key}:{codes_key}"
+                    noise_decision = self.notifier.evaluate_noise_control(
+                        report,
+                        route_type="report",
+                        severity="info",
+                        dedup_key=noise_key,
+                        cooldown_key=noise_key,
+                    )
+                    if not noise_decision.should_send:
+                        logger.info(noise_decision.message)
+                        return
 
                 # Issue #455: Markdown 转图片（与 notification.send 逻辑一致）
                 from src.md2img import markdown_to_image
@@ -1535,6 +1959,7 @@ class StockAnalysisPipeline:
                 channels_needing_image = {
                     ch for ch in channels
                     if ch.value in self.notifier._markdown_to_image_channels
+                    and ch != NotificationChannel.NTFY
                 }
                 non_wechat_channels_needing_image = {
                     ch for ch in channels_needing_image if ch != NotificationChannel.WECHAT
@@ -1549,6 +1974,17 @@ class StockAnalysisPipeline:
                         "npm i -g markdown-to-file" if engine == "markdown-to-file"
                         else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
                     )
+
+                def _send_channel_safely(channel_label: str, send_func: Callable[[], bool]) -> bool:
+                    try:
+                        return bool(send_func())
+                    except Exception as e:
+                        logger.exception(
+                            "通知渠道 %s 推送异常，继续尝试其他渠道: %s",
+                            channel_label,
+                            e,
+                        )
+                        return False
 
                 image_bytes = None
                 if non_wechat_channels_needing_image:
@@ -1569,30 +2005,35 @@ class StockAnalysisPipeline:
                 # 企业微信：只发精简版（平台限制）
                 wechat_success = False
                 if NotificationChannel.WECHAT in channels:
-                    if report_type == ReportType.BRIEF:
-                        dashboard_content = self.notifier.generate_brief_report(results)
-                    else:
-                        dashboard_content = self.notifier.generate_wechat_dashboard(results)
-                    logger.info(f"企业微信仪表盘长度: {len(dashboard_content)} 字符")
-                    logger.debug(f"企业微信推送内容:\n{dashboard_content}")
-                    wechat_image_bytes = None
-                    if NotificationChannel.WECHAT in channels_needing_image:
-                        wechat_image_bytes = markdown_to_image(
-                            dashboard_content,
-                            max_chars=self.notifier._markdown_to_image_max_chars,
-                        )
-                        if wechat_image_bytes is None:
-                            logger.warning(
-                                "企业微信 Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
-                                _get_md2img_hint(),
+                    def _send_wechat_report() -> bool:
+                        if report_type == ReportType.BRIEF:
+                            dashboard_content = self.notifier.generate_brief_report(results)
+                        else:
+                            dashboard_content = self.notifier.generate_wechat_dashboard(results)
+                        logger.info(f"企业微信仪表盘长度: {len(dashboard_content)} 字符")
+                        logger.debug(f"企业微信推送内容:\n{dashboard_content}")
+                        wechat_image_bytes = None
+                        if NotificationChannel.WECHAT in channels_needing_image:
+                            wechat_image_bytes = markdown_to_image(
+                                dashboard_content,
+                                max_chars=self.notifier._markdown_to_image_max_chars,
                             )
-                    use_image = self.notifier._should_use_image_for_channel(
-                        NotificationChannel.WECHAT, wechat_image_bytes
+                            if wechat_image_bytes is None:
+                                logger.warning(
+                                    "企业微信 Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                                    _get_md2img_hint(),
+                                )
+                        use_image = self.notifier._should_use_image_for_channel(
+                            NotificationChannel.WECHAT, wechat_image_bytes
+                        )
+                        if use_image:
+                            return self.notifier._send_wechat_image(wechat_image_bytes)
+                        return self.notifier.send_to_wechat(dashboard_content)
+
+                    wechat_success = _send_channel_safely(
+                        NotificationChannel.WECHAT.value,
+                        _send_wechat_report,
                     )
-                    if use_image:
-                        wechat_success = self.notifier._send_wechat_image(wechat_image_bytes)
-                    else:
-                        wechat_success = self.notifier.send_to_wechat(dashboard_content)
 
                 # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
                 non_wechat_success = False
@@ -1601,16 +2042,23 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
-                        non_wechat_success = self.notifier.send_to_feishu(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_feishu(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.TELEGRAM:
-                        use_image = self.notifier._should_use_image_for_channel(
-                            channel, image_bytes
-                        )
-                        if use_image:
-                            result = self.notifier._send_telegram_photo(image_bytes)
-                        else:
-                            result = self.notifier.send_to_telegram(report)
-                        non_wechat_success = result or non_wechat_success
+                        def _send_telegram_report() -> bool:
+                            use_image = self.notifier._should_use_image_for_channel(
+                                channel, image_bytes
+                            )
+                            if use_image:
+                                return self.notifier._send_telegram_photo(image_bytes)
+                            return self.notifier.send_to_telegram(report)
+
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            _send_telegram_report,
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.EMAIL:
                         if stock_email_groups:
                             code_to_emails: Dict[str, Optional[List[str]]] = {}
@@ -1628,71 +2076,128 @@ class StockAnalysisPipeline:
                                 key = tuple(recs) if recs else None
                                 emails_to_results[key].append(r)
                             for key, group_results in emails_to_results.items():
-                                grp_report = self._generate_aggregate_report(group_results, report_type)
-                                grp_image_bytes = None
-                                if channel.value in self.notifier._markdown_to_image_channels:
-                                    grp_image_bytes = markdown_to_image(
-                                        grp_report,
-                                        max_chars=self.notifier._markdown_to_image_max_chars,
-                                    )
-                                use_image = self.notifier._should_use_image_for_channel(
-                                    channel, grp_image_bytes
-                                )
                                 receivers = list(key) if key is not None else None
-                                if use_image:
-                                    result = self.notifier._send_email_with_inline_image(
-                                        grp_image_bytes, receivers=receivers
+
+                                def _send_email_group(
+                                    group_results=group_results,
+                                    receivers=receivers,
+                                ) -> bool:
+                                    grp_report = self._generate_aggregate_report(group_results, report_type)
+                                    grp_image_bytes = None
+                                    if channel.value in self.notifier._markdown_to_image_channels:
+                                        grp_image_bytes = markdown_to_image(
+                                            grp_report,
+                                            max_chars=self.notifier._markdown_to_image_max_chars,
+                                        )
+                                    use_image = self.notifier._should_use_image_for_channel(
+                                        channel, grp_image_bytes
                                     )
-                                else:
-                                    result = self.notifier.send_to_email(
+                                    if use_image:
+                                        return self.notifier._send_email_with_inline_image(
+                                            grp_image_bytes, receivers=receivers
+                                        )
+                                    return self.notifier.send_to_email(
                                         grp_report, receivers=receivers
                                     )
-                                non_wechat_success = result or non_wechat_success
+
+                                email_label = (
+                                    f"{channel.value}:{','.join(receivers)}"
+                                    if receivers else f"{channel.value}:default"
+                                )
+                                non_wechat_success = _send_channel_safely(
+                                    email_label,
+                                    _send_email_group,
+                                ) or non_wechat_success
                         else:
+                            def _send_email_report() -> bool:
+                                use_image = self.notifier._should_use_image_for_channel(
+                                    channel, image_bytes
+                                )
+                                if use_image:
+                                    return self.notifier._send_email_with_inline_image(image_bytes)
+                                return self.notifier.send_to_email(report)
+
+                            non_wechat_success = _send_channel_safely(
+                                channel.value,
+                                _send_email_report,
+                            ) or non_wechat_success
+                    elif channel == NotificationChannel.CUSTOM:
+                        def _send_custom_report() -> bool:
                             use_image = self.notifier._should_use_image_for_channel(
                                 channel, image_bytes
                             )
                             if use_image:
-                                result = self.notifier._send_email_with_inline_image(image_bytes)
-                            else:
-                                result = self.notifier.send_to_email(report)
-                            non_wechat_success = result or non_wechat_success
-                    elif channel == NotificationChannel.CUSTOM:
-                        use_image = self.notifier._should_use_image_for_channel(
-                            channel, image_bytes
-                        )
-                        if use_image:
-                            result = self.notifier._send_custom_webhook_image(
-                                image_bytes, fallback_content=report
-                            )
-                        else:
-                            result = self.notifier.send_to_custom(report)
-                        non_wechat_success = result or non_wechat_success
+                                return self.notifier._send_custom_webhook_image(
+                                    image_bytes, fallback_content=report
+                                )
+                            return self.notifier.send_to_custom(report)
+
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            _send_custom_report,
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.PUSHPLUS:
-                        non_wechat_success = self.notifier.send_to_pushplus(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_pushplus(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.SERVERCHAN3:
-                        non_wechat_success = self.notifier.send_to_serverchan3(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_serverchan3(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.DISCORD:
-                        non_wechat_success = self.notifier.send_to_discord(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_discord(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.PUSHOVER:
-                        non_wechat_success = self.notifier.send_to_pushover(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_pushover(report),
+                        ) or non_wechat_success
+                    elif channel == NotificationChannel.NTFY:
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_ntfy(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.ASTRBOT:
-                        non_wechat_success = self.notifier.send_to_astrbot(report) or non_wechat_success
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_astrbot(report),
+                        ) or non_wechat_success
                     elif channel == NotificationChannel.SLACK:
-                        use_image = self.notifier._should_use_image_for_channel(
-                            channel, image_bytes
-                        )
-                        if use_image and self.notifier._slack_bot_token and self.notifier._slack_channel_id:
-                            result = self.notifier._send_slack_image(
-                                image_bytes, fallback_content=report
+                        def _send_slack_report() -> bool:
+                            use_image = self.notifier._should_use_image_for_channel(
+                                channel, image_bytes
                             )
-                        else:
-                            result = self.notifier.send_to_slack(report)
-                        non_wechat_success = result or non_wechat_success
+                            if use_image and self.notifier._slack_bot_token and self.notifier._slack_channel_id:
+                                return self.notifier._send_slack_image(
+                                    image_bytes, fallback_content=report
+                                )
+                            return self.notifier.send_to_slack(report)
+
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            _send_slack_report,
+                        ) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 
                 success = wechat_success or non_wechat_success or context_success
+                if (
+                    (wechat_success or non_wechat_success)
+                    and noise_decision is not None
+                    and hasattr(self.notifier, "record_noise_control")
+                ):
+                    self.notifier.record_noise_control(noise_decision)
+                    noise_finalized = True
+                elif (
+                    noise_decision is not None
+                    and hasattr(self.notifier, "release_noise_control")
+                ):
+                    self.notifier.release_noise_control(noise_decision)
+                    noise_finalized = True
                 if success:
                     logger.info("决策仪表盘推送成功")
                 else:
@@ -1701,6 +2206,12 @@ class StockAnalysisPipeline:
                 logger.info("通知渠道未配置，跳过推送")
                 
         except Exception as e:
+            if (
+                noise_decision is not None
+                and not noise_finalized
+                and hasattr(self.notifier, "release_noise_control")
+            ):
+                self.notifier.release_noise_control(noise_decision)
             import traceback
             logger.error(f"发送通知失败: {e}\n{traceback.format_exc()}")
 

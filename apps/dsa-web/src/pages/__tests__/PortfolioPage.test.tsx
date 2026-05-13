@@ -1,5 +1,5 @@
 import type React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApiError, createParsedApiError } from '../../api/error';
 import PortfolioPage from '../PortfolioPage';
@@ -96,7 +96,12 @@ function makeAccounts(items: AccountItem[] = [{ id: 1, name: 'Main' }]) {
   };
 }
 
-function makeSnapshot(options: { accountId?: number; fxStale?: boolean; accountCount?: number } = {}) {
+function makeSnapshot(options: {
+  accountId?: number;
+  fxStale?: boolean;
+  accountCount?: number;
+  positions?: Array<Record<string, unknown>>;
+} = {}) {
   const accountId = options.accountId ?? 1;
   return {
     asOf: '2026-03-19',
@@ -129,7 +134,7 @@ function makeSnapshot(options: { accountId?: number; fxStale?: boolean; accountC
         feeTotal: 0,
         taxTotal: 0,
         fxStale: options.fxStale ?? true,
-        positions: [],
+        positions: options.positions ?? [],
       },
     ],
   };
@@ -313,6 +318,35 @@ describe('PortfolioPage FX refresh', () => {
     fireEvent.click(screen.getByRole('button', { name: '刷新汇率' }));
 
     expect(await screen.findByText('汇率在线刷新已被禁用。')).toBeInTheDocument();
+  });
+
+  it('renders backend-provided position valuation fields and stale missing-price hint', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+      { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
+      { symbol: 'AAPL', market: 'us', currency: 'USD', quantity: 5, avgCost: 100, totalCost: 500, lastPrice: 0, marketValueBase: 0, unrealizedPnlBase: 0, unrealizedPnlPct: null, valuationCurrency: 'USD', priceSource: 'missing', priceDate: null, priceStale: true, priceAvailable: false },
+    ] }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('HK00700')).toBeInTheDocument();
+    expect(screen.getByText('420.0000')).toBeInTheDocument();
+    expect(screen.getByText('HKD 4,200.00')).toBeInTheDocument();
+    expect(screen.getByText('+5.00%')).toBeInTheDocument();
+    expect(screen.getByText('收盘价 · 2026-03-18')).toBeInTheDocument();
+    expect(screen.getByText('缺价')).toBeInTheDocument();
+    expect(screen.getAllByText('--').length).toBeGreaterThanOrEqual(2);
+
+    const hkRow = screen.getByText('HK00700').closest('tr');
+    const aaplRow = screen.getByText('AAPL').closest('tr');
+    expect(hkRow).not.toBeNull();
+    expect(aaplRow).not.toBeNull();
+
+    const hkRowCells = within(hkRow as HTMLTableRowElement).getAllByRole('cell');
+    const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
+    expect(hkRowCells.at(-1)).toHaveClass('text-success');
+    expect(aaplRowCells.at(-1)).toHaveClass('text-secondary');
   });
 
   it('prefers disabled feedback over empty-pair feedback when refresh is disabled', async () => {

@@ -34,6 +34,8 @@ _OPERATION_ADVICE_CANONICAL_MAP = {
     "accumulate": "buy",
     "add position": "buy",
     "持有": "hold",
+    "洗盘观察": "hold",
+    "观察": "hold",
     "hold": "hold",
     "观望": "watch",
     "watch": "watch",
@@ -60,10 +62,17 @@ _OPERATION_ADVICE_TRANSLATIONS = {
 }
 
 _TREND_PREDICTION_CANONICAL_MAP = {
+    "强势空头": "strong_bearish",
     "强烈看多": "strong_bullish",
     "strong bullish": "strong_bullish",
     "very bullish": "strong_bullish",
+    "强势多头": "strong_bullish",
+    "多头排列": "bullish",
+    "空头排列": "bearish",
+    "弱势多头": "bullish",
+    "弱势空头": "bearish",
     "看多": "bullish",
+    "盘整": "sideways",
     "bullish": "bullish",
     "uptrend": "bullish",
     "震荡": "sideways",
@@ -317,6 +326,50 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
     },
 }
 
+_DECISION_INTENT_NEGATIONS = (
+    "不",
+    "并非",
+    "并未",
+    "未",
+    "没有",
+    "无",
+    "不是",
+    "no ",
+    "not ",
+    " never",
+)
+
+_DECISION_INTENT_NEGATION_SCOPE_BREAK_CHARS = "，,。；;:!?！？"
+_DECISION_INTENT_NEGATION_CONNECTORS = (
+    "建议",
+    "应",
+    "应当",
+    "宜",
+    "先",
+    "再",
+    "暂",
+    "暂时",
+    "可",
+    "可以",
+    "需要",
+    "需",
+    "继续",
+)
+
+
+def _strip_decision_negation_connectors(text: str) -> str:
+    """Remove common advisory connectors between a negation token and decision word."""
+    suffix = text.strip()
+    changed = True
+    while changed:
+        changed = False
+        for connector in _DECISION_INTENT_NEGATION_CONNECTORS:
+            if suffix.startswith(connector):
+                suffix = suffix[len(connector):].strip()
+                changed = True
+                break
+    return suffix
+
 
 def normalize_report_language(value: Optional[str], default: str = "zh") -> str:
     """Normalize report language to a supported short code."""
@@ -381,6 +434,52 @@ def _canonicalize_lookup_value(value: Any, canonical_map: Dict[str, str]) -> Opt
     return None
 
 
+def _first_non_negated_position(text: str, token: str) -> Optional[int]:
+    if not text or not token:
+        return None
+
+    normalized_text = text.lower().strip()
+    if any(ch in normalized_text for ch in "abcdefghijklmnopqrstuvwxyz"):
+        matches = list(re.finditer(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", normalized_text))
+    else:
+        matches = list(re.finditer(re.escape(token), normalized_text))
+
+    for match in matches:
+        prefix = normalized_text[: match.start()]
+        if any(prefix.rstrip().endswith(neg) for neg in _DECISION_INTENT_NEGATIONS):
+            continue
+        lookback = prefix[-12:]
+        negated = False
+        for neg in _DECISION_INTENT_NEGATIONS:
+            if not neg:
+                continue
+            neg_idx = lookback.rfind(neg)
+            if neg_idx < 0:
+                continue
+            suffix = lookback[neg_idx + len(neg):]
+            if not suffix:
+                negated = True
+                break
+            if any(ch in suffix for ch in _DECISION_INTENT_NEGATION_SCOPE_BREAK_CHARS):
+                continue
+            normalized_suffix = _strip_decision_negation_connectors(suffix)
+            if not normalized_suffix:
+                negated = True
+                break
+            if any(ch in normalized_suffix for ch in _DECISION_INTENT_NEGATION_SCOPE_BREAK_CHARS):
+                continue
+            if len(normalized_suffix) > 6 and token not in normalized_suffix:
+                continue
+            if normalized_suffix.startswith(token):
+                negated = True
+                break
+        if negated:
+            continue
+        else:
+            return match.start()
+    return None
+
+
 def _is_placeholder_stock_name(value: Any, code: Any = None) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -429,9 +528,16 @@ def localize_operation_advice(value: Any, language: Optional[str]) -> str:
 
 def localize_trend_prediction(value: Any, language: Optional[str]) -> str:
     """Translate trend prediction between Chinese and English when recognized."""
+    normalized_language = normalize_report_language(language)
+    raw_text = str(value or "").strip()
+    if not raw_text:
+        return raw_text
+    if normalized_language == "zh":
+        if re.search(r"[\u4e00-\u9fff]", raw_text):
+            return raw_text
     return _translate_from_map(
         value,
-        language,
+        normalized_language,
         canonical_map=_TREND_PREDICTION_CANONICAL_MAP,
         translations=_TREND_PREDICTION_TRANSLATIONS,
     )
@@ -486,6 +592,26 @@ def infer_decision_type_from_advice(value: Any, default: str = "hold") -> str:
         return "sell"
     if canonical in {"hold", "watch"}:
         return "hold"
+
+    normalized_text = _normalize_lookup_key(value)
+    best_position: Optional[int] = None
+    best_canonical: Optional[str] = None
+    for option, canonical in _OPERATION_ADVICE_CANONICAL_MAP.items():
+        option_norm = _normalize_lookup_key(option)
+        pos = _first_non_negated_position(normalized_text, option_norm)
+        if pos is None:
+            continue
+        if best_position is None or pos < best_position:
+            best_position = pos
+            best_canonical = canonical
+
+    if best_canonical in {"strong_buy", "buy"}:
+        return "buy"
+    if best_canonical in {"reduce", "sell", "strong_sell"}:
+        return "sell"
+    if best_canonical in {"hold", "watch"}:
+        return "hold"
+
     return default
 
 

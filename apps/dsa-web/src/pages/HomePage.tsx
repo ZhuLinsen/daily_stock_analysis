@@ -1,6 +1,10 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BarChart3 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { getParsedApiError, type ParsedApiError } from '../api/error';
+import { analysisApi } from '../api/analysis';
+import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
@@ -8,12 +12,50 @@ import { HistoryList } from '../components/history';
 import { ReportMarkdown, ReportSummary } from '../components/report';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
+import type { SetupStatusResponse } from '../types/systemConfig';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
+
+type MarketReviewNotice = {
+  variant: 'success' | 'warning' | 'danger';
+  title: string;
+  message: string;
+} | null;
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
+  const [marketReviewNotice, setMarketReviewNotice] = useState<MarketReviewNotice>(null);
+  const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
+  const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
+  const [marketReviewReportCopied, setMarketReviewReportCopied] = useState(false);
+  const marketReviewPollTimer = useRef<number | null>(null);
+  const dashboardScrollRef = useRef<HTMLElement | null>(null);
+
+  const stopMarketReviewPolling = useCallback(() => {
+    if (marketReviewPollTimer.current !== null) {
+      window.clearInterval(marketReviewPollTimer.current);
+      marketReviewPollTimer.current = null;
+    }
+  }, []);
+
+  const scrollMarketReviewFeedbackIntoView = useCallback(() => {
+    const scrollContainer = dashboardScrollRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+
+    if (typeof scrollContainer.scrollTo === 'function') {
+      scrollContainer.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    scrollContainer.scrollTop = 0;
+  }, []);
+
+  useEffect(() => stopMarketReviewPolling, [stopMarketReviewPolling]);
+  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
 
   const {
     query,
@@ -55,8 +97,38 @@ const HomePage: React.FC = () => {
   useEffect(() => {
     document.title = '每日选股分析 - DSA';
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    systemConfigApi.getSetupStatus()
+      .then((status) => {
+        if (active) {
+          setSetupStatus(status);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setSetupStatus(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
   const reportText = getReportText(reportLanguage);
+  const setupNeedsAction = setupStatus ? !setupStatus.isComplete : false;
+  const setupMissingLabels = useMemo(() => {
+    if (!setupStatus) {
+      return '';
+    }
+    const requiredNeedsAction = setupStatus.checks
+      .filter((check) => check.required && check.status === 'needs_action')
+      .map((check) => check.title);
+    return requiredNeedsAction.slice(0, 3).join('、');
+  }, [setupStatus]);
 
   useDashboardLifecycle({
     loadInitialHistory,
@@ -113,6 +185,160 @@ const HomePage: React.FC = () => {
     });
   }, [selectedReport, submitAnalysis]);
 
+  const pollMarketReviewStatus = useCallback(
+    async (taskId: string) => {
+      stopMarketReviewPolling();
+
+      const maxAttempts = 120;
+      const intervalMs = 2000;
+      let attempts = 0;
+
+      const poll = async (): Promise<boolean> => {
+        if (attempts >= maxAttempts) {
+          stopMarketReviewPolling();
+          setMarketReviewReport(null);
+          setMarketReviewNotice({
+            variant: 'danger',
+            title: '大盘复盘已超时',
+            message: '任务长时间未返回最终结果，请在任务列表/历史中查看。',
+          });
+          scrollMarketReviewFeedbackIntoView();
+          return false;
+        }
+
+        attempts += 1;
+
+        try {
+          const status = await analysisApi.getStatus(taskId);
+          if (status.status === 'pending' || status.status === 'processing') {
+            setMarketReviewReport(null);
+            const progress = typeof status.progress === 'number'
+              ? `${status.progress}%`
+              : '进行中';
+            setMarketReviewNotice({
+              variant: 'warning',
+              title: '大盘复盘进行中',
+              message: `任务状态：${status.status}（${progress}）`,
+            });
+            return true;
+          }
+
+          if (status.status === 'completed') {
+            stopMarketReviewPolling();
+            const marketReviewText = typeof status.marketReviewReport === 'string'
+              ? status.marketReviewReport
+              : '';
+            setMarketReviewReport(marketReviewText ? marketReviewText.trim() : null);
+            setMarketReviewNotice({
+              variant: 'success',
+              title: '大盘复盘已完成',
+              message: marketReviewText ? '大盘复盘任务已完成，结果如下：' : '大盘复盘任务已完成，结果已生成并按配置推送。',
+            });
+            setMarketReviewError(null);
+            scrollMarketReviewFeedbackIntoView();
+            return false;
+          }
+
+          if (status.status === 'failed') {
+            stopMarketReviewPolling();
+            setMarketReviewReport(null);
+            setMarketReviewError(
+              getParsedApiError({
+                response: {
+                  status: 500,
+                  data: {
+                    error: 'market_review_failed',
+                    message: status.error || '大盘复盘执行失败。',
+                  },
+                },
+              }),
+            );
+            setMarketReviewNotice(null);
+            scrollMarketReviewFeedbackIntoView();
+            return false;
+          }
+
+          stopMarketReviewPolling();
+          setMarketReviewReport(null);
+          setMarketReviewNotice({
+            variant: 'danger',
+            title: '大盘复盘状态异常',
+            message: `收到未知任务状态：${status.status}`,
+          });
+          scrollMarketReviewFeedbackIntoView();
+          return false;
+        } catch (err: unknown) {
+          const parsed = getParsedApiError(err);
+          if (attempts >= maxAttempts) {
+            stopMarketReviewPolling();
+            setMarketReviewReport(null);
+            setMarketReviewError(parsed);
+            setMarketReviewNotice(null);
+            scrollMarketReviewFeedbackIntoView();
+            return false;
+          }
+          return true;
+        }
+
+        return true;
+      };
+
+      if (await poll()) {
+        marketReviewPollTimer.current = window.setInterval(() => {
+          void poll().then((shouldContinue) => {
+            if (!shouldContinue) {
+              stopMarketReviewPolling();
+            }
+          });
+        }, intervalMs);
+      }
+    },
+    [scrollMarketReviewFeedbackIntoView, stopMarketReviewPolling],
+  );
+
+  const handleTriggerMarketReview = useCallback(async () => {
+    setIsSubmittingMarketReview(true);
+    setMarketReviewNotice(null);
+    setMarketReviewError(null);
+    setMarketReviewReport(null);
+    scrollMarketReviewFeedbackIntoView();
+    try {
+      const result = await analysisApi.triggerMarketReview({ sendNotification: notify });
+      setMarketReviewNotice({
+        variant: 'success',
+        title: '大盘复盘已提交',
+        message: result.message,
+      });
+      scrollMarketReviewFeedbackIntoView();
+
+      if (result.taskId) {
+        await pollMarketReviewStatus(result.taskId);
+      }
+    } catch (err: unknown) {
+      setMarketReviewError(getParsedApiError(err));
+      setMarketReviewNotice(null);
+      scrollMarketReviewFeedbackIntoView();
+    } finally {
+      setIsSubmittingMarketReview(false);
+    }
+  }, [notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView]);
+
+  const handleCopyMarketReviewReport = useCallback(() => {
+    if (!marketReviewReport) {
+      return;
+    }
+
+    void navigator.clipboard.writeText(marketReviewReport).then(
+      () => {
+        setMarketReviewReportCopied(true);
+        setTimeout(() => setMarketReviewReportCopied(false), 2000);
+      },
+      (err) => {
+        console.error('复制失败:', err);
+      },
+    );
+  }, [marketReviewReport]);
+
   const handleDeleteSelectedHistory = useCallback(() => {
     void deleteSelectedHistory();
     setShowDeleteConfirm(false);
@@ -162,55 +388,71 @@ const HomePage: React.FC = () => {
     >
       <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
         <header className="flex min-w-0 flex-shrink-0 items-center overflow-hidden px-3 py-3 md:px-4 md:py-4">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5 md:flex-nowrap">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="md:hidden -ml-1 flex-shrink-0 rounded-lg p-1.5 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
-              aria-label="历史记录"
-            >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <div className="relative min-w-0 flex-1">
-              <StockAutocomplete
-                value={query}
-                onChange={setQuery}
-                onSubmit={(stockCode, stockName, selectionSource) => {
-                  handleSubmitAnalysis(stockCode, stockName, selectionSource);
-                }}
-                placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
-                disabled={isAnalyzing}
-                className={inputError ? 'border-danger/50' : undefined}
-              />
+          <div className="flex min-w-0 flex-1 flex-col gap-2.5 md:flex-row md:items-center">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="md:hidden -ml-1 flex-shrink-0 rounded-lg p-1.5 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
+                aria-label="历史记录"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <div className="relative min-w-0 flex-1">
+                <StockAutocomplete
+                  value={query}
+                  onChange={setQuery}
+                  onSubmit={(stockCode, stockName, selectionSource) => {
+                    handleSubmitAnalysis(stockCode, stockName, selectionSource);
+                  }}
+                  placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
+                  disabled={isAnalyzing}
+                  className={inputError ? 'border-danger/50' : undefined}
+                />
+              </div>
             </div>
-            <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground">
-              <input
-                type="checkbox"
-                checked={notify}
-                onChange={(e) => setNotify(e.target.checked)}
-                className="h-3.5 w-3.5 rounded border-border accent-primary"
-              />
-              推送通知
-            </label>
-            <button
-              type="button"
-              onClick={() => handleSubmitAnalysis()}
-              disabled={!query || isAnalyzing}
-              className="btn-primary flex h-10 flex-shrink-0 items-center gap-1.5 whitespace-nowrap"
-            >
-              {isAnalyzing ? (
-                <>
-                  <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  分析中
-                </>
-              ) : (
-                '分析'
-              )}
-            </button>
+            <div className="flex min-w-0 flex-shrink-0 items-center gap-2.5">
+              <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground">
+                <input
+                  type="checkbox"
+                  checked={notify}
+                  onChange={(e) => setNotify(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border accent-primary"
+                />
+                推送通知
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                isLoading={isSubmittingMarketReview}
+                loadingText="提交中"
+                onClick={() => void handleTriggerMarketReview()}
+                className="h-10 flex-1 whitespace-nowrap md:flex-none"
+              >
+                <BarChart3 className="h-4 w-4" aria-hidden="true" />
+                大盘复盘
+              </Button>
+              <button
+                type="button"
+                onClick={() => handleSubmitAnalysis()}
+                disabled={!query || isAnalyzing}
+                className="btn-primary flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap md:flex-none"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    分析中
+                  </>
+                ) : (
+                  '分析'
+                )}
+              </button>
+            </div>
           </div>
         </header>
 
@@ -235,6 +477,31 @@ const HomePage: React.FC = () => {
           </div>
         ) : null}
 
+        {setupNeedsAction ? (
+          <div className="px-3 pb-2 md:px-4">
+            <InlineAlert
+              variant="warning"
+              title="基础配置未完成"
+              message={
+                setupMissingLabels
+                  ? `还缺少 ${setupMissingLabels}，完成后即可开始最小可用分析。`
+                  : '还缺少基础配置，完成后即可开始最小可用分析。'
+              }
+              action={(
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => navigate('/settings')}
+                >
+                  去配置
+                </Button>
+              )}
+              className="rounded-xl px-3 py-2 text-xs shadow-none"
+            />
+          </div>
+        ) : null}
+
         <div className="flex-1 flex min-h-0 overflow-hidden">
           <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
             {sidebarContent}
@@ -252,7 +519,54 @@ const HomePage: React.FC = () => {
             </div>
           ) : null}
 
-          <section className="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto px-3 pb-4 md:px-6 touch-pan-y">
+          <section
+            ref={dashboardScrollRef}
+            data-testid="home-dashboard-scroll"
+            className="flex-1 min-w-0 min-h-0 overflow-x-auto overflow-y-auto px-3 pb-4 md:px-6 touch-pan-y"
+          >
+            {marketReviewNotice ? (
+              <div className="mb-3">
+                <InlineAlert
+                  variant={marketReviewNotice.variant}
+                  title={marketReviewNotice.title}
+                  message={marketReviewNotice.message}
+                  className="rounded-xl px-3 py-2 text-xs shadow-none"
+                />
+              </div>
+            ) : null}
+
+            {marketReviewError ? (
+              <div className="mb-3">
+                <ApiErrorAlert
+                  error={marketReviewError}
+                  className="mb-1"
+                  onDismiss={() => setMarketReviewError(null)}
+                />
+              </div>
+            ) : null}
+
+            {marketReviewReport ? (
+              <div className="mb-3 rounded-xl border border-subtle bg-surface/70 px-3 py-3 text-xs text-secondary-text shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="font-semibold text-foreground">大盘复盘报告</p>
+                  <button
+                    type="button"
+                    className="home-surface-button h-7 rounded-md px-3 py-1 text-xs text-foreground"
+                    disabled={marketReviewReportCopied}
+                    onClick={() => void handleCopyMarketReviewReport()}
+                  >
+                    {marketReviewReportCopied ? '已复制' : '复制'}
+                  </button>
+                </div>
+                <pre
+                  data-testid="market-review-report"
+                  className="overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-background px-3 py-2 leading-relaxed"
+                >
+                  {marketReviewReport}
+                </pre>
+              </div>
+            ) : null}
+
             {error ? (
               <ApiErrorAlert
                 error={error}

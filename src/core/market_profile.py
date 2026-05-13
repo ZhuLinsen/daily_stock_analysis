@@ -53,9 +53,24 @@ US_PROFILE = MarketProfile(
     has_sector_rankings=False,
 )
 
+HK_PROFILE = MarketProfile(
+    region="hk",
+    mood_index_code="HSI",
+    news_queries=[
+        "港股 大盘 复盘",
+        "Hong Kong stock market",
+        "恒生指数 行情",
+    ],
+    prompt_index_hint="分析恒生指数、恒生科技指数、国企指数等各指数走势特点",
+    has_market_stats=False,
+    has_sector_rankings=False,
+)
+
 
 def get_profile(region: str) -> MarketProfile:
     """根据 region 返回对应的 MarketProfile"""
     if region == "us":
         return US_PROFILE
+    if region == "hk":
+        return HK_PROFILE
     return CN_PROFILE

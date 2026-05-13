@@ -21,9 +21,11 @@ A股自选股智能分析系统 - 主调度程序
 - 效率优先：关注筹码集中度好的股票
 - 买点偏好：缩量回踩 MA5/MA10 支撑
 """
+from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from dotenv import dotenv_values
 from src.config import setup_env
@@ -47,7 +49,6 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import List, Tuple
 
 from data_provider.base import canonical_stock_code
 from src.webui_frontend import prepare_webui_frontend_assets
@@ -140,6 +141,22 @@ def _setup_bootstrap_logging(debug: bool = False) -> None:
         root.addHandler(handler)
 
 
+def _setup_runtime_logging(log_dir: str, debug: bool = False) -> bool:
+    """Switch to configured logging, falling back to console on file I/O errors."""
+    try:
+        setup_logging(log_prefix="stock_analysis", debug=debug, log_dir=log_dir)
+        return True
+    except OSError as exc:
+        logger.warning(
+            "文件日志初始化失败，已降级为控制台日志输出；日志目录 %r 当前不可写或不可创建: %s。"
+            "官方 Docker 镜像启动入口会自动修复默认挂载目录权限；若仍失败，"
+            "请检查是否使用了 --user、只读挂载、rootless Docker 或 NFS 等限制写入的环境。",
+            log_dir,
+            exc,
+        )
+        return False
+
+
 def _get_stock_analysis_pipeline():
     """Lazily import StockAnalysisPipeline for external consumers.
 
@@ -213,6 +230,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
   python main.py --no-notify        # 不发送推送通知
+  python main.py --check-notify     # 检查通知配置，不发送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
@@ -241,6 +259,12 @@ def parse_arguments() -> argparse.Namespace:
         '--no-notify',
         action='store_true',
         help='不发送推送通知'
+    )
+
+    parser.add_argument(
+        '--check-notify',
+        action='store_true',
+        help='只读检查通知渠道配置，不发送通知'
     )
 
     parser.add_argument(
@@ -402,6 +426,27 @@ def _compute_trading_day_filter(
     return (filtered_codes, effective_region, should_skip_all)
 
 
+def _run_market_review_with_shared_lock(
+    config: Config,
+    run_market_review_func: Callable[..., Optional[str]],
+    **kwargs: Any,
+) -> Optional[str]:
+    from src.core.market_review_lock import (
+        release_market_review_lock,
+        try_acquire_market_review_lock,
+    )
+
+    lock_token = try_acquire_market_review_lock(config)
+    if lock_token is None:
+        logger.warning("大盘复盘正在执行中，跳过本次大盘复盘")
+        return None
+
+    try:
+        return run_market_review_func(**kwargs)
+    finally:
+        release_market_review_lock(lock_token)
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
@@ -488,7 +533,9 @@ def run_full_analysis(
             and not args.no_market_review
             and effective_region != ''
         ):
-            review_result = run_market_review(
+            review_result = _run_market_review_with_shared_lock(
+                config,
+                run_market_review,
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
                 search_service=pipeline.search_service,
@@ -514,7 +561,7 @@ def run_full_analysis(
             if parts:
                 combined_content = "\n\n---\n\n".join(parts)
                 if pipeline.notifier.is_available():
-                    if pipeline.notifier.send(combined_content, email_send_to_all=True):
+                    if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
                         logger.info("已合并推送（个股+大盘复盘）")
                     else:
                         logger.warning("合并推送失败")
@@ -565,7 +612,10 @@ def run_full_analysis(
                     logger.info(f"飞书云文档创建成功: {doc_url}")
                     # 可选：将文档链接也推送到群里
                     if not args.no_notify:
-                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+                        pipeline.notifier.send(
+                            f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}",
+                            route_type="report",
+                        )
 
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
@@ -733,7 +783,7 @@ def main() -> int:
 
     # 配置日志（输出到控制台和文件）
     try:
-        setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
+        _setup_runtime_logging(config.log_dir, debug=args.debug)
     except Exception as exc:
         logger.exception("切换到配置日志目录失败: %s", exc)
         return 1
@@ -747,6 +797,16 @@ def main() -> int:
     warnings = config.validate()
     for warning in warnings:
         logger.warning(warning)
+
+    if getattr(args, "check_notify", False):
+        from src.services.notification_diagnostics import (
+            format_notification_diagnostics,
+            run_notification_diagnostics,
+        )
+
+        result = run_notification_diagnostics(config)
+        print(format_notification_diagnostics(result))
+        return 0 if result.ok else 1
 
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
@@ -821,10 +881,8 @@ def main() -> int:
 
         # 模式1: 仅大盘复盘
         if args.market_review:
-            from src.analyzer import GeminiAnalyzer
             from src.core.market_review import run_market_review
-            from src.notification import NotificationService
-            from src.search_service import SearchService
+            from src.core.market_review_runtime import build_market_review_runtime
 
             # Issue #373: Trading day check for market-review-only mode.
             # Do NOT use _compute_trading_day_filter here: that helper checks
@@ -842,35 +900,11 @@ def main() -> int:
                     return 0
 
             logger.info("模式: 仅大盘复盘")
-            notifier = NotificationService()
+            notifier, analyzer, search_service = build_market_review_runtime(config)
 
-            # 初始化搜索服务和分析器（如果有配置）
-            search_service = None
-            analyzer = None
-
-            if config.has_search_capability_enabled():
-                search_service = SearchService(
-                    bocha_keys=config.bocha_api_keys,
-                    tavily_keys=config.tavily_api_keys,
-                    anspire_keys=config.anspire_api_keys,
-                    brave_keys=config.brave_api_keys,
-                    serpapi_keys=config.serpapi_keys,
-                    minimax_keys=config.minimax_api_keys,
-                    searxng_base_urls=config.searxng_base_urls,
-                    searxng_public_instances_enabled=config.searxng_public_instances_enabled,
-                    news_max_age_days=config.news_max_age_days,
-                    news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
-                )
-
-            if config.gemini_api_key or config.openai_api_key:
-                analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
-                if not analyzer.is_available():
-                    logger.warning("AI 分析器初始化后不可用，请检查 API Key 配置")
-                    analyzer = None
-            else:
-                logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
-
-            run_market_review(
+            _run_market_review_with_shared_lock(
+                config,
+                run_market_review,
                 notifier=notifier,
                 analyzer=analyzer,
                 search_service=search_service,

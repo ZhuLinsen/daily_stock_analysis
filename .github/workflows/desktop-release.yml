@@ -50,6 +50,16 @@ jobs:
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
 
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export VERSION="${RELEASE_TAG#v}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
+
       - name: Build desktop package (Windows)
         shell: pwsh
         env:
@@ -75,14 +85,30 @@ jobs:
           $exeTarget = "dist/release-assets/daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
           $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
           Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
+          Copy-Item -Path $installerExe.FullName -Destination "dist/release-assets/$($installerExe.Name)" -Force
           Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
+          Get-ChildItem -Path 'apps/dsa-desktop/dist' -File |
+            Where-Object { $_.Name -eq 'latest.yml' -or $_.Name -like '*.blockmap' } |
+            ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination "dist/release-assets/$($_.Name)" -Force
+            }
+          if (-not (Test-Path 'dist/release-assets/latest.yml')) {
+            throw 'No latest.yml found under dist/release-assets.'
+          }
+          $expectedVersion = $env:RELEASE_TAG.TrimStart('v')
+          $versionPattern = '^version:\s*[''"]?' + [regex]::Escape($expectedVersion) + '[''"]?\s*$'
+          if (-not (Select-String -Path 'dist/release-assets/latest.yml' -Pattern $versionPattern)) {
+            throw "latest.yml version does not match release tag $env:RELEASE_TAG."
+          }
+          if (-not (Get-ChildItem -Path 'dist/release-assets' -Filter '*.blockmap' -File)) {
+            throw 'No blockmap files found under dist/release-assets.'
+          }
+          Get-ChildItem -Path 'dist/release-assets' -File | Sort-Object Name | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v6
         with:
           name: desktop-windows-${{ env.RELEASE_TAG }}
-          path: |
-            dist/release-assets/*.exe
-            dist/release-assets/*.zip
+          path: dist/release-assets/*
           if-no-files-found: error
 
   build-macos:
@@ -126,6 +152,16 @@ jobs:
           cache-dependency-path: |
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
+
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export VERSION="${RELEASE_TAG#v}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
 
       - name: Cache Electron binaries
         uses: actions/cache@v5

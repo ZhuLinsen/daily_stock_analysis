@@ -313,6 +313,13 @@ class LLMToolAdapter:
         """Shared completion path for both tool and text-only calls."""
         config = self._config
         models_to_try = get_effective_agent_models_to_try(config)
+        if not models_to_try:
+            error_msg = (
+                "No LLM configured. Please set LITELLM_MODEL, LLM_CHANNELS, "
+                "or provider API keys before using Agent."
+            )
+            logger.error(error_msg)
+            return LLMResponse(content=error_msg, provider="error")
         started_at = time.time()
         providers = [self._get_model_provider(model) for model in models_to_try]
 

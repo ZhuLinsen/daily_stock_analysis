@@ -35,6 +35,7 @@ export const Select: React.FC<SelectProps> = ({
 }) => {
   const selectId = useId();
   const resolvedId = id ?? selectId;
+  const hasEmptyOption = options.some((option) => option.value === '');
 
   return (
     <div className={cn('flex flex-col', className)}>
@@ -51,7 +52,7 @@ export const Select: React.FC<SelectProps> = ({
             disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
           )}
         >
-          {placeholder && (
+          {placeholder && !hasEmptyOption && (
             <option value="" disabled>
               {placeholder}
             </option>

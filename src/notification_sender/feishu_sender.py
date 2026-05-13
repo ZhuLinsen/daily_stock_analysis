@@ -10,7 +10,7 @@ import hashlib
 import hmac
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -73,7 +73,7 @@ class FeishuSender:
         }
     
           
-    def send_to_feishu(self, content: str) -> bool:
+    def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到飞书机器人
         
@@ -141,7 +141,7 @@ class FeishuSender:
             return self._send_feishu_chunked(formatted_content, effective_max_bytes)
         
         try:
-            return self._send_feishu_message(formatted_content)
+            return self._send_feishu_message(formatted_content, timeout_seconds=timeout_seconds)
         except Exception as e:
             logger.error(f"发送飞书消息失败: {e}")
             return False
@@ -187,7 +187,7 @@ class FeishuSender:
         
         return success_count == total_chunks
     
-    def _send_feishu_message(self, content: str) -> bool:
+    def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """发送单条飞书消息（优先使用 Markdown 卡片）"""
         prepared_content = self._apply_keyword_prefix(content)
         security_fields = self._build_security_fields()
@@ -201,7 +201,7 @@ class FeishuSender:
             response = requests.post(
                 self._feishu_url,
                 json=request_payload,
-                timeout=30,
+                timeout=timeout_seconds or 30,
                 verify=self._webhook_verify_ssl
             )
 
@@ -233,7 +233,7 @@ class FeishuSender:
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": "A股智能分析报告"
+                        "content": "股票智能分析报告"
                     }
                 },
                 "elements": [

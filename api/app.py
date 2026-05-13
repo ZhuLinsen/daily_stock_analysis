@@ -304,14 +304,19 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                     status_code=404,
                     content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
                 )
-            
-            file_path = static_dir / full_path
-            if file_path.exists() and file_path.is_file():
+
+            # Reuse the same containment check as /assets/* so that requests
+            # like `/%2e%2e/%2e%2e/etc/passwd` cannot escape static_dir via
+            # the SPA fallback. Starlette's :path converter does not collapse
+            # `..` segments, so static_dir / full_path can resolve outside
+            # the bundle root if served unchecked.
+            file_path = _resolve_asset_path(static_dir, full_path) if full_path else None
+            if file_path is not None and file_path.is_file():
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
                 content_type, _ = mimetypes.guess_type(str(file_path))
                 return FileResponse(file_path, media_type=content_type)
-            
+
             return FileResponse(static_dir / "index.html")
     
     return app

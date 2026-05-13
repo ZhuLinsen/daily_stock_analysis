@@ -144,11 +144,15 @@ Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 
 | 变量名 | 说明 |
 |--------|------|
+| `ANSPIRE_API_KEYS` | Anspire Open API 密钥（大模型与搜索共用，推荐） |
+| `AIHUBMIX_KEY` | AIHubMix API 密钥（一 Key 多模型，推荐） |
 | `GEMINI_API_KEY` | Gemini API 密钥 |
-| `BOCHA_API_KEYS` | Bocha API 密钥（用逗号分隔） |
-| `MINIMAX_API_KEYS` | MiniMax API 密钥（用逗号分隔） |
+| `OPENAI_API_KEY` | OpenAI 兼容 API 密钥 |
+| `SERPAPI_API_KEYS` | SerpAPI 密钥（推荐） |
 | `TAVILY_API_KEYS` | Tavily API 密钥（用逗号分隔） |
-| `SERPAPI_API_KEYS` | SerpAPI 密钥（用逗号分隔） |
+| `BOCHA_API_KEYS` | Bocha API 密钥（用逗号分隔） |
+| `BRAVE_API_KEYS` | Brave Search API 密钥（用逗号分隔） |
+| `MINIMAX_API_KEYS` | MiniMax API 密钥（用逗号分隔） |
 | `SEARXNG_BASE_URLS` | SearXNG 实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） |
 

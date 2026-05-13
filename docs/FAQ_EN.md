@@ -130,13 +130,17 @@ PROXY_PORT=10809
 
 The system uses exactly one mode by priority: advanced YAML routing (`LITELLM_CONFIG`) > `LLM_CHANNELS` > legacy keys. However, YAML routing only takes effect when the file can be parsed successfully and yields a non-empty `model_list`; if the YAML path is invalid or the content is empty, the system automatically falls back to `LLM_CHANNELS` or legacy keys. Once a tier is active, lower-priority tiers are not used.
 
-**Q: test_env says no usable AI model is configured, what should I do?**
+**Q: check_env says no usable AI model is configured, what should I do?**
 
-Start with one provider and its API key. If you want to pin a primary model, add `LITELLM_MODEL=provider/model`. If you need multi-model switching, configure `LLM_CHANNELS` or advanced YAML routing. Run `python test_env.py --config` to validate config and `python test_env.py --llm` to actually call the API.
+Start with one provider and its API key. If you want to pin a primary model, add `LITELLM_MODEL=provider/model`. If you need multi-model switching, configure `LLM_CHANNELS` or advanced YAML routing. Run `python scripts/check_env.py --config` to validate config and `python scripts/check_env.py --llm` to actually call the API.
 
 **Q: How to use multiple models at once (e.g. AIHubmix + DeepSeek + Gemini)?**
 
 Use channel mode: set `LLM_CHANNELS=aihubmix,deepseek,gemini` and configure each channel's `LLM_{NAME}_BASE_URL`, `LLM_{NAME}_API_KEY`, `LLM_{NAME}_MODELS`. You can also configure this visually in Web Settings → AI Model → AI Model Access.
+
+**Q: The ask-stock / Agent page says no usable LLM is configured, but I only use legacy `GEMINI_*` / `OPENAI_*` / `ANTHROPIC_*` settings. What should I check?**
+
+First confirm whether `LITELLM_CONFIG` or `LLM_CHANNELS` is active, because either of those tiers overrides legacy keys. If neither tier is active and `AGENT_LITELLM_MODEL` is empty, the ask-stock Agent still inherits legacy provider models automatically: `GEMINI_MODEL`, `OPENAI_MODEL`, and `ANTHROPIC_MODEL` are mapped to LiteLLM provider-prefixed model names for the corresponding runtime. This fix does not silently migrate or clear old settings; it only returns the real backend reason to the frontend so you can see whether the issue is a missing key, a missing model name, or an upper-tier config taking precedence. Full compatibility details are documented in the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) under “Ask-Stock Agent / LiteLLM compatibility notes”.
 
 ---
 

@@ -3,7 +3,6 @@
 
 Covers:
 - _resolve_vision_model(): priority chain (vision_model > openai_vision_model > litellm_model > inferred)
-- gemini-3 heuristic downgrade behaviour
 - _get_api_keys_for_model(): provider key routing
 - _call_litellm_vision(): request payload / timeout / error handling
 - extract_stock_codes_from_image(): magic bytes check, parsing
@@ -57,11 +56,11 @@ def _cfg(**kwargs) -> Config:
         vision_model="",
         vision_provider_priority="gemini,anthropic,openai",
         gemini_api_keys=[],
-        gemini_model="gemini-2.0-flash",
+        gemini_model="gemini-3.1-pro-preview",
         anthropic_api_keys=[],
-        anthropic_model="claude-3-5-sonnet-20241022",
+        anthropic_model="claude-sonnet-4-6",
         openai_api_keys=[],
-        openai_model="gpt-4o-mini",
+        openai_model="gpt-5.5",
         openai_base_url=None,
         openai_vision_model=None,
         deepseek_api_keys=[],
@@ -99,7 +98,7 @@ class TestResolveVisionModel:
     def test_infers_gemini_from_api_keys(self):
         cfg = _cfg(openai_vision_model=None, litellm_model="", gemini_api_keys=[_GEMINI_KEY])
         with patch("src.services.image_stock_extractor.get_config", return_value=cfg):
-            assert _resolve_vision_model() == "gemini/gemini-2.0-flash"
+            assert _resolve_vision_model() == "gemini/gemini-3.1-pro-preview"
 
     def test_infers_anthropic_when_no_gemini_key(self):
         cfg = _cfg(openai_vision_model=None, litellm_model="", gemini_api_keys=[], anthropic_api_keys=[_ANTHROPIC_KEY])
@@ -113,10 +112,10 @@ class TestResolveVisionModel:
             result = _resolve_vision_model()
             assert result.startswith("openai/")
 
-    def test_downgrades_gemini3_to_gemini20_flash(self):
-        cfg = _cfg(openai_vision_model="gemini/gemini-3-flash-preview")
+    def test_keeps_gemini3_vision_model(self):
+        cfg = _cfg(openai_vision_model="gemini/gemini-3.1-pro-preview")
         with patch("src.services.image_stock_extractor.get_config", return_value=cfg):
-            assert _resolve_vision_model() == "gemini/gemini-2.0-flash"
+            assert _resolve_vision_model() == "gemini/gemini-3.1-pro-preview"
 
     def test_returns_empty_when_no_model_and_no_keys(self):
         cfg = _cfg(openai_vision_model=None, litellm_model="", gemini_api_keys=[], anthropic_api_keys=[], openai_api_keys=[])

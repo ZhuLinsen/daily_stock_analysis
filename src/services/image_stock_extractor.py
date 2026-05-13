@@ -208,23 +208,21 @@ def _parse_items_from_text(text: str) -> List[Tuple[str, Optional[str], str]]:
 
 
 def _resolve_vision_model() -> str:
-    """Determine the litellm model to use for vision, with gemini-3 downgrade."""
+    """Determine the litellm model to use for vision."""
     cfg = get_config()
     # Prefer explicit vision model, then OPENAI_VISION_MODEL alias, then primary litellm model
     model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:
-            model = "gemini/gemini-2.0-flash"
+            model_name = cfg.gemini_model or "gemini-3.1-pro-preview"
+            model = model_name if "/" in model_name else f"gemini/{model_name}"
         elif cfg.anthropic_api_keys:
-            model = f"anthropic/{cfg.anthropic_model or 'claude-3-5-sonnet-20241022'}"
+            model = f"anthropic/{cfg.anthropic_model or 'claude-sonnet-4-6'}"
         elif cfg.openai_api_keys:
-            model = f"openai/{cfg.openai_model or 'gpt-4o-mini'}"
+            model = f"openai/{cfg.openai_model or 'gpt-5.5'}"
         else:
             return ""
-    # Gemini 3 does not support vision; downgrade to gemini-2.0-flash
-    if "gemini-3" in model:
-        model = "gemini/gemini-2.0-flash"
     return model
 
 

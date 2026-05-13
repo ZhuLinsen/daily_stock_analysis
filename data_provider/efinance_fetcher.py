@@ -51,9 +51,9 @@ except (ValueError, TypeError):
     )
     _EF_CALL_TIMEOUT = 30
 
-from patch.eastmoney_patch import eastmoney_patch
+from src.patches.eastmoney_patch import eastmoney_patch
 from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
 from .realtime_types import (
     UnifiedRealtimeQuote, RealtimeSource,
     get_realtime_circuit_breaker,
@@ -354,6 +354,11 @@ class EfinanceFetcher(BaseFetcher):
         # 美股不支持，抛出异常让 DataFetcherManager 切换到 AkshareFetcher/YfinanceFetcher
         if _is_us_code(stock_code):
             raise DataFetchError(f"EfinanceFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+
+        # efinance 的历史 K 线接口在港股代码上可能返回非预期市场数据，
+        # 明确跳过并交给 AkShare/Tushare/YFinance/Longbridge 等港股路径兜底。
+        if _is_hk_market(stock_code):
+            raise DataFetchError(f"EfinanceFetcher 不支持港股日线 {stock_code}，请使用 AkshareFetcher 或其他港股数据源")
         
         # 根据代码类型选择不同的获取方法
         if _is_etf_code(stock_code):
