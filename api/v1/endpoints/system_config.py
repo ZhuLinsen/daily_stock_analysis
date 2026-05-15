@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """System configuration endpoints."""
 
 from __future__ import annotations
@@ -6,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from api.deps import get_system_config_service
 from api.v1.schemas.common import ErrorResponse
@@ -29,6 +28,7 @@ from api.v1.schemas.system_config import (
     ValidateSystemConfigRequest,
     ValidateSystemConfigResponse,
 )
+from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
@@ -41,16 +41,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _ensure_desktop_mode() -> None:
-    """Restrict desktop backup/restore endpoints to desktop runtime only."""
-    if os.getenv("DSA_DESKTOP_MODE", "").strip().lower() != "true":
-        raise HTTPException(
+class EnvBackupAccessDenied(Exception):
+    """Raised when raw `.env` backup access is not allowed for this request."""
+
+    def __init__(self, *, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+def _allow_env_backup_access(request: Request) -> None:
+    """Gate raw .env backup/restore to explicit secure modes.
+
+    - Desktop runtime keeps existing local behavior via DSA_DESKTOP_MODE.
+    - Non-desktop runtime must have admin auth enabled and a valid session.
+    """
+    if os.getenv("DSA_DESKTOP_MODE") == "true":
+        return
+
+    refresh_auth_state()
+    if not is_auth_enabled():
+        raise EnvBackupAccessDenied(
             status_code=403,
-            detail={
-                "error": "desktop_only_feature",
-                "message": "This endpoint is only available in desktop mode",
-            },
+            message="System config backup is disabled; enable admin authentication first",
         )
+
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    if cookie_val and verify_session(cookie_val):
+        return
+
+    raise EnvBackupAccessDenied(
+        status_code=401,
+        message="System config backup requires a valid admin session",
+    )
+
+
+def _raise_env_backup_access_error(exc: EnvBackupAccessDenied) -> None:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "error": "env_backup_access_denied",
+            "message": exc.message,
+        },
+    )
 
 
 @router.get(
@@ -170,29 +203,35 @@ def update_system_config(
     "/config/export",
     response_model=ExportSystemConfigResponse,
     responses={
-        200: {"description": "Desktop env exported"},
+        200: {"description": "Env exported"},
         401: {"description": "Unauthorized", "model": ErrorResponse},
-        403: {"description": "Desktop mode only", "model": ErrorResponse},
+        403: {"description": "Env backup disabled", "model": ErrorResponse},
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
-    summary="Export desktop env backup",
-    description="Desktop-only endpoint that returns the raw saved .env content.",
+    summary="Export env backup",
+    description="Return the raw saved .env content for configuration backup.",
 )
-def export_desktop_system_config(
+def export_system_config(
+    request: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> ExportSystemConfigResponse:
-    """Export the active `.env` file for desktop backup."""
-    _ensure_desktop_mode()
+    """Export the active `.env` file for config backup."""
     try:
-        payload = service.export_desktop_env()
+        _allow_env_backup_access(request)
+    except EnvBackupAccessDenied as exc:
+        logger.warning("System config export blocked: %s", exc)
+        _raise_env_backup_access_error(exc)
+
+    try:
+        payload = service.export_env()
         return ExportSystemConfigResponse.model_validate(payload)
     except Exception as exc:
-        logger.error("Failed to export desktop system configuration: %s", exc, exc_info=True)
+        logger.error("Failed to export system configuration: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "internal_error",
-                "message": "Failed to export desktop system configuration",
+                "message": "Failed to export system configuration",
             },
         )
 
@@ -201,7 +240,7 @@ def export_desktop_system_config(
     "/config/import",
     response_model=UpdateSystemConfigResponse,
     responses={
-        200: {"description": "Desktop env imported"},
+        200: {"description": "Env imported"},
         400: {
             "description": "Import failed",
             "content": {
@@ -216,21 +255,27 @@ def export_desktop_system_config(
             },
         },
         401: {"description": "Unauthorized", "model": ErrorResponse},
-        403: {"description": "Desktop mode only", "model": ErrorResponse},
+        403: {"description": "Env backup disabled", "model": ErrorResponse},
         409: {"description": "Version conflict", "model": SystemConfigConflictResponse},
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
-    summary="Import desktop env backup",
-    description="Desktop-only endpoint that merges raw .env text into the saved configuration.",
+    summary="Import env backup",
+    description="Merge raw .env text into the saved configuration with config version conflict protection.",
 )
-def import_desktop_system_config(
+def import_system_config(
     request: ImportSystemConfigRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> UpdateSystemConfigResponse:
-    """Import a desktop `.env` backup into the active config."""
-    _ensure_desktop_mode()
+    """Import a `.env` backup into the active config."""
     try:
-        payload = service.import_desktop_env(
+        _allow_env_backup_access(request_obj)
+    except EnvBackupAccessDenied as exc:
+        logger.warning("System config import blocked: %s", exc)
+        _raise_env_backup_access_error(exc)
+
+    try:
+        payload = service.import_env(
             config_version=request.config_version,
             content=request.content,
             reload_now=request.reload_now,
@@ -263,12 +308,12 @@ def import_desktop_system_config(
             },
         )
     except Exception as exc:
-        logger.error("Failed to import desktop system configuration: %s", exc, exc_info=True)
+        logger.error("Failed to import system configuration: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "internal_error",
-                "message": "Failed to import desktop system configuration",
+                "message": "Failed to import system configuration",
             },
         )
 

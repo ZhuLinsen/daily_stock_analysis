@@ -1265,6 +1265,24 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
         self.assertEqual(len(monitor.rules), 1)
         self.assertEqual(monitor.rules[0].stock_code, "600519")
 
+    def test_configured_event_monitor_notification_uses_alert_route(self):
+        from src.agent.events import TriggeredAlert, build_event_monitor_from_config
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json='[{"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800}]',
+        )
+        notifier = MagicMock()
+        notifier.send.return_value = True
+
+        monitor = build_event_monitor_from_config(config=config, notifier=notifier)
+
+        self.assertIsNotNone(monitor)
+        monitor._callbacks[0](TriggeredAlert(rule=monitor.rules[0], message="hit"))
+        notifier.send.assert_called_once()
+        self.assertIn("hit", notifier.send.call_args.args[0])
+        self.assertEqual(notifier.send.call_args.kwargs["route_type"], "alert")
+
     def test_build_event_monitor_from_config_accepts_price_change_percent(self):
         from src.agent.events import PriceChangeAlert, build_event_monitor_from_config
 

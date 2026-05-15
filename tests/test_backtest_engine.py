@@ -75,6 +75,52 @@ class BacktestEngineTestCase(unittest.TestCase):
         self.assertEqual(res["direction_expected"], "flat")
         self.assertEqual(res["outcome"], "loss")
 
+    def test_bearish_like_phrases_match_keyword_substring(self):
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("建议买入"),
+            "long",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("继续持有"),
+            "not_down",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("建议持有"),
+            "long",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("建议洗盘观察"),
+            "long",
+        )
+
+    def test_range_bound_watch_is_treated_as_hold_long_path(self):
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("震荡观望"),
+            "long",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("Range-bound watch"),
+            "not_down",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("Range-bound watch"),
+            "long",
+        )
+
+    def test_shakeout_watch_is_treated_as_hold_long_path(self):
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("洗盘观察"),
+            "long",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("Shakeout watch"),
+            "not_down",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("Hold and watch"),
+            "long",
+        )
+
     def test_hold_win_when_flat(self):
         cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0)
         bars = self._bars(date(2024, 1, 1), [100.5, 100.2, 101], highs=[101, 101, 101], lows=[99.8, 99.9, 100])
@@ -275,10 +321,39 @@ class BacktestEngineTestCase(unittest.TestCase):
         # "不要卖出" = "don't sell" — should NOT be direction=down
         self.assertNotEqual(BacktestEngine.infer_direction_expected("不要卖出"), "down")
 
+    def test_conditional_support_phrase_not_negating_hold(self):
+        # "不跌破支撑继续持有" means conditional support hold, not explicit negation of hold.
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("不跌破支撑继续持有"),
+            "long",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("不跌破支撑继续持有"),
+            "not_down",
+        )
+
     def test_wait_then_buy_classified_as_cash(self):
         # "wait" matches first in priority order → cash
         pos = BacktestEngine.infer_position_recommendation("wait for a dip then buy")
         self.assertEqual(pos, "cash")
+
+    def test_wait_phrase_before_bullish_phrases_stays_wait(self):
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("先观望再买入"),
+            "cash",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("先观望再买入"),
+            "flat",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_position_recommendation("观望后买入"),
+            "cash",
+        )
+        self.assertEqual(
+            BacktestEngine.infer_direction_expected("观望后买入"),
+            "flat",
+        )
 
 
 if __name__ == "__main__":

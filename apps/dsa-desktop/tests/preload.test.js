@@ -44,6 +44,7 @@ test('preload exposes desktop version from BrowserWindow additionalArguments', (
   assert.equal(exposeInMainWorldCalls[0][1].version, expectedVersion);
   assert.equal(typeof exposeInMainWorldCalls[0][1].getUpdateState, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].checkForUpdates, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].installDownloadedUpdate, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].openReleasePage, 'function');
   assert.equal(typeof exposeInMainWorldCalls[0][1].onUpdateStateChange, 'function');
   assert.equal(
@@ -141,6 +142,10 @@ test('createDesktopBridge delegates update actions to ipcRenderer', async (t) =>
   });
   assert.deepEqual(await desktopBridge.checkForUpdates(), {
     channel: preloadModule.DESKTOP_CHECK_FOR_UPDATES_CHANNEL,
+    payload: undefined,
+  });
+  assert.deepEqual(await desktopBridge.installDownloadedUpdate(), {
+    channel: preloadModule.DESKTOP_INSTALL_DOWNLOADED_UPDATE_CHANNEL,
     payload: undefined,
   });
   assert.deepEqual(await desktopBridge.openReleasePage('https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0'), {

@@ -552,7 +552,7 @@ def build_event_monitor_from_config(config=None, notifier=None) -> Optional[Even
         title = f"Event Alert | {triggered.rule.stock_code}"
         content = triggered.message or triggered.rule.description or "Alert triggered"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
-        sent = notification_service.send(alert_text)
+        sent = notification_service.send(alert_text, route_type="alert")
         if not sent:
             logger.info("[EventMonitor] No notification channel available for alert: %s", title)
 

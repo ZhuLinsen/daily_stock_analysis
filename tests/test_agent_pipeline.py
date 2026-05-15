@@ -591,6 +591,42 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.operation_advice, "买入")
         self.assertEqual(result.decision_type, "buy")
 
+    def test_convert_missing_decision_type_preserves_conditional_hold_advice(self):
+        """Condition-hold wording should remain hold when decision_type is not provided."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+        from src.stock_analyzer import BuySignal, TrendAnalysisResult, TrendStatus
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "operation_advice": "不跌破支撑位继续持有",
+                "sentiment_score": 72,
+            },
+            provider="gemini",
+        )
+        trend_result = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            buy_signal=BuySignal.STRONG_BUY,
+            signal_score=78,
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "贵州茅台",
+            ReportType.SIMPLE,
+            "q-conditional-hold-advice",
+            trend_result=trend_result,
+        )
+
+        self.assertEqual(result.operation_advice, "不跌破支撑位继续持有")
+        self.assertEqual(result.decision_type, "hold")
+
     def test_convert_empty_top_level_advice_uses_nested_dashboard_advice(self):
         """Empty top-level advice dict should not block nested dashboard fallback."""
         pipeline = self._make_pipeline()
@@ -1293,6 +1329,98 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             pipeline.db.save_news_intel.assert_called_once()
             saved_kwargs = pipeline.db.save_news_intel.call_args.kwargs
             self.assertEqual(saved_kwargs["name"], "科创芯片ETF")
+
+    def test_analyze_with_agent_keeps_dashboard_top_level_fields_after_stability(self):
+        """Decision stability downgrade in agent flow should sync dashboard and top-level decision fields."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.agent.executor import AgentResult
+            from src.enums import ReportType
+            from src.stock_analyzer import TrendAnalysisResult, TrendStatus, BuySignal
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 30,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "卖出",
+                    "decision_type": "sell",
+                    "analysis_summary": "原始建议",
+                    "dashboard": {
+                        "core_conclusion": {"one_sentence": "初始结论"},
+                    },
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            trend_result = TrendAnalysisResult(
+                code="002812",
+                trend_status=TrendStatus.BULL,
+                buy_signal=BuySignal.SELL,
+                signal_score=30,
+                support_levels=[30.0],
+                resistance_levels=[34.0],
+            )
+            fundamental_context = {
+                "capital_flow": {
+                    "status": "ok",
+                    "data": {
+                        "stock_flow": {
+                            "main_net_inflow": 800_000,
+                        }
+                    },
+                }
+            }
+
+            result = pipeline._analyze_with_agent(
+                code="002812",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-stability",
+                stock_name="恩捷股份",
+                realtime_quote={"price": 30.4, "change_pct": -2.1},
+                chip_data=None,
+                fundamental_context=fundamental_context,
+                trend_result=trend_result,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.operation_advice, "洗盘观察")
+            self.assertEqual(result.dashboard.get("decision_type"), "hold")
+            self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
+            self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
 
 
 # ============================================================

@@ -176,7 +176,7 @@ docker pull ghcr.io/zhulinsen/daily_stock_analysis:v3.12.0
 
 如果你一直使用 `latest`，建议改成显式版本 tag；否则很难仅凭容器内页面信息判断自己是否已经重复更新到同一版本。
 
-在确认本地前端打包链路时，建议执行以下命令用于本次改动的最小验证闭环：
+在确认本地前端打包链路时，建议执行以下命令作为最小验证闭环：
 
 ```bash
 cd apps/dsa-web

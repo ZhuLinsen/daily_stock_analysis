@@ -17,6 +17,8 @@ from email.utils import parseaddr
 from unittest import mock
 from typing import Optional
 
+import requests
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import Config
@@ -26,6 +28,8 @@ from src.notification_sender import (
     DiscordSender,
     EmailSender,
     FeishuSender,
+    GotifySender,
+    NtfySender,
     PushoverSender,
     PushplusSender,
     Serverchan3Sender,
@@ -342,6 +346,187 @@ class TestEmailSender(unittest.TestCase):
         server.quit.assert_called_once()
 
 
+class TestNtfySender(unittest.TestCase):
+    """Unit tests for NtfySender."""
+
+    def test_send_returns_false_when_not_configured(self):
+        cfg = _config()
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("hello")
+
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_success_uses_json_publish_with_topic_endpoint(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(
+            ntfy_url="https://ntfy.sh/dsa-topic",
+            ntfy_token="secret-token",
+            webhook_verify_ssl=False,
+        )
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("正文 **Markdown**", title="中文标题", timeout_seconds=5)
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
+        call_kw = mock_post.call_args.kwargs
+        self.assertEqual(
+            call_kw["json"],
+            {
+                "topic": "dsa-topic",
+                "title": "中文标题",
+                "message": "正文 **Markdown**",
+                "markdown": True,
+            },
+        )
+        self.assertEqual(call_kw["headers"]["Authorization"], "Bearer secret-token")
+        self.assertEqual(call_kw["timeout"], 5)
+        self.assertFalse(call_kw["verify"])
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_supports_self_hosted_path_prefix(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(ntfy_url="https://example.com/ntfy/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("body", title="title")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_args.args[0], "https://example.com/ntfy")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "dsa-topic")
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_returns_false_when_url_has_no_topic(self, mock_post):
+        cfg = _config(ntfy_url="https://ntfy.sh")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("body")
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_returns_false_when_url_scheme_is_not_http(self, mock_post):
+        cfg = _config(ntfy_url="ftp://ntfy.example/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("body")
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_http_error_returns_false(self, mock_post):
+        mock_post.return_value = _response(500)
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic")
+        sender = NtfySender(cfg)
+
+        result = sender.send_to_ntfy("body")
+
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.ntfy_sender.requests.post")
+    def test_send_timeout_does_not_log_token_value(self, mock_post):
+        mock_post.side_effect = requests.exceptions.Timeout("secret-token")
+        cfg = _config(ntfy_url="https://ntfy.sh/dsa-topic", ntfy_token="secret-token")
+        sender = NtfySender(cfg)
+
+        with self.assertLogs("src.notification_sender.ntfy_sender", level="ERROR") as captured:
+            result = sender.send_to_ntfy("body")
+
+        self.assertFalse(result)
+        self.assertNotIn("secret-token", "\n".join(captured.output))
+
+
+class TestGotifySender(unittest.TestCase):
+    """Unit tests for GotifySender."""
+
+    def test_send_returns_false_when_not_configured(self):
+        cfg = _config()
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("hello")
+
+        self.assertFalse(result)
+
+    def test_send_returns_false_when_token_is_blank(self):
+        cfg = _config(gotify_url="https://gotify.example", gotify_token="   ")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("hello")
+
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_success_uses_json_payload_and_header_auth(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(
+            gotify_url="https://gotify.example",
+            gotify_token="secret-token",
+            webhook_verify_ssl=False,
+        )
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("正文 **Markdown**", title="中文标题", timeout_seconds=5)
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://gotify.example/message")
+        call_kw = mock_post.call_args.kwargs
+        self.assertEqual(
+            call_kw["json"],
+            {
+                "title": "中文标题",
+                "message": "正文 **Markdown**",
+                "extras": {
+                    "client::display": {
+                        "contentType": "text/markdown",
+                    },
+                },
+            },
+        )
+        self.assertEqual(call_kw["headers"]["X-Gotify-Key"], "secret-token")
+        self.assertNotIn("secret-token", mock_post.call_args.args[0])
+        self.assertEqual(call_kw["timeout"], 5)
+        self.assertFalse(call_kw["verify"])
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_supports_reverse_proxy_path_prefix(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(gotify_url="https://example.com/gotify", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("body", title="title")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_args.args[0], "https://example.com/gotify/message")
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_returns_false_when_url_already_includes_message_endpoint(self, mock_post):
+        cfg = _config(gotify_url="https://gotify.example/message", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("body")
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_timeout_does_not_log_token_value(self, mock_post):
+        mock_post.side_effect = requests.exceptions.Timeout("secret-token")
+        cfg = _config(gotify_url="https://gotify.example", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        with self.assertLogs("src.notification_sender.gotify_sender", level="ERROR") as captured:
+            result = sender.send_to_gotify("body")
+
+        self.assertFalse(result)
+        self.assertNotIn("secret-token", "\n".join(captured.output))
+
+
 class TestAstrbotSender(unittest.TestCase):
     """Unit tests for AstrbotSender."""
 
@@ -436,6 +621,47 @@ class TestCustomWebhookSender(unittest.TestCase):
 
         self.assertEqual(len(payload["body"]), 4000)
         self.assertEqual(payload["body"], "x" * 4000)
+
+    def test_custom_body_template_overrides_bark_auto_payload(self):
+        cfg = _config(
+            custom_webhook_body_template=(
+                '{"title":$title_json,"body":$content_json,"sound":"bell"}'
+            ),
+        )
+        sender = CustomWebhookSender(cfg)
+
+        payload = sender._build_custom_webhook_payload("https://api.day.app/key", "hello")
+
+        self.assertEqual(
+            payload,
+            {
+                "title": "股票分析报告",
+                "body": "hello",
+                "sound": "bell",
+            },
+        )
+        self.assertNotIn("group", payload)
+
+    def test_custom_body_template_json_placeholders_escape_content(self):
+        cfg = _config(
+            custom_webhook_body_template=(
+                '{"title":$title_json,"content":$content_json}'
+            ),
+        )
+        sender = CustomWebhookSender(cfg)
+
+        payload = sender._build_custom_webhook_payload(
+            "https://example.com/webhook",
+            'line 1\nline "2"',
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "title": "股票分析报告",
+                "content": 'line 1\nline "2"',
+            },
+        )
 
     @mock.patch("src.notification_sender.custom_webhook_sender.requests.post")
     def test_send_uses_custom_body_template(self, mock_post):

@@ -728,33 +728,60 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return "\n".join(lines)
 
     def _build_news_block(self, news: List) -> str:
-        """Build a compact news catalyst table for the rendered report."""
+        """Build a source-aware news catalyst table for the rendered report."""
         if not news:
             return ""
         if self._get_review_language() == "en":
             lines = [
                 "#### News Catalysts",
-                "| # | Headline | Signal |",
-                "|---|----------|--------|",
+                "| # | Headline | Snippet / Lead | Source |",
+                "|---|----------|----------------|--------|",
             ]
         else:
             lines = [
                 "#### 近三日催化线索",
-                "| 序号 | 事件/标题 | 关注点 |",
-                "|------|-----------|--------|",
+                "| 序号 | 事件/标题 | 摘要/线索片段 | 来源 |",
+                "|------|-----------|----------------|------|",
             ]
 
         for idx, item in enumerate(news[:5], 1):
-            if hasattr(item, "title"):
-                title = getattr(item, "title", "") or "-"
-                snippet = getattr(item, "snippet", "") or ""
-            else:
-                title = item.get("title", "-") or "-"
-                snippet = item.get("snippet", "") or ""
-            title = self._escape_table_cell(str(title).strip()[:42])
-            signal = self._escape_table_cell(str(snippet).strip().replace("\n", " ")[:58] or "-")
-            lines.append(f"| {idx} | {title} | {signal} |")
+            title = self._escape_table_cell(
+                self._compact_news_text(self._get_news_field(item, "title"), limit=80) or "-"
+            )
+            snippet = self._escape_table_cell(
+                self._compact_news_text(self._get_news_field(item, "snippet"), limit=180) or "-"
+            )
+            source = self._escape_table_cell(self._format_news_source_cell(item) or "-")
+            lines.append(f"| {idx} | {title} | {snippet} | {source} |")
         return "\n".join(lines)
+
+    @staticmethod
+    def _get_news_field(item: Any, field: str) -> str:
+        if hasattr(item, field):
+            value = getattr(item, field, "") or ""
+        elif isinstance(item, dict):
+            value = item.get(field, "") or ""
+        else:
+            value = ""
+        return str(value).strip()
+
+    @classmethod
+    def _format_news_source_cell(cls, item: Any) -> str:
+        source = cls._compact_news_text(cls._get_news_field(item, "source"), limit=40)
+        date_text = cls._compact_news_text(cls._get_news_field(item, "published_date"), limit=24)
+        url = cls._compact_news_text(cls._get_news_field(item, "url"), limit=0)
+        label_parts = [part for part in (source, date_text) if part]
+        label = " / ".join(label_parts)
+        if url:
+            return f"[{label or 'URL'}]({url})"
+        return label
+
+    @staticmethod
+    def _compact_news_text(value: str, *, limit: int) -> str:
+        text = " ".join(str(value or "").split())
+        if limit <= 0 or len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
 
     @staticmethod
     def _format_optional_number(value: float) -> str:
@@ -847,13 +874,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         news_text = ""
         for i, n in enumerate(news[:6], 1):
             # 兼容 SearchResult 对象和字典
-            if hasattr(n, 'title'):
-                title = n.title[:50] if n.title else ''
-                snippet = n.snippet[:100] if n.snippet else ''
-            else:
-                title = n.get('title', '')[:50]
-                snippet = n.get('snippet', '')[:100]
-            news_text += f"{i}. {title}\n   {snippet}\n"
+            title = self._compact_news_text(self._get_news_field(n, "title"), limit=90)
+            snippet = self._compact_news_text(self._get_news_field(n, "snippet"), limit=220)
+            source = self._compact_news_text(self._get_news_field(n, "source"), limit=60)
+            published_date = self._compact_news_text(self._get_news_field(n, "published_date"), limit=30)
+            url = self._compact_news_text(self._get_news_field(n, "url"), limit=180)
+            meta_parts = [part for part in (source, published_date) if part]
+            meta = f" ({' / '.join(meta_parts)})" if meta_parts else ""
+            url_line = f"\n   URL: {url}" if url else ""
+            news_text += f"{i}. {title}{meta}\n   {snippet or '-'}{url_line}\n"
         
         # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
         stats_block = ""

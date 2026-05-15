@@ -31,6 +31,7 @@ for optional_module in ("litellm", "json_repair"):
 
 from src.config import Config
 from src.notification import NotificationService, NotificationChannel
+from src.notification_noise import reset_notification_noise_state
 from src.analyzer import AnalysisResult
 import requests
 
@@ -76,6 +77,9 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
     测试分批发送时，使用 assertAlmostEqual(mock_post.call_count, ...) 检查请求函数被调用次数
 
     """
+
+    def setUp(self):
+        reset_notification_noise_state()
 
     @mock.patch("src.notification.get_config")
     def test_no_channels_service_unavailable_and_send_returns_false(self, mock_get_config):
@@ -134,6 +138,173 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         with mock.patch.object(service, "send_to_wechat", side_effect=RuntimeError("boom")), \
              mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
             ok = service.send("content")
+
+        self.assertTrue(ok)
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_route_empty_keeps_all_configured_channels(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="report")
+
+        self.assertTrue(ok)
+        mock_wechat.assert_called_once_with("content")
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_report_route_filters_static_channels(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_report_channels=["custom"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="report")
+
+        self.assertTrue(ok)
+        mock_wechat.assert_not_called()
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_alert_and_system_error_routes_filter_independently(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_alert_channels=["wechat"],
+            notification_system_error_channels=["custom"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_wechat", return_value=True) as mock_wechat, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            self.assertTrue(service.send("alert", route_type="alert"))
+            self.assertTrue(service.send("system", route_type="system_error"))
+
+        mock_wechat.assert_called_once_with("alert")
+        mock_custom.assert_called_once_with("system")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_route_with_no_matching_channel_does_not_fallback(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_report_channels=["unknown-route-channel"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="report")
+
+        self.assertFalse(ok)
+        mock_custom.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_send_to_context_is_not_limited_by_route(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_report_channels=["telegram"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="report")
+
+        self.assertTrue(ok)
+        mock_context.assert_called_once_with("content")
+        mock_custom.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_send_dedup_suppresses_static_channels_after_success(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_dedup_ttl_seconds=60,
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            self.assertTrue(service.send("content at 12:00", route_type="report", dedup_key="report:aggregate:simple:600519"))
+            self.assertFalse(service.send("content at 12:01", route_type="report", dedup_key="report:aggregate:simple:600519"))
+
+        mock_custom.assert_called_once_with("content at 12:00")
+
+    @mock.patch("src.notification.get_config")
+    def test_send_releases_noise_reservation_when_static_channels_fail(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_dedup_ttl_seconds=60,
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_custom", side_effect=[False, True]) as mock_custom:
+            self.assertFalse(
+                service.send(
+                    "content at 12:00",
+                    route_type="report",
+                    dedup_key="report:aggregate:simple:600519",
+                )
+            )
+            self.assertTrue(
+                service.send(
+                    "content at 12:01",
+                    route_type="report",
+                    dedup_key="report:aggregate:simple:600519",
+                )
+            )
+
+        self.assertEqual(mock_custom.call_count, 2)
+
+    @mock.patch("src.notification.get_config")
+    def test_send_to_context_is_not_limited_by_noise_controls(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_dedup_ttl_seconds=60,
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_context", return_value=True) as mock_context, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            self.assertTrue(service.send("content at 12:00", route_type="report", dedup_key="report:aggregate:simple:600519"))
+            self.assertTrue(service.send("content at 12:01", route_type="report", dedup_key="report:aggregate:simple:600519"))
+
+        self.assertEqual(mock_context.call_count, 2)
+        mock_custom.assert_called_once_with("content at 12:00")
+
+    @mock.patch("src.notification.get_config")
+    def test_noise_check_failure_does_not_block_static_send(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(custom_webhook_urls=["https://example.com/webhook"])
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch("src.notification_noise._evaluate_notification_noise", side_effect=RuntimeError("boom")), \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            ok = service.send("content", route_type="report")
 
         self.assertTrue(ok)
         mock_custom.assert_called_once_with("content")
@@ -442,6 +613,143 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_gotify_via_notification_service(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(gotify_url="https://gotify.example", gotify_token="secret-token")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.GOTIFY, service.get_available_channels())
+
+        ok = service.send("gotify content")
+
+        self.assertTrue(ok)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://gotify.example/message")
+        self.assertEqual(mock_post.call_args.kwargs["headers"]["X-Gotify-Key"], "secret-token")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["message"], "gotify content")
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["extras"]["client::display"]["contentType"],
+            "text/markdown",
+        )
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_without_token_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(gotify_url="https://gotify.example")
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_blank_token_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(
+            gotify_url="https://gotify.example",
+            gotify_token="   ",
+        )
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_message_endpoint_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(
+            gotify_url="https://gotify.example/message",
+            gotify_token="secret-token",
+        )
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_gotify_does_not_trigger_markdown_to_image(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(
+            gotify_url="https://gotify.example",
+            gotify_token="secret-token",
+            markdown_to_image_channels=["gotify"],
+        )
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        with mock.patch("src.md2img.markdown_to_image", return_value=b"png") as mock_md2img:
+            ok = service.send("gotify content")
+
+        self.assertTrue(ok)
+        mock_md2img.assert_not_called()
+        mock_post.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_ntfy_via_notification_service(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(ntfy_url="https://ntfy.sh/dsa-topic")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.NTFY, service.get_available_channels())
+
+        ok = service.send("ntfy content")
+
+        self.assertTrue(ok)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "dsa-topic")
+
+    @mock.patch("src.notification.get_config")
+    def test_ntfy_url_without_topic_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(ntfy_url="https://ntfy.sh")
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.NTFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    def test_ntfy_url_with_unsupported_scheme_is_not_available(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(ntfy_url="ntfy://ntfy.sh/dsa-topic")
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.NTFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_ntfy_does_not_trigger_markdown_to_image(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(
+            ntfy_url="https://ntfy.sh/dsa-topic",
+            markdown_to_image_channels=["ntfy"],
+        )
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        with mock.patch("src.md2img.markdown_to_image", return_value=b"png") as mock_md2img:
+            ok = service.send("ntfy content")
+
+        self.assertTrue(ok)
+        mock_md2img.assert_not_called()
+        mock_post.assert_called_once()
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")

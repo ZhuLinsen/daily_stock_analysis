@@ -1,64 +1,84 @@
 # English Documentation Index
 
-> All English-language documentation for the AI Stock Analysis System.
-> 
-> For Chinese docs, see the [main README](../README.md).
+This is the entry point for project documentation. The README covers the project overview and quick start; detailed setup, configuration, deployment, feature usage, and troubleshooting docs are linked below.
 
----
+> For Chinese documentation, see [docs/INDEX.md](INDEX.md).
 
-## 🚀 Getting Started
+## Choose By Goal
 
-| Document | Description |
-|----------|-------------|
-| [README (EN)](README_EN.md) | Project overview, quick start, features, sample output |
-| [Full Guide (EN)](full-guide_EN.md) | Complete setup and usage walkthrough |
-| [Deploy Guide (EN)](DEPLOY_EN.md) | Server deployment (Docker, systemd, Supervisor) |
-| [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | AI model configuration (Gemini, OpenAI-compatible, DeepSeek, Ollama, etc.) |
+| I want to | Start with | Then read |
+| --- | --- | --- |
+| Understand what the project does | [README (EN)](README_EN.md) | [Full Guide (EN)](full-guide_EN.md) |
+| Run the project for the first time | [README (EN)](README_EN.md) | [Full Guide (EN)](full-guide_EN.md) |
+| Configure model providers | [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | [Provider Configuration Guide](llm-providers.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
+| Configure notifications | [Notification Baseline](notifications.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | [Full Guide (EN)](full-guide_EN.md) |
+| Deploy to a server or cloud platform | [Deploy Guide (EN)](DEPLOY_EN.md) | [Cloud WebUI Deployment](deploy-webui-cloud.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only), [Zeabur Deployment](docker/zeabur-deployment.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
+| Use Bot / IM integrations | [Bot Commands (EN)](bot-command_EN.md) | [Bot Platform Docs](bot/) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
+| Troubleshoot runtime issues | [FAQ (EN)](FAQ_EN.md) | [Changelog](CHANGELOG.md) |
+| Contribute code or docs | [Contributing Guide (EN)](CONTRIBUTING_EN.md) | [API Spec](architecture/api_spec.json) |
 
-## ❓ Help & Troubleshooting
+## Getting Started
 
-| Document | Description |
-|----------|-------------|
-| [FAQ (EN)](FAQ_EN.md) | Frequently asked questions and common errors |
+| Document | Contents |
+| --- | --- |
+| [README (EN)](README_EN.md) | Project overview, key features, quick start, sample output |
+| [Full Guide (EN)](full-guide_EN.md) | Environment setup, run modes, configuration, deployment paths, and common issues |
+| [FAQ (EN)](FAQ_EN.md) | Common configuration, model, notification, deployment, and runtime issues |
+| [Changelog](CHANGELOG.md) | Release notes, capability changes, and migration notes |
 
-## 🤖 Bot Integration
+## Configuration
 
-| Document | Description |
-|----------|-------------|
-| [Bot Commands (EN)](bot-command_EN.md) | Bot architecture, commands, webhook routes, Feishu / DingTalk integration |
+| Document | Contents |
+| --- | --- |
+| [LLM Config Guide (EN)](LLM_CONFIG_GUIDE_EN.md) | Model providers, three-tier configuration, Web settings, and common model setup |
+| [Provider Configuration Guide](llm-providers.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Provider presets, GitHub Actions mapping, error categories, and diagnostics |
+| [LiteLLM YAML Example](examples/litellm_config.example.yaml) | Example LiteLLM multi-provider configuration |
+| [Notification Baseline](notifications.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | WeChat Work, Feishu, Telegram, Discord, Slack, Email, and other notification channels |
+| [Tushare Stock List Guide](TUSHARE_STOCK_LIST_GUIDE.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Tushare stock-list configuration and usage notes |
 
-## 🤝 Contributing
+## Usage Topics
 
-| Document | Description |
-|----------|-------------|
-| [Contributing Guide (EN)](CONTRIBUTING_EN.md) | How to report bugs, request features, and submit pull requests |
+| Document | Contents |
+| --- | --- |
+| [Bot Commands (EN)](bot-command_EN.md) | Bot commands, webhooks, platform integration, and callback behavior |
+| [Bot Platform Docs](bot/) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Feishu, DingTalk, Discord, and related Bot configuration screenshots and notes |
+| [Image Extraction Prompt](image-extract-prompt.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Prompt and boundaries for extracting stock information from images |
+| [OpenClaw Skill Integration](openclaw-skill-integration.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | OpenClaw / Skill external integration notes |
 
-## 📋 Reference
+## Deployment And Packaging
 
-| Document | Description |
-|----------|-------------|
-| [Changelog](CHANGELOG.md) | Version history and release notes (maintained in Chinese with English summaries) |
+| Document | Contents |
+| --- | --- |
+| [Deploy Guide (EN)](DEPLOY_EN.md) | Server deployment, Docker, systemd, Supervisor, and related options |
+| [Cloud WebUI Deployment](deploy-webui-cloud.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Cloud server WebUI access and deployment notes |
+| [Zeabur Deployment](docker/zeabur-deployment.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Zeabur platform deployment |
+| [Desktop Packaging](desktop-package.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | Electron desktop app and Web artifact packaging |
 
----
+## Reference And Development
 
-## Glossary of China-market Terms
+| Document | Contents |
+| --- | --- |
+| [API Spec](architecture/api_spec.json) | FastAPI OpenAPI artifact |
+| [Contributing Guide (EN)](CONTRIBUTING_EN.md) | Issues, pull requests, tests, documentation sync, and collaboration expectations |
 
-Some terms in this project are specific to Chinese financial markets. Here is a quick reference:
+## Languages
+
+| Document | Contents |
+| --- | --- |
+| [Chinese Documentation Index](INDEX.md) | Chinese documentation entry point |
+| [Traditional Chinese README](README_CHT.md) | Traditional Chinese project overview and quick start |
+
+## China-Market Glossary
 
 | Term | Meaning |
-|------|---------|
-| **A-shares** | Stocks listed on the Shanghai (SSE) or Shenzhen (SZSE) stock exchanges, denominated in CNY |
-| **Northbound capital flow** (北向资金) | Net buy/sell flow from foreign investors via the Stock Connect programs (Shanghai/Shenzhen–Hong Kong Connect) |
-| **Dragon-Tiger List** (龙虎榜) | Daily SSE/SZSE disclosure of the top 5 institutional seats by turnover for heavily traded stocks |
-| **Chip distribution** (筹码分布) | Cost-basis distribution of all outstanding shares, used to estimate support/resistance levels |
-| **三板块涨跌榜** (boards / sectors) | Intraday sector rotation ranking published by SSE/SZSE |
-| **Tushare** | A popular Chinese financial data API; requires a token (free tier available) |
-| **AkShare** | An open-source Python library for Chinese/HK/US market data; no key required for most endpoints |
-| **Baostock** | A free Python SDK for historical A-share data |
-| **WeChat Work** (企业微信) | Tencent's enterprise messaging platform; supports webhook-based notifications |
-| **Feishu** (飞书) | ByteDance's enterprise collaboration platform (similar to Slack); also supports webhooks |
+| --- | --- |
+| **A-shares** | Stocks listed on the Shanghai or Shenzhen stock exchanges, denominated in CNY |
+| **Northbound capital flow** | Net buy/sell flow from foreign investors through Stock Connect programs |
+| **Dragon-Tiger List** | Daily SSE/SZSE disclosure of heavily traded stocks and top trading seats |
+| **Chip distribution** | Cost-basis distribution of outstanding shares, often used to estimate support and resistance |
+| **Tushare** | Chinese financial data API that requires a token |
+| **AkShare** | Open-source Python market data library |
+| **Baostock** | Free Python SDK for historical A-share data |
+| **WeChat Work** | Tencent enterprise messaging platform with webhook notifications |
+| **Feishu** | ByteDance enterprise collaboration platform with webhook notifications |
 | **PushPlus / ServerChan** | Chinese mobile push notification services |
-
----
-
-*Last updated: see [CHANGELOG.md](CHANGELOG.md)*

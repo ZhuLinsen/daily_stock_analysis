@@ -13,6 +13,7 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
@@ -249,6 +250,82 @@ def _is_value_placeholder(v: Any) -> bool:
         return True
     s = str(v).strip().lower()
     return s in ("", "n/a", "na", "数据缺失", "未知", "data unavailable", "unknown", "tbd")
+
+
+_RISK_WARNING_PLACEHOLDER_TEXTS = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "unknown",
+    "tbd",
+    "暂无",
+    "待补充",
+    "数据缺失",
+    "未知",
+    "无",
+}
+
+_STRUCTURAL_RISK_PHRASE_HINTS = (
+    "重大利空",
+    "重大风险",
+    "关键风险",
+    "减持",
+    "高位减持",
+    "退市",
+    "退市风险",
+    "停牌",
+    "重大问询",
+    "处罚",
+    "限售",
+    "违规",
+    "违规风险",
+    "诉讼",
+    "问询",
+    "监管",
+    "财务",
+    "审计",
+    "爆雷",
+    "暴雷",
+    "违约",
+    "违约风险",
+    "流动性危机",
+    "债务",
+    "清算",
+    "破产",
+    "重大变脸",
+    "major risk",
+    "material adverse",
+    "suspension",
+    "delisting",
+    "regulatory",
+    "downgrade",
+    "liquidity",
+    "default",
+)
+
+_CAPITAL_FLOW_UNAVAILABLE_STATUS = {
+    "not_supported",
+    "not supported",
+    "unsupported",
+    "unavailable",
+    "not_available",
+    "not available",
+    "none",
+    "na",
+    "n/a",
+    "null",
+    "missing",
+}
+
+
+def _is_meaningful_text(value: Any) -> bool:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return False
+    lowered = text.strip().lower()
+    return lowered not in _RISK_WARNING_PLACEHOLDER_TEXTS
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -602,6 +679,455 @@ def fill_price_position_if_needed(
             logger.info("[price_position] Filled placeholder fields from computed data")
     except Exception as e:
         logger.warning("[price_position] Fill failed, skipping: %s", e)
+
+
+def stabilize_decision_with_structure(
+    result: "AnalysisResult",
+    trend_result: Any = None,
+    fundamental_context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Calibrate aggressive buy/sell advice with price levels and capital flow.
+
+    The LLM can overreact to one-day price movement.  This guard keeps the
+    public `decision_type` enum stable while allowing richer neutral wording
+    such as 震荡/洗盘观察 when support, resistance, and fund flow do not confirm
+    an immediate buy/sell action.
+    """
+    if not result:
+        return
+
+    try:
+        language = normalize_report_language(getattr(result, "report_language", "zh"))
+        dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+        data_perspective = dashboard.get("data_perspective") if isinstance(dashboard, dict) else {}
+        if not isinstance(data_perspective, dict):
+            data_perspective = {}
+        price_position = data_perspective.get("price_position")
+        if not isinstance(price_position, dict):
+            price_position = {}
+
+        trend_dict = _as_dict_for_decision_guard(trend_result)
+        current_price = _first_numeric_value(
+            getattr(result, "current_price", None),
+            price_position.get("current_price"),
+            trend_dict.get("current_price"),
+        )
+        support = _first_numeric_value(
+            price_position.get("support_level"),
+            _first_list_value(trend_dict.get("support_levels")),
+        )
+        resistance = _first_numeric_value(
+            price_position.get("resistance_level"),
+            _first_list_value(trend_dict.get("resistance_levels")),
+        )
+        flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
+        if flow_bias == "unavailable":
+            if isinstance(fundamental_context, dict) and "capital_flow" in fundamental_context:
+                _set_decision_stability_unavailable(
+                    result,
+                    language,
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_status=flow_reason,
+                )
+            return
+        decision_type = infer_decision_type_from_advice(
+            getattr(result, "decision_type", ""),
+            default=getattr(result, "decision_type", "hold") or "hold",
+        )
+        decision_type = decision_type if decision_type in {"buy", "hold", "sell"} else "hold"
+
+        if current_price is None:
+            return
+
+        broke_support = support is not None and current_price < support * 0.985
+        near_support = support is not None and not broke_support and current_price <= support * 1.03
+        breakout = resistance is not None and current_price > resistance * 1.01
+        near_resistance = (
+            resistance is not None
+            and not breakout
+            and current_price >= resistance * 0.97
+        )
+        mid_range = (
+            support is not None
+            and resistance is not None
+            and support * 1.03 < current_price < resistance * 0.97
+        )
+
+        has_significant_risk = _has_structural_risk_alert(result)
+
+        if decision_type == "buy":
+            if near_resistance and flow_bias != "inflow":
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="buy_near_resistance",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif flow_bias == "outflow" and not breakout:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="buy_with_outflow",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif mid_range and flow_bias == "neutral":
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="hold_mid_range",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        elif decision_type == "sell":
+            if near_support and (flow_bias != "outflow") and not has_significant_risk:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="shakeout",
+                    reason_key="sell_near_support",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif flow_bias == "inflow" and not broke_support and not has_significant_risk:
+                _downgrade_to_structural_hold(
+                    result,
+                    language,
+                    advice_key="hold",
+                    reason_key="sell_with_inflow",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        elif decision_type == "hold":
+            change_pct = _first_numeric_value(getattr(result, "change_pct", None))
+            if change_pct is not None and change_pct < 0 and near_support and flow_bias != "outflow":
+                _set_structural_hold_wording(
+                    result,
+                    language,
+                    advice_key="shakeout",
+                    reason_key="hold_shakeout",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+            elif mid_range and flow_bias == "neutral":
+                _set_structural_hold_wording(
+                    result,
+                    language,
+                    advice_key="range",
+                    reason_key="hold_mid_range",
+                    current_price=current_price,
+                    support=support,
+                    resistance=resistance,
+                    flow_bias=flow_bias,
+                )
+        _sync_stability_dashboard_fields(result)
+    except Exception as exc:
+        logger.warning("[decision_stability] skipped: %s", exc)
+
+
+def _has_structural_risk_alert(result: "AnalysisResult") -> bool:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+
+    risk_text = getattr(result, "risk_warning", "")
+    if _is_significant_structural_risk(risk_text):
+        return True
+
+    intelligence = dashboard.get("intelligence") if isinstance(dashboard, dict) else None
+    if isinstance(intelligence, dict):
+        risk_alerts = intelligence.get("risk_alerts")
+        if isinstance(risk_alerts, str):
+            if _is_significant_structural_risk(risk_alerts):
+                return True
+        elif isinstance(risk_alerts, (list, tuple, set)):
+            if any(_is_significant_structural_risk(item) for item in risk_alerts):
+                return True
+
+    core_conclusion = dashboard.get("core_conclusion") if isinstance(dashboard, dict) else None
+    if isinstance(core_conclusion, dict):
+        signal_type = str(core_conclusion.get("signal_type", "")).strip()
+        if _is_significant_structural_risk(signal_type):
+            return True
+    return False
+
+
+def _is_significant_structural_risk(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not _is_meaningful_text(text):
+        return False
+
+    normalized = text.lower()
+    if any(keyword in normalized for keyword in _STRUCTURAL_RISK_PHRASE_HINTS):
+        return True
+
+    return "重大" in text and "风险" in normalized
+
+
+def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    dashboard["sentiment_score"] = getattr(result, "sentiment_score", None)
+    dashboard["operation_advice"] = getattr(result, "operation_advice", None)
+    dashboard["decision_type"] = getattr(result, "decision_type", None)
+
+
+def _as_dict_for_decision_guard(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "to_dict"):
+        try:
+            converted = value.to_dict()
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+    return {}
+
+
+def _first_list_value(value: Any) -> Any:
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def _coerce_numeric_value(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if math.isfinite(float(value)):
+            return float(value)
+        return None
+    text = str(value).replace(",", "").replace("，", "").strip()
+    if not text or text.upper() in {"N/A", "NA", "NONE", "NULL"}:
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _first_numeric_value(*values: Any) -> Optional[float]:
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            nested = _first_numeric_value(*value)
+            if nested is not None:
+                return nested
+            continue
+        numeric = _coerce_numeric_value(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _capital_flow_bias(fundamental_context: Optional[Dict[str, Any]]) -> str:
+    return _capital_flow_bias_with_status(fundamental_context)[0]
+
+
+def _capital_flow_bias_with_status(
+    fundamental_context: Optional[Dict[str, Any]],
+) -> tuple[str, str]:
+    if not isinstance(fundamental_context, dict):
+        return "unavailable", "invalid_context"
+    block = fundamental_context.get("capital_flow")
+    if not isinstance(block, dict):
+        return "unavailable", "capital_flow_block_missing"
+    status = str(block.get("status") or "").strip().lower()
+    normalized_status = status.replace("-", " ").replace("_", " ").strip()
+    if normalized_status in _CAPITAL_FLOW_UNAVAILABLE_STATUS or "not supported" in normalized_status:
+        return "unavailable", status or "not_supported"
+    data = block.get("data") if isinstance(block.get("data"), dict) else block
+    stock_flow = data.get("stock_flow") if isinstance(data, dict) else None
+    if not isinstance(stock_flow, dict) or not stock_flow:
+        return "unavailable", "empty_stock_flow"
+
+    def _flow_direction(value: Optional[float]) -> Optional[str]:
+        if value is None or value == 0:
+            return None
+        return "inflow" if value > 0 else "outflow"
+
+    numeric_values = [
+        _coerce_numeric_value(stock_flow.get("main_net_inflow")),
+        _coerce_numeric_value(stock_flow.get("inflow_5d")),
+        _coerce_numeric_value(stock_flow.get("inflow_10d")),
+    ]
+    if all(value is None for value in numeric_values):
+        return "unavailable", "missing_or_na_flow_fields"
+
+    ordered_signals = [
+        _flow_direction(value) for value in numeric_values
+    ]
+    directions = {signal for signal in ordered_signals if signal is not None}
+    if not directions or len(directions) > 1:
+        return "neutral", "conflict_or_missing"
+    for signal in ordered_signals:
+        if signal is not None:
+            return signal, "ok"
+    return "neutral", "neutral"
+
+
+def _capital_flow_status_for_stability(reason: str, language: str) -> str:
+    normalized = str(reason or "").strip().lower()
+    if "not_supported" in normalized or "unsupported" in normalized or "not available" in normalized:
+        return "市场资金流服务暂不支持" if language == "zh" else "Capital flow source unsupported"
+    if "empty_stock_flow" in normalized or "missing" in normalized:
+        return "资金流数据缺失" if language == "zh" else "capital flow data unavailable"
+    return "资金流数据不可用" if language == "zh" else "capital flow unavailable"
+
+
+def _set_decision_stability_unavailable(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_status: str,
+) -> None:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    dashboard["decision_stability"] = {
+        "applied": False,
+        "reason": "资金流不可用，未使用资金流校准" if language == "zh" else "Capital flow unavailable; stability calibration not applied",
+        "capital_flow_status": _capital_flow_status_for_stability(flow_status, language),
+        "current_price": current_price,
+        "support": support,
+        "resistance": resistance,
+        "capital_flow_bias": "unavailable",
+    }
+    _sync_stability_dashboard_fields(result)
+
+
+def _downgrade_to_structural_hold(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice_key: str,
+    reason_key: str,
+    current_price: float,
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+) -> None:
+    result.decision_type = "hold"
+    try:
+        score = int(getattr(result, "sentiment_score", 50))
+    except (TypeError, ValueError):
+        score = 50
+    result.sentiment_score = min(59, max(45, score))
+    _set_structural_hold_wording(
+        result,
+        language,
+        advice_key=advice_key,
+        reason_key=reason_key,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias=flow_bias,
+    )
+
+
+def _set_structural_hold_wording(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice_key: str,
+    reason_key: str,
+    current_price: float,
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+) -> None:
+    advice = {
+        "zh": {
+            "range": "震荡观望",
+            "shakeout": "洗盘观察",
+            "hold": "持有观察",
+        },
+        "en": {
+            "range": "Range-bound watch",
+            "shakeout": "Shakeout watch",
+            "hold": "Hold and watch",
+        },
+    }[language].get(advice_key, "持有观察" if language == "zh" else "Hold and watch")
+    reason_templates = {
+        "zh": {
+            "buy_near_resistance": "价格接近压力位且主力资金未确认流入，不宜仅因短线反弹追买。",
+            "buy_with_outflow": "主力资金流出与买入结论冲突，买点需等待支撑确认或资金回流。",
+            "sell_near_support": "价格贴近支撑且未见资金持续流出，不宜仅因单日下跌直接卖出。",
+            "sell_with_inflow": "主力资金流入与卖出结论冲突，先按持有观察处理并跟踪支撑失效。",
+            "hold_shakeout": "价格回落至支撑附近但资金未确认流出，更适合按洗盘观察处理。",
+            "hold_mid_range": "价格处于支撑与压力之间且资金流不明确，维持震荡观望更可操作。",
+        },
+        "en": {
+            "buy_near_resistance": "Price is near resistance without confirmed main-force inflow, so chasing the rebound is not actionable.",
+            "buy_with_outflow": "Main-force outflow conflicts with a buy call; wait for support confirmation or capital inflow.",
+            "sell_near_support": "Price is near support without sustained outflow, so a one-day drop is not enough to sell.",
+            "sell_with_inflow": "Main-force inflow conflicts with a sell call; hold and watch for support failure.",
+            "hold_shakeout": "Price pulled back near support without confirmed outflow, which is better treated as a shakeout watch.",
+            "hold_mid_range": "Price is between support and resistance with neutral fund flow, so range-bound watch is more actionable.",
+        },
+    }
+    reason = reason_templates[language].get(reason_key, "")
+    result.operation_advice = advice
+    if language == "zh" and "震荡" not in str(result.trend_prediction) and advice_key == "range":
+        result.trend_prediction = "震荡"
+    elif language == "en" and advice_key == "range":
+        result.trend_prediction = "Sideways"
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        core = {}
+        dashboard["core_conclusion"] = core
+    core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
+    core["one_sentence"] = f"{advice}：{reason}" if language == "zh" else f"{advice}: {reason}"
+    position_advice = core.get("position_advice")
+    if not isinstance(position_advice, dict):
+        position_advice = {}
+        core["position_advice"] = position_advice
+    if language == "zh":
+        position_advice["no_position"] = "空仓先不追涨杀跌，等待支撑确认、放量突破或资金回流后再行动。"
+        position_advice["has_position"] = "持仓以关键支撑为风控线，未跌破前以观察和分批控仓为主。"
+    else:
+        position_advice["no_position"] = "Do not chase or panic; wait for support confirmation, breakout, or renewed inflow."
+        position_advice["has_position"] = "Use key support as the risk line and manage position size unless support fails."
+
+    dashboard["decision_stability"] = {
+        "applied": True,
+        "reason": reason,
+        "current_price": current_price,
+        "support": support,
+        "resistance": resistance,
+        "capital_flow_bias": flow_bias,
+    }
+    if reason and reason not in str(result.risk_warning or ""):
+        sep = "；" if language == "zh" else "; "
+        result.risk_warning = f"{result.risk_warning}{sep}{reason}" if result.risk_warning else reason
+    result.buy_reason = reason or result.buy_reason
+    logger.info("[decision_stability] Applied structural hold calibration: %s", reason_key)
 
 
 def get_stock_name_multi_source(
@@ -991,7 +1517,15 @@ class GeminiAnalyzer:
 2. **分持仓建议**：空仓者和持仓者给不同建议
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
-5. **风险优先级**：舆情中的风险点要醒目标出"""
+5. **风险优先级**：舆情中的风险点要醒目标出
+
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -1138,7 +1672,15 @@ class GeminiAnalyzer:
 2. **分持仓建议**：空仓者和持仓者给不同建议
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
-5. **风险优先级**：舆情中的风险点要醒目标出"""
+5. **风险优先级**：舆情中的风险点要醒目标出
+
+## 可操作性与稳定性约束
+
+- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
+- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
+- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
+- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 
@@ -1960,6 +2502,59 @@ class GeminiAnalyzer:
 | TTM 分红事件数 | {ttm_count} | |
 
 > 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
+"""
+
+        capital_flow_block = (
+            fundamental_context.get("capital_flow", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        capital_flow_data = (
+            capital_flow_block.get("data", {})
+            if isinstance(capital_flow_block, dict)
+            else {}
+        )
+        stock_flow = (
+            capital_flow_data.get("stock_flow", {})
+            if isinstance(capital_flow_data, dict)
+            else {}
+        )
+        sector_flow = (
+            capital_flow_data.get("sector_rankings", {})
+            if isinstance(capital_flow_data, dict)
+            else {}
+        )
+        has_capital_flow = (
+            isinstance(stock_flow, dict)
+            and any(v is not None for v in stock_flow.values())
+        ) or (
+            isinstance(sector_flow, dict)
+            and (sector_flow.get("top") or sector_flow.get("bottom"))
+        )
+        if has_capital_flow:
+            top_sectors = sector_flow.get("top", []) if isinstance(sector_flow, dict) else []
+            bottom_sectors = sector_flow.get("bottom", []) if isinstance(sector_flow, dict) else []
+            top_sector_text = "、".join(
+                str(item.get("name", "")).strip()
+                for item in top_sectors[:3]
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ) or "N/A"
+            bottom_sector_text = "、".join(
+                str(item.get("name", "")).strip()
+                for item in bottom_sectors[:3]
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ) or "N/A"
+            prompt += f"""
+### 主力资金流向（操作建议过滤器）
+| 指标 | 数值 | 决策含义 |
+|------|------|----------|
+| 主力净流入 | {stock_flow.get('main_net_inflow', 'N/A')} | 正值偏支持，负值偏压制 |
+| 5日净流入 | {stock_flow.get('inflow_5d', 'N/A')} | 用于判断资金持续性 |
+| 10日净流入 | {stock_flow.get('inflow_10d', 'N/A')} | 用于判断资金持续性 |
+| 资金流入靠前板块 | {top_sector_text} | 板块资金共振参考 |
+| 资金流出靠前板块 | {bottom_sector_text} | 板块风险参考 |
+
+> 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
 """
 
         # 添加筹码分布数据

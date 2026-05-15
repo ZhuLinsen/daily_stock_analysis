@@ -43,6 +43,9 @@ from src.core.config_registry import (
     get_field_definition,
     get_registered_field_keys,
 )
+from src.notification_noise import validate_notification_timezone
+from src.notification_sender.gotify_sender import resolve_gotify_message_endpoint
+from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +112,8 @@ class SystemConfigService:
         "telegram",
         "email",
         "pushover",
+        "ntfy",
+        "gotify",
         "pushplus",
         "serverchan3",
         "custom",
@@ -133,6 +138,10 @@ class SystemConfigService:
         "EMAIL_RECEIVERS": ("email_receivers", "csv"),
         "PUSHOVER_USER_KEY": ("pushover_user_key", "string"),
         "PUSHOVER_API_TOKEN": ("pushover_api_token", "string"),
+        "NTFY_URL": ("ntfy_url", "string"),
+        "NTFY_TOKEN": ("ntfy_token", "string"),
+        "GOTIFY_URL": ("gotify_url", "string"),
+        "GOTIFY_TOKEN": ("gotify_token", "string"),
         "PUSHPLUS_TOKEN": ("pushplus_token", "string"),
         "PUSHPLUS_TOPIC": ("pushplus_topic", "string"),
         "SERVERCHAN3_SENDKEY": ("serverchan3_sendkey", "string"),
@@ -157,6 +166,8 @@ class SystemConfigService:
         "telegram": (("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"),),
         "email": (("EMAIL_SENDER", "EMAIL_PASSWORD"),),
         "pushover": (("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN"),),
+        "ntfy": (("NTFY_URL",),),
+        "gotify": (("GOTIFY_URL", "GOTIFY_TOKEN"),),
         "pushplus": (("PUSHPLUS_TOKEN",),),
         "serverchan3": (("SERVERCHAN3_SENDKEY",),),
         "custom": (("CUSTOM_WEBHOOK_URLS",),),
@@ -170,6 +181,8 @@ class SystemConfigService:
         "telegram": ("TELEGRAM_BOT_TOKEN",),
         "email": ("EMAIL_RECEIVERS", "EMAIL_SENDER"),
         "pushover": ("PUSHOVER_USER_KEY",),
+        "ntfy": ("NTFY_URL",),
+        "gotify": ("GOTIFY_URL",),
         "pushplus": ("PUSHPLUS_TOPIC",),
         "serverchan3": ("SERVERCHAN3_SENDKEY",),
         "custom": ("CUSTOM_WEBHOOK_URLS",),
@@ -334,6 +347,20 @@ class SystemConfigService:
                 latency_ms=None,
                 attempts=[],
             )
+        invalid_message = self._get_invalid_notification_test_config_message(
+            normalized_channel,
+            effective_map,
+        )
+        if invalid_message:
+            return self._build_notification_test_result(
+                success=False,
+                message=invalid_message,
+                error_code="config_invalid",
+                stage="config_validation",
+                retryable=False,
+                latency_ms=None,
+                attempts=[],
+            )
 
         config = self._build_notification_test_config(effective_map)
         try:
@@ -395,8 +422,8 @@ class SystemConfigService:
             "checks": checks,
         }
 
-    def export_desktop_env(self) -> Dict[str, Any]:
-        """Return the raw active `.env` content for desktop-only backup."""
+    def export_env(self) -> Dict[str, Any]:
+        """Return the raw active `.env` content for backup."""
         if self._manager.env_path.exists():
             content = self._manager.env_path.read_text(encoding="utf-8")
         else:
@@ -408,7 +435,11 @@ class SystemConfigService:
             "updated_at": self._manager.get_updated_at(),
         }
 
-    def import_desktop_env(
+    def export_desktop_env(self) -> Dict[str, Any]:
+        """Return the raw active `.env` content for desktop backup compatibility."""
+        return self.export_env()
+
+    def import_env(
         self,
         *,
         config_version: str,
@@ -425,6 +456,20 @@ class SystemConfigService:
             config_version=config_version,
             items=updates,
             mask_token="__DSA_IMPORT_LITERAL_MASK__",
+            reload_now=reload_now,
+        )
+
+    def import_desktop_env(
+        self,
+        *,
+        config_version: str,
+        content: str,
+        reload_now: bool = True,
+    ) -> Dict[str, Any]:
+        """Merge imported `.env` assignments for desktop backup compatibility."""
+        return self.import_env(
+            config_version=config_version,
+            content=content,
             reload_now=reload_now,
         )
 
@@ -1367,6 +1412,19 @@ class SystemConfigService:
                 )
             )
 
+        startup_only_bind_keys = submitted_keys & {
+            "WEBUI_HOST",
+            "WEBUI_PORT",
+        }
+        if startup_only_bind_keys:
+            warnings.append(
+                (
+                    f"{', '.join(sorted(startup_only_bind_keys))} 已写入 .env。"
+                    "这些属于启动期监听配置：当前已运行的 WebUI/API 进程不会因为本次保存重新绑定监听地址或端口；"
+                    "请重启当前进程、Docker 容器或服务管理器后生效。"
+                )
+            )
+
         return warnings
 
     @staticmethod
@@ -1595,6 +1653,35 @@ class SystemConfigService:
                             }
                         )
 
+        elif validation.get("pattern"):
+            pattern = validation["pattern"]
+            if not re.match(pattern, value.strip()):
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_format",
+                        "message": "Value does not match the required format",
+                        "severity": "error",
+                        "expected": pattern,
+                        "actual": value,
+                    }
+                )
+
+        if validation.get("timezone") and value:
+            try:
+                validate_notification_timezone(value)
+            except ValueError as exc:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_timezone",
+                        "message": str(exc),
+                        "severity": "error",
+                        "expected": "valid IANA timezone or empty",
+                        "actual": value,
+                    }
+                )
+
         if "enum" in validation and value and value not in validation["enum"]:
             issues.append(
                 {
@@ -1606,6 +1693,31 @@ class SystemConfigService:
                     "actual": value,
                 }
             )
+
+        if "allowed_values" in validation and value:
+            delimiter = validation.get("delimiter")
+            raw_values = value.split(delimiter) if delimiter else [value]
+            allowed_values = {str(item).strip().lower() for item in validation["allowed_values"]}
+            invalid_values = []
+            seen_invalid = set()
+            for raw_item in raw_values:
+                item = raw_item.strip().lower()
+                if not item:
+                    continue
+                if item not in allowed_values and item not in seen_invalid:
+                    invalid_values.append(item)
+                    seen_invalid.add(item)
+            if invalid_values:
+                issues.append(
+                    {
+                        "key": key,
+                        "code": "invalid_allowed_value",
+                        "message": "Value contains unsupported item(s)",
+                        "severity": "error",
+                        "expected": ",".join(str(item) for item in validation["allowed_values"]),
+                        "actual": ", ".join(invalid_values),
+                    }
+                )
 
         if validation.get("item_type") == "url":
             delimiter = validation.get("delimiter", ",")
@@ -1626,6 +1738,38 @@ class SystemConfigService:
                         "actual": ", ".join(invalid_values[:3]),
                     }
                 )
+
+        if key == "NTFY_URL" and value.strip():
+            allowed_schemes = tuple(validation.get("allowed_schemes", ["http", "https"]))
+            if SystemConfigService._is_valid_url(value.strip(), allowed_schemes=allowed_schemes):
+                ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(value)
+                if not ntfy_server_url or not ntfy_topic:
+                    issues.append(
+                        {
+                            "key": key,
+                            "code": "invalid_ntfy_url",
+                            "message": "NTFY_URL must include a topic path, e.g. https://ntfy.sh/my-topic",
+                            "severity": "error",
+                            "expected": "ntfy publish endpoint with topic path",
+                            "actual": value,
+                        }
+                    )
+
+        if key == "GOTIFY_URL" and value.strip():
+            allowed_schemes = tuple(validation.get("allowed_schemes", ["http", "https"]))
+            if SystemConfigService._is_valid_url(value.strip(), allowed_schemes=allowed_schemes):
+                gotify_endpoint = resolve_gotify_message_endpoint(value)
+                if not gotify_endpoint:
+                    issues.append(
+                        {
+                            "key": key,
+                            "code": "invalid_gotify_url",
+                            "message": "GOTIFY_URL must be a Gotify server base URL and must not include /message",
+                            "severity": "error",
+                            "expected": "Gotify server base URL, e.g. https://gotify.example",
+                            "actual": value,
+                        }
+                    )
 
         return issues
 
@@ -1734,6 +1878,28 @@ class SystemConfigService:
 
         return missing_by_group[0] if missing_by_group else []
 
+    @staticmethod
+    def _get_invalid_notification_test_config_message(
+        channel: str,
+        effective_map: Dict[str, str],
+    ) -> Optional[str]:
+        if channel == "ntfy":
+            ntfy_url = (effective_map.get("NTFY_URL") or "").strip()
+            if not ntfy_url:
+                return None
+            ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(ntfy_url)
+            if ntfy_server_url and ntfy_topic:
+                return None
+            return "NTFY_URL 必须包含 topic path，例如 https://ntfy.sh/my-topic。"
+        if channel == "gotify":
+            gotify_url = (effective_map.get("GOTIFY_URL") or "").strip()
+            if not gotify_url:
+                return None
+            if resolve_gotify_message_endpoint(gotify_url):
+                return None
+            return "GOTIFY_URL 必须是 Gotify server base URL，不包含 /message。"
+        return None
+
     def _build_notification_test_config(self, effective_map: Dict[str, str]) -> Config:
         """Build an isolated Config instance for notification testing."""
         kwargs: Dict[str, Any] = {"stock_list": []}
@@ -1777,6 +1943,8 @@ class SystemConfigService:
             DiscordSender,
             EmailSender,
             FeishuSender,
+            GotifySender,
+            NtfySender,
             PushoverSender,
             PushplusSender,
             Serverchan3Sender,
@@ -1795,10 +1963,18 @@ class SystemConfigService:
                 timeout_seconds=timeout_seconds,
             )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
-            success = any(bool(attempt.get("success")) for attempt in attempts)
+            success_count = sum(1 for attempt in attempts if bool(attempt.get("success")))
+            total_count = len(attempts)
+            success = success_count > 0
+            if success_count == total_count and total_count > 0:
+                message = f"自定义 Webhook 通知测试成功（{success_count}/{total_count}）"
+            elif success_count > 0:
+                message = f"自定义 Webhook 通知测试部分成功（{success_count}/{total_count}）"
+            else:
+                message = f"自定义 Webhook 通知测试失败（{success_count}/{total_count}）"
             return self._build_notification_test_result(
                 success=success,
-                message="自定义 Webhook 通知测试成功" if success else "自定义 Webhook 通知测试失败",
+                message=message,
                 error_code=None if success else "send_failed",
                 stage="notification_send",
                 retryable=any(bool(attempt.get("retryable")) for attempt in attempts),
@@ -1812,6 +1988,8 @@ class SystemConfigService:
             "telegram": lambda: TelegramSender(config).send_to_telegram(titled_content, timeout_seconds=timeout_seconds),
             "email": lambda: EmailSender(config).send_to_email(content, subject=title, timeout_seconds=timeout_seconds),
             "pushover": lambda: PushoverSender(config).send_to_pushover(content, title=title, timeout_seconds=timeout_seconds),
+            "ntfy": lambda: NtfySender(config).send_to_ntfy(content, title=title, timeout_seconds=timeout_seconds),
+            "gotify": lambda: GotifySender(config).send_to_gotify(content, title=title, timeout_seconds=timeout_seconds),
             "pushplus": lambda: PushplusSender(config).send_to_pushplus(content, title=title, timeout_seconds=timeout_seconds),
             "serverchan3": lambda: Serverchan3Sender(config).send_to_serverchan3(content, title=title, timeout_seconds=timeout_seconds),
             "discord": lambda: DiscordSender(config).send_to_discord(titled_content, timeout_seconds=timeout_seconds),
@@ -1924,12 +2102,19 @@ class SystemConfigService:
 
         safe_netloc = parsed.netloc.rsplit("@", 1)[-1]
         safe_segments: List[str] = []
-        for segment in parsed.path.split("/"):
+        path_segments = parsed.path.split("/")
+        last_non_empty_index = next(
+            (index for index in range(len(path_segments) - 1, -1, -1) if path_segments[index]),
+            -1,
+        )
+        for index, segment in enumerate(path_segments):
             if not segment:
                 safe_segments.append(segment)
                 continue
             lower = segment.lower()
             looks_secret = (
+                (source_key_upper == "NTFY_URL" and index == last_non_empty_index)
+                or
                 len(segment) >= 16
                 or lower.startswith("bot")
                 or "token" in lower
@@ -2011,6 +2196,8 @@ class SystemConfigService:
             "DINGTALK_",
             "WECHAT_",
             "PUSHOVER_",
+            "NTFY_",
+            "GOTIFY_",
             "PUSHPLUS_",
             "SERVERCHAN",
             "CUSTOM_WEBHOOK",
@@ -2036,6 +2223,18 @@ class SystemConfigService:
     @staticmethod
     def _has_any_config_value(effective_map: Dict[str, str], keys: Sequence[str]) -> bool:
         return any((effective_map.get(key) or "").strip() for key in keys)
+
+    @staticmethod
+    def _has_valid_ntfy_endpoint(effective_map: Dict[str, str]) -> bool:
+        ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(effective_map.get("NTFY_URL"))
+        return bool(ntfy_server_url and ntfy_topic)
+
+    @staticmethod
+    def _has_valid_gotify_config(effective_map: Dict[str, str]) -> bool:
+        return bool(
+            resolve_gotify_message_endpoint(effective_map.get("GOTIFY_URL"))
+            and (effective_map.get("GOTIFY_TOKEN") or "").strip()
+        )
 
     @classmethod
     def _anspire_legacy_llm_enabled(cls, effective_map: Dict[str, str]) -> bool:
@@ -2348,6 +2547,8 @@ class SystemConfigService:
                     "ASTRBOT_URL",
                 ),
             )
+            or self._has_valid_ntfy_endpoint(effective_map)
+            or self._has_valid_gotify_config(effective_map)
             or (
                 parse_env_bool(effective_map.get("FEISHU_STREAM_ENABLED"), default=False)
                 and self._has_any_config_value(effective_map, ("FEISHU_APP_ID",))
@@ -2572,8 +2773,6 @@ class SystemConfigService:
                 "Configured model could not be found on this channel",
                 "model_not_found",
             )
-        if status_code in {401, 403} or any(token in lowered for token in ("unauthorized", "forbidden", "invalid api key", "authentication")):
-            return _LLMDiagnostic("auth", False, "LLM authentication failed", "api_key_rejected")
         if status_code == 402 or any(token in lowered for token in ("billing", "balance", "insufficient balance")):
             return _LLMDiagnostic(
                 "quota",
@@ -2595,6 +2794,22 @@ class SystemConfigService:
                 "LLM request was rejected by quota or rate limiting",
                 "rate_limit",
             )
+        if SystemConfigService._has_transport_blocked_signal(error_text or ""):
+            return _LLMDiagnostic(
+                "network_error",
+                True,
+                "LLM request failed before a valid response was returned",
+                "network_error",
+            )
+        if SystemConfigService._has_request_blocked_signal(error_text or ""):
+            return _LLMDiagnostic(
+                "request_blocked",
+                False,
+                "LLM request was blocked by provider or gateway policy",
+                "provider_blocked",
+            )
+        if status_code in {401, 403} or any(token in lowered for token in ("unauthorized", "forbidden", "invalid api key", "authentication")):
+            return _LLMDiagnostic("auth", False, "LLM authentication failed", "api_key_rejected")
         if status_code == 404:
             return _LLMDiagnostic(
                 "network_error",
@@ -2657,6 +2872,36 @@ class SystemConfigService:
         return any(token in lowered for token in access_denied_tokens)
 
     @staticmethod
+    def _has_request_blocked_signal(text: str) -> bool:
+        lowered = text.lower()
+        if SystemConfigService._has_transport_blocked_signal(lowered):
+            return False
+        blocked_tokens = (
+            "your request was blocked",
+            "the request was blocked",
+            "request blocked by policy",
+            "blocked by policy",
+            "blocked due to policy",
+            "moderation_blocked",
+            "policy_blocked",
+            "请求被拦截",
+        )
+        return any(token in lowered for token in blocked_tokens)
+
+    @staticmethod
+    def _has_transport_blocked_signal(text: str) -> bool:
+        lowered = text.lower()
+        transport_tokens = (
+            "connection blocked",
+            "connection request was blocked",
+            "network blocked",
+            "blocked by network policy",
+            "blocked by firewall",
+            "firewall blocked",
+        )
+        return any(token in lowered for token in transport_tokens)
+
+    @staticmethod
     def _has_provider_prefix_mismatch_signal(text: str) -> bool:
         lowered = text.lower()
         mismatch_tokens = (
@@ -2710,6 +2955,13 @@ class SystemConfigService:
                 "Configured model is not available for this channel",
                 "model_access_denied",
             )
+        if SystemConfigService._has_request_blocked_signal(str(exc)):
+            return _LLMDiagnostic(
+                "request_blocked",
+                False,
+                "LLM request was blocked by provider or gateway policy",
+                "provider_blocked",
+            )
         if any(token in exc_name for token in ("auth", "permission")) or any(token in text for token in ("unauthorized", "forbidden", "invalid api key", "authentication")):
             return _LLMDiagnostic("auth", False, "LLM authentication failed", "api_key_rejected")
         if ("notfound" in exc_name or "model" in text) and (
@@ -2727,7 +2979,9 @@ class SystemConfigService:
             return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "connection_refused")
         if "ssl" in text or "tls" in text or "certificate" in text:
             return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "tls_error")
-        if any(token in exc_name for token in ("connection", "network")) or any(token in text for token in ("connection", "network")):
+        if any(token in exc_name for token in ("connection", "network")) or any(
+            token in text for token in ("connection", "network", "firewall")
+        ):
             return _LLMDiagnostic("network_error", True, "LLM request failed before a valid response was returned", "network_error")
         return _LLMDiagnostic("network_error", False, "LLM channel test failed", "unknown_error")
 
@@ -2909,6 +3163,21 @@ class SystemConfigService:
             )
         )
         issues.extend(SystemConfigService._validate_llm_runtime_selection(effective_map=effective_map))
+
+        if parse_env_bool(effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED"), default=False):
+            issues.append(
+                {
+                    "key": "NOTIFICATION_DAILY_DIGEST_ENABLED",
+                    "code": "reserved_notification_daily_digest",
+                    "message": (
+                        "NOTIFICATION_DAILY_DIGEST_ENABLED is reserved; "
+                        "the current P4 implementation does not send daily digests."
+                    ),
+                    "severity": "warning",
+                    "expected": "reserved flag only",
+                    "actual": effective_map.get("NOTIFICATION_DAILY_DIGEST_ENABLED", ""),
+                }
+            )
 
         return issues
 

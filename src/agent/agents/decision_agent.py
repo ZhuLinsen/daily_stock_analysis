@@ -89,6 +89,13 @@ Your task: synthesise all inputs into a single, actionable Decision Dashboard.
 - 20-39: sell (negative trend + risk)
 - 0-19: sell (major risk + bearish)
 
+## Actionability Guardrails
+- Do not flip directly between buy and sell only because one trading day moved up or down.
+- Base operation_advice on support/resistance, volume/chip context, main-force capital flow, and risk flags.
+- If price is between support and resistance and capital flow is not clearly one-sided, prefer a neutral action such as hold/watch/range-bound/shakeout watch; keep decision_type as hold.
+- Buy requires support confirmation or a valid resistance breakout with volume/capital-flow confirmation.
+- Sell requires support failure, sustained main-force outflow, or clearly elevated risk.
+
 ## Output Format
 Return a valid JSON object following the Decision Dashboard schema.  The JSON \
 must include at minimum these top-level keys:

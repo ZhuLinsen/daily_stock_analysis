@@ -13,6 +13,7 @@ Verifies:
 
 import os
 import sys
+import time
 import unittest
 from unittest.mock import patch, MagicMock, PropertyMock
 from dataclasses import dataclass
@@ -209,6 +210,31 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
 
         result = fetcher.get_realtime_quote("AAPL")
         self.assertIsNone(result)
+
+    def test_connection_error_enters_cooldown_and_skips_immediate_retry(self):
+        """Connection-close failures should not trigger reconnect on every stock."""
+        fetcher, ctx = self._make_fetcher_with_mock_ctx()
+        ctx.quote.side_effect = Exception("client is closed")
+
+        with patch("data_provider.longbridge_fetcher._connection_cooldown_seconds", return_value=30):
+            first = fetcher.get_realtime_quote("AAPL")
+            second = fetcher.get_realtime_quote("AAPL")
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(ctx.quote.call_count, 1)
+        self.assertIsNone(fetcher._ctx)
+        self.assertGreater(fetcher._cooldown_until, time.time())
+
+    def test_daily_data_skips_request_during_cooldown(self):
+        """Daily requests should also respect the connection cooldown."""
+        fetcher, ctx = self._make_fetcher_with_mock_ctx()
+        fetcher._cooldown_until = time.time() + 30
+
+        with self.assertRaisesRegex(RuntimeError, "temporarily unavailable"):
+            fetcher._fetch_raw_data("AAPL", "2026-05-01", "2026-05-08")
+
+        ctx.history_candlesticks_by_date.assert_not_called()
 
     def test_hk_stock_symbol(self):
         """HK stock should use .HK suffix."""

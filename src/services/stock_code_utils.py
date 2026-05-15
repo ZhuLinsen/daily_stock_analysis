@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from data_provider.base import is_bse_code
+
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
 # e.g. SH600519 -> 600519, HK00700 -> 00700
@@ -15,6 +17,7 @@ _PREFIX_DIGIT_LENS: dict = {
     "SH": (6,),
     "SZ": (6,),
     "SS": (6,),
+    "BJ": (6,),
     "HK": (1, 2, 3, 4, 5),
 }
 
@@ -22,8 +25,17 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".SH": (6,),
     ".SZ": (6,),
     ".SS": (6,),
+    ".BJ": (6,),
     ".HK": (1, 2, 3, 4, 5),
 }
+
+
+def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
+    if not (base.isdigit() and len(base) in digit_lens):
+        return False
+    if exchange == "BJ":
+        return is_bse_code(base)
+    return True
 
 
 def _strip_exchange_prefix(text: str) -> Optional[str]:
@@ -31,7 +43,7 @@ def _strip_exchange_prefix(text: str) -> Optional[str]:
     for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
         if text.startswith(prefix):
             base = text[len(prefix):]
-            if base.isdigit() and len(base) in digit_lens:
+            if _valid_exchange_code(prefix, base, digit_lens):
                 return base.zfill(5) if prefix == "HK" else base
     return None
 
@@ -41,7 +53,8 @@ def _strip_exchange_suffix(text: str) -> Optional[str]:
     for suffix, digit_lens in _SUFFIX_DIGIT_LENS.items():
         if text.endswith(suffix):
             base = text[: -len(suffix)].strip()
-            if base.isdigit() and len(base) in digit_lens:
+            exchange = suffix.lstrip(".")
+            if _valid_exchange_code(exchange, base, digit_lens):
                 return base.zfill(5) if suffix == ".HK" else base
     return None
 
@@ -57,7 +70,7 @@ def is_code_like(value: str) -> bool:
         return True
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return True
-    # Support exchange-prefixed codes: SH600519, SZ000001, HK00700
+    # Support exchange-prefixed codes: SH600519, SZ000001, BJ920493, HK00700
     if _strip_exchange_prefix(text) is not None:
         return True
     return False
@@ -68,8 +81,8 @@ def normalize_code(raw: str) -> Optional[str]:
 
     Supports:
     - Plain digit codes: 600519, 00700
-    - Suffix format: 600519.SH, 600519.SZ, 00700.HK
-    - Prefix format: SH600519, SZ000001, HK00700 (case-insensitive)
+    - Suffix format: 600519.SH, 600519.SZ, 920493.BJ, 00700.HK
+    - Prefix format: SH600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
     """
     text = raw.strip().upper()
@@ -82,7 +95,7 @@ def normalize_code(raw: str) -> Optional[str]:
     stripped_suffix = _strip_exchange_suffix(text)
     if stripped_suffix is not None:
         return stripped_suffix
-    # Support exchange-prefixed codes: SH600519 -> 600519, HK00700 -> 00700
+    # Support exchange-prefixed codes: SH600519 -> 600519, BJ920493 -> 920493
     stripped = _strip_exchange_prefix(text)
     if stripped is not None:
         return stripped

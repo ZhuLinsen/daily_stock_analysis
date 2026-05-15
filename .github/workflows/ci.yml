@@ -52,12 +52,12 @@ jobs:
           cache: 'pip'
           cache-dependency-path: |
             requirements.txt
-            requirements-ci.txt
+            .github/requirements-ci.txt
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
           for attempt in 1 2 3; do
-            if python -m pip install -r requirements-ci.txt; then
+            if python -m pip install -r .github/requirements-ci.txt; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -95,7 +95,7 @@ jobs:
           from src.notification import NotificationService; print('✅ notification')
           from data_provider import DataFetcherManager; print('✅ data_provider')
           from src.analyzer import GeminiAnalyzer; print('✅ analyzer')
-          from patch.eastmoney_patch import eastmoney_patch; print('✅ patch')
+          from src.patches.eastmoney_patch import eastmoney_patch; print('✅ patch')
           from bot.dispatcher import CommandDispatcher; print('✅ bot')
           from api.app import app; print('✅ api')
           print('✅ All Docker imports OK')

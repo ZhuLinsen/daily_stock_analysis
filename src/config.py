@@ -16,13 +16,20 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
 from src.report_language import (
     is_supported_report_language_value,
     normalize_report_language,
+)
+from src.notification_routing import parse_notification_route_channels
+from src.notification_noise import (
+    NOTIFICATION_SEVERITIES,
+    is_supported_notification_severity,
+    parse_notification_quiet_hours,
+    validate_notification_timezone,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +75,33 @@ _FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
         "non_thinking": 0.6,
     },
 }
+
+
+def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
+    """Return whether an ntfy URL points at a concrete topic endpoint."""
+    raw_url = (value or "").strip()
+    if not raw_url:
+        return False
+    parsed = urlparse(raw_url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return False
+    return any(unquote(segment).strip() for segment in parsed.path.split("/") if segment)
+
+
+def _has_gotify_base_url(value: Optional[str]) -> bool:
+    """Return whether a Gotify URL points at a server base URL, not /message."""
+    raw_url = (value or "").strip().rstrip("/")
+    if not raw_url:
+        return False
+    parsed = urlparse(raw_url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    path_segments = [segment for segment in parsed.path.split("/") if segment]
+    return not (path_segments and path_segments[-1].lower() == "message")
+
+
 AGENT_MAX_STEPS_DEFAULT = 10
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
@@ -724,6 +758,14 @@ class Config:
     # Pushover 配置（手机/桌面推送通知）
     pushover_user_key: Optional[str] = None  # 用户 Key（https://pushover.net 获取）
     pushover_api_token: Optional[str] = None  # 应用 API Token
+
+    # ntfy 配置（完整 topic endpoint，例如 https://ntfy.sh/my-topic）
+    ntfy_url: Optional[str] = None
+    ntfy_token: Optional[str] = None
+
+    # Gotify 配置（server base URL；sender 会拼接 /message）
+    gotify_url: Optional[str] = None
+    gotify_token: Optional[str] = None
     
     # 自定义 Webhook（支持多个，逗号分隔）
     # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
@@ -746,6 +788,19 @@ class Config:
     # AstrBot 通知配置
     astrbot_token: Optional[str] = None
     astrbot_url: Optional[str] = None
+
+    # 通知路由策略（Issue #1200 P3）：留空表示该类型使用全部已配置渠道
+    notification_report_channels: List[str] = field(default_factory=list)
+    notification_alert_channels: List[str] = field(default_factory=list)
+    notification_system_error_channels: List[str] = field(default_factory=list)
+
+    # 通知降噪机制（Issue #1200 P4）：默认全部关闭，仅对静态通知渠道生效
+    notification_dedup_ttl_seconds: int = 0
+    notification_cooldown_seconds: int = 0
+    notification_quiet_hours: str = ""
+    notification_timezone: str = ""
+    notification_min_severity: str = ""
+    notification_daily_digest_enabled: bool = False
 
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
@@ -939,6 +994,7 @@ class Config:
     )
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
     _BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
+    _BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset()
 
     def __post_init__(self) -> None:
         _log = logging.getLogger(__name__)
@@ -1294,11 +1350,22 @@ class Config:
             'SCHEDULE_RUN_IMMEDIATELY',
             prefer_env_file=True,
         )
-        schedule_run_immediately = (
-            schedule_run_immediately_env.lower() == 'true'
-            if schedule_run_immediately_env is not None
-            else legacy_run_immediately
-        )
+        # Keep backward compatibility for container/process overrides:
+        # when RUN_IMMEDIATELY is explicitly provided by the runtime but the
+        # schedule-specific alias is absent, schedule mode should inherit the
+        # legacy process value instead of being pulled back to the persisted
+        # `.env` copy of SCHEDULE_RUN_IMMEDIATELY.
+        if (
+            not cls._had_bootstrap_runtime_env_key('SCHEDULE_RUN_IMMEDIATELY')
+            and cls._has_bootstrap_runtime_env_override('RUN_IMMEDIATELY')
+        ):
+            schedule_run_immediately = legacy_run_immediately
+        else:
+            schedule_run_immediately = (
+                schedule_run_immediately_env.lower() == 'true'
+                if schedule_run_immediately_env is not None
+                else legacy_run_immediately
+            )
         schedule_time_value = cls._resolve_env_value(
             'SCHEDULE_TIME',
             default='18:00',
@@ -1438,6 +1505,10 @@ class Config:
             stock_email_groups=cls._parse_stock_email_groups(),
             pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
+            ntfy_url=os.getenv('NTFY_URL'),
+            ntfy_token=os.getenv('NTFY_TOKEN'),
+            gotify_url=os.getenv('GOTIFY_URL'),
+            gotify_token=os.getenv('GOTIFY_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
             pushplus_topic=os.getenv('PUSHPLUS_TOPIC'),
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
@@ -1457,6 +1528,34 @@ class Config:
             slack_channel_id=os.getenv('SLACK_CHANNEL_ID'),
             astrbot_url=os.getenv('ASTRBOT_URL'),
             astrbot_token=os.getenv('ASTRBOT_TOKEN'),
+            notification_report_channels=parse_notification_route_channels(
+                os.getenv('NOTIFICATION_REPORT_CHANNELS')
+            ),
+            notification_alert_channels=parse_notification_route_channels(
+                os.getenv('NOTIFICATION_ALERT_CHANNELS')
+            ),
+            notification_system_error_channels=parse_notification_route_channels(
+                os.getenv('NOTIFICATION_SYSTEM_ERROR_CHANNELS')
+            ),
+            notification_dedup_ttl_seconds=parse_env_int(
+                os.getenv('NOTIFICATION_DEDUP_TTL_SECONDS'),
+                0,
+                field_name='NOTIFICATION_DEDUP_TTL_SECONDS',
+                minimum=0,
+            ),
+            notification_cooldown_seconds=parse_env_int(
+                os.getenv('NOTIFICATION_COOLDOWN_SECONDS'),
+                0,
+                field_name='NOTIFICATION_COOLDOWN_SECONDS',
+                minimum=0,
+            ),
+            notification_quiet_hours=(os.getenv('NOTIFICATION_QUIET_HOURS') or '').strip(),
+            notification_timezone=(os.getenv('NOTIFICATION_TIMEZONE') or '').strip(),
+            notification_min_severity=(os.getenv('NOTIFICATION_MIN_SEVERITY') or '').strip().lower(),
+            notification_daily_digest_enabled=parse_env_bool(
+                os.getenv('NOTIFICATION_DAILY_DIGEST_ENABLED'),
+                default=False,
+            ),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
             report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
             report_language=cls._parse_report_language(report_language_raw),
@@ -1987,22 +2086,30 @@ class Config:
             return
 
         explicit_overrides = set()
+        present_keys = set()
         for key in cls._WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS:
             env_value = os.environ.get(key)
             if env_value is None:
                 continue
 
+            present_keys.add(key)
             file_value = cls._get_env_file_value(key)
             if file_value is None or env_value != file_value:
                 explicit_overrides.add(key)
 
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset(explicit_overrides)
+        cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset(present_keys)
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = True
 
     @classmethod
     def _has_bootstrap_runtime_env_override(cls, key: str) -> bool:
         cls._capture_bootstrap_runtime_env_overrides()
         return key in cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES
+
+    @classmethod
+    def _had_bootstrap_runtime_env_key(cls, key: str) -> bool:
+        cls._capture_bootstrap_runtime_env_overrides()
+        return key in cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS
 
     @classmethod
     def _resolve_report_language_env_value(
@@ -2125,6 +2232,7 @@ class Config:
         cls._instance = None
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES_CAPTURED = False
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
+        cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset()
 
     def has_searxng_enabled(self) -> bool:
         """Whether SearXNG fallback is enabled via self-hosted or public mode."""
@@ -2393,6 +2501,12 @@ class Config:
             or (self.telegram_bot_token and self.telegram_chat_id)
             or (self.email_sender and self.email_password)
             or (self.pushover_user_key and self.pushover_api_token)
+            or _has_ntfy_topic_endpoint(self.ntfy_url)
+            or (
+                self.gotify_url
+                and (self.gotify_token or "").strip()
+                and _has_gotify_base_url(self.gotify_url)
+            )
             or self.pushplus_token
             or self.serverchan3_sendkey
             or self.custom_webhook_urls
@@ -2408,6 +2522,71 @@ class Config:
                 severity="warning",
                 message="未配置通知渠道，将不发送推送通知",
                 field="WECHAT_WEBHOOK_URL",
+            ))
+
+        if self.ntfy_url and not _has_ntfy_topic_endpoint(self.ntfy_url):
+            issues.append(ConfigIssue(
+                severity="error",
+                message="NTFY_URL 必须包含 topic path，例如 https://ntfy.sh/my-topic",
+                field="NTFY_URL",
+            ))
+
+        if self.gotify_url and not _has_gotify_base_url(self.gotify_url):
+            issues.append(ConfigIssue(
+                severity="error",
+                message="GOTIFY_URL 必须是 Gotify server base URL，不包含 /message，例如 https://gotify.example",
+                field="GOTIFY_URL",
+            ))
+
+        if (
+            self.gotify_url
+            and _has_gotify_base_url(self.gotify_url)
+            and not (self.gotify_token or "").strip()
+        ):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="已配置 GOTIFY_URL，但缺少 GOTIFY_TOKEN，Gotify 渠道不会启用",
+                field="GOTIFY_TOKEN",
+            ))
+
+        if self.notification_quiet_hours:
+            try:
+                parse_notification_quiet_hours(self.notification_quiet_hours)
+            except ValueError as exc:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=f"通知静默时段配置无效：{exc}",
+                    field="NOTIFICATION_QUIET_HOURS",
+                ))
+
+        if self.notification_timezone:
+            try:
+                validate_notification_timezone(self.notification_timezone)
+            except ValueError as exc:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=f"通知时区配置无效：{exc}",
+                    field="NOTIFICATION_TIMEZONE",
+                ))
+
+        if self.notification_min_severity and not is_supported_notification_severity(self.notification_min_severity):
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "通知最低级别配置无效，允许值："
+                    f"{', '.join(NOTIFICATION_SEVERITIES)}"
+                ),
+                field="NOTIFICATION_MIN_SEVERITY",
+            ))
+
+        if self.notification_daily_digest_enabled:
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    "NOTIFICATION_DAILY_DIGEST_ENABLED 当前为预留配置；"
+                    "P4 不会发送每日摘要或持久化摘要内容。"
+                ),
+                field="NOTIFICATION_DAILY_DIGEST_ENABLED",
             ))
 
         has_feishu_app_id = bool((self.feishu_app_id or "").strip())

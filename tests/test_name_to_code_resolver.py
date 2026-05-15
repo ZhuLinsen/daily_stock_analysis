@@ -33,6 +33,14 @@ class TestIsCodeLike:
     def test_a_share_6_digits(self):
         assert _is_code_like("300750") is True
 
+    def test_bse_with_exchange_hint(self):
+        assert _is_code_like("920493.BJ") is True
+        assert _is_code_like("BJ920493") is True
+
+    def test_bj_exchange_hint_rejects_non_bse_code(self):
+        assert _is_code_like("600519.BJ") is False
+        assert _is_code_like("BJ600519") is False
+
     def test_hk_5_digits(self):
         assert _is_code_like("00700") is True
 
@@ -61,6 +69,14 @@ class TestNormalizeCode:
     def test_strips_suffix(self):
         assert _normalize_code("600519.SH") == "600519"
         assert _normalize_code("000001.SZ") == "000001"
+        assert _normalize_code("920493.BJ") == "920493"
+
+    def test_strips_bse_prefix(self):
+        assert _normalize_code("BJ920493") == "920493"
+
+    def test_bj_exchange_hint_rejects_non_bse_code(self):
+        assert _normalize_code("600519.BJ") is None
+        assert _normalize_code("BJ600519") is None
 
     def test_preserves_us_stock(self):
         assert _normalize_code("AAPL") == "AAPL"
@@ -99,6 +115,7 @@ class TestResolveNameToCode:
     def test_code_like_input_returned_normalized(self):
         assert resolve_name_to_code("600519") == "600519"
         assert resolve_name_to_code("600519.SH") == "600519"
+        assert resolve_name_to_code("920493.BJ") == "920493"
         assert resolve_name_to_code("  AAPL  ") == "AAPL"
 
     def test_local_map_exact_match(self):

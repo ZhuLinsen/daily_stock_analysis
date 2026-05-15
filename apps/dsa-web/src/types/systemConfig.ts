@@ -31,6 +31,11 @@ export interface SystemConfigOption {
   value: string;
 }
 
+export interface SystemConfigDocLink {
+  label: string;
+  href: string;
+}
+
 export interface SystemConfigFieldSchema {
   key: string;
   title?: string;
@@ -45,6 +50,10 @@ export interface SystemConfigFieldSchema {
   options: Array<string | SystemConfigOption>;
   validation: Record<string, unknown>;
   displayOrder: number;
+  helpKey?: string | null;
+  examples?: string[];
+  docs?: SystemConfigDocLink[];
+  warningCodes?: string[];
 }
 
 export interface SystemConfigCategorySchema {
@@ -73,6 +82,24 @@ export interface SystemConfigResponse {
   maskToken: string;
   items: SystemConfigItem[];
   updatedAt?: string;
+}
+
+export interface SetupStatusCheck {
+  key: string;
+  title: string;
+  category: 'base' | 'ai_model' | 'agent' | 'notification' | 'system';
+  required: boolean;
+  status: 'configured' | 'inherited' | 'optional' | 'needs_action';
+  message: string;
+  nextStep?: string | null;
+}
+
+export interface SetupStatusResponse {
+  isComplete: boolean;
+  readyForSmoke: boolean;
+  requiredMissingKeys: string[];
+  nextStepKey?: string | null;
+  checks: SetupStatusCheck[];
 }
 
 export interface ExportSystemConfigResponse {
@@ -170,6 +197,8 @@ export type NotificationTestChannel =
   | 'telegram'
   | 'email'
   | 'pushover'
+  | 'ntfy'
+  | 'gotify'
   | 'pushplus'
   | 'serverchan3'
   | 'custom'

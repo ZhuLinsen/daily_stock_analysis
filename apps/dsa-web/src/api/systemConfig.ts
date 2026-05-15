@@ -6,6 +6,7 @@ import type {
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
   ImportSystemConfigRequest,
+  SetupStatusResponse,
   SystemConfigConflictResponse,
   SystemConfigResponse,
   SystemConfigSchemaResponse,
@@ -134,14 +135,23 @@ export const systemConfigApi = {
     return toCamelCase<SystemConfigResponse>(response.data);
   },
 
-  async exportDesktopEnv(): Promise<ExportSystemConfigResponse> {
+  async exportEnv(): Promise<ExportSystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/export');
     return toCamelCase<ExportSystemConfigResponse>(response.data);
+  },
+
+  async exportDesktopEnv(): Promise<ExportSystemConfigResponse> {
+    return this.exportEnv();
   },
 
   async getSchema(): Promise<SystemConfigSchemaResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/schema');
     return toCamelCase<SystemConfigSchemaResponse>(response.data);
+  },
+
+  async getSetupStatus(): Promise<SetupStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
+    return toCamelCase<SetupStatusResponse>(response.data);
   },
 
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {
@@ -152,12 +162,16 @@ export const systemConfigApi = {
     return toCamelCase<ValidateSystemConfigResponse>(response.data);
   },
 
-  async importDesktopEnv(payload: ImportSystemConfigRequest): Promise<UpdateSystemConfigResponse> {
+  async importEnv(payload: ImportSystemConfigRequest): Promise<UpdateSystemConfigResponse> {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/system/config/import',
       toSnakeImportPayload(payload),
     );
     return toCamelCase<UpdateSystemConfigResponse>(response.data);
+  },
+
+  async importDesktopEnv(payload: ImportSystemConfigRequest): Promise<UpdateSystemConfigResponse> {
+    return this.importEnv(payload);
   },
 
   async testLLMChannel(payload: TestLLMChannelRequest): Promise<TestLLMChannelResponse> {

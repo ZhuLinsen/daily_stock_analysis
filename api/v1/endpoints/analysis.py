@@ -21,9 +21,10 @@ import json
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from api.deps import get_config_dep
@@ -38,6 +39,8 @@ from api.v1.schemas.analysis import (
     TaskInfo,
     TaskListResponse,
     DuplicateTaskErrorResponse,
+    MarketReviewRequest,
+    MarketReviewAccepted,
 )
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.history import (
@@ -49,6 +52,15 @@ from api.v1.schemas.history import (
 )
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import Config
+from src.core.market_review_lock import (
+    MarketReviewExecutionLock as _MarketReviewExecutionLock,
+    market_review_lock_path,
+    release_market_review_lock as _release_market_review_lock,
+    try_acquire_market_review_lock as _try_acquire_market_review_lock,
+)
+from src.core.market_review_runtime import (
+    build_market_review_runtime as _runtime_build_market_review_runtime,
+)
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.services.name_to_code_resolver import resolve_name_to_code
 from src.services.stock_code_utils import is_code_like
@@ -69,6 +81,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SUPPORTED_FREE_TEXT_RE = re.compile(r"^[A-Za-z0-9.*\-+\u3400-\u9fff\s]+$")
+
+
+def _market_review_lock_path(config: Config) -> Path:
+    return market_review_lock_path(config)
+
+
+def _compute_market_review_override_region(config: Config) -> Optional[str]:
+    if not getattr(config, "trading_day_check_enabled", True):
+        return None
+
+    try:
+        from src.core.trading_calendar import (
+            get_open_markets_today,
+            compute_effective_region,
+        )
+
+        open_markets = get_open_markets_today()
+        return compute_effective_region(
+            getattr(config, "market_review_region", "cn") or "cn",
+            open_markets,
+        )
+    except Exception as exc:
+        logger.warning("大盘复盘交易日过滤失败，按配置继续执行: %s", exc)
+        return None
+
+
+def _build_market_review_runtime(config: Config, source_message: Optional[Any] = None) -> tuple[Any, Any, Any]:
+    return _runtime_build_market_review_runtime(config, source_message)
+
+
+def _run_market_review_background(
+    send_notification: bool,
+    override_region: Optional[str] = None,
+    lock_token: Optional[_MarketReviewExecutionLock] = None,
+    config: Optional[Config] = None,
+) -> None:
+    """Run market review after the API response has been accepted."""
+    from src.core.market_review import run_market_review
+
+    runtime_config = config or get_config_dep()
+    try:
+        notifier, analyzer, search_service = _build_market_review_runtime(runtime_config)
+        report = run_market_review(
+            notifier=notifier,
+            analyzer=analyzer,
+            search_service=search_service,
+            send_notification=send_notification,
+            override_region=override_region,
+        )
+        if not report:
+            raise RuntimeError("大盘复盘未返回可持久化报告")
+        return {"result": report}
+    finally:
+        _release_market_review_lock(lock_token)
 
 
 def _invalid_analysis_input_error() -> HTTPException:
@@ -393,6 +459,71 @@ def _handle_sync_analysis(
 
 
 # ============================================================
+# POST /market-review - 触发大盘复盘
+# ============================================================
+
+@router.post(
+    "/market-review",
+    response_model=MarketReviewAccepted,
+    status_code=202,
+    responses={
+        202: {"description": "大盘复盘任务已接受", "model": MarketReviewAccepted},
+        409: {"description": "大盘复盘正在执行", "model": ErrorResponse},
+        500: {"description": "提交失败", "model": ErrorResponse},
+    },
+    summary="触发大盘复盘",
+    description="提交一个后台大盘复盘任务，复用 CLI 的大盘复盘链路并保存报告。接口内部仅提供进程内/单机防重，如多实例（多 Worker/多容器）部署，需结合外部幂等机制避免重复触发。",
+)
+def trigger_market_review(
+    request: Optional[MarketReviewRequest] = Body(None),
+    config: Config = Depends(get_config_dep),
+) -> MarketReviewAccepted:
+    """Trigger market review from Web/API without blocking the request."""
+    request = request or MarketReviewRequest()
+
+    override_region = _compute_market_review_override_region(config)
+    if override_region == "":
+        return MarketReviewAccepted(
+            status="accepted",
+            message="今日大盘复盘相关市场均为非交易日，已跳过大盘复盘",
+            send_notification=request.send_notification,
+        )
+
+    lock_token = _try_acquire_market_review_lock(config)
+    if lock_token is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_market_review",
+                "message": "大盘复盘正在执行中，请稍后再试",
+            },
+        )
+
+    try:
+        task = get_task_queue().submit_background_task(
+            lambda: _run_market_review_background(
+                request.send_notification,
+                override_region=override_region,
+                lock_token=lock_token,
+                config=config,
+            ),
+            stock_code="market_review",
+            stock_name="大盘复盘",
+            message="大盘复盘任务已提交",
+        )
+    except Exception:
+        _release_market_review_lock(lock_token)
+        raise
+
+    return MarketReviewAccepted(
+        status="accepted",
+        message="大盘复盘任务已提交，完成后会保存报告并按配置推送通知",
+        send_notification=request.send_notification,
+        task_id=task.task_id,
+    )
+
+
+# ============================================================
 # GET /tasks - 获取任务列表
 # ============================================================
 
@@ -582,11 +713,29 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     task = task_queue.get_task(task_id)
     
     if task:
+        result: Optional[AnalysisResultResponse] = None
+        market_review_report = None
+
+        if task.status == TaskStatusEnum.COMPLETED and isinstance(task.result, dict):
+            if task.stock_code == "market_review":
+                report_text = task.result.get("result")
+                if isinstance(report_text, str) and report_text.strip():
+                    market_review_report = report_text
+            else:
+                try:
+                    result = AnalysisResultResponse.model_validate(task.result)
+                except Exception:
+                    logger.warning(
+                        "解析任务结果失败，回退为空返回: task_id=%s",
+                        task.task_id,
+                    )
+
         return TaskStatus(
             task_id=task.task_id,
             status=task.status.value,
             progress=task.progress,
-            result=None,  # In-progress tasks do not carry a result payload.
+            result=result,
+            market_review_report=market_review_report,
             error=task.error,
             stock_name=task.stock_name,
             original_query=task.original_query,
@@ -648,10 +797,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     analysis_summary=record.analysis_summary,
                 ),
                 strategy=ReportStrategy(
-                    ideal_buy=str(getattr(record, 'ideal_buy', None)) if getattr(record, 'ideal_buy', None) is not None else None,
-                    secondary_buy=str(getattr(record, 'secondary_buy', None)) if getattr(record, 'secondary_buy', None) is not None else None,
-                    stop_loss=str(getattr(record, 'stop_loss', None)) if getattr(record, 'stop_loss', None) is not None else None,
-                    take_profit=str(getattr(record, 'take_profit', None)) if getattr(record, 'take_profit', None) is not None else None,
+                    ideal_buy=_stringify_report_strategy_value(getattr(record, 'ideal_buy', None)),
+                    secondary_buy=_stringify_report_strategy_value(getattr(record, 'secondary_buy', None)),
+                    stop_loss=_stringify_report_strategy_value(getattr(record, 'stop_loss', None)),
+                    take_profit=_stringify_report_strategy_value(getattr(record, 'take_profit', None)),
                 ),
             ).model_dump()
             return TaskStatus(
@@ -723,6 +872,14 @@ def _load_sync_fundamental_sources(
         return None, None
 
 
+def _stringify_report_strategy_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 def _build_analysis_report(
         report_data: Dict[str, Any],
         query_id: str,
@@ -783,10 +940,10 @@ def _build_analysis_report(
     strategy = None
     if strategy_data:
         strategy = ReportStrategy(
-            ideal_buy=strategy_data.get("ideal_buy"),
-            secondary_buy=strategy_data.get("secondary_buy"),
-            stop_loss=strategy_data.get("stop_loss"),
-            take_profit=strategy_data.get("take_profit")
+            ideal_buy=_stringify_report_strategy_value(strategy_data.get("ideal_buy")),
+            secondary_buy=_stringify_report_strategy_value(strategy_data.get("secondary_buy")),
+            stop_loss=_stringify_report_strategy_value(strategy_data.get("stop_loss")),
+            take_profit=_stringify_report_strategy_value(strategy_data.get("take_profit"))
         )
 
     extracted_fundamental = extract_fundamental_detail_fields(

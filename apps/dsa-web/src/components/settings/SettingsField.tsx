@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import type React from 'react';
-import { Badge, Button, Select, Input, Tooltip } from '../common';
+import { Badge, Button, Select, Input } from '../common';
 import type { ConfigValidationIssue, SystemConfigFieldSchema, SystemConfigItem } from '../../types/systemConfig';
 import { getFieldDescriptionZh, getFieldTitleZh } from '../../utils/systemConfigI18n';
 import { cn } from '../../utils/cn';
+import { SettingsHelpButton } from './SettingsHelpButton';
 
 function normalizeSelectOptions(options: SystemConfigFieldSchema['options'] = []) {
   return options.map((option) => {
@@ -215,6 +216,12 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
         <label className="text-sm font-semibold text-foreground" htmlFor={controlId}>
           {title}
         </label>
+        <SettingsHelpButton
+          fieldKey={item.key}
+          title={title}
+          schema={schema}
+          description={description}
+        />
         {schema?.isSensitive ? (
           <Badge variant="history" size="sm">
             敏感
@@ -228,11 +235,9 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
       </div>
 
       {description ? (
-        <Tooltip content={description}>
-          <p className="mb-3 inline-flex max-w-full text-xs leading-5 text-muted-text">
-            {description}
-          </p>
-        </Tooltip>
+        <p className="mb-3 max-w-full text-xs leading-5 text-muted-text">
+          {description}
+        </p>
       ) : null}
 
       <div>

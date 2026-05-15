@@ -10,17 +10,14 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/zhulinsen/daily_stock_analysis)
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/18527" target="_blank"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-  <a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" style="width: 250px; height: 54px;" width="250" height="54" /></a>
+  <a href="https://trendshift.io/repositories/18527" target="_blank"><img src="https://trendshift.io/api/badge/repositories/18527" alt="ZhuLinsen%2Fdaily_stock_analysis | Trendshift" width="230" /></a>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
 </p>
 
 **基於 AI 大模型的 A股/港股/美股自選股智能分析系統**
 
 每日自動分析自選股 -> 生成決策儀表盤 -> 推送到 Telegram / Discord / Slack / 郵件 / 企業微信 / 飛書。
 
-[**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**完整指南**](./full-guide.md) · [**常見問題**](./FAQ.md) · [**更新日誌**](./CHANGELOG.md)
-
-> 本次為文件更新，未隨本次變更引入新的運行時能力；Anspire / AIHubMix / SerpAPI 等供應商配置為既有能力的使用口徑補充。
+[**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
 
 繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
 
@@ -30,27 +27,27 @@
 
 <div align="center">
   <p align="center">
-    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="../sources/anspire.png" alt="Anspire Open 一站式模型和搜尋服務" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="../sources/serpapi_banner_zh.png" alt="輕鬆抓取搜尋引擎上的即時金融新聞數據 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
+    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="assets/anspire.png" alt="Anspire Open 一站式模型和搜尋服務" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
+    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="assets/serpapi_banner_zh.png" alt="輕鬆抓取搜尋引擎上的即時金融新聞數據 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
   </p>
 </div>
 
+## 🖥️ 產品預覽
+
+<p align="center">
+  <img src="assets/readme_workspace_tour_20260510.gif" alt="DSA Web 工作台演示" width="720">
+</p>
+
 ## ✨ 功能特性
 
-| 模組 | 功能 | 說明 |
-|------|------|------|
-| AI | 決策儀表盤 | 一句話核心結論 + 評分 + 買賣點位 + 風險警報 + 操作檢查清單 |
-| 分析 | 多維度分析 | 技術面、即時行情、籌碼分布、新聞輿情、公告、資金流與基本面聚合 |
-| 市場 | 全球市場 | 支援 A股、港股、美股、美股指數及常見 ETF |
-| 策略 | 市場策略系統 | 內建 A股復盤、美股 Regime、均線、纏論、波浪、情緒週期等策略能力 |
-| 復盤 | 大盤復盤 | 每日市場概覽、指數表現、漲跌統計與板塊強弱（支援 cn / hk / us / both） |
-| Web | 雙主題工作台 | 支援手動分析、配置管理、任務進度、歷史報告、回測、持倉管理 |
-| 匯入 | 智能匯入與補全 | 支援圖片、CSV/Excel、剪貼簿匯入，自選股輸入支援代碼/名稱/拼音/別名補全 |
-| 歷史 | 報告管理 | 支援歷史報告查看、完整 Markdown 報告、重新分析與批量管理 |
-| 回測 | AI 回測驗證 | 對歷史分析進行事後驗證，查看方向準確率和模擬收益 |
-| Agent 問股 | 策略對話 | 多輪策略問答，支援均線金叉/纏論/波浪等 11 種內建策略，Web/Bot/API 全鏈路 |
-| 推送 | 多渠道通知 | 支援企業微信、飛書、Telegram、Discord、Slack、郵件等主流渠道 |
-| 自動化 | 定時運行 | 支援 GitHub Actions、Docker、本地定時任務和 FastAPI 服務模式 |
+| 能力 | 覆蓋內容 |
+|------|------|
+| AI 決策報告 | 核心結論、評分、趨勢、買賣點位、風險警報、催化因素、操作檢查清單 |
+| 多市場數據聚合 | A股、港股、美股、ETF；行情、K 線、技術指標、資金流、籌碼、新聞、公告和基本面 |
+| Web / 桌面工作台 | 手動分析、任務進度、歷史報告、完整 Markdown、回測、持倉、配置管理、淺色 / 深色主題 |
+| Agent 策略問股 | 多輪追問，支援均線、纏論、波浪、趨勢等 11 種內建策略，覆蓋 Web/Bot/API |
+| 智能匯入與補全 | 圖片、CSV/Excel、剪貼簿匯入；股票代碼/名稱/拼音/別名補全 |
+| 自動化與推送 | GitHub Actions、Docker、本地定時任務、FastAPI 服務和企業微信/飛書/Telegram/Discord/Slack/郵件推送 |
 
 > 功能細節、欄位契約、基本面 P0 超時語義、交易紀律、數據源優先級、Web/API 行為請看 [完整配置與部署指南](./full-guide.md)。
 
@@ -119,8 +116,8 @@
 
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/)：中文內容特別優化，可增強 A 股分析效果；同一 Key 也可作為 Anspire 大模型網關兜底示例 | 推薦 |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)：搜尋引擎結果補強，適合即時金融新聞 | 推薦 |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/)：中文內容特別優化，可增強 A 股分析效果；同一 Key 也可作為 Anspire 大模型網關兜底示例 | **推薦** |
+| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)：搜尋引擎結果補強，適合即時金融新聞 | **推薦** |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新聞搜尋 API | 可選 |
 | `BOCHA_API_KEYS` | [博查搜尋](https://open.bocha.cn/)：中文搜尋優化，支援 AI 摘要 | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/)：隱私優先，美股資訊補強 | 可選 |
@@ -212,9 +209,7 @@ python main.py --serve-only
 
 ## 🖥️ Web 介面
 
-![FastAPI Web UI](../sources/fastapi_server.png)
-
-Web 工作台提供配置管理、任務監控、手動分析、歷史報告、回測、持倉管理、智能匯入和淺色 / 深色主題。啟動方式：
+Web 工作台提供配置管理、任務監控、手動分析、歷史報告、完整 Markdown 報告、Agent 問股、回測、持倉管理、智能匯入和淺色 / 深色主題。啟動方式：
 
 ```bash
 python main.py --webui
@@ -234,51 +229,44 @@ python main.py --webui-only
 
 > Agent 具體參數、`skill` 命名兼容、多 Agent 模式和預算護欄見 [完整指南](./full-guide.md#本地-webui-管理界面) 與 [LLM 配置指南](./LLM_CONFIG_GUIDE.md)。
 
-## 相關項目 (Related Projects)
+## 🧩 相關項目 (Related Projects)
 
-DSA 聚焦日常分析報告；以下兩個同系列項目分別覆蓋選股、策略驗證與策略進化，適合按需延伸使用。它們目前獨立維護，後續會優先探索與 DSA 的候選股導入、回測驗證和報告聯動。
+> DSA 聚焦日常分析報告；以下兩個同系列項目分別覆蓋選股、策略驗證與策略進化，適合按需延伸使用。它們目前獨立維護，後續會優先探索與 DSA 的候選股導入、回測驗證和報告聯動。
 
-- [AlphaSift](https://github.com/ZhuLinsen/alphasift)：多因子選股與全市場掃描，用於從股票池中整理候選標的。
-- [AlphaEvo](https://github.com/ZhuLinsen/alphaevo)：策略回測與自我進化，用於驗證策略規則，並透過迭代探索策略參數與組合。
+| 項目 | 定位 |
+|------|------|
+| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | 多因子選股與全市場掃描，用於從股票池中整理候選標的 |
+| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | 策略回測與自我進化，用於驗證策略規則，並透過迭代探索策略參數與組合 |
 
-## 🗺️ Roadmap
+## 📬 聯繫與合作
 
-查看已支援的功能和未來規劃：[更新日誌](./CHANGELOG.md)
-
-> 有建議？歡迎 [提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
-
-> UI 正在持續調整與升級，部分頁面在過渡階段可能仍存在樣式、交互或兼容性問題。歡迎通過 Issue 或 Pull Request 一起完善。
-
----
-
-## ☕ 支持項目
-
-| 支付寶 (Alipay) | 微信支付 (WeChat) | 小紅書 |
-| :---: | :---: | :---: |
-| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <img src="../sources/xiaohongshu.png" width="200" alt="小紅書"> |
+<table>
+  <tr>
+    <td width="92" valign="top"><strong>合作郵箱</strong></td>
+    <td valign="top">
+      <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
+      項目諮詢、部署支援與功能擴展
+    </td>
+    <td align="center" rowspan="3" valign="middle" width="148">
+      <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="assets/xiaohongshu_tick.jpg" width="112" alt="小紅書二維碼"></a><br>
+      <sub>掃碼關注小紅書</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="92" valign="top"><strong>小紅書</strong></td>
+    <td valign="top"><a href="http://xhslink.com/m/tU520DWCKT">歡迎關注小紅書</a></td>
+  </tr>
+  <tr>
+    <td width="92" valign="top"><strong>問題反饋</strong></td>
+    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">提交 Issue</a></td>
+  </tr>
+</table>
 
 ## 📄 License
 
 [MIT License](../LICENSE) © 2026 ZhuLinsen
 
 如果你在項目中使用或基於本項目進行二次開發，非常歡迎在 README 或文檔中註明來源並附上本倉庫鏈接。
-
-## 📬 聯繫與合作
-
-- GitHub Issues：[提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
-- 合作郵箱：zhuls345@gmail.com（可溝通贊助合作、定制化開發、私有部署與二次開發）
-
-## ⭐ Star History
-
-**如果覺得有用，請給個 ⭐ Star 支持一下！**
-
-<a href="https://star-history.com/#ZhuLinsen/daily_stock_analysis&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ZhuLinsen/daily_stock_analysis&type=Date" />
- </picture>
-</a>
 
 ## ⚠️ 免責聲明
 

@@ -29,11 +29,52 @@ if (!(Test-Path $backendArtifact)) {
   throw "Backend artifact not found: $backendArtifact. Run scripts\build-backend.ps1 first."
 }
 
+function Get-PackageLockHash {
+  return (Get-FileHash -Path 'package-lock.json' -Algorithm SHA256).Hash
+}
+
+function Install-DesktopDependencies {
+  param(
+    [string]$Reason,
+    [switch]$Clean
+  )
+
+  Write-Host "Installing desktop dependencies ($Reason)..."
+  if ($Clean -and (Test-Path 'node_modules')) {
+    Remove-Item -Recurse -Force 'node_modules'
+  }
+  npm install
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Desktop dependency installation failed.'
+  }
+  New-Item -ItemType Directory -Force -Path 'node_modules' | Out-Null
+  Set-Content -Path 'node_modules\.dsa-package-lock.sha256' -Value (Get-PackageLockHash) -Encoding ascii
+}
+
+function Ensure-DesktopDependencies {
+  $lockHashMarker = 'node_modules\.dsa-package-lock.sha256'
+  $installReason = $null
+
+  if (!(Test-Path 'node_modules')) {
+    $installReason = 'node_modules missing'
+  } elseif (!(Test-Path $lockHashMarker)) {
+    $installReason = 'package-lock marker missing'
+  } elseif ((Get-Content -Path $lockHashMarker -Raw).Trim() -ne (Get-PackageLockHash)) {
+    $installReason = 'package-lock.json changed'
+  } elseif (!(Test-Path 'node_modules\electron-updater')) {
+    $installReason = 'electron-updater missing'
+  }
+
+  if ($null -ne $installReason) {
+    Install-DesktopDependencies -Reason $installReason
+  } else {
+    Write-Host 'Desktop dependencies are up to date.'
+  }
+}
+
 Write-Host 'Building Electron desktop app...'
 Push-Location (Join-Path $repoRoot 'apps\dsa-desktop')
-if (!(Test-Path 'node_modules')) {
-  npm install
-}
+Ensure-DesktopDependencies
 
 Write-Host 'Stopping running app (if any)...'
 Get-Process -Name "Daily Stock Analysis" -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -47,10 +88,7 @@ if (Test-Path 'dist\win-unpacked') {
 $appBuilderPath = 'node_modules\app-builder-bin\win\x64\app-builder.exe'
 if (!(Test-Path $appBuilderPath)) {
   Write-Host 'app-builder.exe missing, reinstalling dependencies...'
-  if (Test-Path 'node_modules') {
-    Remove-Item -Recurse -Force 'node_modules'
-  }
-  npm install
+  Install-DesktopDependencies -Reason 'app-builder.exe missing' -Clean
 }
 
 npx electron-builder --win nsis

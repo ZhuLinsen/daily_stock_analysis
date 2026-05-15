@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -294,7 +294,11 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(call_order, ["reload_env", "reset_instance", "get_config"])
 
     def test_schedule_time_provider_propagates_config_read_failures(self) -> None:
-        with patch(
+        with patch.object(
+            main,
+            "_INITIAL_PROCESS_ENV",
+            {},
+        ), patch(
             "src.core.config_manager.ConfigManager.read_config_map",
             side_effect=RuntimeError("boom"),
         ):
@@ -367,6 +371,79 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_full_analysis.assert_called_once_with(config, args, ["600519", "000001"])
 
+    def test_run_full_analysis_skips_market_review_when_shared_lock_is_held(self) -> None:
+        from src.core.market_review_lock import (
+            release_market_review_lock,
+            try_acquire_market_review_lock,
+        )
+
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=True,
+            no_market_review=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        lock_token = try_acquire_market_review_lock(config)
+        self.assertIsNotNone(lock_token)
+        try:
+            with patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+                 patch("src.core.market_review.run_market_review") as run_market_review:
+                main.run_full_analysis(config, args, [])
+        finally:
+            release_market_review_lock(lock_token)
+
+        pipeline.run.assert_called_once()
+        run_market_review.assert_not_called()
+
+    def test_market_review_mode_uses_shared_runtime_assembly(self) -> None:
+        args = self._make_args(market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_region="both",
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        runtime_notifier = MagicMock()
+        runtime_analyzer = MagicMock()
+        runtime_search_service = MagicMock()
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._run_market_review_with_shared_lock") as run_with_lock, \
+             patch(
+                 "src.core.market_review_runtime.build_market_review_runtime",
+                 return_value=(
+                    runtime_notifier,
+                    runtime_analyzer,
+                    runtime_search_service,
+                 ),
+             ) as runtime_builder, \
+             patch("src.core.market_review.run_market_review") as run_market_review, \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value={"cn", "us"}), \
+             patch("src.core.trading_calendar.compute_effective_region", return_value="cn,us"):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        runtime_builder.assert_called_once_with(config)
+        run_with_lock.assert_called_once()
+        call_args = run_with_lock.call_args
+        self.assertEqual(call_args.args[0], config)
+        self.assertIs(call_args.args[1], run_market_review)
+        self.assertIs(call_args.kwargs["notifier"], runtime_notifier)
+        self.assertIs(call_args.kwargs["analyzer"], runtime_analyzer)
+        self.assertIs(call_args.kwargs["search_service"], runtime_search_service)
+        self.assertTrue(call_args.kwargs["send_notification"])
+        self.assertNotIn("merge_notification", call_args.kwargs)
+        self.assertEqual(call_args.kwargs["override_region"], "cn,us")
+
     def test_bootstrap_logging_persists_when_config_load_fails(self) -> None:
         """Config load failure must be logged to stderr and return exit code 1.
 
@@ -413,6 +490,40 @@ class MainScheduleModeTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         run_mock.assert_called_once()
+
+    def test_runtime_file_logging_permission_error_falls_back_to_console(self) -> None:
+        """Configured file logging failures should not prevent Docker startup."""
+        import io
+
+        args = self._make_args()
+        config = self._make_config(log_dir="/app/logs")
+        capture_stream = io.StringIO()
+        capture_handler = logging.StreamHandler(capture_stream)
+        capture_handler.setLevel(logging.DEBUG)
+        capture_handler.setFormatter(logging.Formatter("%(message)s"))
+
+        root_logger = logging.getLogger()
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch(
+                 "main.setup_logging",
+                 side_effect=PermissionError("/app/logs/stock_analysis_20260511.log"),
+             ), \
+             patch("main.run_full_analysis") as run_mock:
+            root_logger.addHandler(capture_handler)
+            try:
+                exit_code = main.main()
+            finally:
+                root_logger.removeHandler(capture_handler)
+                capture_handler.close()
+
+        self.assertEqual(exit_code, 0)
+        run_mock.assert_called_once()
+        output = capture_stream.getvalue()
+        self.assertIn("文件日志初始化失败，已降级为控制台日志输出", output)
+        self.assertIn("/app/logs", output)
+        self.assertIn("官方 Docker 镜像启动入口会自动修复默认挂载目录权限", output)
 
     def test_run_full_analysis_import_failure_propagates(self) -> None:
         """P1: import failures in run_full_analysis must propagate, not be swallowed."""
