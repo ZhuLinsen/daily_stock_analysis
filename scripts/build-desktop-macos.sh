@@ -81,9 +81,9 @@ fi
 
 echo "Building macOS target arch: ${MAC_ARCH:-default}"
 if [[ ${#ARCH_ARGS[@]} -gt 0 ]]; then
-  npx electron-builder --mac dmg "${ARCH_ARGS[@]}"
+  npx electron-builder --mac dmg "${ARCH_ARGS[@]}" --publish never
 else
-  npx electron-builder --mac dmg
+  npx electron-builder --mac dmg --publish never
 fi
 popd >/dev/null
 

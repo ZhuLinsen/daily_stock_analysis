@@ -1,6 +1,6 @@
 {
   "name": "daily-stock-analysis-desktop",
-  "version": "3.16.0",
+  "version": "3.17.1",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -38,6 +38,7 @@
     ],
     "win": {
       "target": "nsis",
+      "artifactName": "daily-stock-analysis-windows-installer-v${version}.${ext}",
       "publish": [
         {
           "provider": "github",

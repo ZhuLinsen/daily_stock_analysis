@@ -1,0 +1,54 @@
+# Hot Theme Strategy / 热点题材
+
+name: hot_theme
+display_name: 热点题材
+description: 跟踪政策、产业和市场热点，判断题材强度、板块扩散和个股相对强弱。
+category: framework
+core_rules: [2, 3, 5, 7]
+required_tools:
+  - get_sector_rankings
+  - search_stock_news
+  - get_realtime_quote
+  - analyze_trend
+aliases: [热点, 题材, 热点题材]
+default_priority: 35
+market_regimes: [sector_hot]
+
+instructions: |
+  **热点题材策略（Hot Theme Strategy）**
+
+  适用场景：
+  - 市场出现明确政策、产业、技术路线或资金抱团热点。
+  - 需要判断个股是否真正受益于热点，而不是单纯蹭概念。
+
+  分析框架：
+
+  1. **热点强度**
+     - 使用 `get_sector_rankings` 判断相关板块是否在近期涨幅、成交额或人气上处于前列。
+     - 观察热点是否从少数核心股扩散到板块内多只个股。
+     - 若只有单股异动、板块未共振，降低信号权重。
+
+  2. **个股相关性**
+     - 使用 `search_stock_news` 检查公司业务、订单、产能、客户、公告是否与热点直接相关。
+     - 区分“实质受益”“间接受益”“概念关联较弱”。
+     - 概念关联弱但涨幅过大时，应提示题材兑现风险。
+
+  3. **相对强弱**
+     - 使用 `get_realtime_quote` 与 `analyze_trend` 判断个股涨幅、量比、换手率是否强于板块平均。
+     - 强势热点股通常表现为放量、换手活跃、回调不破关键均线。
+
+  4. **节奏与风险**
+     - 不在连续加速、高乖离率位置追涨。
+     - 若新闻集中在“已经大涨”“资金追捧”“龙虎榜游资博弈”，需要警惕短线情绪顶。
+     - 重大利空、监管问询、澄清公告可一票降低评级。
+
+  输出要求：
+  - 明确当前热点阶段：启动 / 扩散 / 分化 / 退潮。
+  - 说明个股与热点的实质相关性。
+  - 给出可执行触发条件：回踩承接、放量突破、板块继续共振或退潮止损。
+
+  评分调整建议：
+  - 热点处于启动或扩散期，且个股实质受益：`sentiment_score +12`
+  - 个股强于板块并有量能确认：额外 `+6`
+  - 热点进入分化或退潮：`sentiment_score -8`
+  - 仅概念蹭热点且乖离率过高：`sentiment_score -12`

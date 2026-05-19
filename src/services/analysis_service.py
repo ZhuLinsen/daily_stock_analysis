@@ -12,7 +12,7 @@
 
 import logging
 import uuid
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 
 from src.repositories.analysis_repo import AnalysisRepository
 from src.report_language import (
@@ -46,6 +46,7 @@ class AnalysisService:
         query_id: Optional[str] = None,
         send_notification: bool = True,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        skills: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -83,6 +84,7 @@ class AnalysisService:
                 query_id=query_id,
                 query_source="api",
                 progress_callback=progress_callback,
+                analysis_skills=skills,
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

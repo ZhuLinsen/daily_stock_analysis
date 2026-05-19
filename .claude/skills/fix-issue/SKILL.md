@@ -77,6 +77,13 @@
 
 ### Step 6: 需要确认的后续动作
 
+如用户要求创建 PR、生成 PR 标题或整理 PR 描述，PR title 建议遵循 `AGENTS.md`：
+
+- 使用 `<类型>: <修改内容>` 格式，例如 `fix: 修复大盘分析历史记录丢失`
+- 类型优先使用 `fix`/`feat`/`refactor`/`docs`/`chore`/`test`/`ci`
+- 标题只描述实际改动，建议不添加 `[codex]`、`codex`、`autocode`、`copilot` 或其他工具/agent 来源前缀
+- 该约定仅用于协作一致性，不应被单独当作 process blocker
+
 只有在用户明确确认后，才执行：
 
 - 建分支

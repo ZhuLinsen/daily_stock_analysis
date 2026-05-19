@@ -11,11 +11,13 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy import and_, delete, desc, func, or_, select
 
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
 logger = logging.getLogger(__name__)
+
+MARKET_REVIEW_REPORT_TYPE = "market_review"
 
 
 class BacktestRepository:
@@ -41,6 +43,12 @@ class BacktestRepository:
             conditions = [AnalysisHistory.created_at <= cutoff_dt]
             if code:
                 conditions.append(AnalysisHistory.code == code)
+            conditions.append(
+                or_(
+                    AnalysisHistory.report_type.is_(None),
+                    AnalysisHistory.report_type != MARKET_REVIEW_REPORT_TYPE,
+                )
+            )
 
             query = select(AnalysisHistory).where(and_(*conditions))
 

@@ -24,6 +24,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
+from src.utils.data_processing import normalize_model_used
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,14 @@ def render(
     buy_count = sum(1 for r in results if getattr(r, "decision_type", "") == "buy")
     sell_count = sum(1 for r in results if getattr(r, "decision_type", "") == "sell")
     hold_count = sum(1 for r in results if getattr(r, "decision_type", "") in ("hold", ""))
+    show_llm_model = bool(getattr(get_config(), "report_show_llm_model", True))
+    models_used: List[str] = []
+    if show_llm_model:
+        for result in results:
+            model = normalize_model_used(getattr(result, "model_used", None))
+            if model:
+                models_used.append(model)
+        models_used = list(dict.fromkeys(models_used))
 
     report_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -148,6 +157,8 @@ def render(
         "hold_count": hold_count,
         "labels": labels,
         "report_language": report_language,
+        "models_used": models_used,
+        "show_llm_model": show_llm_model,
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,

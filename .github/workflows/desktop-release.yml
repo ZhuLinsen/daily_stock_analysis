@@ -70,22 +70,20 @@ jobs:
       - name: Prepare release artifact (Windows)
         shell: pwsh
         run: |
-          $installerExe = Get-ChildItem -Path 'apps/dsa-desktop/dist' -Filter '*.exe' `
-            | Where-Object { $_.Name -match 'Setup' } `
-            | Sort-Object LastWriteTime -Descending `
-            | Select-Object -First 1
+          $expectedInstallerName = "daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $installerPath = Join-Path 'apps/dsa-desktop/dist' $expectedInstallerName
+          $installerExe = Get-Item -Path $installerPath -ErrorAction SilentlyContinue
           if (-not $installerExe) {
-            throw 'No NSIS setup .exe found under apps/dsa-desktop/dist.'
+            throw "No expected NSIS installer found under apps/dsa-desktop/dist: $expectedInstallerName"
           }
           $winUnpacked = 'apps/dsa-desktop/dist/win-unpacked'
           if (-not (Test-Path $winUnpacked)) {
             throw 'No win-unpacked directory found under apps/dsa-desktop/dist.'
           }
           New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
-          $exeTarget = "dist/release-assets/daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $exeTarget = "dist/release-assets/$expectedInstallerName"
           $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
           Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
-          Copy-Item -Path $installerExe.FullName -Destination "dist/release-assets/$($installerExe.Name)" -Force
           Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
           Get-ChildItem -Path 'apps/dsa-desktop/dist' -File |
             Where-Object { $_.Name -eq 'latest.yml' -or $_.Name -like '*.blockmap' } |
@@ -100,8 +98,22 @@ jobs:
           if (-not (Select-String -Path 'dist/release-assets/latest.yml' -Pattern $versionPattern)) {
             throw "latest.yml version does not match release tag $env:RELEASE_TAG."
           }
-          if (-not (Get-ChildItem -Path 'dist/release-assets' -Filter '*.blockmap' -File)) {
-            throw 'No blockmap files found under dist/release-assets.'
+          $latestText = Get-Content -Path 'dist/release-assets/latest.yml' -Raw
+          $pathMatch = [regex]::Match($latestText, '(?m)^\s*path:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if (-not $pathMatch.Success) {
+            throw 'latest.yml missing path field.'
+          }
+          $latestInstallerPath = $pathMatch.Groups[1].Value.Trim()
+          if ($latestInstallerPath -ne $expectedInstallerName) {
+            throw "latest.yml path ($latestInstallerPath) does not match release installer $expectedInstallerName."
+          }
+          $urlMatch = [regex]::Match($latestText, '(?m)^\s*-\s*url:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if ($urlMatch.Success -and $urlMatch.Groups[1].Value.Trim() -ne $expectedInstallerName) {
+            throw "latest.yml file url ($($urlMatch.Groups[1].Value.Trim())) does not match release installer $expectedInstallerName."
+          }
+          $expectedBlockmapName = "$expectedInstallerName.blockmap"
+          if (-not (Get-ChildItem -Path 'dist/release-assets' -Filter $expectedBlockmapName -File)) {
+            throw "No matching blockmap found under dist/release-assets: $expectedBlockmapName"
           }
           Get-ChildItem -Path 'dist/release-assets' -File | Sort-Object Name | Format-Table Name, Length
 

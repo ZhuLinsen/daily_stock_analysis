@@ -235,6 +235,33 @@ def test_existing_asset_supports_head_and_conditional_requests(tmp_path: Path) -
     assert cached_response.headers["etag"] == etag
 
 
+def test_frontend_index_responses_are_not_cacheable(tmp_path: Path) -> None:
+    from api.app import create_app
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "index-abc.js").write_text("// ok", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("/* ok */", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    root_response = client.get("/")
+    direct_index_response = client.get("/index.html")
+    fallback_response = client.get("/analysis/history")
+
+    assert root_response.status_code == 200
+    assert direct_index_response.status_code == 200
+    assert fallback_response.status_code == 200
+    for response in (root_response, direct_index_response, fallback_response):
+        assert response.headers["cache-control"] == (
+            "no-store, no-cache, must-revalidate, max-age=0"
+        )
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+
+
 @pytest.mark.parametrize(
     "request_path",
     [

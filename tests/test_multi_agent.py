@@ -1112,6 +1112,47 @@ class TestEventMonitor(unittest.TestCase):
         self.assertEqual(restored.rules[1].stock_code, "300750")
         self.assertEqual(restored.rules[2].stock_code, "000858")
 
+    def test_serialization_contract_keeps_supported_rule_keys_stable(self):
+        from src.agent.events import (
+            AlertStatus,
+            EventMonitor,
+            PriceAlert,
+            PriceChangeAlert,
+            VolumeAlert,
+        )
+
+        monitor = EventMonitor()
+        monitor.add_alert(PriceAlert(stock_code="600519", direction="above", price=1800.0))
+        monitor.add_alert(PriceChangeAlert(stock_code="300750", direction="down", change_pct=3.5))
+        monitor.add_alert(VolumeAlert(stock_code="000858", multiplier=3.0))
+        monitor.rules[1].status = AlertStatus.TRIGGERED
+        monitor.rules[2].status = AlertStatus.EXPIRED
+
+        data = monitor.to_dict_list()
+
+        common_keys = {
+            "stock_code",
+            "alert_type",
+            "description",
+            "status",
+            "created_at",
+            "ttl_hours",
+        }
+        self.assertEqual(set(data[0]), common_keys | {"direction", "price"})
+        self.assertEqual(set(data[1]), common_keys | {"direction", "change_pct"})
+        self.assertEqual(set(data[2]), common_keys | {"multiplier"})
+        known_status_values = {status.value for status in AlertStatus}
+        for entry in data:
+            self.assertIn(entry["status"], known_status_values)
+
+        restored = EventMonitor.from_dict_list(data)
+
+        self.assertEqual([rule.status for rule in restored.rules], [
+            AlertStatus.ACTIVE,
+            AlertStatus.TRIGGERED,
+            AlertStatus.EXPIRED,
+        ])
+
     def test_remove_expired(self):
         import time
         from src.agent.events import EventMonitor, PriceAlert
@@ -1130,6 +1171,23 @@ class TestEventMonitor(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             monitor.add_alert(SentimentAlert(stock_code="600519"))
+
+    def test_from_dict_list_skips_unsupported_placeholder_rule_type(self):
+        from src.agent.events import EventMonitor
+
+        data = [
+            {"stock_code": "600519", "alert_type": "sentiment_shift"},
+            {
+                "stock_code": "000858",
+                "alert_type": "volume_spike",
+                "multiplier": 2.5,
+            },
+        ]
+
+        monitor = EventMonitor.from_dict_list(data)
+
+        self.assertEqual(len(monitor.rules), 1)
+        self.assertEqual(monitor.rules[0].stock_code, "000858")
 
     def test_from_dict_list_skips_price_change_without_change_pct(self):
         from src.agent.events import EventMonitor

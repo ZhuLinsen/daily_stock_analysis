@@ -13,16 +13,20 @@
 import logging
 from datetime import datetime
 from typing import Optional
+import uuid
 
 from src.config import get_config
 from src.notification import NotificationService
 from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
-from src.analyzer import GeminiAnalyzer
+from src.analyzer import AnalysisResult, GeminiAnalyzer
 
 
 logger = logging.getLogger(__name__)
+
+MARKET_REVIEW_HISTORY_CODE = "MARKET"
+MARKET_REVIEW_REPORT_TYPE = "market_review"
 
 
 def _get_market_review_text(language: str) -> dict[str, str]:
@@ -53,6 +57,7 @@ def run_market_review(
     send_notification: bool = True,
     merge_notification: bool = False,
     override_region: Optional[str] = None,
+    query_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     执行大盘复盘分析
@@ -64,6 +69,7 @@ def run_market_review(
         send_notification: 是否发送通知
         merge_notification: 是否合并推送（跳过本次推送，由 main 层合并个股+大盘后统一发送，Issue #190）
         override_region: 覆盖 config 的 market_review_region（Issue #373 交易日过滤后有效子集）
+        query_id: 历史记录关联 ID；API 后台任务会传入 task_id，CLI/Bot 为空时自动生成
 
     Returns:
         复盘报告文本
@@ -125,6 +131,14 @@ def run_market_review(
                 report_filename
             )
             logger.info(f"大盘复盘报告已保存: {filepath}")
+
+            _persist_market_review_history(
+                review_report=review_report,
+                markdown_report=f"{review_text['root_title']}\n\n{review_report}",
+                region=region,
+                config=config,
+                query_id=query_id,
+            )
             
             # 推送通知（合并模式下跳过，由 main 层统一发送）
             if merge_notification and send_notification:
@@ -147,3 +161,72 @@ def run_market_review(
         logger.error(f"大盘复盘分析失败: {e}")
     
     return None
+
+
+def _persist_market_review_history(
+    *,
+    review_report: str,
+    markdown_report: str,
+    region: str,
+    config: object,
+    query_id: Optional[str] = None,
+) -> int:
+    """Persist market review output into the existing analysis history table."""
+    try:
+        from src.storage import DatabaseManager
+
+        report_language = normalize_report_language(getattr(config, "report_language", "zh"))
+        summary = _summarize_market_review(review_report, report_language)
+        if report_language == "en":
+            stock_name = "Market Review"
+            operation_advice = "View review"
+            trend_prediction = "Market review"
+        else:
+            stock_name = "大盘复盘"
+            operation_advice = "查看复盘"
+            trend_prediction = "大盘复盘"
+
+        result = AnalysisResult(
+            code=MARKET_REVIEW_HISTORY_CODE,
+            name=stock_name,
+            sentiment_score=50,
+            trend_prediction=trend_prediction,
+            operation_advice=operation_advice,
+            analysis_summary=summary,
+            report_language=report_language,
+            news_summary=review_report,
+            raw_response=markdown_report,
+            data_sources="market_review",
+        )
+
+        history_query_id = query_id or f"market_review_{uuid.uuid4().hex}"
+        context_snapshot = {
+            "report_kind": MARKET_REVIEW_REPORT_TYPE,
+            "market_review_region": region,
+            "report_language": report_language,
+        }
+
+        saved = DatabaseManager.get_instance().save_analysis_history(
+            result=result,
+            query_id=history_query_id,
+            report_type=MARKET_REVIEW_REPORT_TYPE,
+            news_content=review_report,
+            context_snapshot=context_snapshot,
+            save_snapshot=True,
+        )
+        if saved:
+            logger.info("大盘复盘历史记录已保存: query_id=%s", history_query_id)
+        else:
+            logger.warning("大盘复盘历史记录保存失败: query_id=%s", history_query_id)
+        return saved
+    except Exception as exc:
+        logger.warning("大盘复盘历史记录保存异常，报告文件与推送流程继续: %s", exc, exc_info=True)
+        return 0
+
+
+def _summarize_market_review(review_report: str, report_language: str) -> str:
+    for line in (review_report or "").splitlines():
+        text = line.strip().lstrip("#").strip()
+        if text and not text.startswith("---") and not text.startswith(">"):
+            return text[:200]
+    return "Market review report generated." if report_language == "en" else "大盘复盘报告已生成。"

@@ -132,8 +132,9 @@ metadata:
 1. **提取股票代码**：从用户消息中识别股票代码（如 600519、AAPL、hk00700）。若用户仅提供中文名称（如「茅台」），需提示用户提供股票代码，或使用常见映射（茅台→600519）。
 2. **调用 API**：向 `{DSA_BASE_URL}/api/v1/analysis/analyze` 发送 POST 请求，请求体：
    ```json
-   {"stock_code": "<提取的代码>", "report_type": "detailed", "force_refresh": true, "async_mode": false}
+   {"stock_code": "<提取的代码>", "report_type": "detailed", "force_refresh": true, "async_mode": false, "skills": ["bull_trend"]}
    ```
+   > `skills` 为可选策略 ID 数组；历史字段 `strategies` 仍保留兼容，建议优先使用 `skills`。
 3. **等待响应**：同步模式下分析约需 2–5 分钟，请确保 HTTP 客户端超时足够（建议 ≥300 秒）。
 4. **解析结果**：从响应的 `report.summary` 中提取 `operation_advice`、`trend_prediction`、`analysis_summary`，从 `report.strategy` 中提取 `ideal_buy`、`stop_loss`、`take_profit`，以简洁格式呈现给用户。
 5. **错误处理**：

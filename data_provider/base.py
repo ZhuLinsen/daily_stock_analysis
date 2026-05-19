@@ -325,6 +325,38 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """
+        获取概念/题材涨跌榜。
+
+        Returns:
+            Tuple: (领涨概念列表, 领跌概念列表)
+        """
+        return None
+
+    def get_hot_stocks(self, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取市场人气股榜。
+
+        Returns:
+            List[Dict]: 人气股列表
+        """
+        return None
+
+    def get_limit_up_pool(
+        self,
+        date: Optional[str] = None,
+        n: int = 20,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取涨停池/连板梯队。
+
+        Args:
+            date: YYYYMMDD，默认由具体数据源决定
+            n: 返回条数
+        """
+        return None
+
     def get_daily_data(
         self,
         stock_code: str, 
@@ -491,6 +523,8 @@ class DataFetcherManager:
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us"},
         "LongbridgeFetcher": {"hk", "us"},
+        "FinnhubFetcher": {"us"},
+        "AlphaVantageFetcher": {"us"},
     }
     
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
@@ -1000,6 +1034,20 @@ class DataFetcherManager:
         else:
             logger.debug("[数据源初始化] 跳过未配置的 LongbridgeFetcher")
 
+        finnhub_api_key = (getattr(config, "finnhub_api_key", None) or "").strip()
+        if finnhub_api_key:
+            from .finnhub_fetcher import FinnhubFetcher
+            optional_fetchers.append(FinnhubFetcher())
+        else:
+            logger.debug("[数据源初始化] 跳过未配置的 FinnhubFetcher")
+
+        alphavantage_api_key = (getattr(config, "alphavantage_api_key", None) or "").strip()
+        if alphavantage_api_key:
+            from .alphavantage_fetcher import AlphaVantageFetcher
+            optional_fetchers.append(AlphaVantageFetcher())
+        else:
+            logger.debug("[数据源初始化] 跳过未配置的 AlphaVantageFetcher")
+
         # 初始化数据源列表
         self._ensure_concurrency_guards()
         with self._fetchers_lock:
@@ -1084,14 +1132,18 @@ class DataFetcherManager:
             logger.error(f"[数据源终止] {stock_code} 获取失败: {error_summary}")
             raise DataFetchError(error_summary)
 
-        # 美股（含美股指数）使用 Longbridge/YFinance 特殊路由；港股走下方通用数据源循环
+        # 美股（含美股指数）使用专用路由；港股走下方通用数据源循环
+        # Failover chain: Finnhub(P2) -> AlphaVantage(P3) -> Yfinance(P4) -> Longbridge(P5)
+        # When Longbridge preferred: Longbridge -> Finnhub -> AlphaVantage -> Yfinance
         if is_us:
             prefer_lb = self._longbridge_preferred(capability="daily_data") and not is_us_index
-            source_order = (
-                ["LongbridgeFetcher", "YfinanceFetcher"]
-                if prefer_lb
-                else ["YfinanceFetcher", "LongbridgeFetcher"]
-            )
+            if is_us_index:
+                # 指数始终 YFinance 首选（Longbridge 不提供指数K线）
+                source_order = ["YfinanceFetcher", "FinnhubFetcher"]
+            elif prefer_lb:
+                source_order = ["LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher"]
+            else:
+                source_order = ["FinnhubFetcher", "AlphaVantageFetcher", "YfinanceFetcher", "LongbridgeFetcher"]
             market_label = "美股指数" if is_us_index else "美股"
 
             for src_name in source_order:
@@ -1326,6 +1378,12 @@ class DataFetcherManager:
             primary_quote = self._supplement_quote(
                 stock_code, primary_quote, secondary_src, **secondary_kw,
             )
+            # 美股个股（非指数）尝试从 Finnhub/AlphaVantage 补充缺失字段
+            if is_us and not is_us_index and primary_quote is not None:
+                for extra_src in ["FinnhubFetcher", "AlphaVantageFetcher"]:
+                    primary_quote = self._supplement_quote(
+                        stock_code, primary_quote, extra_src,
+                    )
             if primary_quote is not None:
                 return primary_quote
             if log_final_failure:
@@ -1608,7 +1666,7 @@ class DataFetcherManager:
         # 3. 依次尝试各个数据源
         from .akshare_fetcher import _is_us_code
         is_us = _is_us_code(stock_code)
-        _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher"}
+        _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher", "FinnhubFetcher", "AlphaVantageFetcher"}
         for fetcher in self._get_fetchers_snapshot():
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
@@ -2623,3 +2681,61 @@ class DataFetcherManager:
             return top, bottom
         logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
         return [], []
+
+    def get_concept_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
+        """获取概念/题材涨跌榜（自动切换数据源）。"""
+        last_error = ""
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_concept_rankings(n)
+                if data and (data[0] or data[1]):
+                    logger.info(f"[{fetcher.name}] 获取概念排行成功")
+                    return data[0] or [], data[1] or []
+                last_error = f"{fetcher.name}返回空结果"
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                logger.warning(f"[{fetcher.name}] 获取概念排行失败: {error_reason}")
+        if last_error:
+            logger.warning(f"[概念排行] 所有数据源均失败，最终错误: {last_error}")
+        return [], []
+
+    def get_hot_stocks(self, n: int = 10) -> List[Dict[str, Any]]:
+        """获取市场人气股榜（自动切换数据源）。"""
+        last_error = ""
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_hot_stocks(n)
+                if data:
+                    logger.info(f"[{fetcher.name}] 获取人气股成功")
+                    return data[:n]
+                last_error = f"{fetcher.name}返回空结果"
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                logger.warning(f"[{fetcher.name}] 获取人气股失败: {error_reason}")
+        if last_error:
+            logger.warning(f"[人气股] 所有数据源均失败，最终错误: {last_error}")
+        return []
+
+    def get_limit_up_pool(
+        self,
+        date: Optional[str] = None,
+        n: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """获取涨停池与连板梯队（自动切换数据源）。"""
+        last_error = ""
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_limit_up_pool(date=date, n=n)
+                if data:
+                    logger.info(f"[{fetcher.name}] 获取涨停池成功")
+                    return data[:n]
+                last_error = f"{fetcher.name}返回空结果"
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                logger.warning(f"[{fetcher.name}] 获取涨停池失败: {error_reason}")
+        if last_error:
+            logger.warning(f"[涨停池] 所有数据源均失败，最终错误: {last_error}")
+        return []

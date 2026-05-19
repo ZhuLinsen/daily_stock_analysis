@@ -44,6 +44,20 @@ class TestAnalyzeRequest:
         assert request.original_query is None
         assert request.selection_source is None
 
+    def test_analyze_request_accepts_strategy_skills_alias(self):
+        """Test analysis requests accept both skills and legacy strategies."""
+        request = AnalyzeRequest(
+            stock_code="600519",
+            skills=["growth_quality"],
+        )
+        assert request.skills == ["growth_quality"]
+
+        legacy_request = AnalyzeRequest(
+            stock_code="600519",
+            strategies=["event_driven"],
+        )
+        assert legacy_request.skills == ["event_driven"]
+
     def test_analyze_request_validation_selection_source(self):
         """Test selection_source field validation"""
         # Valid selection_source values

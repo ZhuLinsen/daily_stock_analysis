@@ -76,3 +76,6 @@
 {% endif %}
 
 *{{ labels.report_time_label }}: {{ report_timestamp[11:16] }}*
+{% if show_llm_model and models_used %}
+*{{ labels.analysis_model_label }}: {{ models_used|join(', ') }}*
+{% endif %}

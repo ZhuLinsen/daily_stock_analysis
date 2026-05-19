@@ -45,6 +45,7 @@ describe('NotificationTestPanel', () => {
     );
 
     expect(screen.getByRole('option', { name: 'ntfy' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Gotify' })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('渠道'), { target: { value: 'custom' } });
     fireEvent.click(screen.getByRole('button', { name: /发送测试/ }));
 

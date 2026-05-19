@@ -20,6 +20,7 @@ from src.notification_routing import (
     ROUTABLE_NOTIFICATION_CHANNELS,
     split_notification_route_channels,
 )
+from src.notification_sender.gotify_sender import resolve_gotify_message_endpoint
 from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
 
 KeyTier = Literal["minimal", "advanced"]
@@ -116,6 +117,14 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         minimal_keys=("NTFY_URL",),
         advanced_keys=("NTFY_TOKEN", "WEBHOOK_VERIFY_SSL"),
         note="NTFY_URL must include the topic path, e.g. https://ntfy.sh/my-topic.",
+    ),
+    NotificationChannelSpec(
+        channel=NotificationChannel.GOTIFY.value,
+        display_name=ChannelDetector.get_channel_name(NotificationChannel.GOTIFY),
+        kind="configured",
+        minimal_keys=("GOTIFY_URL", "GOTIFY_TOKEN"),
+        advanced_keys=("WEBHOOK_VERIFY_SSL",),
+        note="GOTIFY_URL is the server base URL; the sender appends /message.",
     ),
     NotificationChannelSpec(
         channel=NotificationChannel.PUSHPLUS.value,
@@ -230,6 +239,8 @@ P4_NOISE_ACTIONS_ENV_KEYS: Tuple[str, ...] = P4_NOISE_ENV_KEYS
 P6_CHANNEL_ACTIONS_ENV_KEYS: Tuple[str, ...] = (
     "NTFY_URL",
     "NTFY_TOKEN",
+    "GOTIFY_URL",
+    "GOTIFY_TOKEN",
 )
 
 
@@ -305,7 +316,7 @@ def run_notification_diagnostics(config: Config) -> NotificationDiagnosticResult
         _issue(
             "info",
             "phase_scope",
-            "通知诊断会检查渠道基线、只读诊断、Web 测试、P3 路由配置、P4 降噪配置和 P6-A ntfy 渠道。",
+            "通知诊断会检查渠道基线、只读诊断、Web 测试、P3 路由配置、P4 降噪配置和 P6 ntfy/Gotify 渠道。",
         ),
     ]
 
@@ -327,6 +338,18 @@ def run_notification_diagnostics(config: Config) -> NotificationDiagnosticResult
                     "invalid_ntfy_url",
                     "NTFY_URL 必须包含 topic path，例如 https://ntfy.sh/my-topic。",
                     key="NTFY_URL",
+                )
+            )
+
+    if _has(config, "gotify_url"):
+        gotify_endpoint = resolve_gotify_message_endpoint(getattr(config, "gotify_url", None))
+        if not gotify_endpoint:
+            errors.append(
+                _issue(
+                    "error",
+                    "invalid_gotify_url",
+                    "GOTIFY_URL 必须是 Gotify server base URL，不包含 /message，例如 https://gotify.example。",
+                    key="GOTIFY_URL",
                 )
             )
 
@@ -355,6 +378,15 @@ def run_notification_diagnostics(config: Config) -> NotificationDiagnosticResult
         left_key="PUSHOVER_USER_KEY",
         right_key="PUSHOVER_API_TOKEN",
         channel_name="Pushover",
+        errors=errors,
+    )
+    _require_pair(
+        config,
+        left_attr="gotify_url",
+        right_attr="gotify_token",
+        left_key="GOTIFY_URL",
+        right_key="GOTIFY_TOKEN",
+        channel_name="Gotify",
         errors=errors,
     )
     _require_pair(

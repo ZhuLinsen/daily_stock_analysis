@@ -11,6 +11,9 @@ interface SettingsHelpButtonProps {
   fieldKey: string;
   title: string;
   schema?: SystemConfigFieldSchema;
+  helpKey?: string;
+  examples?: string[];
+  docs?: SystemConfigFieldSchema['docs'];
   description?: string;
 }
 
@@ -90,16 +93,19 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
   fieldKey,
   title,
   schema,
+  helpKey,
+  examples: providedExamples,
+  docs: providedDocs,
   description,
 }) => {
-  const help = getSettingsHelpContent(schema?.helpKey, description);
+  const help = getSettingsHelpContent(helpKey ?? schema?.helpKey, description);
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const titleId = useId();
-  const examples = schema?.examples ?? [];
-  const docs = schema?.docs?.length ? schema.docs : help?.docs ?? [];
+  const examples = providedExamples ?? schema?.examples ?? [];
+  const docs = providedDocs?.length ? providedDocs : schema?.docs?.length ? schema.docs : help?.docs ?? [];
 
   useEffect(() => {
     if (!open) {

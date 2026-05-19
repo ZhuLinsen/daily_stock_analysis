@@ -13,6 +13,7 @@ import {
   getProviderTemplate,
   isKnownProviderTemplate,
 } from './llmProviderTemplates';
+import { SettingsHelpButton } from './SettingsHelpButton';
 
 const PROTOCOL_OPTIONS: Array<{ value: ChannelProtocol; label: string }> = [
   { value: 'openai', label: 'OpenAI Compatible' },
@@ -128,6 +129,51 @@ interface ChannelRowProps {
   onCheckCapabilities: (channel: ChannelConfig) => void;
 }
 
+const LLM_CHANNEL_HELP_DOCS = [
+  {
+    label: 'LLM 配置指南',
+    href: 'https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md',
+  },
+  {
+    label: 'LLM 服务商配置速查',
+    href: 'https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/llm-providers.md',
+  },
+];
+
+function HelpLabel({
+  htmlFor,
+  label,
+  fieldKey,
+  helpKey,
+  examples,
+  compact = false,
+}: {
+  htmlFor?: string;
+  label: string;
+  fieldKey: string;
+  helpKey: string;
+  examples?: string[];
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? 'mb-1 flex items-center gap-1.5' : 'mb-2 flex items-center gap-1.5'}>
+      <label
+        htmlFor={htmlFor}
+        className={compact ? 'text-xs text-muted-text' : 'text-sm font-medium text-foreground'}
+      >
+        {label}
+      </label>
+      <SettingsHelpButton
+        fieldKey={fieldKey}
+        title={label}
+        helpKey={helpKey}
+        examples={examples}
+        docs={LLM_CHANNEL_HELP_DOCS}
+      />
+    </div>
+  );
+}
+
 const ChannelRow: React.FC<ChannelRowProps> = ({
   channel,
   index,
@@ -169,6 +215,11 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const selectedCapabilities = capabilityState?.selected || [];
   const capabilityResults = capabilityState?.results || {};
   const capabilityBusy = capabilityState?.status === 'loading';
+  const channelNameInputId = `llm-channel-${channel.id}-name`;
+  const protocolInputId = `llm-channel-${channel.id}-protocol`;
+  const baseUrlInputId = `llm-channel-${channel.id}-base-url`;
+  const apiKeyInputId = `llm-channel-${channel.id}-api-key`;
+  const modelsInputId = `llm-channel-${channel.id}-models`;
 
   return (
     <div className="mb-2 overflow-hidden rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface)] shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
@@ -259,16 +310,32 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
       {expanded ? (
         <div className="settings-surface-overlay-soft space-y-4 px-4 py-4">
           <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <HelpLabel
+                htmlFor={channelNameInputId}
+                label="渠道名称"
+                fieldKey="LLM_CHANNEL_NAME"
+                helpKey="settings.llm_channel.channel_name"
+                examples={['LLM_CHANNELS=deepseek,aihubmix', 'LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro']}
+              />
             <Input
-              label="渠道名称"
+              id={channelNameInputId}
               value={channel.name}
               disabled={busy}
               onChange={(e) => onUpdate(index, 'name', e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
               placeholder="primary"
             />
+            </div>
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-foreground">协议</label>
+              <HelpLabel
+                htmlFor={protocolInputId}
+                label="协议"
+                fieldKey="LLM_CHANNEL_PROTOCOL"
+                helpKey="settings.llm_channel.protocol"
+                examples={['LLM_DEEPSEEK_PROTOCOL=deepseek', 'LLM_OPENROUTER_PROTOCOL=openai']}
+              />
               <Select
+                id={protocolInputId}
                 value={channel.protocol}
                 onChange={(v) => onUpdate(index, 'protocol', normalizeProtocol(v))}
                 options={PROTOCOL_OPTIONS}
@@ -278,8 +345,16 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             </div>
           </div>
 
+          <div>
+            <HelpLabel
+              htmlFor={baseUrlInputId}
+              label="Base URL"
+              fieldKey="LLM_CHANNEL_BASE_URL"
+              helpKey="settings.llm_channel.base_url"
+              examples={['LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com', 'LLM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1']}
+            />
           <Input
-            label="Base URL"
+            id={baseUrlInputId}
             value={channel.baseUrl}
             disabled={busy}
             onChange={(e) => onUpdate(index, 'baseUrl', e.target.value)}
@@ -289,6 +364,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                 : preset?.baseUrl || 'https://api.example.com/v1'
             }
           />
+          </div>
 
           {showProviderTemplateDetails ? (
             <div className="space-y-2 rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface-hover)] p-3">
@@ -332,8 +408,16 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             </div>
           ) : null}
 
+          <div>
+            <HelpLabel
+              htmlFor={apiKeyInputId}
+              label="API Key"
+              fieldKey="LLM_CHANNEL_API_KEY"
+              helpKey="settings.llm_channel.api_key"
+              examples={['LLM_DEEPSEEK_API_KEY=sk-xxxx', 'LLM_OPENAI_API_KEYS=sk-key-1,sk-key-2']}
+            />
           <Input
-            label="API Key"
+            id={apiKeyInputId}
             type="password"
             allowTogglePassword
             iconType="key"
@@ -344,6 +428,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             onChange={(e) => onUpdate(index, 'apiKey', e.target.value)}
             placeholder={channel.protocol === 'ollama' ? '本地 Ollama 可留空' : '支持多个 Key 逗号分隔'}
           />
+          </div>
 
           <div className="space-y-3 rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface-hover)] p-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -376,7 +461,12 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
 
             {discoveredModels.length > 0 ? (
               <div>
-                <label className="mb-2 block text-sm font-medium text-foreground">可选模型（可多选）</label>
+                <HelpLabel
+                  label="可选模型（可多选）"
+                  fieldKey="LLM_CHANNEL_DISCOVERED_MODELS"
+                  helpKey="settings.llm_channel.models"
+                  examples={['LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro']}
+                />
                 <div className="max-h-48 space-y-2 overflow-y-auto rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface)] p-3">
                   {discoveredModels.map((model) => (
                     <label key={model} className="flex items-center gap-2 text-sm text-secondary-text">
@@ -396,8 +486,16 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
               </div>
             ) : null}
 
+            <div>
+              <HelpLabel
+                htmlFor={modelsInputId}
+                label={discoveredModels.length > 0 ? '手动模型（逗号分隔）' : '模型（逗号分隔）'}
+                fieldKey="LLM_CHANNEL_MODELS"
+                helpKey="settings.llm_channel.models"
+                examples={['LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro', 'LLM_OLLAMA_MODELS=qwen3:8b,llama3.1:8b']}
+              />
             <Input
-              label={discoveredModels.length > 0 ? '手动模型（逗号分隔）' : '模型（逗号分隔）'}
+              id={modelsInputId}
               value={channel.models}
               disabled={busy}
               onChange={(e) => onUpdate(index, 'models', e.target.value)}
@@ -408,6 +506,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
                   : '若渠道不支持自动发现或请求失败，可直接手动填写模型列表。'
               }
             />
+            </div>
 
             {manualOnlyModels.length > 0 ? (
               <p className="text-[11px] text-secondary-text">
@@ -456,7 +555,16 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
           <div className="space-y-3 rounded-xl border border-[var(--settings-border)] bg-[var(--settings-surface-hover)] p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-[11px] font-medium text-muted-text">运行时能力检测（可选）</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-[11px] font-medium text-muted-text">运行时能力检测（可选）</p>
+                  <SettingsHelpButton
+                    fieldKey="LLM_CHANNEL_CAPABILITY_CHECKS"
+                    title="运行时能力检测"
+                    helpKey="settings.llm_channel.capability_checks"
+                    examples={['JSON / Tools / Stream / Vision']}
+                    docs={LLM_CHANNEL_HELP_DOCS}
+                  />
+                </div>
                 <p className="mt-0.5 text-[11px] text-secondary-text">
                   仅在手动触发时发起真实 LLM 请求；多选可能需要 20-40 秒。
                 </p>
@@ -1649,7 +1757,13 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                 <Badge variant="default" className="border-[var(--settings-border)] bg-[var(--settings-surface-hover)] text-muted-text">Runtime</Badge>
               </div>
               <div className="mb-4">
-                <label className="mb-1 block text-xs text-muted-text">Temperature</label>
+                <HelpLabel
+                  label="Temperature"
+                  fieldKey="LLM_TEMPERATURE"
+                  helpKey="settings.llm_channel.temperature"
+                  examples={['LLM_TEMPERATURE=0.2', 'LLM_TEMPERATURE=0.7']}
+                  compact
+                />
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
@@ -1675,7 +1789,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
               ) : (
                 <div className="space-y-4">
                   <div>
-                    <label htmlFor="runtime-primary-model" className="mb-1 block text-xs text-muted-text">主模型</label>
+                    <HelpLabel
+                      htmlFor="runtime-primary-model"
+                      label="主模型"
+                      fieldKey="LITELLM_MODEL"
+                      helpKey="settings.llm_channel.primary_model"
+                      examples={['LITELLM_MODEL=deepseek/deepseek-v4-flash']}
+                      compact
+                    />
                     <Select
                       id="runtime-primary-model"
                       value={runtimeConfig.primaryModel}
@@ -1687,7 +1808,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                   </div>
 
                   <div>
-                    <label htmlFor="runtime-agent-primary-model" className="mb-1 block text-xs text-muted-text">Agent 主模型</label>
+                    <HelpLabel
+                      htmlFor="runtime-agent-primary-model"
+                      label="Agent 主模型"
+                      fieldKey="AGENT_LITELLM_MODEL"
+                      helpKey="settings.llm_channel.agent_primary_model"
+                      examples={['AGENT_LITELLM_MODEL=deepseek/deepseek-v4-pro']}
+                      compact
+                    />
                     <Select
                       id="runtime-agent-primary-model"
                       value={runtimeConfig.agentPrimaryModel}
@@ -1702,7 +1830,13 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                   </div>
 
                   <div>
-                    <label className="mb-2 block text-xs text-muted-text">备选模型</label>
+                    <HelpLabel
+                      label="备选模型"
+                      fieldKey="LITELLM_FALLBACK_MODELS"
+                      helpKey="settings.llm_channel.fallback_models"
+                      examples={['LITELLM_FALLBACK_MODELS=deepseek/deepseek-v4-pro,gemini/gemini-3-flash-preview']}
+                      compact
+                    />
                     <div className="space-y-2 rounded-xl border settings-border-strong settings-surface-overlay-soft p-3">
                       {availableModels.map((model) => (
                         <label key={model} className="flex items-center gap-2 text-sm text-secondary-text">
@@ -1723,7 +1857,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                   </div>
 
                   <div>
-                    <label htmlFor="runtime-vision-model" className="mb-1 block text-xs text-muted-text">Vision 模型</label>
+                    <HelpLabel
+                      htmlFor="runtime-vision-model"
+                      label="Vision 模型"
+                      fieldKey="VISION_MODEL"
+                      helpKey="settings.llm_channel.vision_model"
+                      examples={['VISION_MODEL=gemini/gemini-3.1-pro-preview']}
+                      compact
+                    />
                     <Select
                       id="runtime-vision-model"
                       value={runtimeConfig.visionModel}

@@ -98,6 +98,8 @@ gh issue view <issue_number> --repo ZhuLinsen/daily_stock_analysis --comments
 
 <建议修复、澄清或关闭方式>
 
+若建议后续创建 PR，给出的 PR title 建议符合 `AGENTS.md`：使用 `<类型>: <修改内容>`，不添加 `[codex]`、`codex`、`autocode`、`copilot` 或其他工具/agent 来源前缀；该约定仅用于协作一致性提醒，不应单独作为 review process blocker。
+
 ## Risks And Rollback
 
 - 风险点：

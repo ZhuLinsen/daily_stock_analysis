@@ -246,9 +246,34 @@ class SystemConfigApiTestCase(unittest.TestCase):
 
         self.assertIn("非 schedule 模式", run_warning)
         self.assertNotIn("以 schedule 模式", run_warning)
-        self.assertIn("不会自动重建 scheduler", schedule_warning)
+        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_warning)
         self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
         self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
+
+    def test_put_config_returns_schedule_time_runtime_rebind_warning(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+        payload = system_config.update_system_config(
+            request=UpdateSystemConfigRequest(
+                config_version=current["config_version"],
+                reload_now=True,
+                items=[
+                    {"key": "SCHEDULE_TIME", "value": "09:30"},
+                ],
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        schedule_time_warning = next(
+            warning
+            for warning in payload["warnings"]
+            if "SCHEDULE_TIME=09:30 已写入 .env" in warning
+        )
+
+        self.assertIn("已经以 schedule 模式运行", schedule_time_warning)
+        self.assertIn("自动重建 daily job", schedule_time_warning)
+        self.assertIn("不会启动 scheduler", schedule_time_warning)
+        self.assertNotIn("重启当前进程", schedule_time_warning)
 
     def test_export_system_config_returns_raw_env_content(self) -> None:
         self.env_path.write_text(
@@ -614,16 +639,27 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(mock_test.call_args.kwargs["channel"], "wechat")
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
 
-    def test_test_notification_channel_schema_accepts_ntfy(self) -> None:
-        request = TestNotificationChannelRequest(
+    def test_test_notification_channel_schema_accepts_p6_channels(self) -> None:
+        ntfy_request = TestNotificationChannelRequest(
             channel="ntfy",
             items=[{"key": "NTFY_URL", "value": "https://ntfy.sh/dsa-topic"}],
             title="DSA 通知测试",
             content="hello",
             timeout_seconds=5,
         )
+        gotify_request = TestNotificationChannelRequest(
+            channel="gotify",
+            items=[
+                {"key": "GOTIFY_URL", "value": "https://gotify.example"},
+                {"key": "GOTIFY_TOKEN", "value": "app-token"},
+            ],
+            title="DSA 通知测试",
+            content="hello",
+            timeout_seconds=5,
+        )
 
-        self.assertEqual(request.channel, "ntfy")
+        self.assertEqual(ntfy_request.channel, "ntfy")
+        self.assertEqual(gotify_request.channel, "gotify")
 
     def test_validate_returns_user_facing_model_message_without_internal_env_key_name(self) -> None:
         validation = self.service.validate(

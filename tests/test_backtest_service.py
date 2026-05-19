@@ -500,6 +500,75 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(overall.completed_count, 2)
             self.assertEqual(overall.win_count, 2)
 
+    def test_run_backtest_excludes_market_review_records(self) -> None:
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q-market-review",
+                    code="MARKET",
+                    name="大盘复盘",
+                    report_type="market_review",
+                    sentiment_score=50,
+                    operation_advice="查看复盘",
+                    trend_prediction="大盘复盘",
+                    analysis_summary="market review summary",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=datetime(2024, 1, 3, 0, 0, 0),
+                    context_snapshot='{"enhanced_context": {"date": "2024-01-03"}}',
+                )
+            )
+            session.commit()
+
+        service = BacktestService(self.db)
+        stats = service.run_backtest(code=None, force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["saved"], 1)
+        self.assertEqual(self._count_results(), 1)
+        with self.db.get_session() as session:
+            self.assertEqual(
+                session.query(BacktestResult).filter(BacktestResult.code == "MARKET").count(),
+                0,
+            )
+
+    def test_run_backtest_includes_null_report_type_records(self) -> None:
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q-null-report-type",
+                    code="000858",
+                    name="五粮液",
+                    report_type=None,
+                    sentiment_score=60,
+                    operation_advice="持有",
+                    trend_prediction="震荡",
+                    analysis_summary="legacy null report_type row",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=datetime(2024, 1, 3, 0, 0, 0),
+                    context_snapshot='{"enhanced_context": {"date": "2024-01-03"}}',
+                )
+            )
+            session.add_all(
+                [
+                    StockDaily(code="000858", date=date(2024, 1, 3), open=12.0, high=12.8, low=11.5, close=12.2),
+                    StockDaily(code="000858", date=date(2024, 1, 4), open=12.2, high=13.0, low=12.0, close=12.6),
+                    StockDaily(code="000858", date=date(2024, 1, 5), open=12.6, high=12.9, low=11.9, close=12.4),
+                ]
+            )
+            session.commit()
+
+        service = BacktestService(self.db)
+        stats = service.run_backtest(code=None, force=False, eval_window_days=3, min_age_days=0, limit=10)
+        self.assertGreaterEqual(stats["processed"], 2)
+        self.assertGreaterEqual(stats["saved"], 2)
+        with self.db.get_session() as session:
+            self.assertEqual(
+                session.query(BacktestResult).filter(BacktestResult.code == "000858").count(),
+                1,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

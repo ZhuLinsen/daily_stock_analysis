@@ -68,14 +68,34 @@ if ($normalizedLatestVersion -ne $normalizedReleaseTag) {
   throw "Version mismatch: latest.yml=$normalizedLatestVersion, expected=$normalizedReleaseTag"
 }
 
-$setupFiles = Get-ChildItem -Path $distDirPath -Filter '*Setup*.exe' -File -ErrorAction SilentlyContinue
-if (-not $setupFiles) {
-  throw 'No *Setup*.exe found in dist (NSIS installer is required).'
+$expectedInstallerFileName = "daily-stock-analysis-windows-installer-v$normalizedReleaseTag.exe"
+
+if ($ymlText -match '(?m)^\s*path:\s*[''"]?([^''"\r\n]+)[''"]?\s*$') {
+  $latestInstallerPath = $matches[1].Trim()
+} else {
+  throw "latest.yml appears invalid: missing path field."
 }
 
-$blockmapFiles = Get-ChildItem -Path $distDirPath -Filter '*.blockmap' -File -ErrorAction SilentlyContinue
+if ($latestInstallerPath -ne $expectedInstallerFileName) {
+  throw "latest.yml path ($latestInstallerPath) does not match expected installer $expectedInstallerFileName."
+}
+
+if ($ymlText -match '(?m)^\s*-\s*url:\s*[''"]?([^''"\r\n]+)[''"]?\s*$') {
+  $latestInstallerUrl = $matches[1].Trim()
+  if ($latestInstallerUrl -ne $expectedInstallerFileName) {
+    throw "latest.yml file url ($latestInstallerUrl) does not match expected installer $expectedInstallerFileName."
+  }
+}
+
+$setupFiles = Get-ChildItem -Path $distDirPath -Filter $expectedInstallerFileName -File -ErrorAction SilentlyContinue
+if (-not $setupFiles) {
+  throw "No expected NSIS installer found in dist: $expectedInstallerFileName"
+}
+
+$expectedBlockmapFileName = "$expectedInstallerFileName.blockmap"
+$blockmapFiles = Get-ChildItem -Path $distDirPath -Filter $expectedBlockmapFileName -File -ErrorAction SilentlyContinue
 if (-not $blockmapFiles) {
-  throw 'No *.blockmap found in dist; updater metadata may be incomplete.'
+  throw "No matching blockmap found in dist: $expectedBlockmapFileName"
 }
 
 $installerFiles = @()
@@ -101,9 +121,9 @@ if ($releaseAssetsDirWasExplicit) {
 }
 
 if ($releaseAssetsDirPath) {
-  $installerFiles = Get-ChildItem -Path $releaseAssetsDirPath -Filter 'daily-stock-analysis-windows-installer-*.exe' -File -ErrorAction SilentlyContinue
+  $installerFiles = Get-ChildItem -Path $releaseAssetsDirPath -Filter $expectedInstallerFileName -File -ErrorAction SilentlyContinue
   if (-not $installerFiles) {
-    throw "No daily-stock-analysis-windows-installer-*.exe found in release assets: $releaseAssetsDirPath"
+    throw "No expected Windows installer found in release assets: $expectedInstallerFileName"
   }
 } else {
   Write-Host "[check] release attachment alias check skipped: run after release assets are prepared or pass -ReleaseAssetsDir."
@@ -112,7 +132,8 @@ if ($releaseAssetsDirPath) {
 Write-Host "[check] dist: $distDirPath"
 Write-Host "[check] latest.yml version: $normalizedLatestVersion"
 Write-Host "[check] expected release version: $normalizedReleaseTag"
-Write-Host "[check] NSIS installers (Setup):"
+Write-Host "[check] latest.yml installer path: $latestInstallerPath"
+Write-Host "[check] NSIS installers:"
 $setupFiles | ForEach-Object { Write-Host "[found] $($_.Name)" }
 if ($installerFiles) {
   Write-Host "[check] release assets: $releaseAssetsDirPath"
@@ -121,10 +142,6 @@ if ($installerFiles) {
 }
 Write-Host "[check] blockmaps:"
 $blockmapFiles | ForEach-Object { Write-Host "[found] $($_.Name)" }
-
-if (-not $ymlText.Contains('path:')) {
-  throw "latest.yml appears invalid: missing path field."
-}
 
 $versionInTag = Normalize-SemverText -VersionText $ReleaseTag
 if ($versionInTag -and $versionInTag -ne $normalizedReleaseTag) {

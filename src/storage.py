@@ -624,6 +624,103 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class AlertRuleRecord(Base):
+    """Persisted alert rule managed through the Alert API."""
+
+    __tablename__ = 'alert_rules'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), nullable=False)
+    target_scope = Column(String(32), nullable=False, default='single_symbol', index=True)
+    target = Column(String(64), nullable=False, index=True)
+    alert_type = Column(String(32), nullable=False, index=True)
+    parameters = Column(Text, nullable=False, default='{}')
+    severity = Column(String(16), nullable=False, default='warning', index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    source = Column(String(16), nullable=False, default='api', index=True)
+    cooldown_policy = Column(Text)
+    notification_policy = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_alert_rule_type_target', 'alert_type', 'target'),
+    )
+
+
+class AlertTriggerRecord(Base):
+    """Alert trigger history row.
+
+    P1 exposes read APIs and table shape; runtime writer integration lands in
+    later phases.
+    """
+
+    __tablename__ = 'alert_triggers'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, index=True)
+    target = Column(String(64), nullable=False, index=True)
+    observed_value = Column(Float)
+    threshold = Column(Float)
+    reason = Column(Text)
+    data_source = Column(String(64))
+    data_timestamp = Column(DateTime, index=True)
+    triggered_at = Column(DateTime, default=datetime.now, index=True)
+    status = Column(String(16), nullable=False, default='triggered', index=True)
+    diagnostics = Column(Text)
+
+    __table_args__ = (
+        Index('ix_alert_trigger_rule_time', 'rule_id', 'triggered_at'),
+    )
+
+
+class AlertNotificationRecord(Base):
+    """Notification attempt row for alert triggers.
+
+    P1 exposes read APIs and table shape; runtime writer integration lands in
+    later phases.
+    """
+
+    __tablename__ = 'alert_notifications'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trigger_id = Column(Integer, index=True)
+    channel = Column(String(32), nullable=False, index=True)
+    attempt = Column(Integer, nullable=False, default=1)
+    success = Column(Boolean, nullable=False, default=False, index=True)
+    error_code = Column(String(64))
+    retryable = Column(Boolean, nullable=False, default=False)
+    latency_ms = Column(Integer)
+    diagnostics = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_alert_notification_trigger_channel', 'trigger_id', 'channel'),
+    )
+
+
+class AlertCooldownRecord(Base):
+    """Persisted alert cooldown state for DB-managed alert rules."""
+
+    __tablename__ = 'alert_cooldowns'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, index=True)
+    # Reserved for future non-DB/expanded-scope rules; P4 queries by rule_id.
+    rule_key = Column(String(255), index=True)
+    target = Column(String(64), nullable=False, index=True)
+    severity = Column(String(16), nullable=False, default='warning', index=True)
+    last_triggered_at = Column(DateTime, index=True)
+    cooldown_until = Column(DateTime, index=True)
+    reason = Column(Text)
+    state = Column(String(16), nullable=False, default='active', index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('rule_id', 'target', 'severity', name='uix_alert_cooldown_rule_target_severity'),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式

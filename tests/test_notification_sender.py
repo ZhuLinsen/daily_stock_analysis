@@ -28,6 +28,7 @@ from src.notification_sender import (
     DiscordSender,
     EmailSender,
     FeishuSender,
+    GotifySender,
     NtfySender,
     PushoverSender,
     PushplusSender,
@@ -435,6 +436,92 @@ class TestNtfySender(unittest.TestCase):
 
         with self.assertLogs("src.notification_sender.ntfy_sender", level="ERROR") as captured:
             result = sender.send_to_ntfy("body")
+
+        self.assertFalse(result)
+        self.assertNotIn("secret-token", "\n".join(captured.output))
+
+
+class TestGotifySender(unittest.TestCase):
+    """Unit tests for GotifySender."""
+
+    def test_send_returns_false_when_not_configured(self):
+        cfg = _config()
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("hello")
+
+        self.assertFalse(result)
+
+    def test_send_returns_false_when_token_is_blank(self):
+        cfg = _config(gotify_url="https://gotify.example", gotify_token="   ")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("hello")
+
+        self.assertFalse(result)
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_success_uses_json_payload_and_header_auth(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(
+            gotify_url="https://gotify.example",
+            gotify_token="secret-token",
+            webhook_verify_ssl=False,
+        )
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("正文 **Markdown**", title="中文标题", timeout_seconds=5)
+
+        self.assertTrue(result)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://gotify.example/message")
+        call_kw = mock_post.call_args.kwargs
+        self.assertEqual(
+            call_kw["json"],
+            {
+                "title": "中文标题",
+                "message": "正文 **Markdown**",
+                "extras": {
+                    "client::display": {
+                        "contentType": "text/markdown",
+                    },
+                },
+            },
+        )
+        self.assertEqual(call_kw["headers"]["X-Gotify-Key"], "secret-token")
+        self.assertNotIn("secret-token", mock_post.call_args.args[0])
+        self.assertEqual(call_kw["timeout"], 5)
+        self.assertFalse(call_kw["verify"])
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_supports_reverse_proxy_path_prefix(self, mock_post):
+        mock_post.return_value = _response(200)
+        cfg = _config(gotify_url="https://example.com/gotify", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("body", title="title")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_args.args[0], "https://example.com/gotify/message")
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_returns_false_when_url_already_includes_message_endpoint(self, mock_post):
+        cfg = _config(gotify_url="https://gotify.example/message", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        result = sender.send_to_gotify("body")
+
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @mock.patch("src.notification_sender.gotify_sender.requests.post")
+    def test_send_timeout_does_not_log_token_value(self, mock_post):
+        mock_post.side_effect = requests.exceptions.Timeout("secret-token")
+        cfg = _config(gotify_url="https://gotify.example", gotify_token="secret-token")
+        sender = GotifySender(cfg)
+
+        with self.assertLogs("src.notification_sender.gotify_sender", level="ERROR") as captured:
+            result = sender.send_to_gotify("body")
 
         self.assertFalse(result)
         self.assertNotIn("secret-token", "\n".join(captured.output))

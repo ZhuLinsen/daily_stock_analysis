@@ -14,6 +14,10 @@ from src.config import (
     get_fixed_litellm_temperature,
     normalize_litellm_temperature,
 )
+from src.llm.generation_params import (
+    apply_litellm_generation_params,
+    resolve_litellm_temperature_directive,
+)
 
 
 class LLMChannelConfigTestCase(unittest.TestCase):
@@ -478,6 +482,38 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             normalize_litellm_temperature("openai/kimi-k2.6", 0.2, model_list=model_list),
             0.6,
         )
+
+    def test_gpt5_family_temperature_is_omitted_at_request_build_time(self) -> None:
+        directive = resolve_litellm_temperature_directive("openai/gpt5.5-ferr")
+        self.assertTrue(directive.omit_temperature)
+
+        call_kwargs = apply_litellm_generation_params(
+            {"model": "openai/gpt5.5-ferr", "messages": [], "temperature": 0.2},
+            "openai/gpt5.5-ferr",
+            0.2,
+        )
+
+        self.assertNotIn("temperature", call_kwargs)
+        self.assertAlmostEqual(normalize_litellm_temperature("openai/gpt5.5-ferr", 0.2), 0.2)
+
+    def test_gpt5_temperature_directive_resolves_litellm_yaml_alias(self) -> None:
+        model_list = [
+            {
+                "model_name": "future_router",
+                "litellm_params": {"model": "openai/gpt-5.5"},
+            }
+        ]
+
+        directive = resolve_litellm_temperature_directive("future_router", model_list=model_list)
+        call_kwargs = apply_litellm_generation_params(
+            {"model": "future_router", "messages": []},
+            "future_router",
+            0.2,
+            model_list=model_list,
+        )
+
+        self.assertTrue(directive.omit_temperature)
+        self.assertNotIn("temperature", call_kwargs)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

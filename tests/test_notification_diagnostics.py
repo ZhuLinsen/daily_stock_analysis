@@ -41,6 +41,8 @@ class NotificationDiagnosticsTestCase(unittest.TestCase):
         self.assertIn(("ASTRBOT_TOKEN", "advanced"), key_tiers)
         self.assertIn(("NTFY_URL", "minimal"), key_tiers)
         self.assertIn(("NTFY_TOKEN", "advanced"), key_tiers)
+        self.assertIn(("GOTIFY_URL", "minimal"), key_tiers)
+        self.assertIn(("GOTIFY_TOKEN", "minimal"), key_tiers)
         self.assertIn(("CUSTOM_WEBHOOK_BODY_TEMPLATE", "advanced"), key_tiers)
         self.assertIn(("WEBHOOK_VERIFY_SSL", "advanced"), key_tiers)
         for key in P3_ROUTE_ENV_KEYS:
@@ -87,12 +89,14 @@ class NotificationDiagnosticsTestCase(unittest.TestCase):
             _config(
                 wechat_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=1",
                 ntfy_url="https://ntfy.sh/dsa-topic",
+                gotify_url="https://gotify.example",
+                gotify_token="app-token",
                 astrbot_url="https://astrbot.example/webhook",
             )
         )
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.configured_channels, ("wechat", "ntfy", "astrbot"))
+        self.assertEqual(result.configured_channels, ("wechat", "ntfy", "gotify", "astrbot"))
 
     def test_ntfy_url_without_topic_reports_error(self):
         result = run_notification_diagnostics(_config(ntfy_url="https://ntfy.sh"))
@@ -109,6 +113,22 @@ class NotificationDiagnosticsTestCase(unittest.TestCase):
         self.assertNotIn("ntfy", result.configured_channels)
         self.assertIn("invalid_ntfy_url", {item.code for item in result.errors})
         self.assertIn("NTFY_URL", {item.key for item in result.errors})
+
+    def test_gotify_message_endpoint_reports_error(self):
+        result = run_notification_diagnostics(
+            _config(gotify_url="https://gotify.example/message", gotify_token="app-token")
+        )
+
+        self.assertFalse(result.ok)
+        self.assertNotIn("gotify", result.configured_channels)
+        self.assertIn("invalid_gotify_url", {item.code for item in result.errors})
+        self.assertIn("GOTIFY_URL", {item.key for item in result.errors})
+
+    def test_gotify_token_without_url_reports_error(self):
+        result = run_notification_diagnostics(_config(gotify_token="app-token"))
+
+        self.assertFalse(result.ok)
+        self.assertIn("GOTIFY_URL", {item.key for item in result.errors})
 
     def test_advanced_key_without_minimal_warns_but_is_structured(self):
         result = run_notification_diagnostics(_config(pushplus_topic="topic-only"))

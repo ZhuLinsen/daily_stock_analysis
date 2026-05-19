@@ -91,7 +91,7 @@ if (!(Test-Path $appBuilderPath)) {
   Install-DesktopDependencies -Reason 'app-builder.exe missing' -Clean
 }
 
-npx electron-builder --win nsis
+npx electron-builder --win nsis --publish never
 if ($LASTEXITCODE -ne 0) {
   throw 'Electron build failed.'
 }

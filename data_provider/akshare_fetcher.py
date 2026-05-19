@@ -1805,6 +1805,254 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
 
+    def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """获取概念/题材涨跌榜。"""
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_board_concept_name_em() 获取概念排行...")
+            df = ak.stock_board_concept_name_em()
+            if df is None or df.empty:
+                return None
+
+            change_col = '涨跌幅'
+            name_col = '板块名称'
+            if change_col not in df.columns or name_col not in df.columns:
+                return None
+
+            df = df.copy()
+            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+            df = df.dropna(subset=[change_col])
+            top = df.nlargest(n, change_col)
+            bottom = df.nsmallest(n, change_col)
+            return (
+                [
+                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                    for _, row in top.iterrows()
+                ],
+                [
+                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
+                    for _, row in bottom.iterrows()
+                ],
+            )
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取概念排行失败: {e}")
+            return None
+
+    def get_hot_stocks(self, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+        """获取人气股榜，按免配置热榜数据源降级。"""
+        import akshare as ak
+
+        fetch_attempts = (
+            ("东方财富人气榜", lambda top_n: self._get_eastmoney_hot_stocks(ak, top_n)),
+            ("东方财富飙升榜", lambda top_n: self._get_eastmoney_hot_up_stocks(ak, top_n)),
+            ("雪球关注榜", lambda top_n: self._get_xueqiu_hot_stocks(ak, top_n)),
+        )
+        last_error = ""
+        for source, fetch in fetch_attempts:
+            try:
+                rows = fetch(n)
+                if rows:
+                    return rows[:n]
+            except Exception as e:
+                last_error = f"{source}: {e}"
+                logger.debug("[Akshare] 人气股候选源失败 source=%s: %s", source, e)
+        if last_error:
+            logger.warning("[Akshare] 获取人气股全部候选源失败: %s", last_error)
+        return None
+
+    def _get_eastmoney_hot_stocks(self, ak: Any, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+        """获取东方财富人气股榜。"""
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+
+        logger.info("[API调用] ak.stock_hot_rank_em() 获取东方财富人气股...")
+        df = ak.stock_hot_rank_em()
+        if df is None or df.empty:
+            return None
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.head(n).iterrows():
+            rows.append({
+                'rank': self._safe_int(row.get('当前排名')),
+                'code': str(row.get('代码', '')).strip(),
+                'name': str(row.get('股票名称', '')).strip(),
+                'price': self._safe_float(row.get('最新价')),
+                'change_pct': self._safe_float(row.get('涨跌幅')),
+                'source': '东方财富人气榜',
+            })
+        return rows
+
+    def _get_eastmoney_hot_up_stocks(self, ak: Any, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+        """获取东方财富飙升榜。"""
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+
+        logger.info("[API调用] ak.stock_hot_up_em() 获取东方财富飙升榜...")
+        df = ak.stock_hot_up_em()
+        if df is None or df.empty:
+            return None
+
+        code_col = self._find_first_column(df, ("代码", "股票代码"))
+        name_col = self._find_first_column(df, ("股票名称", "名称", "股票简称"))
+        rank_col = self._find_first_column(df, ("当前排名", "排名", "序号"))
+        price_col = self._find_first_column(df, ("最新价", "现价"))
+        change_col = self._find_column_containing(df, ("涨跌幅",))
+        if not code_col or not name_col:
+            return None
+
+        rows: List[Dict[str, Any]] = []
+        for _, row in df.head(n).iterrows():
+            rows.append({
+                'rank': self._safe_int(row.get(rank_col)) if rank_col else len(rows) + 1,
+                'code': str(row.get(code_col, '')).strip(),
+                'name': str(row.get(name_col, '')).strip(),
+                'price': self._safe_float(row.get(price_col)) if price_col else None,
+                'change_pct': self._safe_float(row.get(change_col)) if change_col else None,
+                'source': '东方财富飙升榜',
+            })
+        return rows
+
+    def _get_xueqiu_hot_stocks(self, ak: Any, n: int = 10) -> Optional[List[Dict[str, Any]]]:
+        """获取雪球关注榜兜底。该接口较慢，仅在人气榜失败后尝试。"""
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+
+        logger.info("[API调用] ak.stock_hot_follow_xq() 获取雪球关注榜...")
+        df = ak.stock_hot_follow_xq(symbol='最热门')
+        if df is None or df.empty:
+            return None
+
+        rows: List[Dict[str, Any]] = []
+        for idx, (_, row) in enumerate(df.head(n).iterrows(), 1):
+            rows.append({
+                'rank': idx,
+                'code': str(row.get('股票代码', '')).strip(),
+                'name': str(row.get('股票简称', '')).strip(),
+                'price': self._safe_float(row.get('最新价')),
+                'change_pct': None,
+                'source': '雪球关注榜',
+            })
+        return rows
+
+    def get_limit_up_pool(
+        self,
+        date: Optional[str] = None,
+        n: int = 20,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """获取涨停池，优先按连板数和封板时间展示。"""
+        import akshare as ak
+
+        query_date = date or datetime.now().strftime('%Y%m%d')
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_zt_pool_em(date=%s) 获取涨停池...", query_date)
+            df = ak.stock_zt_pool_em(date=query_date)
+            if df is None or df.empty:
+                return None
+
+            df = df.copy()
+            for col in ('连板数', '封板资金', '成交额', '换手率', '涨跌幅'):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            if '首次封板时间' in df.columns:
+                df['首次封板时间'] = df['首次封板时间'].map(self._normalize_limit_time_value)
+                df['_首次封板时间排序'] = df['首次封板时间'].where(df['首次封板时间'] != '', '999999')
+            sort_cols = [col for col in ('连板数', '_首次封板时间排序') if col in df.columns]
+            if sort_cols:
+                ascending = [False if col == '连板数' else True for col in sort_cols]
+                df = df.sort_values(sort_cols, ascending=ascending)
+
+            rows: List[Dict[str, Any]] = []
+            for _, row in df.head(n).iterrows():
+                rows.append({
+                    'code': str(row.get('代码', '')).strip(),
+                    'name': str(row.get('名称', '')).strip(),
+                    'change_pct': self._safe_float(row.get('涨跌幅')),
+                    'price': self._safe_float(row.get('最新价')),
+                    'amount': self._safe_float(row.get('成交额')),
+                    'turnover_rate': self._safe_float(row.get('换手率')),
+                    'seal_amount': self._safe_float(row.get('封板资金')),
+                    'first_limit_time': str(row.get('首次封板时间', '')).strip(),
+                    'last_limit_time': self._normalize_limit_time_value(row.get('最后封板时间')),
+                    'break_count': self._safe_int(row.get('炸板次数')),
+                    'limit_stat': str(row.get('涨停统计', '')).strip(),
+                    'consecutive_boards': self._safe_int(row.get('连板数')),
+                    'industry': str(row.get('所属行业', '')).strip(),
+                })
+            return rows
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取涨停池失败: {e}")
+            return None
+
+    @staticmethod
+    def _normalize_limit_time_value(value: Any) -> str:
+        """Normalize AkShare HHMMSS-like seal time values to zero-padded HHMMSS."""
+        try:
+            if pd.isna(value):
+                return ""
+        except TypeError:
+            pass
+
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "nat", "none", "null", "-", "--"}:
+            return ""
+
+        if ":" in text:
+            parts = text.split(":")
+            try:
+                hour = int(parts[0])
+                minute = int(parts[1]) if len(parts) > 1 else 0
+                second = int(parts[2]) if len(parts) > 2 else 0
+                return f"{hour:02d}{minute:02d}{second:02d}"
+            except (TypeError, ValueError):
+                return text
+
+        try:
+            return f"{int(float(text)):06d}"
+        except (TypeError, ValueError):
+            digits = "".join(ch for ch in text if ch.isdigit())
+            return digits.zfill(6) if digits else text
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if pd.isna(value):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            if pd.isna(value):
+                return 0
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _find_first_column(df: pd.DataFrame, candidates: Tuple[str, ...]) -> Optional[str]:
+        columns = [str(col) for col in df.columns]
+        for candidate in candidates:
+            if candidate in columns:
+                return candidate
+        return None
+
+    @staticmethod
+    def _find_column_containing(df: pd.DataFrame, keywords: Tuple[str, ...]) -> Optional[str]:
+        for col in df.columns:
+            col_text = str(col)
+            if all(keyword in col_text for keyword in keywords):
+                return col
+        return None
+
 
 if __name__ == "__main__":
     # 测试代码

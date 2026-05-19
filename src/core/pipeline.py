@@ -22,7 +22,7 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 import pandas as pd
 
-from src.config import get_config, Config
+from src.config import FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT, get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.base import normalize_stock_code
@@ -84,6 +84,7 @@ class StockAnalysisPipeline:
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        analysis_skills: Optional[List[str]] = None,
     ):
         """
         初始化调度器
@@ -101,13 +102,14 @@ class StockAnalysisPipeline:
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
         )
         self.progress_callback = progress_callback
+        self.analysis_skills = list(analysis_skills) if analysis_skills is not None else None
         
         # 初始化各模块
         self.db = get_db()
         self.fetcher_manager = DataFetcherManager()
         # 不再单独创建 akshare_fetcher，统一使用 fetcher_manager 获取增强数据
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
-        self.analyzer = GeminiAnalyzer(config=self.config)
+        self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
         self.notifier = NotificationService(source_message=source_message)
         self._single_stock_notify_lock = threading.Lock()
         
@@ -312,6 +314,10 @@ class StockAnalysisPipeline:
             # switched to Agent mode (which is slower and more expensive).
             use_agent = getattr(self.config, 'agent_mode', False)
             if not use_agent:
+                if self.analysis_skills:
+                    use_agent = True
+                    logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
+            if not use_agent:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
@@ -327,7 +333,11 @@ class StockAnalysisPipeline:
             try:
                 fundamental_context = self.fetcher_manager.get_fundamental_context(
                     code,
-                    budget_seconds=getattr(self.config, 'fundamental_stage_timeout_seconds', 1.5),
+                    budget_seconds=getattr(
+                        self.config,
+                        'fundamental_stage_timeout_seconds',
+                        FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT,
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
@@ -786,8 +796,13 @@ class StockAnalysisPipeline:
             from src.agent.factory import build_agent_executor
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
 
+            requested_skills = (
+                self.analysis_skills
+                if self.analysis_skills is not None
+                else (getattr(self.config, 'agent_skills', None) or None)
+            )
             # Build executor from shared factory (ToolRegistry and SkillManager prototype are cached)
-            executor = build_agent_executor(self.config, getattr(self.config, 'agent_skills', None) or None)
+            executor = build_agent_executor(self.config, requested_skills)
 
             # Build initial context to avoid redundant tool calls
             initial_context = {
@@ -797,6 +812,8 @@ class StockAnalysisPipeline:
                 "report_language": report_language,
                 "fundamental_context": fundamental_context,
             }
+            if self.analysis_skills is not None:
+                initial_context["skills"] = self.analysis_skills
             
             if realtime_quote:
                 initial_context["realtime_quote"] = self._safe_to_dict(realtime_quote)
@@ -1514,12 +1531,15 @@ class StockAnalysisPipeline:
         """
         构建分析上下文快照
         """
-        return {
+        snapshot = {
             "enhanced_context": enhanced_context,
             "news_content": news_content,
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+        if self.analysis_skills is not None:
+            snapshot["skills"] = list(self.analysis_skills)
+        return snapshot
 
     @staticmethod
     def _resolve_resume_target_date(
@@ -1959,7 +1979,7 @@ class StockAnalysisPipeline:
                 channels_needing_image = {
                     ch for ch in channels
                     if ch.value in self.notifier._markdown_to_image_channels
-                    and ch != NotificationChannel.NTFY
+                    and ch not in {NotificationChannel.NTFY, NotificationChannel.GOTIFY}
                 }
                 non_wechat_channels_needing_image = {
                     ch for ch in channels_needing_image if ch != NotificationChannel.WECHAT
@@ -2160,6 +2180,11 @@ class StockAnalysisPipeline:
                         non_wechat_success = _send_channel_safely(
                             channel.value,
                             lambda: self.notifier.send_to_ntfy(report),
+                        ) or non_wechat_success
+                    elif channel == NotificationChannel.GOTIFY:
+                        non_wechat_success = _send_channel_safely(
+                            channel.value,
+                            lambda: self.notifier.send_to_gotify(report),
                         ) or non_wechat_success
                     elif channel == NotificationChannel.ASTRBOT:
                         non_wechat_success = _send_channel_safely(

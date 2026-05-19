@@ -18,6 +18,7 @@ const CHANNEL_OPTIONS: Array<{ value: NotificationTestChannel; label: string }> 
   { value: 'email', label: '邮件' },
   { value: 'pushover', label: 'Pushover' },
   { value: 'ntfy', label: 'ntfy' },
+  { value: 'gotify', label: 'Gotify' },
   { value: 'pushplus', label: 'PushPlus' },
   { value: 'serverchan3', label: 'Server酱3' },
   { value: 'custom', label: '自定义 Webhook' },

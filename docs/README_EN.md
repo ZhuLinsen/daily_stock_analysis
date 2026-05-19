@@ -45,7 +45,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 | AI decision reports | Core conclusion, score, trend, entry/exit levels, risk alerts, catalysts, and action checklist |
 | Multi-market data | A-shares, Hong Kong, US stocks, ETFs; quotes, K-lines, technicals, capital flow, chips, news, announcements, and fundamentals |
 | Web / desktop workspace | Manual analysis, task progress, history, full Markdown reports, backtest, portfolio, settings, and light/dark themes |
-| Agent strategy chat | Multi-turn Q&A with 11 built-in strategies across Web/Bot/API |
+| Agent strategy chat | Multi-turn Q&A with 15 built-in strategies across Web/Bot/API |
 | Smart import & autocomplete | Image, CSV/Excel, clipboard import; code/name/pinyin/alias autocomplete |
 | Automation & notifications | GitHub Actions, Docker, local scheduler, FastAPI service, and WeChat Work / Feishu / Telegram / Discord / Slack / Email delivery |
 
@@ -222,7 +222,7 @@ Visit `http://127.0.0.1:8000`. Authentication, smart import, autocomplete, repor
 
 After configuring any available AI API key, the Web `/chat` page can use strategy chat. Set `AGENT_MODE=false` only if you want to disable it explicitly.
 
-- Built-in strategies include moving-average crossovers, Chan theory, Elliott wave, bull trend, and more
+- Built-in strategies include moving-average crossovers, Chan theory, Elliott wave, bull trend, hot themes, event-driven, growth quality, expectation repricing, and more
 - Calls realtime quotes, K-line data, technical indicators, news, and risk context
 - Supports follow-up questions, session export, notification sending, and background execution
 - Supports custom strategy files and experimental multi-agent orchestration

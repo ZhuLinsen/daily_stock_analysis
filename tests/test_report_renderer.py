@@ -9,7 +9,7 @@ Tests for Jinja2 report rendering and fallback behavior.
 
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 try:
     import litellm  # noqa: F401
@@ -29,6 +29,7 @@ def _make_result(
     decision_type: str = "hold",
     dashboard: dict = None,
     report_language: str = "zh",
+    model_used: str = None,
 ) -> AnalysisResult:
     if dashboard is None:
         dashboard = {
@@ -46,7 +47,16 @@ def _make_result(
         decision_type=decision_type,
         dashboard=dashboard,
         report_language=report_language,
+        model_used=model_used,
     )
+
+
+def _make_renderer_config(show_llm_model: bool = True) -> MagicMock:
+    config = MagicMock()
+    config.report_templates_dir = "templates"
+    config.report_language = "zh"
+    config.report_show_llm_model = show_llm_model
+    return config
 
 
 class TestReportRenderer(unittest.TestCase):
@@ -83,6 +93,31 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("决策简报", out)
         self.assertIn("贵州茅台", out)
+
+    def test_render_brief_respects_model_visibility_toggle(self) -> None:
+        r = _make_result(model_used="gemini/gemini-2.5-flash")
+
+        with patch("src.services.report_renderer.get_config", return_value=_make_renderer_config(True)):
+            visible = render("brief", [r])
+        with patch("src.services.report_renderer.get_config", return_value=_make_renderer_config(False)):
+            hidden = render("brief", [r])
+
+        self.assertIsNotNone(visible)
+        self.assertIsNotNone(hidden)
+        self.assertIn("分析模型: gemini/gemini-2.5-flash", visible)
+        self.assertNotIn("分析模型", hidden)
+        self.assertNotIn("gemini/gemini-2.5-flash", hidden)
+
+    def test_render_markdown_footer_uses_consistent_separator(self) -> None:
+        r = _make_result(model_used="gemini/gemini-2.5-flash")
+
+        with patch("src.services.report_renderer.get_config", return_value=_make_renderer_config(True)):
+            out = render("markdown", [r], summary_only=True)
+
+        self.assertIsNotNone(out)
+        self.assertIn("报告生成时间：", out)
+        self.assertIn("分析模型：gemini/gemini-2.5-flash", out)
+        self.assertNotIn("分析模型: gemini/gemini-2.5-flash", out)
 
     def test_render_markdown_in_english(self) -> None:
         """Markdown renderer switches headings and summary labels for English reports."""

@@ -71,6 +71,7 @@ class TaskInfo:
     completed_at: Optional[datetime] = None
     original_query: Optional[str] = None
     selection_source: Optional[str] = None
+    skills: Optional[List[str]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -88,6 +89,7 @@ class TaskInfo:
             "error": self.error,
             "original_query": self.original_query,
             "selection_source": self.selection_source,
+            "skills": self.skills,
         }
     
     def copy(self) -> 'TaskInfo':
@@ -107,6 +109,7 @@ class TaskInfo:
             completed_at=self.completed_at,
             original_query=self.original_query,
             selection_source=self.selection_source,
+            skills=list(self.skills) if self.skills is not None else None,
         )
 
 
@@ -300,6 +303,7 @@ class AnalysisTaskQueue:
         selection_source: Optional[str] = None,
         report_type: str = "detailed",
         force_refresh: bool = False,
+        skills: Optional[List[str]] = None,
     ) -> TaskInfo:
         """
         Submit a single analysis task.
@@ -329,6 +333,7 @@ class AnalysisTaskQueue:
             selection_source=selection_source,
             report_type=report_type,
             force_refresh=force_refresh,
+            skills=skills,
         )
         if duplicates:
             raise duplicates[0]
@@ -343,6 +348,7 @@ class AnalysisTaskQueue:
         report_type: str = "detailed",
         force_refresh: bool = False,
         notify: bool = True,
+        skills: Optional[List[str]] = None,
     ) -> Tuple[List[TaskInfo], List[DuplicateTaskError]]:
         """
         Submit analysis tasks in batch.
@@ -370,6 +376,7 @@ class AnalysisTaskQueue:
                     continue
 
                 task_id = uuid.uuid4().hex
+                task_skills = list(skills) if skills is not None else None
                 task_info = TaskInfo(
                     task_id=task_id,
                     stock_code=stock_code,
@@ -379,6 +386,7 @@ class AnalysisTaskQueue:
                     report_type=report_type,
                     original_query=original_query,
                     selection_source=selection_source,
+                    skills=task_skills,
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
@@ -391,6 +399,7 @@ class AnalysisTaskQueue:
                         report_type,
                         force_refresh,
                         notify,
+                        task_skills,
                     )
                 except Exception:
                     # Roll back the current batch to avoid partial submission.
@@ -418,6 +427,7 @@ class AnalysisTaskQueue:
         stock_name: Optional[str] = None,
         report_type: str = "detailed",
         message: Optional[str] = "任务已加入队列",
+        task_id: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a generic background callable with task lifecycle tracking.
@@ -425,7 +435,7 @@ class AnalysisTaskQueue:
         This is used by callers that need task status visibility but do not
         map to standard per-stock async analysis flow.
         """
-        task_id = uuid.uuid4().hex
+        task_id = task_id or uuid.uuid4().hex
         task_info = TaskInfo(
             task_id=task_id,
             stock_code=stock_code,
@@ -436,6 +446,8 @@ class AnalysisTaskQueue:
         )
 
         with self._data_lock:
+            if task_id in self._tasks:
+                raise ValueError(f"任务 ID 已存在: {task_id}")
             self._tasks[task_id] = task_info
             try:
                 future = self.executor.submit(self._execute_background_task, task_id, run_task)
@@ -570,6 +582,7 @@ class AnalysisTaskQueue:
         report_type: str,
         force_refresh: bool,
         notify: bool = True,
+        skills: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行分析任务（在线程池中运行）
@@ -612,6 +625,7 @@ class AnalysisTaskQueue:
                 query_id=task_id,
                 send_notification=notify,
                 progress_callback=_on_progress,
+                skills=skills,
             )
             
             if result:

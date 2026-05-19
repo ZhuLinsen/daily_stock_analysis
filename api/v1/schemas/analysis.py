@@ -13,7 +13,7 @@
 from typing import Optional, List, Any
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from src.utils.analysis_metadata import SELECTION_SOURCE_PATTERN
 
 
@@ -71,6 +71,12 @@ class AnalyzeRequest(BaseModel):
         True,
         description="是否发送推送通知（Telegram/企业微信等）"
     )
+    skills: Optional[List[str]] = Field(
+        None,
+        validation_alias=AliasChoices("skills", "strategies"),
+        description="本次分析使用的策略 skill ID 列表；兼容 legacy strategies 字段",
+        example=["bull_trend", "growth_quality"]
+    )
 
     class Config:
         json_schema_extra = {
@@ -82,7 +88,8 @@ class AnalyzeRequest(BaseModel):
                 "stock_name": "贵州茅台",
                 "original_query": "茅台",
                 "selection_source": "autocomplete",
-                "notify": True
+                "notify": True,
+                "skills": ["bull_trend"]
             }
         }
 
@@ -259,6 +266,7 @@ class TaskStatus(BaseModel):
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
     )
+    skills: Optional[List[str]] = Field(None, description="本次任务使用的策略 skill ID 列表")
     
     class Config:
         json_schema_extra = {
@@ -271,7 +279,8 @@ class TaskStatus(BaseModel):
                 "error": None,
                 "stock_name": "贵州茅台",
                 "original_query": "茅台",
-                "selection_source": "autocomplete"
+                "selection_source": "autocomplete",
+                "skills": ["bull_trend"]
             }
         }
 
@@ -300,6 +309,7 @@ class TaskInfo(BaseModel):
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
     )
+    skills: Optional[List[str]] = Field(None, description="本次任务使用的策略 skill ID 列表")
     
     class Config:
         json_schema_extra = {
@@ -316,7 +326,8 @@ class TaskInfo(BaseModel):
                 "completed_at": None,
                 "error": None,
                 "original_query": "茅台",
-                "selection_source": "autocomplete"
+                "selection_source": "autocomplete",
+                "skills": ["bull_trend"]
             }
         }
 

@@ -996,6 +996,13 @@ function resolveDesktopVersion() {
   return String(app.getVersion() || '').trim();
 }
 
+function buildMainPageUrl(port, timestamp = Date.now()) {
+  const url = new URL(`http://127.0.0.1:${port}/`);
+  url.searchParams.set('desktop_version', resolveDesktopVersion() || 'unknown');
+  url.searchParams.set('cache_bust', String(timestamp));
+  return url.toString();
+}
+
 function isWindowsNsisInstalledApp() {
   if (!isWindows || !app.isPackaged) {
     return false;
@@ -1563,8 +1570,9 @@ async function createWindow() {
     );
     logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
     const mainPageStartedAt = Date.now();
-    await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
-    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms`);
+    const mainPageUrl = buildMainPageUrl(port);
+    await mainWindow.loadURL(mainPageUrl);
+    logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
     logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
     if (!restoreFailed) {
       void performDesktopUpdateCheck({ notify: true });
@@ -1610,6 +1618,7 @@ module.exports = {
   evaluateReleaseUpdate,
   extractReleaseMetadata,
   fetchLatestReleaseJson,
+  buildMainPageUrl,
   normalizeVersionString,
   parseSemver,
   restorePackagedRuntimeStateFromBackup,

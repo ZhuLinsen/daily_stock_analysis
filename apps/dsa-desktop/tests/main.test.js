@@ -123,6 +123,19 @@ test('compareVersions follows semantic version ordering', (t) => {
   assert.equal(mainModule.compareVersions('3.13.0-beta.2', '3.13.0-beta.10'), -1);
 });
 
+test('buildMainPageUrl includes desktop version and cache buster', (t) => {
+  const mainModule = loadMainModule(t, {
+    app: {
+      getVersion: () => ' 3.17.1 ',
+    },
+  });
+
+  assert.equal(
+    mainModule.buildMainPageUrl(8123, 1234567890),
+    'http://127.0.0.1:8123/?desktop_version=3.17.1&cache_bust=1234567890'
+  );
+});
+
 test('extractReleaseMetadata ignores releases without semver tags', (t) => {
   const mainModule = loadMainModule(t);
 
@@ -654,6 +667,10 @@ test('createWindow startup path does not throw ReferenceError after restore resu
 
   assert.equal(loadedFiles.length >= 1, true);
   assert.equal(loadedUrls.length >= 1, true);
+  assert.match(
+    loadedUrls[0],
+    /^http:\/\/127\.0\.0\.1:\d+\/\?desktop_version=3\.12\.0&cache_bust=\d+$/
+  );
   assert.equal(updateCheckRequested, true);
   assert.equal(startupError, undefined);
   assert.equal(fs.existsSync(backupRoot), false);

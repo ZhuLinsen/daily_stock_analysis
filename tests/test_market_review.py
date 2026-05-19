@@ -2,7 +2,9 @@
 """Tests for localized market review wrappers."""
 
 import importlib
+import os
 import sys
+import tempfile
 import unittest
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -37,6 +39,8 @@ def _build_optional_module_stubs() -> dict[str, ModuleType]:
 
 sys.modules.update(_build_optional_module_stubs())
 import src.core.market_review as market_review_module
+from src.config import Config
+from src.storage import AnalysisHistory, DatabaseManager
 
 run_market_review = market_review_module.run_market_review
 
@@ -58,7 +62,11 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "get_config",
             return_value=SimpleNamespace(report_language="en", market_review_region="cn"),
-        ), patch.object(market_review_module, "MarketAnalyzer", return_value=market_analyzer):
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
             result = run_market_review(notifier, send_notification=True)
 
         self.assertEqual(result, "## 2026-04-10 A-share Market Recap\n\nBody")
@@ -68,6 +76,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
         self.assertTrue(notifier.send.call_args.kwargs["email_send_to_all"])
         self.assertEqual(notifier.send.call_args.kwargs["route_type"], "report")
+        persist_history.assert_called_once()
+        self.assertEqual(persist_history.call_args.kwargs["query_id"], None)
 
     def test_run_market_review_merges_both_regions_with_english_wrappers(self) -> None:
         notifier = self._make_notifier()
@@ -86,7 +96,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, hk_analyzer, us_analyzer],
-        ):
+        ), patch.object(market_review_module, "_persist_market_review_history"):
             result = run_market_review(notifier, send_notification=False)
 
         self.assertIn("# A-share Market Recap\n\nCN body", result)
@@ -114,7 +124,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, us_analyzer],
-        ):
+        ), patch.object(market_review_module, "_persist_market_review_history"):
             result = run_market_review(
                 notifier, send_notification=False, override_region="cn,us"
             )
@@ -141,7 +151,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, hk_analyzer],
-        ):
+        ), patch.object(market_review_module, "_persist_market_review_history"):
             result = run_market_review(
                 notifier, send_notification=False, override_region="cn,hk"
             )
@@ -150,6 +160,41 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# 港股大盘复盘\n\nHK body", result)
         self.assertNotIn("美股", result)
         self.assertNotIn("US Market", result)
+
+    def test_persist_market_review_history_saves_markdown_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_db_path = os.environ.get("DATABASE_PATH")
+            os.environ["DATABASE_PATH"] = os.path.join(temp_dir, "market_review_history.db")
+            Config._instance = None
+            DatabaseManager.reset_instance()
+            try:
+                saved = market_review_module._persist_market_review_history(
+                    review_report="## 今日大盘\n\n复盘正文",
+                    markdown_report="# 🎯 大盘复盘\n\n## 今日大盘\n\n复盘正文",
+                    region="cn",
+                    config=SimpleNamespace(report_language="zh"),
+                    query_id="market-task-001",
+                )
+
+                self.assertEqual(saved, 1)
+                db = DatabaseManager.get_instance()
+                with db.get_session() as session:
+                    row = session.query(AnalysisHistory).filter(
+                        AnalysisHistory.query_id == "market-task-001"
+                    ).first()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row.code, market_review_module.MARKET_REVIEW_HISTORY_CODE)
+                    self.assertEqual(row.name, "大盘复盘")
+                    self.assertEqual(row.report_type, market_review_module.MARKET_REVIEW_REPORT_TYPE)
+                    self.assertEqual(row.news_content, "## 今日大盘\n\n复盘正文")
+                    self.assertIn("# 🎯 大盘复盘", row.raw_result)
+            finally:
+                DatabaseManager.reset_instance()
+                Config._instance = None
+                if old_db_path is None:
+                    os.environ.pop("DATABASE_PATH", None)
+                else:
+                    os.environ["DATABASE_PATH"] = old_db_path
 
 
 if __name__ == "__main__":

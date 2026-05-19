@@ -40,6 +40,18 @@ _INDEX_ASSET_REF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset({"text/css", "text/javascript"})
+_FRONTEND_INDEX_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+def _frontend_index_response(static_dir: Path) -> FileResponse:
+    return FileResponse(
+        static_dir / "index.html",
+        headers=_FRONTEND_INDEX_NO_CACHE_HEADERS,
+    )
 
 
 def _check_frontend_assets_consistency(static_dir: Path) -> List[str]:
@@ -210,7 +222,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         @app.get("/", include_in_schema=False)
         async def root():
             """根路由 - 返回前端页面"""
-            return FileResponse(static_dir / "index.html")
+            return _frontend_index_response(static_dir)
     else:
         _FRONTEND_NOT_BUILT_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -312,12 +324,14 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             # the bundle root if served unchecked.
             file_path = _resolve_asset_path(static_dir, full_path) if full_path else None
             if file_path is not None and file_path.is_file():
+                if file_path == (static_dir / "index.html").resolve():
+                    return _frontend_index_response(static_dir)
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
                 content_type, _ = mimetypes.guess_type(str(file_path))
                 return FileResponse(file_path, media_type=content_type)
 
-            return FileResponse(static_dir / "index.html")
+            return _frontend_index_response(static_dir)
     
     return app
 

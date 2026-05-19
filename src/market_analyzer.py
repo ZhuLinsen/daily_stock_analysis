@@ -168,6 +168,14 @@ class MarketAnalyzer:
             return f"{amount_raw / 1e8:.0f}"
         return f"{amount_raw:.0f}"
 
+    def _get_index_change_arrow(self, change_pct: float) -> str:
+        if change_pct == 0:
+            return "⚪"
+        color_scheme = getattr(getattr(self, "config", None), "market_review_color_scheme", "green_up")
+        if color_scheme == "red_up":
+            return "🔴" if change_pct > 0 else "🟢"
+        return "🟢" if change_pct > 0 else "🔴"
+
     def _get_review_title(self, date: str) -> str:
         if self._get_review_language() == "en":
             market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
@@ -674,7 +682,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "|------|------|--------|------|------|------|------|-----------|",
             ]
         for idx in overview.indices:
-            arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+            arrow = self._get_index_change_arrow(idx.change_pct)
             amount_raw = idx.amount or 0.0
             amount_str = self._format_turnover_value(amount_raw)
             lines.append(

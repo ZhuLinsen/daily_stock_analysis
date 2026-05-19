@@ -62,6 +62,18 @@ describe('SidebarNav', () => {
     expect(screen.getByRole('button', { name: '切换主题(折叠)' })).toBeInTheDocument();
   });
 
+  it('renders the alerts navigation item and marks it active', () => {
+    render(
+      <MemoryRouter initialEntries={['/alerts']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const alertsLink = screen.getByRole('link', { name: '告警' });
+    expect(alertsLink).toHaveAttribute('href', '/alerts');
+    expect(alertsLink).toHaveClass('font-medium');
+  });
+
   it('opens the logout confirmation and confirms logout', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>

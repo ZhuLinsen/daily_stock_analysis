@@ -93,6 +93,18 @@ from api.v1.schemas.portfolio import (
     PortfolioFxRefreshResponse,
     PortfolioRiskResponse,
 )
+from api.v1.schemas.alerts import (
+    AlertDeleteResponse,
+    AlertNotificationItem,
+    AlertNotificationListResponse,
+    AlertRuleCreateRequest,
+    AlertRuleItem,
+    AlertRuleListResponse,
+    AlertRuleTestResponse,
+    AlertRuleUpdateRequest,
+    AlertTriggerItem,
+    AlertTriggerListResponse,
+)
 
 __all__ = [
     # common
@@ -173,4 +185,15 @@ __all__ = [
     "PortfolioImportBrokerListResponse",
     "PortfolioFxRefreshResponse",
     "PortfolioRiskResponse",
+    # alerts
+    "AlertDeleteResponse",
+    "AlertNotificationItem",
+    "AlertNotificationListResponse",
+    "AlertRuleCreateRequest",
+    "AlertRuleItem",
+    "AlertRuleListResponse",
+    "AlertRuleTestResponse",
+    "AlertRuleUpdateRequest",
+    "AlertTriggerItem",
+    "AlertTriggerListResponse",
 ]

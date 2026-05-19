@@ -30,9 +30,10 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
-    normalize_litellm_temperature,
     resolve_news_window_days,
 )
+from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.errors import call_litellm_with_param_recovery
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.report_language import (
@@ -721,23 +722,38 @@ def stabilize_decision_with_structure(
             price_position.get("resistance_level"),
             _first_list_value(trend_dict.get("resistance_levels")),
         )
-        flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
-        if flow_bias == "unavailable":
-            if isinstance(fundamental_context, dict) and "capital_flow" in fundamental_context:
-                _set_decision_stability_unavailable(
-                    result,
-                    language,
-                    current_price=current_price,
-                    support=support,
-                    resistance=resistance,
-                    flow_status=flow_reason,
-                )
-            return
         decision_type = infer_decision_type_from_advice(
             getattr(result, "decision_type", ""),
             default=getattr(result, "decision_type", "hold") or "hold",
         )
         decision_type = decision_type if decision_type in {"buy", "hold", "sell"} else "hold"
+        advice_decision_type = infer_decision_type_from_advice(
+            getattr(result, "operation_advice", ""),
+            default="",
+        )
+
+        flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
+        if flow_bias == "unavailable":
+            if isinstance(fundamental_context, dict) and "capital_flow" in fundamental_context:
+                if decision_type == "buy" or advice_decision_type == "buy":
+                    _downgrade_buy_without_capital_flow(
+                        result,
+                        language,
+                        current_price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        flow_status=flow_reason,
+                    )
+                else:
+                    _set_decision_stability_unavailable(
+                        result,
+                        language,
+                        current_price=current_price,
+                        support=support,
+                        resistance=resistance,
+                        flow_status=flow_reason,
+                    )
+            return
 
         if current_price is None:
             return
@@ -1019,6 +1035,107 @@ def _set_decision_stability_unavailable(
     _sync_stability_dashboard_fields(result)
 
 
+def _bound_hold_watch_sentiment_score(result: "AnalysisResult") -> None:
+    try:
+        score = int(getattr(result, "sentiment_score", 50))
+    except (TypeError, ValueError):
+        score = 50
+    result.sentiment_score = min(59, max(45, score))
+
+
+def _apply_hold_watch_dashboard(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    advice: str,
+    reason: str,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_bias: str,
+    no_position: str,
+    has_position: str,
+    capital_flow_status: Optional[str] = None,
+) -> None:
+    result.operation_advice = advice
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        core = {}
+        dashboard["core_conclusion"] = core
+    core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
+    core["one_sentence"] = f"{advice}：{reason}" if language == "zh" else f"{advice}: {reason}"
+
+    position_advice = core.get("position_advice")
+    if not isinstance(position_advice, dict):
+        position_advice = {}
+        core["position_advice"] = position_advice
+    position_advice["no_position"] = no_position
+    position_advice["has_position"] = has_position
+
+    stability = {
+        "applied": True,
+        "reason": reason,
+        "current_price": current_price,
+        "support": support,
+        "resistance": resistance,
+        "capital_flow_bias": flow_bias,
+    }
+    if capital_flow_status is not None:
+        stability["capital_flow_status"] = capital_flow_status
+    dashboard["decision_stability"] = stability
+
+    if reason and reason not in str(result.risk_warning or ""):
+        sep = "；" if language == "zh" else "; "
+        result.risk_warning = f"{result.risk_warning}{sep}{reason}" if result.risk_warning else reason
+    result.buy_reason = reason or result.buy_reason
+
+
+def _downgrade_buy_without_capital_flow(
+    result: "AnalysisResult",
+    language: str,
+    *,
+    current_price: Optional[float],
+    support: Optional[float],
+    resistance: Optional[float],
+    flow_status: str,
+) -> None:
+    status_text = _capital_flow_status_for_stability(flow_status, language)
+    if language == "zh":
+        advice = "持有观察"
+        reason = f"{status_text}，买入结论缺少资金面确认，先按观察处理。"
+        no_position = "空仓先不追买，等待资金流恢复、支撑确认或有效突破后再行动。"
+        has_position = "持仓以关键支撑为风控线，资金流恢复前控制仓位。"
+        confidence = "低"
+    else:
+        advice = "Hold and watch"
+        reason = f"{status_text}; the buy call lacks capital-flow confirmation, so treat it as watch-only."
+        no_position = "Do not chase; wait for capital-flow recovery, support confirmation, or a valid breakout."
+        has_position = "Use key support as the risk line and keep position size controlled until capital flow recovers."
+        confidence = "Low"
+
+    result.decision_type = "hold"
+    result.confidence_level = confidence
+    _bound_hold_watch_sentiment_score(result)
+    _apply_hold_watch_dashboard(
+        result,
+        language,
+        advice=advice,
+        reason=reason,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias="unavailable",
+        no_position=no_position,
+        has_position=has_position,
+        capital_flow_status=status_text,
+    )
+    _sync_stability_dashboard_fields(result)
+    logger.info("[decision_stability] Downgraded buy because capital flow is unavailable: %s", flow_status)
+
+
 def _downgrade_to_structural_hold(
     result: "AnalysisResult",
     language: str,
@@ -1031,11 +1148,7 @@ def _downgrade_to_structural_hold(
     flow_bias: str,
 ) -> None:
     result.decision_type = "hold"
-    try:
-        score = int(getattr(result, "sentiment_score", 50))
-    except (TypeError, ValueError):
-        score = 50
-    result.sentiment_score = min(59, max(45, score))
+    _bound_hold_watch_sentiment_score(result)
     _set_structural_hold_wording(
         result,
         language,
@@ -1096,37 +1209,24 @@ def _set_structural_hold_wording(
     elif language == "en" and advice_key == "range":
         result.trend_prediction = "Sideways"
 
-    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
-    result.dashboard = dashboard
-    core = dashboard.get("core_conclusion")
-    if not isinstance(core, dict):
-        core = {}
-        dashboard["core_conclusion"] = core
-    core["signal_type"] = "🟡持有观望" if language == "zh" else "🟡 Hold / Watch"
-    core["one_sentence"] = f"{advice}：{reason}" if language == "zh" else f"{advice}: {reason}"
-    position_advice = core.get("position_advice")
-    if not isinstance(position_advice, dict):
-        position_advice = {}
-        core["position_advice"] = position_advice
     if language == "zh":
-        position_advice["no_position"] = "空仓先不追涨杀跌，等待支撑确认、放量突破或资金回流后再行动。"
-        position_advice["has_position"] = "持仓以关键支撑为风控线，未跌破前以观察和分批控仓为主。"
+        no_position = "空仓先不追涨杀跌，等待支撑确认、放量突破或资金回流后再行动。"
+        has_position = "持仓以关键支撑为风控线，未跌破前以观察和分批控仓为主。"
     else:
-        position_advice["no_position"] = "Do not chase or panic; wait for support confirmation, breakout, or renewed inflow."
-        position_advice["has_position"] = "Use key support as the risk line and manage position size unless support fails."
-
-    dashboard["decision_stability"] = {
-        "applied": True,
-        "reason": reason,
-        "current_price": current_price,
-        "support": support,
-        "resistance": resistance,
-        "capital_flow_bias": flow_bias,
-    }
-    if reason and reason not in str(result.risk_warning or ""):
-        sep = "；" if language == "zh" else "; "
-        result.risk_warning = f"{result.risk_warning}{sep}{reason}" if result.risk_warning else reason
-    result.buy_reason = reason or result.buy_reason
+        no_position = "Do not chase or panic; wait for support confirmation, breakout, or renewed inflow."
+        has_position = "Use key support as the risk line and manage position size unless support fails."
+    _apply_hold_watch_dashboard(
+        result,
+        language,
+        advice=advice,
+        reason=reason,
+        current_price=current_price,
+        support=support,
+        resistance=resistance,
+        flow_bias=flow_bias,
+        no_position=no_position,
+        has_position=has_position,
+    )
     logger.info("[decision_stability] Applied structural hold calibration: %s", reason_key)
 
 
@@ -1711,6 +1811,7 @@ class GeminiAnalyzer:
         self._use_legacy_default_prompt_override = use_legacy_default_prompt
         self._resolved_prompt_state: Optional[Dict[str, Any]] = None
         self._router = None
+        self._legacy_router_model_list: List[Dict[str, Any]] = []
         self._litellm_available = False
         self._init_litellm()
         if not self._litellm_available:
@@ -1809,6 +1910,47 @@ class GeminiAnalyzer:
             e.get('model_name', '').startswith('__legacy_') for e in config.llm_model_list
         )
 
+    @staticmethod
+    def _legacy_router_provider_alias(model: str) -> str:
+        provider = model.split("/", 1)[0] if "/" in model else "openai"
+        return f"__legacy_{provider}__"
+
+    @staticmethod
+    def _build_legacy_router_model_list_from_config(
+        model: str,
+        model_list: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build legacy-router candidates from configured legacy llm_model_list entries."""
+        if not model:
+            return []
+        target_model = model
+        target_legacy_alias = GeminiAnalyzer._legacy_router_provider_alias(model)
+        legacy_entries: List[Dict[str, Any]] = []
+        for entry in model_list or []:
+            if not isinstance(entry, dict):
+                continue
+            model_name = str(entry.get("model_name") or "").strip()
+            if model_name != target_legacy_alias:
+                continue
+
+            params = entry.get("litellm_params")
+            if not isinstance(params, dict):
+                continue
+
+            api_key = str(params.get("api_key") or "").strip()
+            if not api_key or len(api_key) < 8:
+                continue
+
+            deployed_params = dict(params)
+            deployed_params["model"] = target_model
+            deployed_params["api_key"] = api_key
+            legacy_entries.append({
+                "model_name": target_model,
+                "litellm_params": deployed_params,
+            })
+
+        return legacy_entries
+
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
         config = self._get_runtime_config()
@@ -1822,27 +1964,34 @@ class GeminiAnalyzer:
         # --- Channel / YAML path: build Router from pre-built model_list ---
         if self._has_channel_config(config):
             model_list = config.llm_model_list
-            self._router = Router(
-                model_list=model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            unique_models = list(dict.fromkeys(
-                e['litellm_params']['model'] for e in model_list
-            ))
-            logger.info(
-                f"Analyzer LLM: Router initialized from channels/YAML — "
-                f"{len(model_list)} deployment(s), models: {unique_models}"
-            )
-            return
+            try:
+                self._router = Router(
+                    model_list=model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                )
+            except TypeError:
+                logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
+                self._router = None
+            else:
+                unique_models = list(dict.fromkeys(
+                    e['litellm_params']['model'] for e in model_list
+                ))
+                logger.info(
+                    f"Analyzer LLM: Router initialized from channels/YAML — "
+                    f"{len(model_list)} deployment(s), models: {unique_models}"
+                )
+                return
 
         # --- Legacy path: build Router for multi-key, or use single key ---
         keys = get_api_keys_for_model(litellm_model, config)
-
-        if len(keys) > 1:
-            # Build legacy Router for primary model multi-key load-balancing
+        legacy_model_list = self._build_legacy_router_model_list_from_config(
+            litellm_model,
+            config.llm_model_list,
+        )
+        if len(legacy_model_list) <= 1 and keys:
             extra_params = extra_litellm_params(litellm_model, config)
-            legacy_model_list = [
+            configured_model_list = [
                 {
                     "model_name": litellm_model,
                     "litellm_params": {
@@ -1853,16 +2002,30 @@ class GeminiAnalyzer:
                 }
                 for k in keys
             ]
-            self._router = Router(
-                model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
-            logger.info(
-                f"Analyzer LLM: Legacy Router initialized with {len(keys)} keys "
-                f"for {litellm_model}"
-            )
-        elif keys:
+            if not legacy_model_list:
+                legacy_model_list = configured_model_list
+            elif len(legacy_model_list) < len(configured_model_list):
+                legacy_model_list = configured_model_list
+
+        if len(legacy_model_list) > 1:
+            self._legacy_router_model_list = legacy_model_list
+            try:
+                self._router = Router(
+                    model_list=legacy_model_list,
+                    routing_strategy="simple-shuffle",
+                    num_retries=2,
+                )
+            except TypeError:
+                logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
+                self._router = None
+            else:
+                logger.info(
+                    f"Analyzer LLM: Legacy Router initialized with {len(legacy_model_list)} keys "
+                    f"for {litellm_model}"
+                )
+                return
+
+        if keys:
             logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
         else:
             logger.info(
@@ -1911,6 +2074,67 @@ class GeminiAnalyzer:
             "completion_tokens": _get_value("completion_tokens"),
             "total_tokens": _get_value("total_tokens"),
         }
+
+    @staticmethod
+    def _get_response_field(obj: Any, key: str) -> Any:
+        """Read a field from dict-like or object-like LiteLLM payloads."""
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    def _extract_text_blocks(self, blocks: Any) -> str:
+        """Extract text from OpenAI-compatible content block lists."""
+        if not blocks:
+            return ""
+
+        parts: List[str] = []
+        for block in blocks:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+
+            text = None
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text is None:
+                    text = block.get("content")
+            else:
+                text = getattr(block, "text", None)
+                if text is None:
+                    text = getattr(block, "content", None)
+
+            if isinstance(text, str) and text:
+                parts.append(text)
+
+        return "".join(parts).strip()
+
+    def _extract_completion_text(self, response: Any) -> str:
+        """Extract text from non-stream LiteLLM completion responses."""
+        choices = self._get_response_field(response, "choices")
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        message = self._get_response_field(choice, "message")
+
+        content_blocks = self._get_response_field(choice, "content_blocks")
+        if content_blocks is None and message is not None:
+            content_blocks = self._get_response_field(message, "content_blocks")
+        block_text = self._extract_text_blocks(content_blocks)
+        if block_text:
+            return block_text
+
+        content = None
+        if message is not None:
+            content = self._get_response_field(message, "content")
+        if content is None:
+            content = self._get_response_field(choice, "content")
+
+        if isinstance(content, list):
+            return self._extract_text_blocks(content)
+        if isinstance(content, str):
+            return content.strip()
+        return str(content).strip() if content is not None else ""
 
     def _extract_stream_text(self, chunk: Any) -> str:
         """Extract provider-agnostic text delta from a LiteLLM streaming chunk."""
@@ -2046,6 +2270,11 @@ class GeminiAnalyzer:
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
+            recovery_model_list = config.llm_model_list
+            legacy_router_model_list = getattr(self, "_legacy_router_model_list", None) or []
+            if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
+                recovery_model_list = legacy_router_model_list
+
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
                 extra = get_thinking_extra_body(model_short)
@@ -2055,28 +2284,50 @@ class GeminiAnalyzer:
                         {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": normalize_litellm_temperature(
-                        model,
-                        requested_temperature,
-                        model_list=config.llm_model_list,
-                        request_overrides={"extra_body": extra} if extra else None,
-                    ),
                     "max_tokens": max_tokens,
                 }
                 if extra:
                     call_kwargs["extra_body"] = extra
+                uses_router = (
+                    (use_channel_router and self._router and model in router_model_names)
+                    or (self._router and model == config.litellm_model and not use_channel_router)
+                )
+                if not uses_router:
+                    try:
+                        keys = get_api_keys_for_model(model, config)
+                    except AttributeError:
+                        keys = []
+                    if keys:
+                        call_kwargs["api_key"] = keys[0]
+                    try:
+                        call_kwargs.update(extra_litellm_params(model, config))
+                    except AttributeError:
+                        pass
+                call_kwargs = apply_litellm_generation_params(
+                    call_kwargs,
+                    model,
+                    requested_temperature,
+                    model_list=recovery_model_list,
+                )
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
 
                 if stream:
                     try:
-                        stream_response = self._dispatch_litellm_completion(
-                            model,
-                            {**call_kwargs, "stream": True},
-                            config=config,
-                            use_channel_router=use_channel_router,
-                            router_model_names=router_model_names,
+                        stream_response = call_litellm_with_param_recovery(
+                            lambda kwargs: self._dispatch_litellm_completion(
+                                model,
+                                kwargs,
+                                config=config,
+                                use_channel_router=use_channel_router,
+                                router_model_names=router_model_names,
+                            ),
+                            model=model,
+                            call_kwargs={**call_kwargs, "stream": True},
+                            model_list=recovery_model_list,
+                            cache_recovery=False,
+                            logger=logger,
                         )
                         _stream_text, _stream_usage = self._consume_litellm_stream(
                             stream_response,
@@ -2112,17 +2363,23 @@ class GeminiAnalyzer:
                         response_validator(_stream_text)
                     return _stream_text, model, _stream_usage
 
-                response = self._dispatch_litellm_completion(
-                    model,
-                    call_kwargs,
-                    config=config,
-                    use_channel_router=use_channel_router,
-                    router_model_names=router_model_names,
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: self._dispatch_litellm_completion(
+                        model,
+                        kwargs,
+                        config=config,
+                        use_channel_router=use_channel_router,
+                        router_model_names=router_model_names,
+                    ),
+                    model=model,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    logger=logger,
                 )
 
-                if response and response.choices and response.choices[0].message.content:
-                    content = response.choices[0].message.content
-                    usage = self._normalize_usage(getattr(response, "usage", None))
+                content = self._extract_completion_text(response)
+                if content:
+                    usage = self._normalize_usage(self._get_response_field(response, "usage"))
                     last_response_text = content
                     last_model = model
                     last_usage = usage

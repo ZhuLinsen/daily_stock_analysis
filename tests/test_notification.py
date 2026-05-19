@@ -143,6 +143,48 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_custom.assert_called_once_with("content")
 
     @mock.patch("src.notification.get_config")
+    def test_send_with_results_reports_per_channel_attempts(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            wechat_webhook_url="https://wechat.example/hook",
+            custom_webhook_urls=["https://example.com/webhook"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_wechat", side_effect=RuntimeError("token=secret-token failed")), \
+             mock.patch.object(service, "send_to_custom", return_value=True):
+            result = service.send_with_results("content")
+
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.success)
+        self.assertEqual(result.status, "partial_failed")
+        by_channel = {item.channel: item for item in result.channel_results}
+        self.assertFalse(by_channel["wechat"].success)
+        self.assertEqual(by_channel["wechat"].error_code, "exception")
+        self.assertNotIn("secret-token", by_channel["wechat"].diagnostics)
+        self.assertTrue(by_channel["custom"].success)
+
+    @mock.patch("src.notification.get_config")
+    def test_send_with_results_reports_route_no_channel(self, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            custom_webhook_urls=["https://example.com/webhook"],
+            notification_report_channels=["unknown-route-channel"],
+        )
+        mock_get_config.return_value = cfg
+
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            result = service.send_with_results("content", route_type="report")
+
+        self.assertFalse(result.dispatched)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "no_channel")
+        self.assertEqual(result.channel_results, [])
+        mock_custom.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
     def test_send_route_empty_keeps_all_configured_channels(self, mock_get_config: mock.MagicMock):
         cfg = _make_config(
             wechat_webhook_url="https://wechat.example/hook",
@@ -411,6 +453,67 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("600519", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_brief_report_shows_model_by_default(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            model_used="gemini/gemini-2.5-flash",
+        )
+
+        out = service.generate_brief_report([result], report_date="2026-02-01")
+
+        self.assertIn("*分析模型: gemini/gemini-2.5-flash*", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_shows_model_by_default(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            model_used="gemini/gemini-2.5-flash",
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-02-01")
+
+        self.assertIn("*分析模型：gemini/gemini-2.5-flash*", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_reports_hide_model_when_disabled(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(
+            report_renderer_enabled=False,
+            report_show_llm_model=False,
+        )
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            model_used="gemini/gemini-2.5-flash",
+        )
+
+        dashboard = service.generate_dashboard_report([result], report_date="2026-02-01")
+        single = service.generate_single_stock_report(result)
+
+        self.assertNotIn("分析模型", dashboard)
+        self.assertNotIn("gemini/gemini-2.5-flash", dashboard)
+        self.assertNotIn("分析模型", single)
+        self.assertNotIn("gemini/gemini-2.5-flash", single)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_dashboard_report_localizes_english_fallback(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="en")
         service = NotificationService()
@@ -613,6 +716,84 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_gotify_via_notification_service(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(gotify_url="https://gotify.example", gotify_token="secret-token")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.GOTIFY, service.get_available_channels())
+
+        ok = service.send("gotify content")
+
+        self.assertTrue(ok)
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.args[0], "https://gotify.example/message")
+        self.assertEqual(mock_post.call_args.kwargs["headers"]["X-Gotify-Key"], "secret-token")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["message"], "gotify content")
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"]["extras"]["client::display"]["contentType"],
+            "text/markdown",
+        )
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_without_token_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(gotify_url="https://gotify.example")
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_blank_token_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(
+            gotify_url="https://gotify.example",
+            gotify_token="   ",
+        )
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    def test_gotify_message_endpoint_is_not_available(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(
+            gotify_url="https://gotify.example/message",
+            gotify_token="secret-token",
+        )
+
+        service = NotificationService()
+
+        self.assertNotIn(NotificationChannel.GOTIFY, service.get_available_channels())
+        self.assertFalse(service.is_available())
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_gotify_does_not_trigger_markdown_to_image(
+        self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock
+    ):
+        cfg = _make_config(
+            gotify_url="https://gotify.example",
+            gotify_token="secret-token",
+            markdown_to_image_channels=["gotify"],
+        )
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        with mock.patch("src.md2img.markdown_to_image", return_value=b"png") as mock_md2img:
+            ok = service.send("gotify content")
+
+        self.assertTrue(ok)
+        mock_md2img.assert_not_called()
+        mock_post.assert_called_once()
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
