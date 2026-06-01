@@ -33,7 +33,7 @@ const COMPONENT_ORDER = [
 const TEXT = {
   zh: {
     eyebrow: '运行诊断',
-    title: '数据可靠性',
+    title: '运行状态',
     loading: '诊断加载中...',
     unavailable: '运行诊断暂不可用',
     noComponents: '暂无组件诊断',
@@ -62,7 +62,7 @@ const TEXT = {
   },
   en: {
     eyebrow: 'RUN DIAGNOSTICS',
-    title: 'Data Reliability',
+    title: 'Run Status',
     loading: 'Loading diagnostics...',
     unavailable: 'Diagnostics unavailable',
     noComponents: 'No component diagnostics',

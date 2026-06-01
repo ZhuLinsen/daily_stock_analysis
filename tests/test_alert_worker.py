@@ -1020,7 +1020,8 @@ class AlertWorkerTestCase(unittest.TestCase):
             },
             "data_quality": "ok",
         }
-        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service)
+        notifier = self._notifier()
+        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service, notifier=notifier)
 
         with patch("src.services.market_light_alerts.build_current_snapshot", return_value=snapshot):
             first = worker.run_once()
@@ -1030,6 +1031,8 @@ class AlertWorkerTestCase(unittest.TestCase):
         self.assertEqual(first["recorded"], 1)
         self.assertEqual(second["triggered"], 1)
         self.assertEqual(second["recorded"], 0)
+        notifier.send_with_results.assert_called_once()
+        self.assertEqual(notifier.send_with_results.call_args.kwargs["route_type"], "alert")
         triggers = self._triggers(rule_id=rule["id"], status="triggered")
         self.assertEqual(len(triggers), 1)
         self.assertEqual(triggers[0]["target"], "cn")

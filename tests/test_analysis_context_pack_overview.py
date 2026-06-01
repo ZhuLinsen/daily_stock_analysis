@@ -95,6 +95,17 @@ def _pack() -> AnalysisContextPack:
             ),
         },
         data_quality=DataQuality(
+            overall_score=76,
+            level="usable",
+            block_scores={
+                "quote": 65,
+                "daily_bars": 100,
+                "technical": 75,
+                "news": 35,
+                "fundamentals": 100,
+                "chip": 100,
+            },
+            limitations=["quote: fallback", "technical: partial"],
             warnings=["intraday_realtime_overlay", "intraday_realtime_overlay"]
         ),
         metadata={
@@ -129,6 +140,7 @@ def test_renderer_outputs_only_public_schema_fields() -> None:
         "subject",
         "blocks",
         "counts",
+        "data_quality",
         "warnings",
         "metadata",
     }
@@ -141,6 +153,25 @@ def test_renderer_outputs_only_public_schema_fields() -> None:
         "source",
         "warnings",
         "missing_reasons",
+    }
+    assert set(overview["data_quality"]) == {
+        "overall_score",
+        "level",
+        "block_scores",
+        "limitations",
+    }
+    assert overview["data_quality"] == {
+        "overall_score": 76,
+        "level": "usable",
+        "block_scores": {
+            "quote": 65,
+            "daily_bars": 100,
+            "technical": 75,
+            "news": 35,
+            "fundamentals": 100,
+            "chip": 100,
+        },
+        "limitations": ["quote: fallback", "technical: partial"],
     }
 
 
@@ -175,6 +206,7 @@ def test_counts_are_by_block_status_and_missing_reasons_are_deduped() -> None:
         "stale": 0,
         "estimated": 0,
         "partial": 1,
+        "fetch_failed": 0,
     }
     news_block = next(block for block in overview["blocks"] if block["key"] == "news")
     assert news_block["missing_reasons"] == [
@@ -214,6 +246,7 @@ def test_extract_and_sanitize_handle_json_snapshot_strings() -> None:
         {
             "enhanced_context": {"code": "600519"},
             "analysis_context_pack_overview": overview,
+            "market_phase_summary": {"phase": "intraday", "market": "cn"},
         },
         ensure_ascii=False,
     )
@@ -270,6 +303,24 @@ def test_extract_reprojects_persisted_overview_to_public_schema() -> None:
                 "stale": 999,
                 "estimated": 999,
                 "partial": 999,
+                "fetch_failed": 999,
+            },
+            "data_quality": {
+                "overall_score": 76,
+                "level": "usable",
+                "block_scores": {
+                    "quote": 65,
+                    "news": 35,
+                    "api_key": 99,
+                    "technical": 999,
+                },
+                "limitations": [
+                    "quote: fallback",
+                    "token=secret should not pass",
+                    "technical: partial",
+                    "technical: partial",
+                ],
+                "warnings": ["not-public"],
             },
             "warnings": ["top_warning", "top_warning"],
             "metadata": {
@@ -292,6 +343,17 @@ def test_extract_reprojects_persisted_overview_to_public_schema() -> None:
         "stale": 0,
         "estimated": 0,
         "partial": 0,
+        "fetch_failed": 0,
+    }
+    assert extracted["data_quality"] == {
+        "overall_score": 76,
+        "level": "usable",
+        "block_scores": {"quote": 65, "news": 35},
+        "limitations": [
+            "quote: fallback",
+            "[REDACTED]",
+            "technical: partial",
+        ],
     }
     assert extracted["blocks"][1]["missing_reasons"] == [
         "news_context_missing",
@@ -305,6 +367,32 @@ def test_extract_reprojects_persisted_overview_to_public_schema() -> None:
     assert "webhook_url" not in rendered
     assert "hooks.example.test" not in rendered
     assert "secret-key" not in rendered
+
+
+def test_extract_accepts_legacy_overview_without_data_quality() -> None:
+    extracted = extract_analysis_context_pack_overview(
+        {
+            "analysis_context_pack_overview": {
+                "pack_version": "1.0",
+                "subject": {"code": "600519"},
+                "blocks": [
+                    {
+                        "key": "quote",
+                        "label": "行情",
+                        "status": "available",
+                        "source": "mock",
+                        "warnings": [],
+                        "missing_reasons": [],
+                    }
+                ],
+                "metadata": {},
+            }
+        }
+    )
+
+    assert extracted is not None
+    assert "data_quality" not in extracted
+    assert extracted["counts"]["fetch_failed"] == 0
 
 
 def test_extract_returns_none_for_malformed_persisted_overview() -> None:

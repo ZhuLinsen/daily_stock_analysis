@@ -269,7 +269,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
           </div>
         </div>
 
-        {/* 右侧：情绪指标 */}
+        {/* 右侧：情绪指标 / 关联详情 */}
         <div className="flex flex-col">
           <Card variant="bordered" padding="md" className="home-panel-card home-rail-card !overflow-visible">
             <div className="text-center">

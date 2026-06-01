@@ -67,6 +67,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
 
+    def test_get_config_masks_alphasift_install_spec(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "ALPHASIFT_INSTALL_SPEC=git+https://user:token@example.com/internal/alphasift.git",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["ALPHASIFT_INSTALL_SPEC"]["value"], payload["mask_token"])
+        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["is_masked"])
+        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["schema"]["is_sensitive"])
+
     def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
@@ -494,6 +507,46 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
+
+    def test_update_alphasift_enable_does_not_rewrite_llm_fields(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "AGENT_LITELLM_MODEL=openai/gpt-4o",
+            "OPENAI_BASE_URL=https://api.openai.com/v1",
+            "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
+            "ALPHASIFT_ENABLED=false",
+            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@b2ca66dd47001b9a09890cfe21c2b18c7219ccf5",
+            "GEMINI_API_KEY=legacy-secret",
+        )
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[
+                {"key": "ALPHASIFT_ENABLED", "value": "true"},
+                {"key": "ALPHASIFT_INSTALL_SPEC", "value": "******"},
+                {"key": "GEMINI_API_KEY", "value": "******"},
+            ],
+            mask_token="******",
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertEqual(response["applied_count"], 1)
+        self.assertIn("ALPHASIFT_ENABLED", response["updated_keys"])
+        self.assertEqual(response["skipped_masked_count"], 2)
+
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
+        self.assertEqual(
+            current_map["ALPHASIFT_INSTALL_SPEC"],
+            "git+https://github.com/ZhuLinsen/alphasift.git@b2ca66dd47001b9a09890cfe21c2b18c7219ccf5",
+        )
+        self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
+        self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
+        self.assertEqual(current_map["AGENT_LITELLM_MODEL"], "openai/gpt-4o")
+        self.assertEqual(current_map["OPENAI_BASE_URL"], "https://api.openai.com/v1")
+        self.assertEqual(current_map["LITELLM_FALLBACK_MODELS"], "openai/gpt-4o-mini,openai/gpt-4o")
 
     def test_validate_reports_invalid_time(self) -> None:
         validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])

@@ -1034,6 +1034,39 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("| -- | -- |", out)
 
     @mock.patch("src.notification.get_config")
+    def test_related_boards_without_type_renders_one_line(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {}},
+            "growth": {"status": "ok", "data": {}},
+            "belong_boards": [
+                {"name": "白酒Ⅲ"},
+                {"name": "白酒Ⅱ"},
+                {"name": "食品饮料"},
+                {"name": "贵州板块"},
+                {"name": "酿酒概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("关联板块", out)
+        self.assertIn("白酒Ⅲ / 白酒Ⅱ / 食品饮料 / 贵州板块 / 酿酒概念", out)
+        self.assertNotIn("| 板块 | 类型 |", out)
+        self.assertNotIn("| 白酒Ⅲ | N/A |", out)
+
+    @mock.patch("src.notification.get_config")
     def test_related_boards_keeps_signal_columns_when_any_board_has_data(
         self, mock_get_config: mock.MagicMock
     ):

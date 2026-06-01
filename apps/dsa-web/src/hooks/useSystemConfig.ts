@@ -408,6 +408,7 @@ export function useSystemConfig() {
     save,
     resetDraft,
     setDraftValue,
+    getChangedItems,
     applyPartialUpdate,
     refreshAfterExternalSave,
   };

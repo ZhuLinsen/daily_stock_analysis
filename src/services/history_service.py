@@ -31,7 +31,11 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
-from src.utils.data_processing import normalize_model_used, parse_json_field
+from src.utils.data_processing import (
+    extract_realtime_detail_fields,
+    normalize_model_used,
+    parse_json_field,
+)
 
 if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
@@ -63,6 +67,69 @@ class HistoryService:
             db_manager: Database manager (optional, defaults to singleton instance)
         """
         self.db = db_manager or DatabaseManager.get_instance()
+
+    @staticmethod
+    def _history_code_filter_candidates(stock_code: str) -> List[str]:
+        raw_code = str(stock_code or "").strip()
+        if not raw_code:
+            return []
+
+        candidates: List[str] = []
+
+        def add(candidate: str) -> None:
+            candidate = str(candidate or "").strip().upper()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        try:
+            from data_provider.base import (
+                canonical_stock_code,
+                is_bse_code,
+                normalize_stock_code,
+            )
+
+            raw_canonical = canonical_stock_code(raw_code)
+            normalized = canonical_stock_code(normalize_stock_code(raw_canonical))
+        except Exception:
+            add(raw_code)
+            return candidates
+
+        def add_hk_variants(digits: str) -> None:
+            if not digits or not digits.isdigit():
+                return
+
+            normalized_digits = digits.zfill(5)
+            add(f"HK{normalized_digits}")
+            add(f"{normalized_digits}.HK")
+
+            unpadded_digits = digits.lstrip("0")
+            if unpadded_digits:
+                add(f"{unpadded_digits}.HK")
+
+        add(raw_canonical)
+        add(normalized)
+
+        if normalized.startswith("HK") and normalized[2:].isdigit():
+            add_hk_variants(normalized[2:])
+        elif normalized.isdigit() and len(normalized) == 5:
+            add_hk_variants(normalized)
+        elif normalized.isdigit() and len(normalized) == 6:
+            exchange = None
+            if is_bse_code(normalized):
+                exchange = "BJ"
+            elif normalized.startswith(("5", "6", "9")):
+                exchange = "SH"
+            elif normalized.startswith(("0", "1", "2", "3")):
+                exchange = "SZ"
+
+            if exchange:
+                add(f"{normalized}.{exchange}")
+                add(f"{exchange}{normalized}")
+                if exchange == "SH":
+                    add(f"{normalized}.SS")
+                    add(f"SS{normalized}")
+
+        return candidates
     
     def get_history_list(
         self,
@@ -86,6 +153,9 @@ class HistoryService:
             Dictionary containing total count and items
         """
         try:
+            if stock_code:
+                stock_code = self._history_code_filter_candidates(stock_code)
+
             # Parse date parameters
             start_dt = None
             end_dt = None
@@ -117,16 +187,7 @@ class HistoryService:
             # Convert to response format
             items = []
             for record in records:
-                items.append({
-                    "id": record.id,
-                    "query_id": record.query_id,
-                    "stock_code": record.code,
-                    "stock_name": record.name,
-                    "report_type": record.report_type,
-                    "sentiment_score": record.sentiment_score,
-                    "operation_advice": record.operation_advice,
-                    "created_at": record.created_at.isoformat() if record.created_at else None,
-                })
+                items.append(self._record_to_list_item_dict(record))
             
             return {
                 "total": total,
@@ -136,6 +197,82 @@ class HistoryService:
         except Exception as e:
             logger.error(f"查询历史列表失败: {e}", exc_info=True)
             return {"total": 0, "items": []}
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, str):
+                value = value.strip().replace("%", "")
+                if not value:
+                    return None
+            parsed = float(value)
+            return parsed if parsed == parsed else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _first_present(*values: Any) -> Any:
+        for value in values:
+            if value is not None and value != "":
+                return value
+        return None
+
+    def _extract_history_market_fields(self, context_snapshot: Any) -> Dict[str, Optional[float]]:
+        snapshot_obj = parse_json_field(context_snapshot)
+        realtime_fields = extract_realtime_detail_fields(snapshot_obj)
+
+        volume_ratio = None
+        turnover_rate = None
+        if isinstance(snapshot_obj, dict):
+            enhanced = snapshot_obj.get("enhanced_context")
+            realtime = enhanced.get("realtime") if isinstance(enhanced, dict) else None
+            quote_raw = snapshot_obj.get("realtime_quote_raw")
+            quote = snapshot_obj.get("realtime_quote")
+            for source in (realtime, quote_raw, quote):
+                if not isinstance(source, dict):
+                    continue
+                if volume_ratio is None:
+                    volume_ratio = self._first_present(
+                        source.get("volume_ratio"),
+                        source.get("volumeRatio"),
+                    )
+                if turnover_rate is None:
+                    turnover_rate = self._first_present(
+                        source.get("turnover_rate"),
+                        source.get("turnoverRate"),
+                        source.get("turnover"),
+                    )
+
+        return {
+            "current_price": self._safe_float(realtime_fields.get("current_price")),
+            "change_pct": self._safe_float(realtime_fields.get("change_pct")),
+            "volume_ratio": self._safe_float(volume_ratio),
+            "turnover_rate": self._safe_float(turnover_rate),
+        }
+
+    def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
+        raw_result = parse_json_field(getattr(record, "raw_result", None))
+        model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+        market_fields = self._extract_history_market_fields(
+            getattr(record, "context_snapshot", None)
+        )
+
+        return {
+            "id": record.id,
+            "query_id": record.query_id,
+            "stock_code": record.code,
+            "stock_name": record.name,
+            "report_type": record.report_type,
+            "trend_prediction": record.trend_prediction,
+            "analysis_summary": record.analysis_summary,
+            "sentiment_score": record.sentiment_score,
+            "operation_advice": record.operation_advice,
+            "model_used": normalize_model_used(model_used),
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            **market_fields,
+        }
 
     def _resolve_record(self, record_id: str):
         """
@@ -553,7 +690,7 @@ class HistoryService:
         if not result:
             logger.error(f"get_markdown_report: _rebuild_analysis_result returned None for {record_id}")
             raise MarkdownReportGenerationError(
-                f"Failed to rebuild AnalysisResult from raw_result",
+                "Failed to rebuild AnalysisResult from raw_result",
                 record_id=record_id
             )
 

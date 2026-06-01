@@ -12,7 +12,7 @@
   ; electron-builder's default NSIS template passes _?=$installationDir
   ; without quotes. Default per-user installs live under "Daily Stock Analysis",
   ; so old uninstallers can receive a split _? path and return code 2.
-  DetailPrint "Retrying old uninstaller with raw final _? installation directory."
+  DetailPrint "Retrying old uninstaller with quoted _? installation directory."
   !insertmacro readReg $R6 "${ROOT_KEY}" "${UNINSTALL_REGISTRY_KEY}" UninstallString
   ${if} $R6 == ""
     !ifdef UNINSTALL_REGISTRY_KEY_2
@@ -51,11 +51,11 @@
   StrCpy $R5 "$PLUGINSDIR\old-uninstaller-quoted.exe"
   !insertmacro copyFile "$R7" "$R5"
   ClearErrors
-  ExecWait '"$R5" /S /KEEP_APP_DATA $R9 _?=$R8' $R0
+  ExecWait '"$R5" /S /KEEP_APP_DATA $R9 "_?=$R8"' $R0
   IfErrors 0 DsaQuotedUninstallResult_${SUFFIX}
 
   ClearErrors
-  ExecWait '"$R7" /S /KEEP_APP_DATA $R9 _?=$R8' $R0
+  ExecWait '"$R7" /S /KEEP_APP_DATA $R9 "_?=$R8"' $R0
   IfErrors DsaQuotedUninstallFailed_${SUFFIX} DsaQuotedUninstallResult_${SUFFIX}
 
 DsaQuotedUninstallResult_${SUFFIX}:

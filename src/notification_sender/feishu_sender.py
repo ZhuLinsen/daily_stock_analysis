@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class FeishuSender:
-    
+
     def __init__(self, config: Config):
         """
         初始化飞书配置
@@ -71,12 +71,12 @@ class FeishuSender:
             "timestamp": timestamp,
             "sign": sign,
         }
-    
-          
+
+
     def send_to_feishu(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到飞书机器人
-        
+
         飞书自定义机器人 Webhook 消息格式：
         {
             "msg_type": "interactive",
@@ -99,22 +99,22 @@ class FeishuSender:
                 }
             }
         }
-        
+
         说明：飞书文本消息不会渲染 Markdown，需使用交互卡片（lark_md）格式
-        
+
         注意：飞书文本消息限制约 20KB，超长内容会自动分批发送
         可通过环境变量 FEISHU_MAX_BYTES 调整限制值
-        
+
         Args:
             content: 消息内容（Markdown 会转为纯文本）
-            
+
         Returns:
             是否发送成功
         """
         if not self._feishu_url:
             logger.warning("飞书 Webhook 未配置，跳过推送")
             return False
-        
+
         # 飞书 lark_md 支持有限，先做格式转换
         formatted_content = format_feishu_markdown(content)
 
@@ -125,7 +125,7 @@ class FeishuSender:
         if effective_max_bytes <= 0:
             logger.error("飞书关键词过长，超过单条消息允许的最大字节数，无法发送")
             return False
-        
+
         # 检查字节长度，超长则分批发送
         content_bytes = len(formatted_content.encode('utf-8')) + keyword_overhead
         if content_bytes > max_bytes:
@@ -139,23 +139,23 @@ class FeishuSender:
                 return False
             logger.info(f"飞书消息内容超长({content_bytes}字节/{len(content)}字符)，将分批发送")
             return self._send_feishu_chunked(formatted_content, effective_max_bytes)
-        
+
         try:
             return self._send_feishu_message(formatted_content, timeout_seconds=timeout_seconds)
         except Exception as e:
             logger.error(f"发送飞书消息失败: {e}")
             return False
-   
+
     def _send_feishu_chunked(self, content: str, max_bytes: int) -> bool:
         """
         分批发送长消息到飞书
-        
+
         按股票分析块（以 --- 或 ### 分隔）智能分割，确保每批不超过限制
-        
+
         Args:
             content: 完整消息内容
             max_bytes: 单条消息最大字节数
-            
+
         Returns:
             是否全部发送成功
         """
@@ -164,13 +164,13 @@ class FeishuSender:
         except ValueError as e:
             logger.error("飞书消息分片失败，单片预算不足以安全分页（关键词过长或 max_bytes 过小）: %s", e)
             return False
-        
+
         # 分批发送
         total_chunks = len(chunks)
         success_count = 0
-        
+
         logger.info(f"飞书分批发送：共 {total_chunks} 批")
-        
+
         for i, chunk in enumerate(chunks):
             try:
                 if self._send_feishu_message(chunk):
@@ -180,13 +180,13 @@ class FeishuSender:
                     logger.error(f"飞书第 {i+1}/{total_chunks} 批发送失败")
             except Exception as e:
                 logger.error(f"飞书第 {i+1}/{total_chunks} 批发送异常: {e}")
-            
+
             # 批次间隔，避免触发频率限制
             if i < total_chunks - 1:
                 time.sleep(1)
-        
+
         return success_count == total_chunks
-    
+
     def _send_feishu_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """发送单条飞书消息（优先使用 Markdown 卡片）"""
         prepared_content = self._apply_keyword_prefix(content)

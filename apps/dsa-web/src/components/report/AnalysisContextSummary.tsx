@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Database } from 'lucide-react';
+import { ChevronDown, Database } from 'lucide-react';
 import type {
   AnalysisContextPackBlockStatus,
   AnalysisContextPackOverview,
@@ -25,6 +25,33 @@ const STATUS_STYLE: Record<AnalysisContextPackBlockStatus, { variant: BadgeVaria
   stale: { variant: 'warning', tone: 'warning' },
   estimated: { variant: 'info', tone: 'info' },
   partial: { variant: 'warning', tone: 'warning' },
+  fetch_failed: { variant: 'danger', tone: 'danger' },
+};
+
+const QUALITY_STYLE = {
+  good: { variant: 'success', tone: 'success' },
+  usable: { variant: 'info', tone: 'info' },
+  limited: { variant: 'warning', tone: 'warning' },
+  poor: { variant: 'danger', tone: 'danger' },
+} as const satisfies Record<string, { variant: BadgeVariant; tone: StatusTone }>;
+
+const BLOCK_LABELS: Record<ReportLanguage, Record<string, string>> = {
+  zh: {
+    quote: '行情',
+    daily_bars: '日线',
+    technical: '技术',
+    news: '新闻',
+    fundamentals: '基本面',
+    chip: '筹码',
+  },
+  en: {
+    quote: 'quote',
+    daily_bars: 'daily bars',
+    technical: 'technical',
+    news: 'news',
+    fundamentals: 'fundamentals',
+    chip: 'chip',
+  },
 };
 
 const TEXT = {
@@ -35,8 +62,16 @@ const TEXT = {
     source: '来源',
     warnings: '告警',
     missingReasons: '缺失原因',
+    qualityScore: '质量分',
+    limitations: '数据限制',
     newsResultCount: '新闻结果数',
     triggerSource: '触发来源',
+    qualityLevel: {
+      good: '良好',
+      usable: '可用',
+      limited: '受限',
+      poor: '较差',
+    },
     status: {
       available: '可用',
       missing: '缺失',
@@ -45,6 +80,7 @@ const TEXT = {
       stale: '过期',
       estimated: '估算',
       partial: '部分可用',
+      fetch_failed: '抓取失败',
     },
   },
   en: {
@@ -54,8 +90,16 @@ const TEXT = {
     source: 'Source',
     warnings: 'Warnings',
     missingReasons: 'Missing Reasons',
+    qualityScore: 'Quality',
+    limitations: 'Data Limitations',
     newsResultCount: 'News Results',
     triggerSource: 'Trigger',
+    qualityLevel: {
+      good: 'Good',
+      usable: 'Usable',
+      limited: 'Limited',
+      poor: 'Poor',
+    },
     status: {
       available: 'Available',
       missing: 'Missing',
@@ -64,6 +108,7 @@ const TEXT = {
       stale: 'Stale',
       estimated: 'Estimated',
       partial: 'Partial',
+      fetch_failed: 'Fetch failed',
     },
   },
 } as const;
@@ -71,6 +116,7 @@ const TEXT = {
 const STATUS_ORDER: AnalysisContextPackBlockStatus[] = [
   'available',
   'missing',
+  'fetch_failed',
   'not_supported',
   'fallback',
   'stale',
@@ -85,7 +131,31 @@ const getCount = (
   if (status === 'not_supported') {
     return overview.counts.notSupported || 0;
   }
+  if (status === 'fetch_failed') {
+    return overview.counts.fetchFailed || 0;
+  }
   return overview.counts[status] || 0;
+};
+
+const formatLimitation = (
+  value: string,
+  language: ReportLanguage,
+  text: typeof TEXT.zh | typeof TEXT.en,
+): string => {
+  const [rawKey, ...statusParts] = value.split(':');
+  if (!rawKey || statusParts.length === 0) {
+    return value;
+  }
+
+  const key = rawKey.trim();
+  const status = statusParts.join(':').trim();
+  if (!key || !status) {
+    return value;
+  }
+
+  const label = BLOCK_LABELS[language][key] || key;
+  const statusLabel = (text.status as Record<string, string>)[status] || status;
+  return language === 'zh' ? `${label}：${statusLabel}` : `${label}: ${statusLabel}`;
 };
 
 export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
@@ -102,41 +172,44 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
   const visibleCounts = STATUS_ORDER
     .map((status) => ({ status, value: getCount(overview, status) }))
     .filter((item) => item.value > 0);
+  const summaryCounts = STATUS_ORDER
+    .map((status) => ({ status, value: getCount(overview, status) }))
+    .filter((item) => item.status === 'available' || item.status === 'missing' || item.value > 0);
   const metadataItems = [
-    overview.metadata?.triggerSource
-      ? `${text.triggerSource}: ${overview.metadata.triggerSource}`
-      : null,
     typeof overview.metadata?.newsResultCount === 'number'
       ? `${text.newsResultCount}: ${overview.metadata.newsResultCount}`
       : null,
   ].filter((item): item is string => Boolean(item));
+  const triggerSource = overview.metadata?.triggerSource?.trim();
+  const quality = overview.dataQuality;
+  const qualityLevel = quality?.level || undefined;
+  const qualityStyle = qualityLevel ? QUALITY_STYLE[qualityLevel] : undefined;
+  const qualityLabel = qualityLevel ? text.qualityLevel[qualityLevel] : undefined;
+  const limitations = quality?.limitations?.map((item) => formatLimitation(item, reportLanguage, text)) || [];
 
   return (
-    <Card variant="bordered" padding="md" className="home-panel-card">
-      <div data-testid="analysis-context-summary">
-        <DashboardPanelHeader
-          eyebrow={text.eyebrow}
-          title={text.title}
-          leading={(
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan/10 text-cyan">
+    <Card variant="bordered" padding="none" className="home-panel-card">
+      <details data-testid="analysis-context-summary" className="group">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan/10 text-cyan">
               <Database className="h-4 w-4" aria-hidden="true" />
             </span>
-          )}
-          actions={metadataItems.length > 0 ? (
-            <div className="hidden flex-wrap justify-end gap-2 text-xs text-muted-text md:flex">
-              {metadataItems.map((item) => (
-                <span key={item} className="home-accent-chip px-2 py-0.5">
-                  {item}
-                </span>
-              ))}
-            </div>
-          ) : undefined}
-        />
-
-        {visibleCounts.length > 0 ? (
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <span className="label-uppercase">{text.counts}</span>
-            {visibleCounts.map(({ status, value }) => {
+            <span className="min-w-0">
+              <span className="label-uppercase">{text.eyebrow}</span>
+              <span className="mt-0.5 block truncate text-base font-semibold text-foreground">
+                {text.title}
+              </span>
+            </span>
+          </div>
+          <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+            {typeof quality?.overallScore === 'number' ? (
+              <Badge variant={qualityStyle?.variant || 'default'} className="gap-1.5 shadow-none">
+                {qualityStyle ? <StatusDot tone={qualityStyle.tone} className="h-1.5 w-1.5" /> : null}
+                {text.qualityScore} {quality.overallScore}/100{qualityLabel ? ` ${qualityLabel}` : ''}
+              </Badge>
+            ) : null}
+            {summaryCounts.map(({ status, value }) => {
               const style = STATUS_STYLE[status];
               return (
                 <Badge key={status} variant={style.variant} className="gap-1.5 shadow-none">
@@ -145,61 +218,120 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                 </Badge>
               );
             })}
-          </div>
-        ) : null}
-
-        {overview.warnings?.length ? (
-          <div className="mb-3 home-subpanel p-3 text-xs leading-5 text-warning">
-            <span className="font-medium">{text.warnings}: </span>
-            {overview.warnings.join(', ')}
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-          {overview.blocks.map((block) => {
-            const style = STATUS_STYLE[block.status] || STATUS_STYLE.missing;
-            return (
-              <div key={block.key} className="home-subpanel p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground">{block.label}</p>
-                    {block.source ? (
-                      <p className="mt-1 truncate text-xs text-secondary-text">
-                        {text.source}: {block.source}
-                      </p>
-                    ) : null}
-                  </div>
-                  <Badge variant={style.variant} className="shrink-0 gap-1.5 shadow-none">
-                    <StatusDot tone={style.tone} className="h-1.5 w-1.5" />
-                    {text.status[block.status] || block.status}
-                  </Badge>
-                </div>
-
-                {block.warnings?.length ? (
-                  <p className="mt-2 text-xs leading-5 text-warning">
-                    {text.warnings}: {block.warnings.join(', ')}
-                  </p>
-                ) : null}
-                {block.missingReasons?.length ? (
-                  <p className="mt-2 text-xs leading-5 text-muted-text">
-                    {text.missingReasons}: {block.missingReasons.join(', ')}
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-
-        {metadataItems.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-text md:hidden">
-            {metadataItems.map((item) => (
-              <span key={item} className="home-accent-chip px-2 py-0.5">
-                {item}
+            {triggerSource ? (
+              <span className="home-accent-chip px-2 py-0.5 text-xs text-muted-text">
+                {text.triggerSource}: {triggerSource}
               </span>
-            ))}
+            ) : null}
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-text transition-transform group-open:rotate-180" aria-hidden="true" />
+          </span>
+        </summary>
+
+        <div className="home-divider border-t px-4 pb-4 pt-3">
+          <DashboardPanelHeader
+            eyebrow={text.eyebrow}
+            title={text.title}
+            leading={(
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan/10 text-cyan">
+                <Database className="h-4 w-4" aria-hidden="true" />
+              </span>
+            )}
+            actions={metadataItems.length > 0 || typeof quality?.overallScore === 'number' ? (
+              <div className="hidden flex-wrap justify-end gap-2 text-xs text-muted-text md:flex">
+                {typeof quality?.overallScore === 'number' ? (
+                  <span className="home-accent-chip px-2 py-0.5">
+                    {text.qualityScore}: {quality.overallScore}/100{qualityLabel ? ` ${qualityLabel}` : ''}
+                  </span>
+                ) : null}
+                {metadataItems.map((item) => (
+                  <span key={item} className="home-accent-chip px-2 py-0.5">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            ) : undefined}
+          />
+
+          {visibleCounts.length > 0 ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="label-uppercase">{text.counts}</span>
+              {visibleCounts.map(({ status, value }) => {
+                const style = STATUS_STYLE[status];
+                return (
+                  <Badge key={status} variant={style.variant} className="gap-1.5 shadow-none">
+                    <StatusDot tone={style.tone} className="h-1.5 w-1.5" />
+                    {text.status[status]} {value}
+                  </Badge>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {limitations.length ? (
+            <div className="mb-3 home-subpanel p-3 text-xs leading-5 text-muted-text">
+              <span className="font-medium text-foreground">{text.limitations}: </span>
+              {limitations.join(', ')}
+            </div>
+          ) : null}
+
+          {overview.warnings?.length ? (
+            <div className="mb-3 home-subpanel p-3 text-xs leading-5 text-warning">
+              <span className="font-medium">{text.warnings}: </span>
+              {overview.warnings.join(', ')}
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {overview.blocks.map((block) => {
+              const style = STATUS_STYLE[block.status] || STATUS_STYLE.missing;
+              return (
+                <div key={block.key} className="home-subpanel p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">{block.label}</p>
+                      {block.source ? (
+                        <p className="mt-1 truncate text-xs text-secondary-text">
+                          {text.source}: {block.source}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Badge variant={style.variant} className="shrink-0 gap-1.5 shadow-none">
+                      <StatusDot tone={style.tone} className="h-1.5 w-1.5" />
+                      {text.status[block.status] || block.status}
+                    </Badge>
+                  </div>
+
+                  {block.warnings?.length ? (
+                    <p className="mt-2 text-xs leading-5 text-warning">
+                      {text.warnings}: {block.warnings.join(', ')}
+                    </p>
+                  ) : null}
+                  {block.missingReasons?.length ? (
+                    <p className="mt-2 text-xs leading-5 text-muted-text">
+                      {text.missingReasons}: {block.missingReasons.join(', ')}
+                    </p>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
-        ) : null}
-      </div>
+
+          {metadataItems.length > 0 || typeof quality?.overallScore === 'number' ? (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-text md:hidden">
+              {typeof quality?.overallScore === 'number' ? (
+                <span className="home-accent-chip px-2 py-0.5">
+                  {text.qualityScore}: {quality.overallScore}/100{qualityLabel ? ` ${qualityLabel}` : ''}
+                </span>
+              ) : null}
+              {metadataItems.map((item) => (
+                <span key={item} className="home-accent-chip px-2 py-0.5">
+                  {item}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </details>
     </Card>
   );
 };

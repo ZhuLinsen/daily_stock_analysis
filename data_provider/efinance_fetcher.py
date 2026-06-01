@@ -53,7 +53,18 @@ except (ValueError, TypeError):
 
 from src.patches.eastmoney_patch import eastmoney_patch
 from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
+from .base import (
+    BaseFetcher,
+    DataFetchError,
+    RateLimitError,
+    STANDARD_COLUMNS,
+    is_bse_code,
+    is_st_stock,
+    is_kc_cy_stock,
+    normalize_stock_code,
+    _is_hk_market,
+    _is_etf_code as _is_a_share_etf_code,
+)
 from .realtime_types import (
     UnifiedRealtimeQuote, RealtimeSource,
     get_realtime_circuit_breaker,
@@ -134,6 +145,9 @@ _etf_realtime_cache: Dict[str, Any] = {
     'ttl': 600  # 10分钟缓存有效期
 }
 
+_ETF_SH_PREFIXES = ('51', '52', '56', '58')
+_ETF_SZ_PREFIXES = ('15', '16', '18')
+
 
 def _is_etf_code(stock_code: str) -> bool:
     """
@@ -149,8 +163,19 @@ def _is_etf_code(stock_code: str) -> bool:
     Returns:
         True 表示是 ETF 代码，False 表示是普通股票代码
     """
-    etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
-    return stock_code.startswith(etf_prefixes) and len(stock_code) == 6
+    return _is_a_share_etf_code(stock_code)
+
+
+def _build_eastmoney_etf_secid(stock_code: str) -> str:
+    """Build Eastmoney secid for A-share ETF historical K-line queries."""
+    code = normalize_stock_code(stock_code)
+    if not _is_etf_code(code):
+        raise DataFetchError(f"无法识别 ETF 代码 {stock_code}")
+    if code.startswith(_ETF_SH_PREFIXES):
+        return f"1.{code}"
+    if code.startswith(_ETF_SZ_PREFIXES):
+        return f"0.{code}"
+    raise DataFetchError(f"无法确定 ETF {stock_code} 的 Eastmoney 市场前缀")
 
 
 def _is_us_code(stock_code: str) -> bool:
@@ -480,20 +505,26 @@ class EfinanceFetcher(BaseFetcher):
         # Format dates (efinance uses YYYYMMDD)
         beg_date = start_date.replace('-', '')
         end_date_fmt = end_date.replace('-', '')
+        secid = _build_eastmoney_etf_secid(stock_code)
 
-        logger.info(f"[API调用] ef.stock.get_quote_history(stock_codes={stock_code}, "
-                     f"beg={beg_date}, end={end_date_fmt}, klt=101, fqt=1)  [ETF]")
+        logger.info(
+            f"[API调用] ef.stock.get_quote_history(stock_codes={secid}, "
+            f"beg={beg_date}, end={end_date_fmt}, klt=101, fqt=1, "
+            f"quote_id_mode=True, use_id_cache=False)  [ETF stock_code={stock_code}]"
+        )
 
         api_start = time.time()
         try:
             # ETFs are exchange-traded securities; use the stock API to get full OHLCV data
             df = _ef_call_with_timeout(
                 ef.stock.get_quote_history,
-                stock_codes=stock_code,
+                stock_codes=secid,
                 beg=beg_date,
                 end=end_date_fmt,
                 klt=101,  # daily
                 fqt=1,    # forward-adjusted
+                quote_id_mode=True,
+                use_id_cache=False,
                 timeout=60,
             )
 
@@ -502,7 +533,7 @@ class EfinanceFetcher(BaseFetcher):
             if df is not None and not df.empty:
                 logger.info(
                     "[API返回] Eastmoney 历史K线成功 [ETF]: "
-                    f"endpoint={EASTMONEY_HISTORY_ENDPOINT}, stock_code={stock_code}, "
+                    f"endpoint={EASTMONEY_HISTORY_ENDPOINT}, stock_code={stock_code}, secid={secid}, "
                     f"range={beg_date}~{end_date_fmt}, rows={len(df)}, elapsed={api_elapsed:.2f}s"
                 )
                 logger.info(f"[API返回] 列名: {list(df.columns)}")
@@ -512,7 +543,7 @@ class EfinanceFetcher(BaseFetcher):
             else:
                 logger.warning(
                     "[API返回] Eastmoney 历史K线为空 [ETF]: "
-                    f"endpoint={EASTMONEY_HISTORY_ENDPOINT}, stock_code={stock_code}, "
+                    f"endpoint={EASTMONEY_HISTORY_ENDPOINT}, stock_code={stock_code}, secid={secid}, "
                     f"range={beg_date}~{end_date_fmt}, elapsed={api_elapsed:.2f}s"
                 )
 

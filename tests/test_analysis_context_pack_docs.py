@@ -6,6 +6,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOC_PATH = PROJECT_ROOT / "docs" / "analysis-context-pack.md"
+FULL_GUIDE_PATH = PROJECT_ROOT / "docs" / "full-guide.md"
+FULL_GUIDE_EN_PATH = PROJECT_ROOT / "docs" / "full-guide_EN.md"
 
 
 def _read_doc() -> str:
@@ -28,6 +30,7 @@ def test_analysis_context_pack_doc_has_required_sections() -> None:
         "## P2 Builder 契约",
         "## P3 Runtime Consumption",
         "## P4 历史记录、任务状态与 Web 可见性",
+        "## P5 数据质量评分与 Prompt 数据限制",
         "## 字段质量状态",
         "## 现有状态映射",
         "## 七路径盘点",
@@ -63,9 +66,11 @@ def test_analysis_context_pack_doc_defines_p0_quality_states() -> None:
         "`stale`",
         "`estimated`",
         "`partial`",
+        "`fetch_failed`",
     ):
         assert state in section
-    assert "`fetch_failed`" not in section
+    assert "P0 先固定七词" in section
+    assert "P5 在同一 1.0 umbrella 内追加 `fetch_failed`" in section
 
 
 def test_analysis_context_pack_doc_covers_seven_paths() -> None:
@@ -106,7 +111,7 @@ def test_analysis_context_pack_doc_records_non_goals_and_safety_boundaries() -> 
         "不公开完整 pack",
         "不 pack 化 `market_review`",
         "`market_light`",
-        "`fetch_failed` 与 `not_supported` 的细分留到 P5",
+        "P5 已在同一 1.0 umbrella 内追加该状态",
         "`analysis_history.context_snapshot.enhanced_context.date`",
         "完整 pack 不默认公开",
         "API key",
@@ -226,6 +231,32 @@ def test_analysis_context_pack_doc_defines_p2_builder_boundaries() -> None:
         assert token in section
 
 
+def test_analysis_context_pack_docs_record_issue_1386_p3_quality_boundaries() -> None:
+    section = _section(_read_doc(), "P2 Builder 契约")
+
+    for token in (
+        "`fetched_at`",
+        "`provider_timestamp`",
+        "`is_stale`",
+        "`stale_seconds`",
+        "`fallback_from`",
+        "`STALE > FALLBACK > AVAILABLE`",
+        "builder 只映射上游 artifact，不做质量评分",
+        "`is_partial_bar`、`is_estimated`、`estimated_fields`",
+        "`daily_bars` 不承载 partial/estimated",
+    ):
+        assert token in section
+
+    full_guide = FULL_GUIDE_PATH.read_text(encoding="utf-8")
+    full_guide_en = FULL_GUIDE_EN_PATH.read_text(encoding="utf-8")
+    assert "盘中数据包与实时质量控制（Issue #1386 P3）" in full_guide
+    assert "source` 保留实际成功的数据源 token" in full_guide
+    assert "`AnalysisContextBuilder` 只映射这些上游 artifact" in full_guide
+    assert "daily_bars` block 仍表示 storage 中完整日线窗口" in full_guide
+    assert "Intraday Data Packet and Realtime Quality Control (Issue #1386 P3)" in full_guide_en
+    assert "source` keeps the actual successful provider token" in full_guide_en
+
+
 def test_analysis_context_pack_doc_defines_p3_runtime_consumption_boundaries() -> None:
     section = _section(_read_doc(), "P3 Runtime Consumption")
 
@@ -248,7 +279,7 @@ def test_analysis_context_pack_doc_defines_p3_runtime_consumption_boundaries() -
         "`analysis_context_pack_summary`",
         "Agent 工具级 pack cache 复用",
         "P4 在此基础上新增低敏 overview",
-        "通知展示和数据质量评分仍留给后续阶段",
+        "P5 继续复用 summary 消费路径",
     ):
         assert token in section
 
@@ -274,9 +305,41 @@ def test_analysis_context_pack_doc_defines_p4_visibility_contract() -> None:
         "`fundamental_context`",
         "`SAVE_CONTEXT_SNAPSHOT=false`",
         "`AnalysisContextSummary`",
+        "位置在策略点位和资讯之后、运行诊断之前",
+        "默认折叠",
+        "非零的其他状态计数",
         "不覆盖 pending/processing TaskPanel",
         "不改通知摘要",
-        "P5 数据质量评分",
+        "质量分/等级",
+        "`fetch_failed` 状态",
+    ):
+        assert token in section
+
+    assert "运行诊断之后、策略点位之前" not in section
+
+
+def test_analysis_context_pack_doc_defines_p5_data_quality_contract() -> None:
+    section = _section(_read_doc(), "P5 数据质量评分与 Prompt 数据限制")
+
+    for token in (
+        "`PACK_VERSION`",
+        "`fetch_failed`",
+        "`fundamental_context.status == \"failed\"`",
+        "`overall_score`",
+        "`level`",
+        "`block_scores`",
+        "`limitations`",
+        "`quote=25`",
+        "`fetch_failed=25`",
+        "`Data Limitations`",
+        "`confidence_level` 不得为 `高` / `High`",
+        "`phase × degraded data`",
+        "fail-open",
+        "不替代 P5 的 confidence/safety 规则",
+        "`analysis_context_pack_overview.data_quality`",
+        "`details.context_snapshot`",
+        "不新增 fetcher",
+        "不改变 LLM 输出 JSON schema",
     ):
         assert token in section
 
@@ -328,18 +391,20 @@ def test_analysis_context_pack_doc_updates_indexes_and_changelog() -> None:
     changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
 
     assert "[分析上下文包契约、运行态消费与可见性](analysis-context-pack.md)" in index
-    assert "P1/P2 内部契约、P3 Prompt 摘要消费、P4 历史/API/Web 低敏可见性" in index
+    assert "P1/P2 内部契约、P3 Prompt 摘要消费、P4 历史/API/Web 低敏可见性、P5 数据质量评分" in index
     assert (
         "[Analysis Context Pack Contract, Runtime Consumption, And Visibility](analysis-context-pack.md) "
-        "<sub><sub>![P4 Badge](https://img.shields.io/badge/P4-orange?style=flat)</sub></sub> "
+        "<sub><sub>![P5 Badge](https://img.shields.io/badge/P5-orange?style=flat)</sub></sub> "
         "(Chinese-only)"
     ) in index_en
-    assert "P1/P2 internal contracts, P3 prompt-summary consumption, P4 history/API/Web low-sensitivity visibility" in index_en
+    assert "P1/P2 internal contracts, P3 prompt-summary consumption, P4 history/API/Web low-sensitivity visibility, P5 data-quality scoring" in index_en
     assert "新增 AnalysisContextPack P0 上下文盘点" in changelog
     assert "新增 AnalysisContextPack P1 内部契约与脱敏序列化测试" in changelog
     assert "新增 AnalysisContextPack P2 builder" in changelog
     assert "普通分析与 Agent 运行时 Prompt 接入 AnalysisContextPack 低敏摘要" in changelog
     assert "AnalysisContextPack P4 低敏 overview 接入历史详情" in changelog
+    assert "AnalysisContextPack P5 增加数据质量评分" in changelog
+    assert "优化 Web 报告详情页信息层级" in changelog
 
 
 def test_full_guides_clarify_pack_summary_does_not_replace_legacy_payload_channels() -> None:
@@ -351,11 +416,27 @@ def test_full_guides_clarify_pack_summary_does_not_replace_legacy_payload_channe
     assert "既有 `news_context`、Agent pre-fetched JSON 和 `enhanced_context` 原始数据通道保持 P3 前行为" in guide
     assert "`report.details.analysis_context_pack_overview`" in guide
     assert "completed `/api/v1/analysis/status/{task_id}`" in guide
+    assert "Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要" in guide
+    assert "折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源" in guide
+    assert "Web 报告页在策略点位和资讯之后默认折叠展示数据块状态" in guide
     assert "`details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`" in guide
+    assert "AnalysisContextPack 数据质量评分与 Prompt 数据限制（Issue #1389 P5）" in guide
+    assert "`fetch_failed`" in guide
+    assert "折叠头部新增质量分/等级" in guide
+    assert "`report.meta.market_phase_summary`" in guide
+    assert "`details.context_snapshot` 会剥离顶层 `market_phase_summary`" in guide
 
     assert "in this new pack-summary section" in guide_en
     assert "not full `news.content`" in guide_en
     assert "Existing `news_context`, Agent pre-fetched JSON, and `enhanced_context` raw-payload channels keep their pre-P3 behavior" in guide_en
     assert "`report.details.analysis_context_pack_overview`" in guide_en
     assert "completed `/api/v1/analysis/status/{task_id}`" in guide_en
+    assert "the Web report page renders a collapsed data-block summary after Strategy and News" in guide_en
+    assert "available/missing counts, non-zero other status counts, and trigger source" in guide_en
+    assert "the Web report page shows the data-block summary collapsed after Strategy and News" in guide_en
     assert "API `details.context_snapshot` strips the top-level `analysis_context_pack_overview`" in guide_en
+    assert "AnalysisContextPack Data Quality Scoring and Prompt Limitations (Issue #1389 P5)" in guide_en
+    assert "`fetch_failed`" in guide_en
+    assert "adds quality score/level to the header" in guide_en
+    assert "`report.meta.market_phase_summary`" in guide_en
+    assert "API `details.context_snapshot` strips the top-level `market_phase_summary`" in guide_en

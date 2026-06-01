@@ -45,6 +45,7 @@ class ContextFieldStatus(str, Enum):
     STALE = "stale"
     ESTIMATED = "estimated"
     PARTIAL = "partial"
+    FETCH_FAILED = "fetch_failed"
 
 
 class AnalysisSubject(_AnalysisContextModel):
@@ -90,8 +91,12 @@ class AnalysisContextBlock(_AnalysisContextModel):
 
 
 class DataQuality(_AnalysisContextModel):
-    """Container for future quality summaries without P5 scoring semantics."""
+    """Low-sensitivity data quality summary for an AnalysisContextPack."""
 
+    overall_score: Optional[int] = Field(None, ge=0, le=100)
+    level: Optional[Literal["good", "usable", "limited", "poor"]] = None
+    block_scores: Dict[str, int] = Field(default_factory=dict)
+    limitations: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

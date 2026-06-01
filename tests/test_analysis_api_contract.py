@@ -77,12 +77,44 @@ def _analysis_context_pack_overview() -> dict:
             "stale": 0,
             "estimated": 0,
             "partial": 0,
+            "fetch_failed": 0,
+        },
+        "data_quality": {
+            "overall_score": 88,
+            "level": "good",
+            "block_scores": {
+                "quote": 100,
+                "daily_bars": 100,
+                "technical": 100,
+                "news": 35,
+                "fundamentals": 100,
+                "chip": 100,
+            },
+            "limitations": [],
         },
         "warnings": ["news_context_missing"],
         "metadata": {
             "trigger_source": "api",
             "news_result_count": 0,
         },
+    }
+
+
+def _market_phase_summary() -> dict:
+    return {
+        "market": "cn",
+        "phase": "intraday",
+        "market_local_time": "2026-03-27T10:00:00+08:00",
+        "session_date": "2026-03-27",
+        "effective_daily_bar_date": "2026-03-26",
+        "is_trading_day": True,
+        "is_market_open_now": True,
+        "is_partial_bar": True,
+        "minutes_to_open": None,
+        "minutes_to_close": 300,
+        "trigger_source": "api",
+        "analysis_intent": "auto",
+        "warnings": ["partial_bar"],
     }
 
 
@@ -758,6 +790,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         overview = _analysis_context_pack_overview()
+        phase_summary = _market_phase_summary()
         service_instance = MagicMock()
         service_instance.analyze_stock.return_value = {
             "stock_code": "600519",
@@ -778,6 +811,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                      {
                          "enhanced_context": {"code": "600519"},
                          "analysis_context_pack_overview": overview,
+                         "market_phase_summary": phase_summary,
                      },
                      None,
                  ),
@@ -793,11 +827,17 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             )
 
         details = result.report["details"]
+        self.assertEqual(result.report["meta"]["market_phase_summary"]["phase"], "intraday")
         self.assertEqual(
             details["analysis_context_pack_overview"]["metadata"]["trigger_source"],
             "api",
         )
+        self.assertEqual(
+            details["analysis_context_pack_overview"]["data_quality"]["overall_score"],
+            88,
+        )
         self.assertNotIn("analysis_context_pack_overview", details["context_snapshot"])
+        self.assertNotIn("market_phase_summary", details["context_snapshot"])
 
     def test_build_analysis_response_localizes_placeholder_stock_name_for_english(self) -> None:
         service = AnalysisService()
@@ -951,6 +991,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         overview = _analysis_context_pack_overview()
+        phase_summary = _market_phase_summary()
         report = _build_analysis_report(
             report_data={
                 "meta": {},
@@ -964,13 +1005,23 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             context_snapshot={
                 "enhanced_context": {"code": "600519"},
                 "analysis_context_pack_overview": overview,
+                "market_phase_summary": {
+                    **phase_summary,
+                    "market_phase_context": {"raw": True},
+                },
             },
             fallback_fundamental_payload=None,
         )
 
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
         self.assertEqual(
             report.details.analysis_context_pack_overview.metadata.trigger_source,
             "api",
+        )
+        self.assertEqual(
+            report.details.analysis_context_pack_overview.data_quality.overall_score,
+            88,
         )
         self.assertEqual(
             report.details.analysis_context_pack_overview.blocks[1].missing_reasons,
@@ -978,6 +1029,10 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         )
         self.assertNotIn(
             "analysis_context_pack_overview",
+            report.details.context_snapshot,
+        )
+        self.assertNotIn(
+            "market_phase_summary",
             report.details.context_snapshot,
         )
 
@@ -1258,6 +1313,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         overview = _analysis_context_pack_overview()
+        phase_summary = _market_phase_summary()
         record = SimpleNamespace(
             id=1,
             code="600519",
@@ -1281,6 +1337,10 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         "change_pct": 1.56,
                     },
                     "analysis_context_pack_overview": overview,
+                    "market_phase_summary": {
+                        **phase_summary,
+                        "quote_timestamp": "not-public",
+                    },
                 }
             ),
             news_content="news",
@@ -1306,6 +1366,10 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["meta"]["current_price"], 1888.0)
         self.assertEqual(status.result.report["meta"]["change_pct"], 1.56)
         self.assertEqual(
+            status.result.report["meta"]["market_phase_summary"]["phase"],
+            "intraday",
+        )
+        self.assertEqual(
             status.result.report["details"]["belong_boards"],
             [{"name": "白酒", "type": "行业"}],
         )
@@ -1317,8 +1381,16 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             status.result.report["details"]["analysis_context_pack_overview"]["metadata"]["trigger_source"],
             "api",
         )
+        self.assertEqual(
+            status.result.report["details"]["analysis_context_pack_overview"]["data_quality"]["overall_score"],
+            88,
+        )
         self.assertNotIn(
             "analysis_context_pack_overview",
+            status.result.report["details"]["context_snapshot"],
+        )
+        self.assertNotIn(
+            "market_phase_summary",
             status.result.report["details"]["context_snapshot"],
         )
 
@@ -1327,6 +1399,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         overview = _analysis_context_pack_overview()
+        phase_summary = _market_phase_summary()
         context_snapshot = {
             "fundamental_context": {
                 "belong_boards": [{"name": "白酒", "type": "行业"}],
@@ -1342,6 +1415,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 "change_pct": 1.56,
             },
             "analysis_context_pack_overview": overview,
+            "market_phase_summary": phase_summary,
         }
         task = SimpleNamespace(
             task_id="task_agent_snapshot_in_memory_1",
@@ -1387,6 +1461,10 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["meta"]["current_price"], 1888.0)
         self.assertEqual(status.result.report["meta"]["change_pct"], 1.56)
         self.assertEqual(
+            status.result.report["meta"]["market_phase_summary"]["phase"],
+            "intraday",
+        )
+        self.assertEqual(
             status.result.report["details"]["belong_boards"],
             [{"name": "白酒", "type": "行业"}],
         )
@@ -1398,14 +1476,70 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             status.result.report["details"]["analysis_context_pack_overview"]["metadata"]["trigger_source"],
             "api",
         )
+        self.assertEqual(
+            status.result.report["details"]["analysis_context_pack_overview"]["data_quality"]["overall_score"],
+            88,
+        )
         self.assertNotIn(
             "analysis_context_pack_overview",
+            status.result.report["details"]["context_snapshot"],
+        )
+        self.assertNotIn(
+            "market_phase_summary",
             status.result.report["details"]["context_snapshot"],
         )
         mock_db.get_analysis_history.assert_called_once_with(
             query_id="task_agent_snapshot_in_memory_1",
             code="600519",
             limit=1,
+        )
+
+    def test_get_analysis_status_in_memory_task_without_db_snapshot_omits_phase_summary(self) -> None:
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        task = SimpleNamespace(
+            task_id="task_no_snapshot_in_memory_1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {
+                        "query_id": "task_no_snapshot_in_memory_1",
+                        "stock_code": "600519",
+                        "stock_name": "贵州茅台",
+                    },
+                    "summary": {"analysis_summary": "summary"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            skills=None,
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            completed_at=datetime(2026, 4, 10, 12, 1, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(None, None),
+             ) as load_sources:
+            queue_mock.return_value.get_task.return_value = task
+            status = get_analysis_status("task_no_snapshot_in_memory_1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertIsNone(
+            status.result.report["meta"].get("market_phase_summary"),
+        )
+        load_sources.assert_called_once_with(
+            query_id="task_no_snapshot_in_memory_1",
+            stock_code="600519",
         )
 
     def test_openapi_declares_single_and_batch_async_202_payloads(self) -> None:

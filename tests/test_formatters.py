@@ -11,12 +11,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.formatters import (
     chunk_content_by_max_words,
     chunk_content_by_max_bytes,
+    chunk_markdown_preserving_blocks,
+    format_feishu_markdown,
+    format_slack_mrkdwn,
+    format_telegram_markdown,
+    format_wechat_markdown,
+    markdown_tables_to_key_value_rows,
     slice_at_max_bytes,
     TRUNCATION_SUFFIX,
     MIN_MAX_WORDS,
     MIN_MAX_BYTES,
     _slice_at_effective_len,
     _chunk_by_max_words,
+    utf16_len,
 )
 
 
@@ -176,3 +183,263 @@ class TestChunkContentByMaxBytes(unittest.TestCase):
         chunk, remaining = slice_at_max_bytes("测试ABC", 7)
         self.assertEqual(chunk, "测试A")
         self.assertEqual(remaining, "BC")
+
+
+class TestChunkMarkdownPreservingBlocks(unittest.TestCase):
+    """Tests for markdown-aware notification chunking."""
+
+    @staticmethod
+    def _strip_chunk_suffix(chunk):
+        return chunk.rsplit("\n\n(", 1)[0] if "\n\n(" in chunk else chunk
+
+    def test_preserves_fenced_code_boundaries_when_split_inside_block(self):
+        text = (
+            "## Report\n\n"
+            "```python\n"
+            + "\n".join(f"print({i})" for i in range(20))
+            + "\n```\n\n"
+            "Done"
+        )
+
+        chunks = chunk_markdown_preserving_blocks(text, 120)
+
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            body = self._strip_chunk_suffix(chunk)
+            self.assertEqual(body.count("```") % 2, 0)
+        bodies = [self._strip_chunk_suffix(chunk) for chunk in chunks]
+        self.assertTrue(any(body.endswith("```") for body in bodies[:-1]))
+        self.assertTrue(any(body.startswith("```python\n") for body in bodies[1:]))
+
+    def test_preserves_indentation_when_carrying_fenced_code(self):
+        text = (
+            "## Report\n\n"
+            "```python\n"
+            + "\n".join(f"    print({i})" for i in range(20))
+            + "\n```\n\n"
+            "Done"
+        )
+
+        chunks = chunk_markdown_preserving_blocks(text, 120)
+
+        carried_bodies = [
+            self._strip_chunk_suffix(chunk)
+            for chunk in chunks[1:]
+            if self._strip_chunk_suffix(chunk).startswith("```python\n")
+        ]
+        self.assertTrue(carried_bodies)
+        self.assertTrue(
+            any(body.startswith("```python\n    print(") for body in carried_bodies)
+        )
+        self.assertFalse(
+            any(body.startswith("```python\nprint(") for body in carried_bodies)
+        )
+
+    def test_preserves_space_delimiter_inside_fenced_code(self):
+        text = "```python\n" + "value =" + (" item" * 30) + "\n```"
+
+        chunks = chunk_markdown_preserving_blocks(text, 70)
+
+        carried_bodies = [
+            self._strip_chunk_suffix(chunk)
+            for chunk in chunks[1:]
+            if self._strip_chunk_suffix(chunk).startswith("```python\n")
+        ]
+        self.assertTrue(any(body.startswith("```python\n item") for body in carried_bodies))
+        self.assertFalse(any(body.startswith("```python\nitem") for body in carried_bodies))
+
+    def test_preserves_nested_list_indentation_after_split(self):
+        text = (
+            "- parent with enough words here\n"
+            "  - nested child keeps indentation after chunking "
+            + ("word " * 20)
+        )
+
+        chunks = chunk_markdown_preserving_blocks(text, 70)
+
+        bodies = [self._strip_chunk_suffix(chunk) for chunk in chunks]
+        self.assertTrue(any(body.startswith("  - nested child") for body in bodies[1:]))
+        self.assertFalse(any(body.startswith("- nested child") for body in bodies[1:]))
+
+    def test_avoids_splitting_inside_inline_code(self):
+        text = "Intro " + ("word " * 8) + "`inline code with spaces and (parens)` tail " + ("more " * 20)
+
+        chunks = chunk_markdown_preserving_blocks(text, 70)
+
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            body = self._strip_chunk_suffix(chunk)
+            self.assertEqual(body.count("`") % 2, 0)
+
+    def test_avoids_splitting_inside_markdown_links(self):
+        link = "[full report](https://example.com/reports/2026/05/30/daily-stock-analysis?channel=feishu)"
+        text = (
+            "Intro "
+            + ("word " * 8)
+            + link
+            + " tail "
+            + ("more " * 20)
+        )
+
+        chunks = chunk_markdown_preserving_blocks(text, 130)
+
+        self.assertGreater(len(chunks), 1)
+        bodies = [self._strip_chunk_suffix(chunk) for chunk in chunks]
+        self.assertTrue(any(link in body for body in bodies))
+        self.assertEqual([body for body in bodies if "[full report" in body and link not in body], [])
+
+    def test_supports_utf16_length_function(self):
+        text = "😀" * 20
+
+        chunks = chunk_markdown_preserving_blocks(text, 20, len_fn=utf16_len)
+
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(utf16_len(chunk), 20)
+
+    def test_add_page_marker_appends_stable_markers(self):
+        text = "A" * 180
+
+        chunks = chunk_markdown_preserving_blocks(text, 80, add_page_marker=True)
+
+        self.assertGreater(len(chunks), 1)
+        for i, chunk in enumerate(chunks):
+            self.assertIn(f"{i + 1}/{len(chunks)}", chunk)
+
+
+class TestNotificationMarkdownFormatters(unittest.TestCase):
+    """Tests for chat-friendly report Markdown conversions."""
+
+    @staticmethod
+    def _first_fenced_code_body(text):
+        return text.split("```markdown\n", 1)[1].split("\n```", 1)[0]
+
+    def test_markdown_tables_to_key_value_rows(self):
+        text = "| 股票 | 评级 |\n| --- | --- |\n| 600519 | 买入 |\n| AAPL | 观望 |"
+
+        result = markdown_tables_to_key_value_rows(text)
+
+        self.assertNotIn("| --- |", result)
+        self.assertIn("• 600519：买入", result)
+        self.assertIn("• AAPL：观望", result)
+
+    def test_markdown_tables_to_key_value_rows_compacts_report_metric_tables(self):
+        text = (
+            "| 价格指标 | 当前价 |\n"
+            "|---------|------|\n"
+            "| MA5 | 1292.85 |\n"
+            "| 支撑位 | 1302.77 |\n\n"
+            "| 板块 | 类型 |\n"
+            "|:-----|:----:|\n"
+            "| 白酒Ⅲ | N/A |"
+        )
+
+        result = markdown_tables_to_key_value_rows(text)
+
+        self.assertIn("• MA5：1292.85", result)
+        self.assertIn("• 支撑位：1302.77", result)
+        self.assertIn("• 白酒Ⅲ", result)
+        self.assertNotIn("价格指标：MA5", result)
+        self.assertNotIn("类型：N/A", result)
+
+    def test_markdown_tables_to_key_value_rows_keeps_fenced_code_tables(self):
+        text = (
+            "```markdown\n"
+            "| 股票 | 评级 |\n"
+            "| --- | --- |\n"
+            "| 示例 | 不应转换 |\n"
+            "```\n\n"
+            "| 股票 | 评级 |\n"
+            "| --- | --- |\n"
+            "| 600519 | 买入 |"
+        )
+
+        result = markdown_tables_to_key_value_rows(text)
+
+        fenced = self._first_fenced_code_body(result)
+        self.assertIn("| --- |", fenced)
+        self.assertIn("| 示例 | 不应转换 |", fenced)
+        self.assertIn("• 600519：买入", result)
+        self.assertNotIn("@@DSA_FENCED_CODE_BLOCK_", result)
+
+    def test_feishu_formatter_keeps_legacy_structure_and_converts_table(self):
+        text = "# 日报\n\n> 风险提示\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n- 关注量能"
+
+        result = format_feishu_markdown(text)
+
+        self.assertIn("**日报**", result)
+        self.assertIn("💬 风险提示", result)
+        self.assertIn("• 股票：600519 | 信号：强势", result)
+        self.assertIn("• 关注量能", result)
+
+    def test_telegram_formatter_uses_supported_markdown(self):
+        text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n[详情](https://example.com/report)"
+
+        result = format_telegram_markdown(text)
+
+        self.assertIn("*日报*", result)
+        self.assertIn("- 600519：强势", result)
+        self.assertIn("[详情](https://example.com/report)", result)
+
+    def test_telegram_formatter_escapes_non_link_metacharacters(self):
+        text = (
+            "## [P4] 日报\n\n"
+            "| 股票 | 信号 |\n"
+            "| --- | --- |\n"
+            "| 600519 | [P4] 强势 (观察) |\n\n"
+            "详见 [详情](https://example.com/report)"
+        )
+
+        result = format_telegram_markdown(text)
+
+        self.assertIn("*\\[P4\\] 日报*", result)
+        self.assertIn("- 600519：\\[P4\\] 强势 \\(观察\\)", result)
+        self.assertIn("[详情](https://example.com/report)", result)
+
+    def test_slack_formatter_uses_mrkdwn_links_and_tables(self):
+        text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |\n\n[详情](https://example.com/report)"
+
+        result = format_slack_mrkdwn(text)
+
+        self.assertIn("*日报*", result)
+        self.assertIn("• 600519：强势", result)
+        self.assertIn("<https://example.com/report|详情>", result)
+
+    def test_wechat_formatter_keeps_markdown_but_converts_tables(self):
+        text = "## 日报\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |"
+
+        result = format_wechat_markdown(text)
+
+        self.assertIn("## 日报", result)
+        self.assertIn("• 600519：强势", result)
+        self.assertNotIn("| --- |", result)
+
+    def test_platform_formatters_do_not_rewrite_fenced_code_blocks(self):
+        text = (
+            "## 日报\n\n"
+            "```markdown\n"
+            "| 股票 | 信号 |\n"
+            "| --- | --- |\n"
+            "| 示例 | 不应转换 |\n"
+            "# not heading\n"
+            "[详情](https://example.com/raw)\n"
+            "```\n\n"
+            "| 股票 | 信号 |\n"
+            "| --- | --- |\n"
+            "| 600519 | 强势 |"
+        )
+
+        for formatter in (
+            format_telegram_markdown,
+            format_wechat_markdown,
+            format_slack_mrkdwn,
+        ):
+            with self.subTest(formatter=formatter.__name__):
+                result = formatter(text)
+                fenced = self._first_fenced_code_body(result)
+                self.assertIn("| --- |", fenced)
+                self.assertIn("| 示例 | 不应转换 |", fenced)
+                self.assertIn("# not heading", fenced)
+                self.assertIn("[详情](https://example.com/raw)", fenced)
+                self.assertIn("600519：强势", result)
+                self.assertNotIn("@@DSA_FENCED_CODE_BLOCK_", result)

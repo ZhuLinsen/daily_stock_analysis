@@ -15,7 +15,7 @@ interface ReportSummaryProps {
 
 /**
  * 完整报告展示组件
- * 整合概览、策略、资讯、详情四个区域
+ * 按主体内容优先、透明度信息后置的顺序展示报告。
  */
 export const ReportSummary: React.FC<ReportSummaryProps> = ({
   data,
@@ -45,12 +45,11 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         isHistory={isHistory}
       />
 
-      {/* 运行诊断摘要 */}
-      <ReportDiagnostics
-        recordId={recordId}
-        summary={diagnosticSummary}
-        language={reportLanguage}
-      />
+      {/* 策略点位区 */}
+      <ReportStrategy strategy={strategy} language={reportLanguage} />
+
+      {/* 资讯区 */}
+      <ReportNews recordId={recordId} limit={8} language={reportLanguage} />
 
       {/* 输入数据块低敏摘要 */}
       <AnalysisContextSummary
@@ -58,11 +57,12 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         language={reportLanguage}
       />
 
-      {/* 策略点位区 */}
-      <ReportStrategy strategy={strategy} language={reportLanguage} />
-
-      {/* 资讯区 */}
-      <ReportNews recordId={recordId} limit={8} language={reportLanguage} />
+      {/* 运行诊断摘要 */}
+      <ReportDiagnostics
+        recordId={recordId}
+        summary={diagnosticSummary}
+        language={reportLanguage}
+      />
 
       {/* 透明度与追溯区 */}
       <ReportDetails details={details} recordId={recordId} language={reportLanguage} />

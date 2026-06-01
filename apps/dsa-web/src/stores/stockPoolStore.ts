@@ -3,11 +3,12 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
-import type { AnalysisReport, HistoryItem, HistoryListResponse, TaskInfo } from '../types/analysis';
+import type { AnalysisReport, HistoryItem, HistoryListResponse, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
 const PAGE_SIZE = 20;
+const STOCK_HISTORY_PAGE_SIZE = 20;
 
 type SelectionSource = 'manual' | 'autocomplete' | 'import' | 'image';
 
@@ -30,6 +31,7 @@ type SubmitAnalysisOptions = {
 let reportRequestSeq = 0;
 let analyzeRequestSeq = 0;
 let historyRequestSeq = 0;
+let stockHistoryRequestSeq = 0;
 let activeTaskRequestSeq = 0;
 let activeTaskLocalRevision = 0;
 const dismissedTaskIds = new Set<string>();
@@ -51,6 +53,15 @@ export interface StockPoolState {
   currentPage: number;
   selectedReport: AnalysisReport | null;
   isLoadingReport: boolean;
+  isHistoryTrendOpen: boolean;
+  stockHistoryItems: HistoryItem[];
+  stockHistoryTotal: number;
+  stockHistoryPage: number;
+  stockHistoryHasMore: boolean;
+  isLoadingStockHistory: boolean;
+  isLoadingMoreStockHistory: boolean;
+  stockHistoryError: ParsedApiError | null;
+  stockHistoryFilters: StockHistoryFilters;
   activeTasks: TaskInfo[];
   markdownDrawerOpen: boolean;
   setQuery: (query: string) => void;
@@ -58,6 +69,10 @@ export interface StockPoolState {
   clearInlineMessages: () => void;
   openMarkdownDrawer: () => void;
   closeMarkdownDrawer: () => void;
+  openHistoryTrend: () => Promise<void>;
+  closeHistoryTrend: () => void;
+  setStockHistoryRange: (range: StockHistoryRange) => Promise<void>;
+  loadMoreStockHistory: () => Promise<void>;
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
@@ -92,6 +107,19 @@ const initialState = {
   currentPage: 1,
   selectedReport: null as AnalysisReport | null,
   isLoadingReport: false,
+  isHistoryTrendOpen: false,
+  stockHistoryItems: [] as HistoryItem[],
+  stockHistoryTotal: 0,
+  stockHistoryPage: 1,
+  stockHistoryHasMore: false,
+  isLoadingStockHistory: false,
+  isLoadingMoreStockHistory: false,
+  stockHistoryError: null as ParsedApiError | null,
+  stockHistoryFilters: {
+    range: 'all' as StockHistoryRange,
+    model: 'all',
+    sort: 'desc' as const,
+  },
   activeTasks: [] as TaskInfo[],
   markdownDrawerOpen: false,
 };
@@ -103,6 +131,162 @@ function buildHistoryParams(page: number) {
     page,
     limit: PAGE_SIZE,
   };
+}
+
+function buildStockHistoryParams(stockCode: string, page: number, filters: StockHistoryFilters) {
+  const params: {
+    stockCode: string;
+    startDate?: string;
+    endDate?: string;
+    page: number;
+    limit: number;
+  } = {
+    stockCode,
+    page,
+    limit: STOCK_HISTORY_PAGE_SIZE,
+  };
+
+  if (filters.range === '30d') {
+    params.startDate = getRecentStartDate(30);
+    params.endDate = getTodayInShanghai();
+  } else if (filters.range === '90d') {
+    params.startDate = getRecentStartDate(90);
+    params.endDate = getTodayInShanghai();
+  }
+
+  return params;
+}
+
+function reportToHistoryItem(report: AnalysisReport): HistoryItem | null {
+  if (report.meta.id === undefined) {
+    return null;
+  }
+
+  return {
+    id: report.meta.id,
+    queryId: report.meta.queryId,
+    stockCode: report.meta.stockCode,
+    stockName: report.meta.stockName,
+    reportType: report.meta.reportType,
+    trendPrediction: report.summary.trendPrediction,
+    analysisSummary: report.summary.analysisSummary,
+    sentimentScore: report.summary.sentimentScore,
+    operationAdvice: report.summary.operationAdvice,
+    currentPrice: report.meta.currentPrice,
+    changePct: report.meta.changePct,
+    modelUsed: report.meta.modelUsed,
+    createdAt: report.meta.createdAt,
+  };
+}
+
+function isDateInHistoryRange(createdAt: string | undefined, range: StockHistoryRange): boolean {
+  if (range === 'all') {
+    return true;
+  }
+  if (!createdAt) {
+    return false;
+  }
+
+  const reportDate = createdAt.slice(0, 10);
+  const startDate = range === '30d' ? getRecentStartDate(30) : getRecentStartDate(90);
+  const endDate = getTodayInShanghai();
+
+  return reportDate >= startDate && reportDate <= endDate;
+}
+
+function includeSelectedReport(
+  items: HistoryItem[],
+  report: AnalysisReport,
+  range: StockHistoryRange,
+): HistoryItem[] {
+  const current = reportToHistoryItem(report);
+  if (!current || !isDateInHistoryRange(current.createdAt, range) || items.some((item) => item.id === current.id)) {
+    return items;
+  }
+  return [current, ...items];
+}
+
+function dedupeHistoryItems(items: HistoryItem[]): HistoryItem[] {
+  const seen = new Set<number>();
+  return items.filter((item) => {
+    if (seen.has(item.id)) {
+      return false;
+    }
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function resetStockHistoryState(set: (partial: Partial<StockPoolState>) => void) {
+  set({
+    stockHistoryItems: [],
+    stockHistoryTotal: 0,
+    stockHistoryPage: 1,
+    stockHistoryHasMore: false,
+    isLoadingStockHistory: false,
+    isLoadingMoreStockHistory: false,
+    stockHistoryError: null,
+  });
+}
+
+async function fetchStockHistory(
+  get: () => StockPoolState,
+  set: (partial: Partial<StockPoolState>) => void,
+  options: { reset?: boolean } = {},
+): Promise<HistoryListResponse | null> {
+  const { reset = true } = options;
+  const state = get();
+  const report = state.selectedReport;
+
+  if (!report || report.meta.reportType === 'market_review') {
+    resetStockHistoryState(set);
+    set({
+      isHistoryTrendOpen: false,
+    });
+    return null;
+  }
+
+  const page = reset ? 1 : state.stockHistoryPage + 1;
+  const requestId = ++stockHistoryRequestSeq;
+  set(
+    reset
+      ? { isLoadingStockHistory: true, isLoadingMoreStockHistory: false, stockHistoryError: null }
+      : { isLoadingMoreStockHistory: true, stockHistoryError: null },
+  );
+
+  try {
+    const response = await historyApi.getList(
+      buildStockHistoryParams(report.meta.stockCode, page, state.stockHistoryFilters),
+    );
+    if (requestId !== stockHistoryRequestSeq) {
+      return null;
+    }
+
+    const nextItems = reset
+      ? dedupeHistoryItems(includeSelectedReport(response.items, report, state.stockHistoryFilters.range))
+      : dedupeHistoryItems([...get().stockHistoryItems, ...response.items]);
+    const nextTotal = Math.max(response.total, nextItems.length);
+    set({
+      stockHistoryItems: nextItems,
+      stockHistoryTotal: nextTotal,
+      stockHistoryPage: page,
+      stockHistoryHasMore: nextItems.length < nextTotal,
+    });
+    return response;
+  } catch (error) {
+    if (requestId !== stockHistoryRequestSeq) {
+      return null;
+    }
+    set({ stockHistoryError: getParsedApiError(error) });
+    return null;
+  } finally {
+    if (requestId === stockHistoryRequestSeq) {
+      set({
+        isLoadingStockHistory: false,
+        isLoadingMoreStockHistory: false,
+      });
+    }
+  }
 }
 
 async function fetchHistory(
@@ -200,6 +384,42 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   closeMarkdownDrawer: () => set({ markdownDrawerOpen: false }),
 
+  openHistoryTrend: async () => {
+    if (!get().selectedReport || get().selectedReport?.meta.reportType === 'market_review') {
+      return;
+    }
+    set({ isHistoryTrendOpen: true });
+    await fetchStockHistory(get, set, { reset: true });
+  },
+
+  closeHistoryTrend: () => {
+    stockHistoryRequestSeq += 1;
+    resetStockHistoryState(set);
+    set({
+      isHistoryTrendOpen: false,
+    });
+  },
+
+  setStockHistoryRange: async (range) => {
+    set({
+      stockHistoryFilters: {
+        ...get().stockHistoryFilters,
+        range,
+      },
+    });
+    if (get().isHistoryTrendOpen) {
+      await fetchStockHistory(get, set, { reset: true });
+    }
+  },
+
+  loadMoreStockHistory: async () => {
+    const state = get();
+    if (!state.isHistoryTrendOpen || state.isLoadingMoreStockHistory || !state.stockHistoryHasMore) {
+      return;
+    }
+    await fetchStockHistory(get, set, { reset: false });
+  },
+
   loadInitialHistory: async () => {
     await fetchHistory(get, set, { autoSelectFirst: true, reset: true });
   },
@@ -235,6 +455,17 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         error: null,
         isLoadingReport: false,
       });
+
+      if (report.meta.reportType === 'market_review' || !report.meta.stockCode) {
+        stockHistoryRequestSeq += 1;
+        resetStockHistoryState(set);
+        set({ isHistoryTrendOpen: false });
+        return;
+      }
+
+      if (get().isHistoryTrendOpen) {
+        await fetchStockHistory(get, set, { reset: true });
+      }
     } catch (error) {
       if (requestId !== reportRequestSeq) {
         return;
@@ -295,7 +526,12 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         if (nextItem) {
           await get().selectHistoryItem(nextItem.id);
         } else {
-          set({ selectedReport: null });
+          stockHistoryRequestSeq += 1;
+          resetStockHistoryState(set);
+          set({
+            isHistoryTrendOpen: false,
+            selectedReport: null,
+          });
         }
       }
     } catch (error) {
@@ -469,6 +705,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   resetDashboardState: () => {
     historyRequestSeq += 1;
+    stockHistoryRequestSeq += 1;
     reportRequestSeq = 0;
     analyzeRequestSeq = 0;
     activeTaskRequestSeq += 1;

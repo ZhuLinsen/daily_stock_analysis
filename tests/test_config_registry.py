@@ -149,6 +149,14 @@ class TestAstrBotFieldsRegistered(unittest.TestCase):
             self.assertIn(key, field_keys, f"{key} missing from schema response")
 
 
+class TestAlphaSiftFieldsRegistered(unittest.TestCase):
+    def test_install_spec_is_sensitive(self):
+        field = get_field_definition("ALPHASIFT_INSTALL_SPEC")
+
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 

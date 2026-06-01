@@ -58,12 +58,12 @@ describe('ReportDiagnostics', () => {
     render(<ReportDiagnostics recordId={1} />);
 
     expect(historyApi.getDiagnostics).toHaveBeenCalledWith(1);
-    expect(await screen.findByText('数据可靠性')).toBeInTheDocument();
+    expect(await screen.findByText('运行状态')).toBeInTheDocument();
     const panel = screen.getByTestId('run-diagnostics');
     expect(panel).not.toHaveAttribute('open');
     expect(screen.getByText('部分降级')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('数据可靠性'));
+    fireEvent.click(screen.getByText('运行状态'));
 
     expect(panel).toHaveAttribute('open');
     expect(screen.getByText('最近失败后已降级')).toBeInTheDocument();
@@ -83,7 +83,7 @@ describe('ReportDiagnostics', () => {
     render(<ReportDiagnostics summary={diagnosticSummary} />);
 
     expect(historyApi.getDiagnostics).not.toHaveBeenCalled();
-    expect(screen.getByText('数据可靠性')).toBeInTheDocument();
+    expect(screen.getByText('运行状态')).toBeInTheDocument();
     expect(screen.getByText('部分降级')).toBeInTheDocument();
   });
 
@@ -99,6 +99,6 @@ describe('ReportDiagnostics', () => {
     await waitFor(() => {
       expect(historyApi.getDiagnostics).toHaveBeenCalledTimes(2);
     });
-    expect(await screen.findByText('数据可靠性')).toBeInTheDocument();
+    expect(await screen.findByText('运行状态')).toBeInTheDocument();
   });
 });

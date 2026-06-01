@@ -1088,6 +1088,17 @@ function isWindowsNsisInstalledApp() {
   return fs.existsSync(path.join(appDir, 'Uninstall Daily Stock Analysis.exe'));
 }
 
+function quoteNsisDirectoryArgument(directoryPath) {
+  const normalizedPath = String(directoryPath || '').trim();
+  if (!normalizedPath) {
+    return '';
+  }
+  if (normalizedPath.includes('"')) {
+    return normalizedPath;
+  }
+  return /\s/.test(normalizedPath) ? `"${normalizedPath}"` : normalizedPath;
+}
+
 function getElectronAutoUpdater() {
   if (electronAutoUpdater !== undefined) {
     return electronAutoUpdater;
@@ -1312,6 +1323,13 @@ function configureElectronAutoUpdater() {
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  if (isWindows && app.isPackaged) {
+    const installDirectory = path.dirname(app.getPath('exe'));
+    if (installDirectory) {
+      updater.installDirectory = quoteNsisDirectoryArgument(installDirectory);
+      logLine(`[update] auto updater install directory set to ${updater.installDirectory}`);
+    }
+  }
 
   updater.on('checking-for-update', () => {
     setDesktopUpdateState({

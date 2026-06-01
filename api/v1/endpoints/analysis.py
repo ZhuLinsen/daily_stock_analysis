@@ -66,6 +66,7 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
+from src.market_phase_summary import extract_market_phase_summary
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.services.name_to_code_resolver import resolve_name_to_code
 from src.services.stock_code_utils import is_code_like
@@ -911,6 +912,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             skills = None
             context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
             analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
+            market_phase_summary = extract_market_phase_summary(context_snapshot)
             api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
             if context_snapshot and isinstance(context_snapshot, dict):
                 raw_skills = context_snapshot.get("skills")
@@ -958,6 +960,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     model_used=model_used,
                     current_price=current_price,
                     change_pct=change_pct,
+                    market_phase_summary=market_phase_summary,
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,
@@ -1103,6 +1106,7 @@ def _build_analysis_report(
     change_pct = meta_data.get("change_pct")
     if change_pct is None:
         change_pct = realtime_fields.get("change_pct")
+    market_phase_summary = extract_market_phase_summary(context_snapshot)
 
     meta = ReportMeta(
         query_id=meta_data.get("query_id", query_id),
@@ -1114,6 +1118,7 @@ def _build_analysis_report(
         current_price=current_price,
         change_pct=change_pct,
         model_used=normalize_model_used(meta_data.get("model_used")),
+        market_phase_summary=market_phase_summary,
     )
 
     summary = ReportSummary(

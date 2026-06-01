@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.schemas.analysis_context_pack import (
@@ -20,6 +21,37 @@ from src.schemas.analysis_context_pack import (
 _REALTIME_OVERLAY_WARNING = "intraday_realtime_overlay"
 _REALTIME_FALLBACK_WARNING = "realtime_provider_fallback"
 _FUNDAMENTAL_FAILED_REASON = "fundamental_pipeline_failed"
+_QUALITY_BLOCK_WEIGHTS: Dict[str, int] = {
+    "quote": 25,
+    "daily_bars": 25,
+    "technical": 25,
+    "news": 10,
+    "fundamentals": 10,
+    "chip": 5,
+}
+_STATUS_SCORES: Dict[ContextFieldStatus, int] = {
+    ContextFieldStatus.AVAILABLE: 100,
+    ContextFieldStatus.PARTIAL: 75,
+    ContextFieldStatus.ESTIMATED: 75,
+    ContextFieldStatus.NOT_SUPPORTED: 70,
+    ContextFieldStatus.FALLBACK: 65,
+    ContextFieldStatus.STALE: 50,
+    ContextFieldStatus.MISSING: 35,
+    ContextFieldStatus.FETCH_FAILED: 25,
+}
+_CORE_LIMITATION_STATUSES = {
+    ContextFieldStatus.STALE,
+    ContextFieldStatus.FALLBACK,
+    ContextFieldStatus.MISSING,
+    ContextFieldStatus.FETCH_FAILED,
+    ContextFieldStatus.PARTIAL,
+    ContextFieldStatus.ESTIMATED,
+}
+_AUX_LIMITATION_STATUSES = {
+    ContextFieldStatus.FETCH_FAILED,
+    ContextFieldStatus.FALLBACK,
+    ContextFieldStatus.STALE,
+}
 
 
 @dataclass(frozen=True)
@@ -61,6 +93,7 @@ class AnalysisContextBuilder:
         blocks["chip"] = _build_chip_block(artifacts)
         blocks["fundamentals"] = _build_fundamentals_block(artifacts)
         blocks["news"] = _build_news_block(artifacts)
+        data_quality = _build_data_quality(blocks, warnings=data_quality_warnings)
 
         return AnalysisContextPack(
             subject=AnalysisSubject(
@@ -70,7 +103,7 @@ class AnalysisContextBuilder:
             ),
             phase=artifacts.phase,
             blocks=blocks,
-            data_quality=DataQuality(warnings=data_quality_warnings),
+            data_quality=data_quality,
             metadata=metadata,
         )
 
@@ -107,11 +140,13 @@ def _build_quote_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextB
         "realtime_fallback_from",
         "fallback_from",
     )
+    timestamp = _quote_timestamp(artifacts, quote)
+    is_fallback = fallback_from is not None or source == "fallback"
 
     if _has_explicit_quote_stale_marker(artifacts, quote):
         status = ContextFieldStatus.STALE
         warnings.append("quote_stale")
-    elif source == "fallback":
+    elif is_fallback:
         status = ContextFieldStatus.FALLBACK
         if fallback_from is None:
             warnings.append(_REALTIME_FALLBACK_WARNING)
@@ -121,7 +156,8 @@ def _build_quote_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextB
             status=status,
             value=value,
             source=source,
-            fallback_from=fallback_from if status == ContextFieldStatus.FALLBACK else None,
+            timestamp=timestamp,
+            fallback_from=fallback_from if is_fallback else None,
             warnings=list(warnings),
         )
         for key, value in quote.items()
@@ -131,6 +167,7 @@ def _build_quote_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextB
         status=status,
         items=items,
         source=source,
+        timestamp=timestamp,
         warnings=warnings,
         metadata=_quote_metadata(artifacts, quote),
     )
@@ -217,7 +254,12 @@ def _build_technical_block(
             [],
         )
 
-    has_realtime_overlay = _has_realtime_overlay(artifacts.enhanced_context)
+    explicit_intraday_overlay = _has_explicit_intraday_overlay(
+        artifacts.enhanced_context
+    )
+    has_realtime_overlay = explicit_intraday_overlay or _has_realtime_overlay(
+        artifacts.enhanced_context
+    )
     warnings = [_REALTIME_OVERLAY_WARNING] if has_realtime_overlay else []
     block_status = (
         ContextFieldStatus.PARTIAL
@@ -244,7 +286,24 @@ def _build_technical_block(
             items=items,
             warnings=warnings,
             metadata={
-                "overlay_source": _realtime_overlay_source(artifacts.enhanced_context)
+                key: value
+                for key, value in {
+                    "overlay_source": _realtime_overlay_source(
+                        artifacts.enhanced_context
+                    ),
+                    "is_partial_bar": _today_metadata_value(
+                        artifacts.enhanced_context, "is_partial_bar", "isPartialBar"
+                    ),
+                    "is_estimated": _today_metadata_value(
+                        artifacts.enhanced_context, "is_estimated", "isEstimated"
+                    ),
+                    "estimated_fields": _today_metadata_value(
+                        artifacts.enhanced_context,
+                        "estimated_fields",
+                        "estimatedFields",
+                    ),
+                }.items()
+                if value is not None
             },
         ),
         warnings,
@@ -386,6 +445,70 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
     )
 
 
+def _build_data_quality(
+    blocks: Dict[str, AnalysisContextBlock],
+    *,
+    warnings: List[str],
+) -> DataQuality:
+    block_scores: Dict[str, int] = {}
+    weighted_sum = 0
+    for key, weight in _QUALITY_BLOCK_WEIGHTS.items():
+        status = _quality_block_status(blocks, key)
+        score = _STATUS_SCORES.get(status, _STATUS_SCORES[ContextFieldStatus.MISSING])
+        block_scores[key] = score
+        weighted_sum += score * weight
+
+    overall_score = int(round(weighted_sum / 100))
+    return DataQuality(
+        overall_score=overall_score,
+        level=_quality_level(overall_score),
+        block_scores=block_scores,
+        limitations=_quality_limitations(blocks),
+        warnings=warnings,
+    )
+
+
+def _quality_block_status(
+    blocks: Dict[str, AnalysisContextBlock],
+    key: str,
+) -> ContextFieldStatus:
+    block = blocks.get(key)
+    if block is None:
+        return ContextFieldStatus.MISSING
+    status = block.status
+    if isinstance(status, ContextFieldStatus):
+        return status
+    try:
+        return ContextFieldStatus(str(status))
+    except ValueError:
+        return ContextFieldStatus.MISSING
+
+
+def _quality_level(score: int) -> str:
+    if score >= 85:
+        return "good"
+    if score >= 70:
+        return "usable"
+    if score >= 55:
+        return "limited"
+    return "poor"
+
+
+def _quality_limitations(blocks: Dict[str, AnalysisContextBlock]) -> List[str]:
+    limitations: List[str] = []
+    for key in ("quote", "daily_bars", "technical"):
+        status = _quality_block_status(blocks, key)
+        if status in _CORE_LIMITATION_STATUSES:
+            limitations.append(f"{key}: {status.value}")
+
+    for key in ("news", "fundamentals", "chip"):
+        status = _quality_block_status(blocks, key)
+        if status in _AUX_LIMITATION_STATUSES:
+            limitations.append(f"{key}: {status.value}")
+
+    return limitations[:5]
+
+
 def _to_dict(value: Optional[Any]) -> Dict[str, Any]:
     if value is None:
         return {}
@@ -423,19 +546,63 @@ def _metadata_value(metadata: Dict[str, Any], *keys: str) -> Optional[str]:
     return None
 
 
+def _metadata_iso_datetime_value(metadata: Dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = (metadata or {}).get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, datetime):
+            return value.isoformat()
+        text = str(value).strip()
+        if not text:
+            continue
+        if "T" not in text:
+            continue
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            datetime.fromisoformat(normalized)
+        except ValueError:
+            continue
+        return text
+    return None
+
+
+def _quote_timestamp(
+    artifacts: PipelineAnalysisArtifacts,
+    quote: Dict[str, Any],
+) -> Optional[str]:
+    return _metadata_iso_datetime_value(
+        quote,
+        "provider_timestamp",
+        "quote_timestamp",
+    ) or _metadata_iso_datetime_value(
+        artifacts.metadata,
+        "provider_timestamp",
+        "quote_timestamp",
+        "realtime_provider_timestamp",
+    ) or _metadata_iso_datetime_value(
+        quote,
+        "fetched_at",
+        "realtime_fetched_at",
+    ) or _metadata_iso_datetime_value(
+        artifacts.metadata,
+        "fetched_at",
+        "realtime_fetched_at",
+    )
+
+
 def _has_explicit_quote_stale_marker(
     artifacts: PipelineAnalysisArtifacts,
     quote: Dict[str, Any],
 ) -> bool:
     metadata = artifacts.metadata or {}
-    for key in (
-        "price_stale",
-        "quote_stale",
-        "quote_stale_seconds",
-        "stale_seconds",
-    ):
+    for key in ("price_stale", "quote_stale", "is_stale"):
         if bool(metadata.get(key)) or bool(quote.get(key)):
             return True
+    if bool(metadata.get("quote_stale_seconds")) or bool(
+        quote.get("quote_stale_seconds")
+    ):
+        return True
     return False
 
 
@@ -448,27 +615,64 @@ def _quote_metadata(
         "price_stale",
         "quote_stale",
         "quote_stale_seconds",
+        "is_stale",
         "stale_seconds",
+        "fetched_at",
+        "provider_timestamp",
+        "fallback_from",
     ):
-        value = (artifacts.metadata or {}).get(key)
-        if value is None:
-            value = quote.get(key)
+        if key in {"fetched_at", "provider_timestamp"}:
+            value = _metadata_iso_datetime_value(artifacts.metadata or {}, key)
+            if value is None:
+                value = _metadata_iso_datetime_value(quote, key)
+        else:
+            value = (artifacts.metadata or {}).get(key)
+            if value is None:
+                value = quote.get(key)
         if value is not None:
             metadata[key] = value
     return metadata
 
 
-def _has_realtime_overlay(enhanced_context: Dict[str, Any]) -> bool:
+def _today_dict(enhanced_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     today = (enhanced_context or {}).get("today")
-    if not isinstance(today, dict):
+    return today if isinstance(today, dict) else None
+
+
+def _today_metadata_value(enhanced_context: Dict[str, Any], *keys: str) -> Any:
+    today = _today_dict(enhanced_context)
+    if today is None:
+        return None
+    for key in keys:
+        value = today.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _has_explicit_intraday_overlay(enhanced_context: Dict[str, Any]) -> bool:
+    today = _today_dict(enhanced_context)
+    if today is None:
+        return False
+    if bool(today.get("is_partial_bar")) or bool(today.get("isPartialBar")):
+        return True
+    if bool(today.get("is_estimated")) or bool(today.get("isEstimated")):
+        return True
+    estimated_fields = today.get("estimated_fields") or today.get("estimatedFields")
+    return bool(estimated_fields)
+
+
+def _has_realtime_overlay(enhanced_context: Dict[str, Any]) -> bool:
+    today = _today_dict(enhanced_context)
+    if today is None:
         return False
     data_source = today.get("data_source") or today.get("dataSource")
     return isinstance(data_source, str) and data_source.startswith("realtime:")
 
 
 def _realtime_overlay_source(enhanced_context: Dict[str, Any]) -> Optional[str]:
-    today = (enhanced_context or {}).get("today")
-    if not isinstance(today, dict):
+    today = _today_dict(enhanced_context)
+    if today is None:
         return None
     value = today.get("data_source") or today.get("dataSource")
     return value if isinstance(value, str) and value else None
@@ -481,6 +685,8 @@ def _fundamental_status(status: str) -> ContextFieldStatus:
         return ContextFieldStatus.NOT_SUPPORTED
     if status == "partial":
         return ContextFieldStatus.PARTIAL
+    if status == "failed":
+        return ContextFieldStatus.FETCH_FAILED
     return ContextFieldStatus.MISSING
 
 
@@ -490,8 +696,11 @@ def _fundamental_payload_status(
 ) -> ContextFieldStatus:
     if has_payload:
         return block_status
-    if block_status == ContextFieldStatus.NOT_SUPPORTED:
-        return ContextFieldStatus.NOT_SUPPORTED
+    if block_status in {
+        ContextFieldStatus.NOT_SUPPORTED,
+        ContextFieldStatus.FETCH_FAILED,
+    }:
+        return block_status
     return ContextFieldStatus.MISSING
 
 

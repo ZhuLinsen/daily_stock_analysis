@@ -501,6 +501,65 @@ describe('HomePage', () => {
     });
   });
 
+  it('keeps same-stock history range controls in empty result state and allows switching back', async () => {
+    const staleReport = {
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        createdAt: '2020-01-01T08:00:00Z',
+      },
+    };
+
+    vi.mocked(historyApi.getList).mockImplementation((params: { stockCode?: string; startDate?: string } = {}) => {
+      if (!Object.prototype.hasOwnProperty.call(params, 'stockCode')) {
+        return Promise.resolve({
+          total: 1,
+          page: 1,
+          limit: 20,
+          items: [historyItem],
+        });
+      }
+
+      return Promise.resolve({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(staleReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    const historyTrendButton = await screen.findByRole('button', { name: '历史趋势' });
+    fireEvent.click(historyTrendButton);
+
+    const range30Button = await screen.findByRole('button', { name: '近30天' });
+    fireEvent.click(range30Button);
+
+    await waitFor(() => {
+      expect(screen.getByText('暂无更多同股历史分析')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '全部历史' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '全部历史' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('暂无更多同股历史分析')).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: /继续观察买点/ })).toBeInTheDocument();
+    expect(screen.getByText(/共 1 次分析/)).toBeInTheDocument();
+
+    const historyCalls = vi.mocked(historyApi.getList).mock.calls.filter((call) => call[0]?.stockCode === '600519');
+    expect(historyCalls).toHaveLength(3);
+    expect(historyCalls[1][0]).toHaveProperty('startDate');
+    expect(historyCalls[2][0]).not.toHaveProperty('startDate');
+  });
+
   it('renders active task panel content from dashboard state', async () => {
     const activeTask = {
       taskId: 'task-1',

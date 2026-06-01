@@ -42,7 +42,14 @@ def test_pack_defaults_and_json_serialization_are_stable() -> None:
         "market": "cn",
     }
     assert dumped["blocks"] == {}
-    assert dumped["data_quality"] == {"warnings": [], "metadata": {}}
+    assert dumped["data_quality"] == {
+        "overall_score": None,
+        "level": None,
+        "block_scores": {},
+        "limitations": [],
+        "warnings": [],
+        "metadata": {},
+    }
     assert dumped["metadata"] == {}
     assert dumped["created_at"] == "2026-05-24T09:30:00Z"
 
@@ -140,22 +147,26 @@ def test_item_and_block_reject_invalid_assignment_updates() -> None:
     with pytest.raises(ValidationError):
         item.timestamp = "yesterday"
 
-    with pytest.raises(ValidationError):
-        item.status = "fetch_failed"
+    item.status = "fetch_failed"
 
     with pytest.raises(ValidationError):
         block.timestamp = "2026/05/24"
 
+    block.status = "fetch_failed"
+
     with pytest.raises(ValidationError):
-        block.status = "fetch_failed"
+        item.status = "bad_status"
+
+    with pytest.raises(ValidationError):
+        block.status = "bad_status"
 
     assert item.timestamp == "2026-05-24T09:30:00+08:00"
-    assert item.status == ContextFieldStatus.AVAILABLE
+    assert item.status == ContextFieldStatus.FETCH_FAILED
     assert block.timestamp == "2026-05-24T09:30:01+08:00"
-    assert block.status == ContextFieldStatus.AVAILABLE
+    assert block.status == ContextFieldStatus.FETCH_FAILED
 
 
-def test_context_field_status_allows_only_p0_quality_states() -> None:
+def test_context_field_status_allows_current_quality_states() -> None:
     for state in (
         "available",
         "missing",
@@ -164,14 +175,15 @@ def test_context_field_status_allows_only_p0_quality_states() -> None:
         "stale",
         "estimated",
         "partial",
+        "fetch_failed",
     ):
         assert ContextFieldStatus(state).value == state
 
     with pytest.raises(ValueError):
-        ContextFieldStatus("fetch_failed")
+        ContextFieldStatus("bad_status")
 
     with pytest.raises(ValidationError):
-        AnalysisContextItem(status="fetch_failed")
+        AnalysisContextItem(status="bad_status")
 
 
 def test_market_phase_context_dict_can_be_used_as_phase_slot() -> None:
@@ -209,15 +221,23 @@ def test_block_and_item_status_are_independent_contract_fields() -> None:
     assert dumped["items"]["turnover_rate"]["status"] == "missing"
 
 
-def test_data_quality_is_container_only() -> None:
+def test_data_quality_serializes_p5_scoring_fields_and_legacy_fields() -> None:
     data_quality = DataQuality(
+        overall_score=72,
+        level="usable",
+        block_scores={"quote": 65},
+        limitations=["quote: fallback"],
         warnings=["quote_stale"],
-        metadata={"note": "P1 does not define scoring"},
+        metadata={"note": "P5 scoring is low sensitivity"},
     )
 
     assert data_quality.model_dump(mode="json") == {
+        "overall_score": 72,
+        "level": "usable",
+        "block_scores": {"quote": 65},
+        "limitations": ["quote: fallback"],
         "warnings": ["quote_stale"],
-        "metadata": {"note": "P1 does not define scoring"},
+        "metadata": {"note": "P5 scoring is low sensitivity"},
     }
 
 

@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { SidebarNav } from '../SidebarNav';
 
 const mockLogout = vi.fn().mockResolvedValue(undefined);
+const mockGetAlphaSiftStatus = vi.fn().mockResolvedValue({ enabled: false, available: false, installSpecIsDefault: false });
 const mockThemeToggle = vi.fn(({ collapsed }: { collapsed?: boolean }) => (
   <button type="button">{collapsed ? '切换主题(折叠)' : '切换主题'}</button>
 ));
@@ -22,11 +23,75 @@ vi.mock('../../../stores/agentChatStore', () => ({
     selector({ completionBadge: completionBadgeState.value }),
 }));
 
+vi.mock('../../../api/alphasift', () => ({
+  ALPHASIFT_CONFIG_CHANGED_EVENT: 'alphasift-config-changed',
+  SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
+  alphasiftApi: {
+    getStatus: () => mockGetAlphaSiftStatus(),
+  },
+}));
+
 vi.mock('../../theme/ThemeToggle', () => ({
   ThemeToggle: (props: { collapsed?: boolean }) => mockThemeToggle(props),
 }));
 
 describe('SidebarNav', () => {
+  it('hides the screening navigation item while AlphaSift is disabled', () => {
+    mockGetAlphaSiftStatus.mockResolvedValueOnce({ enabled: false, available: false, installSpecIsDefault: false });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
+  });
+
+  it('shows the screening navigation item when AlphaSift is enabled', async () => {
+    mockGetAlphaSiftStatus.mockResolvedValueOnce({ enabled: true, available: false, installSpecIsDefault: false });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
+  });
+
+  it('places screening directly after chat when AlphaSift is enabled', async () => {
+    mockGetAlphaSiftStatus.mockResolvedValueOnce({ enabled: true, available: false, installSpecIsDefault: false });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('link', { name: '选股' });
+    const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
+    expect(hrefs.slice(0, 4)).toEqual(['/', '/chat', '/screening', '/portfolio']);
+  });
+
+  it('refreshes the screening navigation item after any config save event', async () => {
+    mockGetAlphaSiftStatus
+      .mockResolvedValueOnce({ enabled: false, available: false, installSpecIsDefault: false })
+      .mockResolvedValueOnce({ enabled: true, available: false, installSpecIsDefault: false });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
+    window.dispatchEvent(new Event('dsa-system-config-changed'));
+
+    expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
+    await waitFor(() => expect(mockGetAlphaSiftStatus.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+
   it('shows the shared completion badge only when chat completion is pending', () => {
     completionBadgeState.value = true;
 

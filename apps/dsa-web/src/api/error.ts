@@ -343,6 +343,76 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
+  if (errorCode === 'alphasift_install_auth_required') {
+    return createParsedApiError({
+      title: 'AlphaSift 自动安装需要管理员登录',
+      message: '自动安装会在后端 Python 环境执行 pip install。请先开启 ADMIN_AUTH_ENABLED 并完成管理员登录，或手动安装 AlphaSift 后再开启选股。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_unauthorized') {
+    return createParsedApiError({
+      title: 'AlphaSift 自动安装未授权',
+      message: '当前管理员会话无效或已过期。请重新登录后再开启 AlphaSift，或手动安装 AlphaSift 后再开启选股。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_failed') {
+    return createParsedApiError({
+      title: 'AlphaSift 自动安装失败',
+      message: 'DSA 已尝试自动安装 AlphaSift，但 pip 安装未成功。请检查 ALPHASIFT_INSTALL_SPEC、网络代理或后端 Python 环境。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_spec_missing') {
+    return createParsedApiError({
+      title: 'AlphaSift 安装来源未配置',
+      message: '请先在设置页把 ALPHASIFT_INSTALL_SPEC 配置为受信任的 AlphaSift GitHub 仓库，再开启选股。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_spec_not_allowed') {
+    return createParsedApiError({
+      title: 'AlphaSift 安装来源受限',
+      message: '自动安装仅允许使用受信任的 AlphaSift GitHub 来源；如需本地路径或 wheel，请先手动安装到当前 Python 环境。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_unavailable' || includesAny(matchText, ['cannot import alphasift', 'alphasift.screen'])) {
+    return createParsedApiError({
+      title: 'AlphaSift 未就绪',
+      message: '当前 DSA 后端环境无法导入 alphasift。请先安装或挂载 AlphaSift，例如在同一个 Python 环境执行 python -m pip install -e /path/to/alphasift。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_adapter_unavailable') {
+    return createParsedApiError({
+      title: 'AlphaSift 适配层不可用',
+      message: '当前 AlphaSift 版本缺少 DSA 稳定适配层。请重新安装或升级 AlphaSift 后再试。',
+      category: 'http_error',
+      rawMessage,
+      status,
+    });
+  }
+
   const noConfiguredLlm = (
     includesAny(matchText, ['all llm models failed']) && includesAny(matchText, ['last error: none'])
   ) || includesAny(matchText, [

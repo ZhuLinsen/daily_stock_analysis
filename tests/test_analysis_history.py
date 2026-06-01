@@ -66,12 +66,44 @@ def _analysis_context_pack_overview() -> dict:
             "stale": 0,
             "estimated": 0,
             "partial": 0,
+            "fetch_failed": 0,
+        },
+        "data_quality": {
+            "overall_score": 100,
+            "level": "good",
+            "block_scores": {
+                "quote": 100,
+                "daily_bars": 100,
+                "technical": 100,
+                "news": 100,
+                "fundamentals": 100,
+                "chip": 100,
+            },
+            "limitations": [],
         },
         "warnings": [],
         "metadata": {
             "trigger_source": "api",
             "news_result_count": 2,
         },
+    }
+
+
+def _market_phase_summary() -> dict:
+    return {
+        "market": "cn",
+        "phase": "intraday",
+        "market_local_time": "2026-03-27T10:00:00+08:00",
+        "session_date": "2026-03-27",
+        "effective_daily_bar_date": "2026-03-26",
+        "is_trading_day": True,
+        "is_market_open_now": True,
+        "is_partial_bar": True,
+        "minutes_to_open": None,
+        "minutes_to_close": 300,
+        "trigger_source": "api",
+        "analysis_intent": "auto",
+        "warnings": ["partial_bar"],
     }
 
 
@@ -277,6 +309,172 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         detail = service.get_history_detail_by_id(record_id)
         self.assertIsNotNone(detail)
         self.assertIsNone(detail.get("model_used"))
+
+    def test_history_list_includes_timeline_summary_fields(self) -> None:
+        """History list items expose the fields needed by the same-stock timeline drawer."""
+        result = self._build_result()
+        result.model_used = "gemini/gemini-2.5-pro"
+        context_snapshot = {
+            "enhanced_context": {
+                "realtime": {
+                    "price": "51.5",
+                    "change_pct": "-4.61%",
+                    "volume_ratio": "1.17",
+                    "turnover_rate": "11.46",
+                },
+            },
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_timeline_summary",
+            report_type="detailed",
+            news_content="新闻摘要",
+            context_snapshot=context_snapshot,
+            save_snapshot=True,
+        )
+        self.assertEqual(saved, 1)
+
+        service = HistoryService(self.db)
+        payload = service.get_history_list(stock_code="600519.SH", page=1, limit=5)
+
+        self.assertEqual(payload["total"], 1)
+        item = payload["items"][0]
+        self.assertEqual(item["stock_code"], "600519")
+        self.assertEqual(item["trend_prediction"], "看多")
+        self.assertEqual(item["analysis_summary"], "基本面稳健，短期震荡")
+        self.assertEqual(item["operation_advice"], "持有")
+        self.assertEqual(item["model_used"], "gemini/gemini-2.5-pro")
+        self.assertEqual(item["current_price"], 51.5)
+        self.assertEqual(item["change_pct"], -4.61)
+        self.assertEqual(item["volume_ratio"], 1.17)
+        self.assertEqual(item["turnover_rate"], 11.46)
+
+    def test_history_list_matches_equivalent_suffixed_stock_codes(self) -> None:
+        """Same-stock history should include rows saved with supported suffixed codes."""
+
+        def save_record(code: str, query_id: str) -> None:
+            result = self._build_result()
+            result.code = code
+            if "HK" in code:
+                result.name = "腾讯控股"
+            saved = self.db.save_analysis_history(
+                result=result,
+                query_id=query_id,
+                report_type="simple",
+                news_content="新闻摘要",
+                context_snapshot=None,
+                save_snapshot=False,
+            )
+            self.assertEqual(saved, 1)
+
+        save_record("600519.SH", "query_cn_suffix")
+        save_record("600519", "query_cn_plain")
+        save_record("00700.HK", "query_hk_suffix")
+        save_record("HK00700", "query_hk_prefix")
+
+        service = HistoryService(self.db)
+
+        cn_from_suffix = service.get_history_list(stock_code="600519.SH", page=1, limit=10)
+        self.assertEqual(cn_from_suffix["total"], 2)
+        self.assertEqual(
+            {item["stock_code"] for item in cn_from_suffix["items"]},
+            {"600519.SH", "600519"},
+        )
+
+        cn_from_plain = service.get_history_list(stock_code="600519", page=1, limit=10)
+        self.assertEqual(cn_from_plain["total"], 2)
+        self.assertEqual(
+            {item["stock_code"] for item in cn_from_plain["items"]},
+            {"600519.SH", "600519"},
+        )
+
+        hk_from_suffix = service.get_history_list(stock_code="00700.HK", page=1, limit=10)
+        self.assertEqual(hk_from_suffix["total"], 2)
+        self.assertEqual(
+            {item["stock_code"] for item in hk_from_suffix["items"]},
+            {"00700.HK", "HK00700"},
+        )
+
+        hk_from_prefix = service.get_history_list(stock_code="HK00700", page=1, limit=10)
+        self.assertEqual(hk_from_prefix["total"], 2)
+        self.assertEqual(
+            {item["stock_code"] for item in hk_from_prefix["items"]},
+            {"00700.HK", "HK00700"},
+        )
+
+    def test_history_list_matches_unpadded_hk_suffix_variants(self) -> None:
+        """HK short suffix forms (e.g. 1810.HK) should match 5-digit canonical suffix/prefix forms."""
+
+        def save_record(code: str, query_id: str) -> None:
+            result = self._build_result()
+            result.code = code
+            if "HK" in code:
+                result.name = "腾讯控股"
+            saved = self.db.save_analysis_history(
+                result=result,
+                query_id=query_id,
+                report_type="simple",
+                news_content="新闻摘要",
+                context_snapshot=None,
+                save_snapshot=False,
+            )
+            self.assertEqual(saved, 1)
+
+        save_record("1810.HK", "query_hk_unpadded")
+        save_record("01810.HK", "query_hk_padded")
+        save_record("HK01810", "query_hk_prefix")
+
+        service = HistoryService(self.db)
+
+        hk_from_suffix = service.get_history_list(stock_code="01810.HK", page=1, limit=10)
+        self.assertEqual(hk_from_suffix["total"], 3)
+        self.assertEqual(
+            {item["stock_code"] for item in hk_from_suffix["items"]},
+            {"1810.HK", "01810.HK", "HK01810"},
+        )
+
+        hk_from_prefix = service.get_history_list(stock_code="HK01810", page=1, limit=10)
+        self.assertEqual(hk_from_prefix["total"], 3)
+        self.assertEqual(
+            {item["stock_code"] for item in hk_from_prefix["items"]},
+            {"1810.HK", "01810.HK", "HK01810"},
+        )
+
+    def test_history_list_matches_sh_and_ss_suffixed_variants(self) -> None:
+        """SH suffix and legacy `.SS` variants should be treated as the same A-share stock."""
+
+        def save_record(code: str, query_id: str) -> None:
+            result = self._build_result()
+            result.code = code
+            saved = self.db.save_analysis_history(
+                result=result,
+                query_id=query_id,
+                report_type="simple",
+                news_content="新闻摘要",
+                context_snapshot=None,
+                save_snapshot=False,
+            )
+            self.assertEqual(saved, 1)
+
+        save_record("600519.SH", "query_cn_sh")
+        save_record("600519.SS", "query_cn_ss")
+        save_record("600519", "query_cn_plain")
+
+        service = HistoryService(self.db)
+        expected = {"600519.SH", "600519.SS", "600519"}
+
+        from_sh = service.get_history_list(stock_code="600519.SH", page=1, limit=10)
+        self.assertEqual(from_sh["total"], 3)
+        self.assertEqual({item["stock_code"] for item in from_sh["items"]}, expected)
+
+        from_ss = service.get_history_list(stock_code="600519.SS", page=1, limit=10)
+        self.assertEqual(from_ss["total"], 3)
+        self.assertEqual({item["stock_code"] for item in from_ss["items"]}, expected)
+
+        from_plain = service.get_history_list(stock_code="600519", page=1, limit=10)
+        self.assertEqual(from_plain["total"], 3)
+        self.assertEqual({item["stock_code"] for item in from_plain["items"]}, expected)
 
     def test_history_detail_preserves_zero_change_pct(self) -> None:
         """change_pct=0.0（平盘）应原样返回，而不是被当成缺失值丢失。
@@ -687,6 +885,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.skipTest("fastapi is not installed in this test environment")
 
         overview = _analysis_context_pack_overview()
+        phase_summary = _market_phase_summary()
         query_id = "query_context_pack_overview_001"
         saved = self.db.save_analysis_history(
             result=self._build_result(),
@@ -696,6 +895,10 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot={
                 "enhanced_context": {"code": "600519"},
                 "analysis_context_pack_overview": overview,
+                "market_phase_summary": {
+                    **phase_summary,
+                    "market_phase_context": {"raw": True},
+                },
             },
             save_snapshot=True,
         )
@@ -712,9 +915,20 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report.details.analysis_context_pack_overview.metadata.trigger_source,
             "api",
         )
+        self.assertEqual(
+            report.details.analysis_context_pack_overview.data_quality.overall_score,
+            100,
+        )
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
+        self.assertEqual(report.meta.market_phase_summary.minutes_to_close, 300)
         self.assertEqual(report.details.analysis_context_pack_overview.metadata.news_result_count, 2)
         self.assertNotIn(
             "analysis_context_pack_overview",
+            report.details.context_snapshot,
+        )
+        self.assertNotIn(
+            "market_phase_summary",
             report.details.context_snapshot,
         )
 
@@ -745,6 +959,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.assertIsNone(row.context_snapshot)
 
         report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.meta.market_phase_summary)
         self.assertIsNone(report.details.analysis_context_pack_overview)
         self.assertIsNone(report.details.context_snapshot)
 

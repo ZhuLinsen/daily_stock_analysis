@@ -54,5 +54,8 @@ export const formatReportType = (value?: string): string => {
   if (!value) return '—';
   if (value === 'simple') return '普通';
   if (value === 'detailed') return '标准';
+  if (value === 'full') return '完整';
+  if (value === 'brief') return '简版';
+  if (value === 'market_review') return '大盘';
   return value;
 };

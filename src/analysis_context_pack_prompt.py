@@ -25,6 +25,66 @@ BLOCK_LABELS_EN = {
     "news": "news",
 }
 
+STATUS_LABELS_ZH = {
+    "available": "可用",
+    "missing": "缺失",
+    "not_supported": "不支持",
+    "fallback": "降级",
+    "stale": "过期",
+    "estimated": "估算",
+    "partial": "部分可用",
+    "fetch_failed": "抓取失败",
+}
+
+STATUS_LABELS_EN = {
+    "available": "available",
+    "missing": "missing",
+    "not_supported": "not supported",
+    "fallback": "fallback",
+    "stale": "stale",
+    "estimated": "estimated",
+    "partial": "partial",
+    "fetch_failed": "fetch failed",
+}
+
+QUALITY_LEVEL_LABELS_ZH = {
+    "good": "良好",
+    "usable": "可用",
+    "limited": "受限",
+    "poor": "较差",
+}
+
+QUALITY_LEVEL_LABELS_EN = {
+    "good": "good",
+    "usable": "usable",
+    "limited": "limited",
+    "poor": "poor",
+}
+
+CORE_DEGRADED_STATUSES = {
+    "stale",
+    "fallback",
+    "missing",
+    "fetch_failed",
+    "partial",
+    "estimated",
+}
+
+KNOWN_MARKET_PHASES = frozenset(
+    {
+        "premarket",
+        "intraday",
+        "lunch_break",
+        "closing_auction",
+        "postmarket",
+        "non_trading",
+        "unknown",
+    }
+)
+
+INTRADAY_MARKET_PHASES = frozenset({"intraday", "lunch_break", "closing_auction"})
+CONSERVATIVE_MARKET_PHASES = frozenset({"non_trading", "unknown"})
+
 SENSITIVE_MARKERS = (
     "api_key",
     "access_token",
@@ -115,6 +175,7 @@ def _format_zh(payload: Dict[str, Any]) -> str:
     warnings = _list_strings(_nested(payload, "data_quality", "warnings"))
     if warnings:
         lines.append(f"- 数据质量提醒：{_join_text(warnings, lang='zh')}")
+    lines.extend(_data_limitation_lines(payload, lang="zh"))
     return "\n".join(lines) + "\n"
 
 
@@ -131,6 +192,7 @@ def _format_en(payload: Dict[str, Any]) -> str:
     warnings = _list_strings(_nested(payload, "data_quality", "warnings"))
     if warnings:
         lines.append(f"- Data quality notes: {_join_text(warnings, lang='en')}")
+    lines.extend(_data_limitation_lines(payload, lang="en"))
     return "\n".join(lines) + "\n"
 
 
@@ -219,6 +281,172 @@ def _metadata_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
         if lang == "en"
         else f"- 新闻结果数：{news_count}"
     ]
+
+
+def _data_limitation_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
+    lines = ["", "## Data Limitations" if lang == "en" else "## 数据限制"]
+    data_quality = payload.get("data_quality")
+    if not isinstance(data_quality, Mapping):
+        data_quality = {}
+
+    score = _safe_score(data_quality.get("overall_score"))
+    level = _safe_text(data_quality.get("level"))
+    if score is not None:
+        level_text = _quality_level_label(level, lang=lang)
+        if lang == "en":
+            line = f"- Data quality score: {score}/100"
+            if level_text:
+                line += f" ({level_text})"
+        else:
+            line = f"- 数据质量评分：{score}/100"
+            if level_text:
+                line += f"（{level_text}）"
+        lines.append(line)
+
+    limitations = _localized_limitations(
+        _list_strings(data_quality.get("limitations")),
+        lang=lang,
+    )
+    if limitations:
+        label = "Known limitations" if lang == "en" else "已知限制"
+        separator = ": " if lang == "en" else "："
+        lines.append(f"- {label}{separator}{_join_text(limitations, lang=lang)}")
+
+    lines.extend(_phase_data_quality_constraint_lines(payload, lang=lang))
+
+    if _has_core_degraded_block(payload):
+        if lang == "en":
+            lines.append(
+                "- Confidence rule: when quote, daily bars, or technical data is "
+                "stale, fallback, missing, fetch_failed, partial, or estimated, "
+                "the final JSON confidence_level must not be High."
+            )
+        else:
+            lines.append(
+                "- 置信度规则：当 quote、daily_bars 或 technical 为 stale、fallback、missing、"
+                "fetch_failed、partial 或 estimated 时，最终 JSON 的 confidence_level 不得为高。"
+            )
+
+    if lang == "en":
+        lines.append(
+            "- Analysis rule: missing auxiliary blocks only limit their matching "
+            "analysis sections; do not treat missing data itself as bullish or bearish."
+        )
+        lines.append(
+            "- Safety rule: use only status, source, warnings, and missing_reason "
+            "from this summary; do not reproduce raw payloads, news body text, "
+            "raw trend values, secrets, tokens, or webhooks."
+        )
+    else:
+        lines.append(
+            "- 分析规则：辅助数据块缺失只限制对应分析段落，不要把缺失本身解释为利好或利空。"
+        )
+        lines.append(
+            "- 安全规则：只使用本摘要中的 status、source、warnings 和 missing_reason；"
+            "不要复述 raw payload、新闻正文、趋势原始值、secret、token 或 webhook。"
+        )
+    return lines
+
+
+def _localized_limitations(limitations: List[str], *, lang: str) -> List[str]:
+    labels = get_analysis_context_pack_block_labels(lang)
+    status_labels = STATUS_LABELS_EN if lang == "en" else STATUS_LABELS_ZH
+    result: List[str] = []
+    for item in limitations:
+        key, separator, status = item.partition(":")
+        if not separator:
+            result.append(item)
+            continue
+        normalized_key = key.strip()
+        normalized_status = status.strip()
+        label = labels.get(normalized_key, _safe_text(normalized_key))
+        status_label = status_labels.get(normalized_status, _safe_text(normalized_status))
+        if not label or not status_label:
+            continue
+        result.append(
+            f"{label}: {status_label}" if lang == "en" else f"{label}：{status_label}"
+        )
+    return result[:5]
+
+
+def _has_core_degraded_block(payload: Dict[str, Any]) -> bool:
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, Mapping):
+        return False
+    for key in ("quote", "daily_bars", "technical"):
+        block = blocks.get(key)
+        if not isinstance(block, Mapping):
+            continue
+        status = _safe_text(block.get("status"))
+        if status in CORE_DEGRADED_STATUSES:
+            return True
+    return False
+
+
+def _phase_data_quality_constraint_lines(payload: Dict[str, Any], *, lang: str) -> List[str]:
+    if not _has_core_degraded_block(payload):
+        return []
+
+    phase = _phase_value(payload)
+    if not phase or phase == "postmarket":
+        return []
+
+    if lang == "en":
+        if phase in INTRADAY_MARKET_PHASES:
+            return [
+                "- Phase/data rule: intraday judgment is limited by quote, daily-bar, "
+                "or technical data quality; state those limitations before making "
+                "near-term trading conclusions."
+            ]
+        if phase == "premarket":
+            return [
+                "- Phase/data rule: the opening plan is limited by data freshness "
+                "or fallback status; do not describe degraded quote data as "
+                "today's completed price action."
+            ]
+        if phase in CONSERVATIVE_MARKET_PHASES:
+            return [
+                "- Phase/data rule: use only available data conservatively and do "
+                "not fill in nonexistent intraday facts."
+            ]
+        return []
+
+    if phase in INTRADAY_MARKET_PHASES:
+        return [
+            "- 阶段数据规则：盘中判断受实时行情、日线或技术数据质量限制；"
+            "给出短线结论前必须说明这些限制。"
+        ]
+    if phase == "premarket":
+        return [
+            "- 阶段数据规则：开盘计划受数据新鲜度或降级状态限制；"
+            "不得把降级行情描述成今日走势已经发生。"
+        ]
+    if phase in CONSERVATIVE_MARKET_PHASES:
+        return [
+            "- 阶段数据规则：只能保守使用当前可用数据，不得补全不存在的盘中事实。"
+        ]
+    return []
+
+
+def _phase_value(payload: Dict[str, Any]) -> str:
+    phase_payload = payload.get("phase")
+    if not isinstance(phase_payload, Mapping):
+        return ""
+    phase = _safe_text(phase_payload.get("phase"))
+    return phase if phase in KNOWN_MARKET_PHASES else ""
+
+
+def _quality_level_label(level: str, *, lang: str) -> str:
+    labels = QUALITY_LEVEL_LABELS_EN if lang == "en" else QUALITY_LEVEL_LABELS_ZH
+    return labels.get(level, "")
+
+
+def _safe_score(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if 0 <= value <= 100:
+        return value
+    return None
 
 
 def _first_item_field(items: Any, field: str) -> Optional[str]:

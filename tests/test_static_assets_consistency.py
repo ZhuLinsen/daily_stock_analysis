@@ -315,7 +315,7 @@ def test_stock_index_route_serves_newer_remote_cache(tmp_path: Path) -> None:
     assert response.headers["content-type"].startswith("application/json")
     assert response.headers["cache-control"] == "no-cache"
     assert response.json()[0][2] == "远程缓存"
-    schedule.assert_called_once()
+    schedule.assert_any_call(ANY, "serve-stock-index")
 
 
 def test_stock_index_route_prefers_newer_static_index_over_older_remote_cache(tmp_path: Path) -> None:

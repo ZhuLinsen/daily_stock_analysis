@@ -2035,6 +2035,10 @@ class NotificationService(
                 change = "--" if change_pct is None else f"{change_pct:+.2f}%"
                 lines.append(f"| {name} | {board_type} | {status} | {change} |")
         else:
+            if all(board_type == "N/A" for _, board_type, _, _ in prepared):
+                lines.append(" / ".join(name for name, _, _, _ in prepared))
+                lines.append("")
+                return
             lines.append(f"| {labels['board_name_label']} | {labels['board_type_label']} |")
             lines.append("|:-----|:----:|")
             for name, board_type, _, _ in prepared:

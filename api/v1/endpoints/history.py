@@ -50,6 +50,7 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
+from src.market_phase_summary import extract_market_phase_summary
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +111,15 @@ def get_history_list(
                 stock_code=item.get("stock_code", ""),
                 stock_name=item.get("stock_name"),
                 report_type=item.get("report_type"),
+                trend_prediction=item.get("trend_prediction"),
+                analysis_summary=item.get("analysis_summary"),
                 sentiment_score=item.get("sentiment_score"),
                 operation_advice=item.get("operation_advice"),
+                current_price=item.get("current_price"),
+                change_pct=item.get("change_pct"),
+                volume_ratio=item.get("volume_ratio"),
+                turnover_rate=item.get("turnover_rate"),
+                model_used=item.get("model_used"),
                 created_at=item.get("created_at")
             )
             for item in result.get("items", [])
@@ -231,6 +239,7 @@ def get_history_detail(
         # 同时不混用 `change_60d`（60 日累计涨跌幅）作为日内 change_pct 的兜底。
         context_snapshot = result.get("context_snapshot")
         analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
+        market_phase_summary = extract_market_phase_summary(context_snapshot)
         api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
         realtime_fields = extract_realtime_detail_fields(context_snapshot)
         current_price = realtime_fields.get("current_price")
@@ -265,7 +274,8 @@ def get_history_detail(
             created_at=result.get("created_at"),
             current_price=current_price,
             change_pct=change_pct,
-            model_used=normalize_model_used(result.get("model_used"))
+            model_used=normalize_model_used(result.get("model_used")),
+            market_phase_summary=market_phase_summary,
         )
         
         summary = ReportSummary(

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { historyApi } from '../../api/history';
 import type { TaskInfo, TaskListResponse } from '../../types/analysis';
+import { getRecentStartDate, getTodayInShanghai } from '../../utils/format';
 import { useStockPoolStore } from '../stockPoolStore';
 
 vi.mock('../../api/history', () => ({
@@ -47,6 +48,18 @@ const historyReport = {
     operationAdvice: '继续观察买点',
     trendPrediction: '短线震荡偏强',
     sentimentScore: 78,
+  },
+};
+
+const marketReviewHistoryReport = {
+  ...historyReport,
+  meta: {
+    ...historyReport.meta,
+    id: 10,
+    queryId: 'q-10',
+    stockCode: '',
+    stockName: '大盘复盘',
+    reportType: 'market_review' as const,
   },
 };
 
@@ -110,6 +123,174 @@ describe('stockPoolStore', () => {
     expect(state.selectedReport?.meta.stockCode).toBe('600519');
     expect(state.isLoadingHistory).toBe(false);
     expect(state.isLoadingReport).toBe(false);
+  });
+
+  it('opens same-stock history trend and loads more records', async () => {
+    const olderItem = {
+      ...historyItem,
+      id: 2,
+      queryId: 'q-2',
+      modelUsed: 'gemini/gemini-2.5-pro',
+    };
+
+    useStockPoolStore.setState({ selectedReport: historyReport });
+    vi.mocked(historyApi.getList)
+      .mockResolvedValueOnce({
+        total: 2,
+        page: 1,
+        limit: 20,
+        items: [historyItem],
+      })
+      .mockResolvedValueOnce({
+        total: 2,
+        page: 2,
+        limit: 20,
+        items: [olderItem],
+      });
+
+    await useStockPoolStore.getState().openHistoryTrend();
+
+    let state = useStockPoolStore.getState();
+    expect(state.isHistoryTrendOpen).toBe(true);
+    expect(state.stockHistoryItems).toEqual([historyItem]);
+    expect(state.stockHistoryHasMore).toBe(true);
+    expect(historyApi.getList).toHaveBeenLastCalledWith({
+      stockCode: '600519',
+      page: 1,
+      limit: 20,
+    });
+
+    await useStockPoolStore.getState().loadMoreStockHistory();
+
+    state = useStockPoolStore.getState();
+    expect(state.stockHistoryItems.map((item) => item.id)).toEqual([1, 2]);
+    expect(state.stockHistoryHasMore).toBe(false);
+    expect(historyApi.getList).toHaveBeenLastCalledWith({
+      stockCode: '600519',
+      page: 2,
+      limit: 20,
+    });
+  });
+
+  it('deduplicates same-stock trend records when loading more pages', async () => {
+    const duplicateCurrentItem = {
+      ...historyItem,
+      id: 1,
+      queryId: 'q-1',
+    };
+    const olderPageItem = {
+      ...historyItem,
+      id: 2,
+      queryId: 'q-2',
+      modelUsed: 'gemini/gemini-2.5-pro',
+    };
+    const thirdItem = {
+      ...historyItem,
+      id: 3,
+      queryId: 'q-3',
+      modelUsed: 'gemini/gemini-2.5-flash',
+    };
+
+    useStockPoolStore.setState({ selectedReport: historyReport });
+    vi.mocked(historyApi.getList)
+      .mockResolvedValueOnce({
+        total: 3,
+        page: 1,
+        limit: 20,
+        items: [olderPageItem],
+      })
+      .mockResolvedValueOnce({
+        total: 3,
+        page: 2,
+        limit: 20,
+        items: [duplicateCurrentItem, thirdItem],
+      });
+
+    await useStockPoolStore.getState().openHistoryTrend();
+    await useStockPoolStore.getState().loadMoreStockHistory();
+
+    const state = useStockPoolStore.getState();
+    expect(state.stockHistoryItems.map((item) => item.id)).toEqual([1, 2, 3]);
+  });
+
+  it('does not inject the current report when it is outside the selected history time range', async () => {
+    const oldSelectedReport = {
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        id: 5,
+        queryId: 'q-old',
+        createdAt: '2020-01-01T08:00:00Z',
+      },
+    };
+
+    useStockPoolStore.setState({
+      selectedReport: oldSelectedReport,
+      stockHistoryFilters: {
+        range: '30d',
+        model: 'all',
+        sort: 'desc',
+      },
+    });
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [
+        {
+          ...historyItem,
+          id: 6,
+          queryId: 'q-in-range',
+          createdAt: '2026-03-18T08:00:00Z',
+        },
+      ],
+    });
+
+    await useStockPoolStore.getState().openHistoryTrend();
+
+    const state = useStockPoolStore.getState();
+    expect(state.stockHistoryItems).toHaveLength(1);
+    expect(state.stockHistoryItems[0].id).toBe(6);
+    expect(state.stockHistoryItems[0].id).not.toBe(5);
+    expect(historyApi.getList).toHaveBeenCalledWith({
+      stockCode: '600519',
+      startDate: getRecentStartDate(30),
+      endDate: getTodayInShanghai(),
+      page: 1,
+      limit: 20,
+    });
+  });
+
+  it('closes and resets same-stock trend state when selecting a market-review report', async () => {
+    useStockPoolStore.setState({
+      selectedReport: historyReport,
+      isHistoryTrendOpen: true,
+      stockHistoryItems: [{ ...historyItem, modelUsed: 'gemini/gemini-2.5-pro' }],
+      stockHistoryTotal: 12,
+      stockHistoryPage: 3,
+      stockHistoryHasMore: true,
+    });
+
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(marketReviewHistoryReport);
+
+    await useStockPoolStore.getState().selectHistoryItem(1);
+
+    const state = useStockPoolStore.getState();
+    expect(state.selectedReport?.meta.reportType).toBe('market_review');
+    expect(state.isHistoryTrendOpen).toBe(false);
+    expect(state.stockHistoryItems).toEqual([]);
+    expect(state.stockHistoryTotal).toBe(0);
+    expect(state.stockHistoryPage).toBe(1);
+    expect(state.stockHistoryHasMore).toBe(false);
+    expect(state.isLoadingStockHistory).toBe(false);
+    expect(state.isLoadingMoreStockHistory).toBe(false);
+    expect(historyApi.getList).not.toHaveBeenCalled();
   });
 
   it('deletes selected history and clears the selected report when nothing remains', async () => {

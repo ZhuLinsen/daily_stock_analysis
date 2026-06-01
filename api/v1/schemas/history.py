@@ -13,6 +13,8 @@ from typing import Optional, List, Any, Dict, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.v1.schemas.market_phase import MarketPhaseSummary
+
 
 class HistoryItem(BaseModel):
     """历史记录摘要（列表展示用）"""
@@ -22,11 +24,21 @@ class HistoryItem(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
+    trend_prediction: Optional[str] = Field(None, description="趋势预测")
+    analysis_summary: Optional[str] = Field(None, description="分析摘要")
     sentiment_score: Optional[int] = Field(
         None,
         description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     operation_advice: Optional[str] = Field(None, description="操作建议")
+    current_price: Optional[float] = Field(None, description="分析时股价")
+    change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
+    volume_ratio: Optional[float] = Field(None, description="分析时量比")
+    turnover_rate: Optional[float] = Field(None, description="分析时换手率")
+    model_used: Optional[str] = Field(
+        None,
+        description="分析历史记录中的模型快照，仅用于展示历史元数据；不参与模型配置或运行时路由决策",
+    )
     created_at: Optional[str] = Field(None, description="创建时间")
     
     model_config = ConfigDict(json_schema_extra={
@@ -117,7 +129,14 @@ class ReportMeta(BaseModel):
     created_at: Optional[str] = Field(None, description="创建时间")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
-    model_used: Optional[str] = Field(None, description="分析使用的 LLM 模型")
+    model_used: Optional[str] = Field(
+        None,
+        description="历史报告元数据中的模型快照，仅用于展示，不影响 Provider/Model/Base URL 运行时路由",
+    )
+    market_phase_summary: Optional[MarketPhaseSummary] = Field(
+        None,
+        description="本次分析市场阶段低敏摘要",
+    )
 
 
 class ReportSummary(BaseModel):
@@ -163,6 +182,7 @@ class AnalysisContextPackOverviewBlock(BaseModel):
         "stale",
         "estimated",
         "partial",
+        "fetch_failed",
     ] = Field(..., description="数据块质量状态")
     source: Optional[str] = Field(None, description="数据来源")
     warnings: List[str] = Field(default_factory=list, description="数据块告警码")
@@ -179,6 +199,7 @@ class AnalysisContextPackOverviewCounts(BaseModel):
     stale: int = 0
     estimated: int = 0
     partial: int = 0
+    fetch_failed: int = 0
 
 
 class AnalysisContextPackOverviewMetadata(BaseModel):
@@ -186,6 +207,18 @@ class AnalysisContextPackOverviewMetadata(BaseModel):
 
     trigger_source: Optional[str] = Field(None, description="触发来源")
     news_result_count: Optional[int] = Field(None, description="新闻结果数量")
+
+
+class AnalysisContextPackOverviewDataQuality(BaseModel):
+    """AnalysisContextPack 可见摘要数据质量评分"""
+
+    overall_score: Optional[int] = Field(None, ge=0, le=100, description="输入数据质量总分")
+    level: Optional[Literal["good", "usable", "limited", "poor"]] = Field(
+        None,
+        description="输入数据质量等级",
+    )
+    block_scores: Dict[str, int] = Field(default_factory=dict, description="固定数据块质量分")
+    limitations: List[str] = Field(default_factory=list, description="低敏数据限制说明")
 
 
 class AnalysisContextPackOverview(BaseModel):
@@ -196,6 +229,10 @@ class AnalysisContextPackOverview(BaseModel):
     subject: AnalysisContextPackOverviewSubject
     blocks: List[AnalysisContextPackOverviewBlock] = Field(default_factory=list)
     counts: AnalysisContextPackOverviewCounts
+    data_quality: Optional[AnalysisContextPackOverviewDataQuality] = Field(
+        None,
+        description="本次分析输入数据质量低敏摘要",
+    )
     warnings: List[str] = Field(default_factory=list, description="顶层数据质量提醒")
     metadata: AnalysisContextPackOverviewMetadata = Field(default_factory=AnalysisContextPackOverviewMetadata)
 

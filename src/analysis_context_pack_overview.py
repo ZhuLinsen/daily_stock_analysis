@@ -14,11 +14,13 @@ from src.analysis_context_pack_prompt import (
     get_analysis_context_pack_block_labels,
     iter_analysis_context_pack_block_keys,
 )
+from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY
 from src.schemas.analysis_context_pack import ContextFieldStatus
 
 
 ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY = "analysis_context_pack_overview"
 _ALL_STATUSES = tuple(status.value for status in ContextFieldStatus)
+_DATA_QUALITY_BLOCK_KEYS = {"quote", "daily_bars", "technical", "news", "fundamentals", "chip"}
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +78,7 @@ def render_analysis_context_pack_overview(
             },
             "blocks": overview_blocks,
             "counts": counts,
+            "data_quality": _sanitize_data_quality(payload.get("data_quality")),
             "warnings": _list_strings(_nested(payload, "data_quality", "warnings")),
             "metadata": {
                 "trigger_source": _safe_text(metadata.get("trigger_source")) or None,
@@ -99,11 +102,12 @@ def extract_analysis_context_pack_overview(context_snapshot: Any) -> Optional[Di
 
 
 def sanitize_context_snapshot_for_api(context_snapshot: Any) -> Any:
-    """Return a context snapshot without the separately exposed overview field."""
+    """Return a context snapshot without separately exposed public summary fields."""
     snapshot = _as_mapping(context_snapshot)
     if snapshot is not None:
         sanitized = dict(snapshot)
         sanitized.pop(ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY, None)
+        sanitized.pop(MARKET_PHASE_SUMMARY_KEY, None)
         return sanitized
     return context_snapshot
 
@@ -157,7 +161,7 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
         return None
 
     metadata = overview.get("metadata") if isinstance(overview.get("metadata"), Mapping) else {}
-    return {
+    sanitized = {
         "pack_version": _safe_text(overview.get("pack_version")) or "1.0",
         "created_at": _safe_text(overview.get("created_at")) or None,
         "subject": {
@@ -173,11 +177,50 @@ def _sanitize_persisted_overview(overview: Mapping[str, Any]) -> Optional[Dict[s
             "news_result_count": _safe_int(metadata.get("news_result_count")),
         },
     }
+    if "data_quality" in overview:
+        sanitized["data_quality"] = _sanitize_data_quality(overview.get("data_quality"))
+    return sanitized
+
+
+def _sanitize_data_quality(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        "overall_score": _safe_score(value.get("overall_score")),
+        "level": _safe_quality_level(value.get("level")),
+        "block_scores": _safe_block_scores(value.get("block_scores")),
+        "limitations": _list_strings(value.get("limitations"), limit=5),
+    }
 
 
 def _safe_status(value: Any) -> Optional[str]:
     text = _safe_text(value)
     return text if text in _ALL_STATUSES else None
+
+
+def _safe_quality_level(value: Any) -> Optional[str]:
+    text = _safe_text(value)
+    return text if text in {"good", "usable", "limited", "poor"} else None
+
+
+def _safe_score(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if 0 <= value <= 100:
+        return value
+    return None
+
+
+def _safe_block_scores(value: Any) -> Dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: Dict[str, int] = {}
+    for key, score in value.items():
+        text_key = _safe_text(key)
+        safe_score = _safe_score(score)
+        if text_key in _DATA_QUALITY_BLOCK_KEYS and safe_score is not None:
+            result[text_key] = safe_score
+    return result
 
 
 def _safe_text(value: Any) -> str:

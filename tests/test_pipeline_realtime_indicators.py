@@ -31,6 +31,7 @@ def _make_realtime_quote(
     volume: int = 13995600,
     amount: float = None,
     change_pct: float = 0.96,
+    **overrides,
 ) -> UnifiedRealtimeQuote:
     return UnifiedRealtimeQuote(
         code="600519",
@@ -43,6 +44,7 @@ def _make_realtime_quote(
         volume=volume,
         amount=amount,
         change_pct=change_pct,
+        **overrides,
     )
 
 
@@ -277,6 +279,70 @@ class TestEnhanceContextRealtimeOverride(unittest.TestCase):
         self.assertEqual(enhanced["today"]["date"], today.isoformat())
         self.assertEqual(enhanced["today"]["data_source"], "realtime:tencent")
         self.assertEqual(enhanced["today"]["realtime_source"], "tencent")
+        self.assertNotIn("dataSource", enhanced["today"])
+
+    @patch("src.core.pipeline.get_market_now")
+    @patch("src.core.pipeline.get_market_for_stock", return_value="cn")
+    def test_realtime_metadata_and_partial_estimated_fields_are_propagated(
+        self, _mock_market, mock_now
+    ) -> None:
+        today = date.today()
+        mock_now.return_value = datetime(
+            today.year, today.month, today.day, 10, 0, tzinfo=timezone.utc
+        )
+        context = {
+            "code": "600519",
+            "date": (today - timedelta(days=1)).isoformat(),
+            "today": {
+                "close": 15.0,
+                "amount": 999999,
+                "date": (today - timedelta(days=1)).isoformat(),
+                "dataSource": "AkshareFetcher",
+            },
+            "yesterday": {"close": 14.5, "volume": 1000000},
+        }
+        quote = _make_realtime_quote(
+            price=15.72,
+            amount=None,
+            fetched_at="2026-05-31T10:00:05+00:00",
+            provider_timestamp="2026-05-31T10:00:00+00:00",
+            is_stale=False,
+            stale_seconds=5,
+            fallback_from="efinance",
+        )
+        trend = TrendAnalysisResult(
+            code="600519",
+            trend_status=TrendStatus.BULL,
+            ma5=15.5,
+            ma10=15.2,
+            ma20=14.9,
+        )
+
+        enhanced = self.pipeline._enhance_context(
+            context,
+            quote,
+            None,
+            trend,
+            "贵州茅台",
+            market_phase_context={"is_partial_bar": True},
+        )
+
+        self.assertEqual(enhanced["realtime"]["source"], "tencent")
+        self.assertEqual(enhanced["realtime"]["fetched_at"], "2026-05-31T10:00:05+00:00")
+        self.assertEqual(enhanced["realtime"]["provider_timestamp"], "2026-05-31T10:00:00+00:00")
+        self.assertIs(enhanced["realtime"]["is_stale"], False)
+        self.assertEqual(enhanced["realtime"]["stale_seconds"], 5)
+        self.assertEqual(enhanced["realtime"]["fallback_from"], "efinance")
+        self.assertTrue(enhanced["today"]["is_partial_bar"])
+        self.assertTrue(enhanced["today"]["is_estimated"])
+        self.assertEqual(
+            enhanced["today"]["estimated_fields"],
+            ["close", "open", "high", "low", "ma5", "ma10", "ma20", "volume", "pct_chg"],
+        )
+        self.assertEqual(enhanced["today"]["fetched_at"], "2026-05-31T10:00:05+00:00")
+        self.assertEqual(enhanced["today"]["provider_timestamp"], "2026-05-31T10:00:00+00:00")
+        self.assertEqual(enhanced["today"]["fallback_from"], "efinance")
+        self.assertNotIn("amount", enhanced["today"])
         self.assertNotIn("dataSource", enhanced["today"])
 
     @patch("src.core.pipeline.get_market_now")

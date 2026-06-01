@@ -46,9 +46,24 @@ if ($LASTEXITCODE -ne 0) {
   throw "pip install -r requirements.txt failed with exit code $LASTEXITCODE."
 }
 
+Write-Host 'Bundling AlphaSift desktop dependency...'
+$alphaSiftInstallSpec = (& $pythonBin -c "from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC; print(DEFAULT_ALPHASIFT_INSTALL_SPEC)").Trim()
+if ([string]::IsNullOrWhiteSpace($alphaSiftInstallSpec)) {
+  throw 'DEFAULT_ALPHASIFT_INSTALL_SPEC is empty; cannot bundle AlphaSift for desktop.'
+}
+& $pythonBin -m pip install $alphaSiftInstallSpec
+if ($LASTEXITCODE -ne 0) {
+  throw "pip install AlphaSift failed with exit code $LASTEXITCODE."
+}
+
 Write-Host 'Checking python-multipart availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import multipart, multipart.multipart")) {
   throw 'python-multipart is not importable in the selected Python environment.'
+}
+
+Write-Host 'Checking AlphaSift adapter availability...'
+if (-not (Test-PythonCode -Python $pythonBin -Code "import alphasift.dsa_adapter")) {
+  throw 'alphasift.dsa_adapter is not importable after installing AlphaSift.'
 }
 
 if (Test-Path 'dist\backend') {
@@ -81,6 +96,9 @@ $hiddenImports = @(
   'api.v1.endpoints.history',
   'api.v1.endpoints.stocks',
   'api.v1.endpoints.health',
+  'api.v1.endpoints.alphasift',
+  'alphasift',
+  'alphasift.dsa_adapter',
   'api.v1.schemas',
   'api.v1.schemas.analysis',
   'api.v1.schemas.history',
@@ -114,7 +132,8 @@ $pyInstallerArgs = @(
   '--add-data', 'static;static',
   '--add-data', 'strategies;strategies',
   '--collect-data', 'litellm',
-  '--collect-data', 'tiktoken'
+  '--collect-data', 'tiktoken',
+  '--collect-all', 'alphasift'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

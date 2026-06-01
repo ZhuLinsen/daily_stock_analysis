@@ -263,12 +263,16 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         analyze_kwargs = pipeline.analyzer.analyze.call_args.kwargs
         self.assertIn("分析上下文包摘要", analyze_kwargs["analysis_context_pack_summary"])
         self.assertIn("日线: missing", analyze_kwargs["analysis_context_pack_summary"])
+        self.assertIn("盘中判断受", analyze_kwargs["analysis_context_pack_summary"])
+        self.assertIn("数据质量限制", analyze_kwargs["analysis_context_pack_summary"])
 
         save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
         self.assertTrue(save_kwargs["save_snapshot"])
         snapshot = save_kwargs["context_snapshot"]
         self.assertNotIn("market_phase_context", snapshot["enhanced_context"])
         self.assertNotIn("analysis_context_pack_summary", snapshot["enhanced_context"])
+        self.assertEqual(snapshot["market_phase_summary"]["phase"], "intraday")
+        self.assertEqual(snapshot["market_phase_summary"]["market"], "cn")
         self.assertIn("analysis_context_pack_overview", snapshot)
         self.assertEqual(snapshot["analysis_context_pack_overview"]["subject"]["code"], "600519")
         self.assertTrue(snapshot["analysis_context_pack_overview"]["blocks"])
@@ -303,6 +307,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             "\n".join(logs.output),
         )
         save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
+        self.assertEqual(save_kwargs["context_snapshot"]["market_phase_summary"]["phase"], "intraday")
         self.assertNotIn("analysis_context_pack_overview", save_kwargs["context_snapshot"])
 
     def test_agent_legacy_context_gets_runtime_key_but_history_snapshot_strips_it(self):
@@ -338,6 +343,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
                 fundamental_context={"market": "cn"},
                 trend_result=None,
                 market_phase_context=phase_payload,
+                market_phase_summary=phase_payload,
             )
 
         self.assertIsNotNone(result)
@@ -346,11 +352,14 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertIn("analysis_context_pack_summary", run_context)
         self.assertIn("分析上下文包摘要", run_context["analysis_context_pack_summary"])
         self.assertIn("新闻: missing", run_context["analysis_context_pack_summary"])
+        self.assertIn("盘中判断受", run_context["analysis_context_pack_summary"])
+        self.assertIn("数据质量限制", run_context["analysis_context_pack_summary"])
 
         save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
         self.assertTrue(save_kwargs["save_snapshot"])
         self.assertNotIn("market_phase_context", save_kwargs["context_snapshot"])
         self.assertNotIn("analysis_context_pack_summary", save_kwargs["context_snapshot"])
+        self.assertEqual(save_kwargs["context_snapshot"]["market_phase_summary"]["phase"], "intraday")
         self.assertIn("analysis_context_pack_overview", save_kwargs["context_snapshot"])
         self.assertEqual(
             save_kwargs["context_snapshot"]["analysis_context_pack_overview"]["subject"]["code"],
@@ -458,6 +467,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
                 fundamental_context={"market": "cn"},
                 trend_result=None,
                 market_phase_context=phase_payload,
+                market_phase_summary=phase_payload,
             )
 
         self.assertIsNotNone(result)
@@ -468,6 +478,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             "\n".join(logs.output),
         )
         save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
+        self.assertEqual(save_kwargs["context_snapshot"]["market_phase_summary"]["phase"], "intraday")
         self.assertNotIn("analysis_context_pack_overview", save_kwargs["context_snapshot"])
 
     def test_agent_history_snapshot_contains_diagnostics_context_when_active(self):

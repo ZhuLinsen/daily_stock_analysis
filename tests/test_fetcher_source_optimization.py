@@ -173,6 +173,36 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         longbridge.get_realtime_quote.assert_not_called()
 
     @patch("src.config.get_config")
+    def test_us_realtime_route_marks_longbridge_fallback_when_secondary_succeeds(self, mock_get_config):
+        mock_get_config.return_value = SimpleNamespace(
+            enable_realtime_quote=True,
+            realtime_source_priority="efinance,akshare_em,tushare",
+            realtime_cache_ttl=600,
+        )
+
+        longbridge = MagicMock()
+        longbridge.name = "LongbridgeFetcher"
+        longbridge.priority = 5
+        longbridge.is_available_for_request.return_value = True
+        longbridge.get_realtime_quote.return_value = None
+
+        yfinance_quote = _make_quote("AAPL")
+        yfinance = MagicMock()
+        yfinance.name = "YfinanceFetcher"
+        yfinance.priority = 4
+        yfinance.get_realtime_quote.return_value = yfinance_quote
+
+        manager = DataFetcherManager(fetchers=[longbridge, yfinance])
+
+        quote = manager.get_realtime_quote("AAPL")
+
+        self.assertIs(quote, yfinance_quote)
+        self.assertEqual(quote.fallback_from, "longbridge")
+        self.assertIsNotNone(quote.fetched_at)
+        longbridge.get_realtime_quote.assert_called_once_with("AAPL")
+        yfinance.get_realtime_quote.assert_called_once_with("AAPL")
+
+    @patch("src.config.get_config")
     def test_us_daily_route_skips_temporarily_unavailable_longbridge(self, mock_get_config):
         mock_get_config.return_value = SimpleNamespace(
             longbridge_app_key="app-key",
