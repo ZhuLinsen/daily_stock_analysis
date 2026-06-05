@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -313,6 +314,43 @@ class AlertWorkerTestCase(unittest.TestCase):
         else:
             notifier.send_with_results.side_effect = list(results)
         return notifier
+
+    def test_triggered_diagnostics_merge_visibility_and_market_scope_uses_region(self) -> None:
+        worker = AlertWorker(config_provider=lambda: self._config(), service=self.service)
+        runtime_rule = SimpleNamespace(
+            target_scope="market",
+            target="cn",
+            effective_target="cn",
+        )
+        result = {
+            "status": "triggered",
+            "diagnostics": '{"existing":"keep"}',
+        }
+
+        with patch(
+            "src.services.alert_worker.build_market_phase_context",
+            return_value={
+                "phase": "intraday",
+                "market": "cn",
+                "trigger_source": "alert",
+                "is_trading_day": True,
+                "is_partial_bar": True,
+            },
+        ) as build_context, patch(
+            "src.services.alert_worker.get_market_for_stock",
+            side_effect=AssertionError("market scope must not infer stock market"),
+        ):
+            diagnostics = worker._diagnostics_for_status("triggered", result, runtime_rule)
+
+        payload = json.loads(diagnostics)
+        self.assertEqual(payload["existing"], "keep")
+        visibility = payload["analysis_visibility"]
+        self.assertEqual(visibility["source"], "alert_trigger_market_context")
+        self.assertEqual(visibility["market_phase_summary"]["phase"], "intraday")
+        self.assertEqual(visibility["market_phase_summary"]["market"], "cn")
+        self.assertTrue(visibility["market_phase_summary"]["is_partial_bar"])
+        build_context.assert_called_once()
+        self.assertEqual(build_context.call_args.kwargs["market"], "cn")
 
     def test_enabled_db_rule_triggers_and_disabled_rule_is_ignored(self) -> None:
         enabled_rule = self._create_rule(target="600519")

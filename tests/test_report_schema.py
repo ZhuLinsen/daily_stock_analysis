@@ -59,6 +59,35 @@ class TestAnalysisReportSchema(unittest.TestCase):
         self.assertIsNone(schema.dashboard)
         self.assertIsNone(schema.analysis_summary)
 
+    def test_schema_accepts_phase_decision_and_defaults_lists(self) -> None:
+        """Dashboard accepts the optional phase_decision contract."""
+        data = {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 70,
+            "trend_prediction": "震荡",
+            "operation_advice": "持有",
+            "dashboard": {
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "phase_decision": {
+                    "phase_context": {"phase": "intraday", "market": "cn"},
+                    "action_window": "盘中跟踪",
+                    "immediate_action": "等待确认",
+                    "next_check_time": "14:30",
+                    "confidence_reason": "数据质量可用",
+                },
+            },
+        }
+
+        schema = AnalysisReportSchema.model_validate(data)
+
+        self.assertIsNotNone(schema.dashboard)
+        phase_decision = schema.dashboard and schema.dashboard.phase_decision
+        self.assertIsNotNone(phase_decision)
+        if phase_decision:
+            self.assertEqual(phase_decision.watch_conditions, [])
+            self.assertEqual(phase_decision.data_limitations, [])
+            self.assertEqual(phase_decision.phase_context["phase"], "intraday")
+
     def test_schema_allows_numeric_strings(self) -> None:
         """Schema accepts string values for numeric fields (LLM may return N/A)."""
         data = {

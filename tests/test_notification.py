@@ -630,6 +630,62 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("*分析模型：gemini/gemini-2.5-flash*", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generated_reports_include_public_phase_pack_excerpt_only(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.market_phase_summary = {
+            "phase": "intraday",
+            "market": "cn",
+            "trigger_source": "portfolio",
+            "is_partial_bar": True,
+        }
+        result.analysis_context_pack_overview = {
+            "data_quality": {
+                "level": "limited",
+                "limitations": ["quote: stale", "news: missing", "portfolio_context: hidden"],
+            }
+        }
+        result.raw_response = "raw context pack and prompt should not appear"
+
+        out = service.generate_brief_report([result], report_date="2026-02-01")
+
+        self.assertIn("阶段：intraday", out)
+        self.assertIn("触发来源：portfolio", out)
+        self.assertIn("盘中数据提示", out)
+        self.assertIn("数据质量: limited", out)
+        self.assertIn("限制: quote: stale", out)
+        self.assertIn("限制: news: missing", out)
+        self.assertNotIn("portfolio_context: hidden", out)
+        self.assertNotIn("raw context pack", out)
+        self.assertNotIn("prompt", out.lower())
+
+    @mock.patch("src.notification.get_config")
+    def test_generated_reports_skip_phase_pack_excerpt_when_summary_missing(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+
+        out = service.generate_brief_report([result], report_date="2026-02-01")
+
+        self.assertNotIn("摘要来源", out)
+        self.assertNotIn("评估器快照", out)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_dashboard_report_collapses_unavailable_chip_structure(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
         service = NotificationService()

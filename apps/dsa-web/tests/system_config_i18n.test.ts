@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getSettingsHelpContent } from '../src/locales/settingsHelp';
 import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '../src/utils/systemConfigI18n';
 
 const requiredLocalizedKeys = [
@@ -65,6 +66,7 @@ const requiredLocalizedKeys = [
   'MARKET_REVIEW_ENABLED',
   'MARKET_REVIEW_REGION',
   'ANALYSIS_DELAY',
+  'SAVE_CONTEXT_SNAPSHOT',
   'DEBUG',
   'AGENT_NL_ROUTING',
   'AGENT_DEEP_RESEARCH_BUDGET',
@@ -137,5 +139,23 @@ describe('systemConfigI18n option label localization', () => {
         expect(label).not.toBe(fallbackLabel);
       }
     });
+  });
+});
+
+describe('SAVE_CONTEXT_SNAPSHOT settings help contract', () => {
+  it('describes the persistence boundary without implying old records are changed', () => {
+    const help = getSettingsHelpContent('settings.system.SAVE_CONTEXT_SNAPSHOT', undefined, 'zh-CN');
+    const text = [
+      help?.summary,
+      help?.usage,
+      ...(help?.valueNotes ?? []),
+      ...(help?.impact ?? []),
+      ...(help?.notes ?? []),
+    ].join('\n');
+
+    expect(text).toContain('新历史记录');
+    expect(text).toContain('不关闭当次 AnalysisContextPack 构建');
+    expect(text).toContain('不关闭 LLM Prompt');
+    expect(text).not.toContain('旧记录');
   });
 });

@@ -229,13 +229,21 @@
           "History"
         ],
         "summary": "获取历史分析列表",
-        "description": "分页获取历史分析记录摘要，支持按股票代码和日期范围筛选",
+        "description": "分页获取历史分析记录摘要，支持按股票代码、报告类型和日期范围筛选",
         "operationId": "getHistoryList",
         "parameters": [
           {
             "name": "stock_code",
             "in": "query",
             "description": "股票代码筛选",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "report_type",
+            "in": "query",
+            "description": "报告类型筛选（如 market_review）；不传则返回所有类型历史。",
             "schema": {
               "type": "string"
             }
@@ -793,6 +801,17 @@
             "type": "boolean",
             "default": false,
             "description": "是否使用异步模式"
+          },
+          "analysis_phase": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "premarket",
+              "intraday",
+              "postmarket"
+            ],
+            "default": "auto",
+            "description": "分析阶段覆盖：auto(自动推断) / premarket(盘前) / intraday(盘中) / postmarket(盘后)"
           }
         }
       },
@@ -842,6 +861,17 @@
           "message": {
             "type": "string",
             "example": "Analysis task accepted"
+          },
+          "analysis_phase": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "premarket",
+              "intraday",
+              "postmarket"
+            ],
+            "default": "auto",
+            "description": "请求的分析阶段"
           }
         },
         "required": [
@@ -869,6 +899,17 @@
           },
           "message": {
             "type": "string"
+          },
+          "analysis_phase": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "premarket",
+              "intraday",
+              "postmarket"
+            ],
+            "default": "auto",
+            "description": "请求的分析阶段"
           }
         },
         "required": [
@@ -950,6 +991,17 @@
           "error": {
             "type": "string",
             "description": "错误信息（仅在 failed 时存在）"
+          },
+          "analysis_phase": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "premarket",
+              "intraday",
+              "postmarket"
+            ],
+            "nullable": true,
+            "description": "请求的分析阶段；无持久化字段的历史 DB fallback 可能为空"
           }
         },
         "required": [
@@ -1019,6 +1071,17 @@
           "error": {
             "type": "string",
             "description": "错误信息"
+          },
+          "analysis_phase": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "premarket",
+              "intraday",
+              "postmarket"
+            ],
+            "default": "auto",
+            "description": "请求的分析阶段"
           }
         },
         "required": [

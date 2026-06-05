@@ -7,6 +7,10 @@
 
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% set phase_excerpt = phase_pack_excerpt(e.result) %}
+{% if phase_excerpt %}
+{{ phase_excerpt }}
+{% endif %}
 {% endfor %}
 
 ---
@@ -103,6 +107,38 @@
 {% elif chip_unavailable_reason %}
 **{{ labels.chip_label }}**: {{ chip_unavailable_reason }}
 {% endif %}
+{% endif %}
+
+{% set phase_decision = dashboard.get('phase_decision') or {} %}
+{% set phase_decision_has_content = phase_decision.get('action_window') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('immediate_action') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('watch_conditions') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('next_check_time') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('confidence_reason') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('data_limitations') %}
+{% if phase_decision_has_content %}
+### 🛡️ {{ labels.phase_decision_heading }}
+
+| {{ labels.action_window_label }} | {{ labels.immediate_action_label }} | {{ labels.next_check_time_label }} |
+|---------|---------|---------|
+| {{ phase_decision.get('action_window') or 'N/A' }} | {{ phase_decision.get('immediate_action') or 'N/A' }} | {{ phase_decision.get('next_check_time') or 'N/A' }} |
+
+{% if phase_decision.get('watch_conditions') %}
+**{{ labels.watch_conditions_label }}**:
+{% for condition in phase_decision.get('watch_conditions') %}
+- {{ condition }}
+{% endfor %}
+{% endif %}
+{% if phase_decision.get('confidence_reason') %}
+**{{ labels.confidence_reason_label }}**: {{ phase_decision.get('confidence_reason') }}
+{% endif %}
+{% if phase_decision.get('data_limitations') %}
+**{{ labels.data_limitations_label }}**:
+{% for limitation in phase_decision.get('data_limitations') %}
+- {{ limitation }}
+{% endfor %}
+{% endif %}
+
 {% endif %}
 
 {% if battle %}

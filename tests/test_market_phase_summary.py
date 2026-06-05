@@ -6,6 +6,8 @@ import json
 from src.market_phase_summary import (
     MARKET_PHASE_SUMMARY_KEY,
     extract_market_phase_summary,
+    format_public_phase_pack_excerpt,
+    normalize_analysis_phase_bucket,
     render_market_phase_summary,
 )
 
@@ -109,3 +111,51 @@ def test_extract_market_phase_summary_returns_none_for_missing_or_malformed_snap
         {MARKET_PHASE_SUMMARY_KEY: {**_phase_context(), "phase": "bad_phase"}}
     ) is None
     assert extract_market_phase_summary("not-json") is None
+
+
+def test_normalize_analysis_phase_bucket_maps_public_statistics_buckets() -> None:
+    assert normalize_analysis_phase_bucket("premarket") == "premarket"
+    assert normalize_analysis_phase_bucket("intraday") == "intraday"
+    assert normalize_analysis_phase_bucket("lunch_break") == "intraday"
+    assert normalize_analysis_phase_bucket("closing_auction") == "intraday"
+    assert normalize_analysis_phase_bucket("postmarket") == "postmarket"
+    assert normalize_analysis_phase_bucket("non_trading") == "unknown"
+    assert normalize_analysis_phase_bucket(None) == "unknown"
+    assert normalize_analysis_phase_bucket("bad_phase") == "unknown"
+
+
+def test_format_public_phase_pack_excerpt_limits_and_redacts_public_fields() -> None:
+    excerpt = format_public_phase_pack_excerpt(
+        {
+            "phase": "intraday",
+            "market": "cn",
+            "trigger_source": "portfolio",
+            "is_partial_bar": True,
+        },
+        {
+            "data_quality": {
+                "level": "limited",
+                "limitations": [
+                    "quote stale",
+                    "api_key=secret should not leak",
+                    "news missing",
+                ],
+            }
+        },
+        source="analysis_history_snapshot",
+        report_language="zh",
+    )
+
+    assert "阶段：intraday" in excerpt
+    assert "触发来源：portfolio" in excerpt
+    assert "摘要来源：最近分析快照" in excerpt
+    assert "盘中数据提示" in excerpt
+    assert "数据质量: limited" in excerpt
+    assert "限制: quote stale" in excerpt
+    assert "限制: [REDACTED]" in excerpt
+    assert "news missing" not in excerpt
+    assert "api_key=secret" not in excerpt
+
+
+def test_format_public_phase_pack_excerpt_returns_empty_without_summary_or_pack() -> None:
+    assert format_public_phase_pack_excerpt(None, None, source="evaluator_snapshot") == ""

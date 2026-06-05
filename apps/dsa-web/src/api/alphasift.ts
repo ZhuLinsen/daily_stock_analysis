@@ -14,6 +14,7 @@ export type AlphaSiftStatus = {
   contractVersion?: string | null;
   version?: string | null;
   strategyCount?: number | null;
+  diagnostics?: Record<string, string>;
 };
 
 export type AlphaSiftInstallResponse = {
@@ -49,6 +50,27 @@ export type AlphaSiftCandidate = {
   factorScores?: Record<string, number>;
   postAnalysisSummaries?: Record<string, string>;
   postAnalysisTags?: string[];
+  dsaContext?: {
+    enriched?: boolean;
+    quote?: Record<string, unknown>;
+    fundamentals?: Record<string, unknown>;
+    news?: {
+      success?: boolean;
+      query?: string;
+      provider?: string;
+      results?: Array<Record<string, unknown>>;
+      error?: string | null;
+    };
+    warnings?: string[];
+  };
+  dsaNews?: Array<{
+    title?: string;
+    snippet?: string;
+    url?: string;
+    source?: string;
+    publishedDate?: string | null;
+  }>;
+  dsaAnalysisSummary?: string;
   raw: Record<string, unknown>;
 };
 
@@ -88,6 +110,13 @@ export type AlphaSiftScreenResponse = {
   llmParseErrors?: string[];
   warnings?: string[];
   sourceErrors?: string[];
+  dsaEnrichment?: {
+    enabled?: boolean;
+    maxCandidates?: number;
+    requestedCount?: number;
+    enrichedCount?: number;
+    warnings?: string[];
+  };
 };
 
 export function notifyAlphaSiftConfigChanged(): void {
@@ -126,7 +155,7 @@ export const alphasiftApi = {
   },
 
   async getStrategies(): Promise<AlphaSiftStrategiesResponse> {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/alphasift/strategies');
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/alphasift/strategies', { timeout: ALPHASIFT_INSTALL_TIMEOUT_MS });
     return toCamelCase<AlphaSiftStrategiesResponse>(response.data);
   },
 
@@ -140,7 +169,8 @@ export const alphasiftApi = {
     try {
       const status = await alphasiftApi.getStatus();
       if (!status.available) {
-        throw new Error('AlphaSift 适配层当前不可用。桌面发布包应已内置 AlphaSift；源码部署请先在后端 Python 环境安装 AlphaSift 后再开启选股。');
+        const reason = status.diagnostics?.reason ? `（${status.diagnostics.reason}）` : '';
+        throw new Error(`AlphaSift 适配层不可用${reason}。请确认后端已安装项目依赖，必要时执行 pip install -r requirements.txt 或重建 Docker/桌面后端。`);
       }
     } catch (error) {
       try {

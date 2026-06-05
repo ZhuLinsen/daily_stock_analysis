@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
 from src.config import get_config
+from src.market_phase_summary import format_public_phase_pack_excerpt
 from src.report_language import (
     get_localized_stock_name,
     get_report_labels,
@@ -148,6 +149,14 @@ def render(
     def failed_checks(checklist: List[str]) -> List[str]:
         return [c for c in (checklist or []) if c.startswith("❌") or c.startswith("⚠️")]
 
+    def phase_pack_excerpt(result: AnalysisResult) -> str:
+        return format_public_phase_pack_excerpt(
+            getattr(result, "market_phase_summary", None),
+            getattr(result, "analysis_context_pack_overview", None),
+            source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
+            report_language=report_language,
+        )
+
     context: Dict[str, Any] = {
         "report_date": report_date,
         "report_timestamp": report_timestamp,
@@ -164,6 +173,7 @@ def render(
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,
+        "phase_pack_excerpt": phase_pack_excerpt,
         "history_by_code": {},
         "get_chip_unavailable_reason": get_chip_unavailable_reason,
         "is_chip_structure_unavailable": is_chip_structure_unavailable,

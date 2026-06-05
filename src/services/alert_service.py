@@ -56,6 +56,11 @@ from src.services.market_light_alerts import (
     normalize_market_alert_parameters,
 )
 from src.services.market_light_service import normalize_market_region
+from src.analysis_context_pack_overview import (
+    ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY,
+    extract_analysis_context_pack_overview,
+)
+from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, extract_market_phase_summary
 from src.storage import (
     AlertCooldownRecord,
     AlertNotificationRecord,
@@ -1205,6 +1210,7 @@ class AlertService:
         }
 
     def _serialize_trigger(self, row: AlertTriggerRecord) -> Dict[str, Any]:
+        visibility = self._parse_analysis_visibility(row.diagnostics)
         return {
             "id": row.id,
             "rule_id": row.rule_id,
@@ -1217,7 +1223,39 @@ class AlertService:
             "triggered_at": row.triggered_at.isoformat() if row.triggered_at else None,
             "status": row.status,
             "diagnostics": self._sanitize_text(row.diagnostics) if row.diagnostics else None,
+            "market_phase_summary": visibility.get("market_phase_summary"),
+            "analysis_context_pack_overview": visibility.get("analysis_context_pack_overview"),
+            "analysis_visibility_source": visibility.get("analysis_visibility_source"),
         }
+
+    @staticmethod
+    def _parse_analysis_visibility(diagnostics: Optional[str]) -> Dict[str, Any]:
+        result = {
+            "market_phase_summary": None,
+            "analysis_context_pack_overview": None,
+            "analysis_visibility_source": None,
+        }
+        if not diagnostics:
+            return result
+        try:
+            parsed = json.loads(diagnostics)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result["analysis_visibility_source"] = "legacy_text"
+            return result
+        if not isinstance(parsed, dict):
+            result["analysis_visibility_source"] = "legacy_text"
+            return result
+        visibility = parsed.get("analysis_visibility")
+        if not isinstance(visibility, dict):
+            return result
+        phase = extract_market_phase_summary({MARKET_PHASE_SUMMARY_KEY: visibility.get("market_phase_summary")})
+        overview = extract_analysis_context_pack_overview(
+            {ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY: visibility.get("analysis_context_pack_overview")}
+        )
+        result["market_phase_summary"] = phase
+        result["analysis_context_pack_overview"] = overview
+        result["analysis_visibility_source"] = visibility.get("source")
+        return result
 
     def _serialize_notification(self, row: AlertNotificationRecord) -> Dict[str, Any]:
         return {

@@ -4,8 +4,9 @@ import type {
   ReportMeta,
   ReportSummary as ReportSummaryType,
 } from '../../types/analysis';
-import { Badge, Card, ScoreGauge } from '../common';
+import { Badge, Button, Card, ScoreGauge } from '../common';
 import { formatDateTime } from '../../utils/format';
+import { getMarketPhaseSummaryLabel, getPartialBarLabel } from '../../utils/marketPhase';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
 interface ReportOverviewProps {
@@ -13,6 +14,12 @@ interface ReportOverviewProps {
   summary: ReportSummaryType;
   details?: ReportDetailsType;
   isHistory?: boolean;
+  watchlist?: {
+    isInWatchlist: (code: string) => boolean;
+    onToggle: (code: string) => void;
+    isActioning: boolean;
+    actionMessage: string | null;
+  };
 }
 
 type BoardStatus = 'leading' | 'lagging';
@@ -77,9 +84,14 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
   meta,
   summary,
   details,
+  watchlist,
 }) => {
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
   const text = getReportText(reportLanguage);
+  const marketPhaseLabel = getMarketPhaseSummaryLabel(meta.marketPhaseSummary, reportLanguage);
+  const partialBarLabel = meta.marketPhaseSummary?.isPartialBar === true
+    ? getPartialBarLabel(reportLanguage)
+    : null;
   const relatedBoards = (Array.isArray(details?.belongBoards) ? details.belongBoards : [])
     .filter((board) => normalizeBoardName(board?.name).length > 0);
   const boardSignals = buildBoardSignalMap(details);
@@ -146,10 +158,20 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2 mt-1.5">
+                <div className="flex flex-wrap items-center gap-2 mt-1.5">
                   <span className="home-accent-chip px-2 py-0.5 font-mono text-xs">
                     {meta.stockCode}
                   </span>
+                  {marketPhaseLabel ? (
+                    <Badge variant="info" className="shrink-0 gap-1.5 shadow-none" aria-label={marketPhaseLabel}>
+                      {marketPhaseLabel}
+                    </Badge>
+                  ) : null}
+                  {partialBarLabel ? (
+                    <Badge variant="warning" className="shrink-0 shadow-none" aria-label={partialBarLabel}>
+                      {partialBarLabel}
+                    </Badge>
+                  ) : null}
                   <span className="text-xs text-muted-text flex items-center gap-1">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -269,8 +291,28 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
           </div>
         </div>
 
-        {/* 右侧：情绪指标 / 关联详情 */}
-        <div className="flex flex-col">
+        {/* 右侧：情绪指标 / 自选操作 */}
+        <div className="flex flex-col space-y-4">
+          {watchlist && meta.reportType !== 'market_review' && (
+            <Card variant="bordered" padding="sm" className="home-panel-card">
+              <div className="text-center space-y-3">
+                <span className="label-uppercase">自选</span>
+                <div className="text-xs text-muted-text font-mono">{meta.stockCode}</div>
+                <Button
+                  variant={watchlist.isInWatchlist(meta.stockCode) ? 'danger-subtle' : 'secondary'}
+                  size="sm"
+                  isLoading={watchlist.isActioning}
+                  onClick={() => watchlist.onToggle(meta.stockCode)}
+                  className="w-full text-xs"
+                >
+                  {watchlist.isInWatchlist(meta.stockCode) ? '从自选删除' : '加入自选'}
+                </Button>
+                {watchlist.actionMessage && (
+                  <p className="text-[11px] text-secondary-text animate-in fade-in">{watchlist.actionMessage}</p>
+                )}
+              </div>
+            </Card>
+          )}
           <Card variant="bordered" padding="md" className="home-panel-card home-rail-card !overflow-visible">
             <div className="text-center">
               <h3 className="mb-5 text-sm font-medium tracking-wide text-foreground">{text.marketSentiment}</h3>

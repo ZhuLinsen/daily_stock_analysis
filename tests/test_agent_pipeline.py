@@ -647,6 +647,47 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertIn("agent:gemini", result.data_sources)
         self.assertIsNotNone(result.dashboard)
 
+    def test_convert_preserves_top_level_phase_decision_with_nested_dashboard(self):
+        """Agent top-level phase_decision should survive nested dashboard unwrapping."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        dashboard = {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 80,
+            "trend_prediction": "看多",
+            "operation_advice": "持有",
+            "decision_type": "hold",
+            "confidence_level": "中",
+            "phase_decision": {
+                "phase_context": {"phase": "intraday", "market": "cn"},
+                "action_window": "盘中跟踪",
+                "immediate_action": "等待确认",
+                "watch_conditions": ["放量突破"],
+                "next_check_time": "14:30",
+                "confidence_reason": "等待确认",
+                "data_limitations": [],
+            },
+            "dashboard": {"core_conclusion": {"one_sentence": "看好"}},
+            "analysis_summary": "Testing",
+        }
+
+        agent_result = AgentResult(
+            success=True,
+            content=json.dumps(dashboard),
+            dashboard=dashboard,
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-phase"
+        )
+
+        self.assertEqual(result.dashboard["phase_decision"]["phase_context"]["phase"], "intraday")
+        self.assertEqual(result.dashboard["phase_decision"]["watch_conditions"], ["放量突破"])
+
     def test_convert_failed_dashboard(self):
         """Failed AgentResult should produce a minimal AnalysisResult."""
         pipeline = self._make_pipeline()
@@ -1653,6 +1694,111 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertEqual(result.dashboard.get("decision_type"), "hold")
             self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
             self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
+
+    def test_analyze_with_agent_phase_integrity_fills_missing_phase_decision(self):
+        """Agent weak integrity should enforce phase_decision when phase context exists."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_cfg.report_integrity_enabled = True
+            mock_cfg.agent_orchestrator_timeout_s = 600
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.analyzer import check_content_integrity
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline._ensure_agent_history = MagicMock()
+            pipeline._build_analysis_context_pack_outputs = MagicMock(
+                return_value=(
+                    "",
+                    {
+                        "blocks": [],
+                        "data_quality": {"limitations": []},
+                    },
+                )
+            )
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 62,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "减仓",
+                    "decision_type": "sell",
+                    "confidence_level": "中",
+                    "analysis_summary": "盘中风险偏高",
+                    "dashboard": {
+                        "core_conclusion": {"one_sentence": "盘中风险偏高"},
+                        "intelligence": {"risk_alerts": []},
+                    },
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            phase_context = {
+                "phase": "intraday",
+                "market": "cn",
+                "market_local_time": "2026-06-02T10:30:00+08:00",
+            }
+            phase_summary = {
+                **phase_context,
+                "is_trading_day": True,
+                "is_market_open_now": True,
+                "is_partial_bar": True,
+                "warnings": [],
+            }
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-phase-integrity",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+                market_phase_context=phase_context,
+                market_phase_summary=phase_summary,
+            )
+
+            self.assertIsNotNone(result)
+            ok, missing = check_content_integrity(result, require_phase_decision=True)
+            self.assertTrue(ok, missing)
+            phase_decision = result.dashboard["phase_decision"]
+            self.assertEqual(phase_decision["phase_context"]["phase"], "intraday")
+            self.assertEqual(phase_decision["action_window"], "模型未提供阶段化行动窗口")
+            self.assertEqual(phase_decision["immediate_action"], "模型未提供阶段化即时动作")
+            self.assertEqual(phase_decision["watch_conditions"], [])
+            self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
+            self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
 
     def test_analyze_with_agent_preserves_chip_structure_when_prefetch_missing(self):
         """Agent tool chip metrics should not be cleared when prefetch chip_data is unavailable."""

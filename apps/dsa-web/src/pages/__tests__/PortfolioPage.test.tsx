@@ -22,6 +22,7 @@ const {
   parseCsvImport,
   commitCsvImport,
   createAccount,
+  analyzePosition,
 } = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getSnapshot: vi.fn(),
@@ -40,6 +41,7 @@ const {
   parseCsvImport: vi.fn(),
   commitCsvImport: vi.fn(),
   createAccount: vi.fn(),
+  analyzePosition: vi.fn(),
 }));
 
 vi.mock('../../api/portfolio', () => ({
@@ -61,6 +63,7 @@ vi.mock('../../api/portfolio', () => ({
     parseCsvImport,
     commitCsvImport,
     createAccount,
+    analyzePosition,
   },
 }));
 
@@ -234,6 +237,13 @@ describe('PortfolioPage FX refresh', () => {
       errors: [],
     });
     createAccount.mockResolvedValue({ id: 1 });
+    analyzePosition.mockResolvedValue({
+      taskId: 'task-portfolio-1',
+      traceId: 'task-portfolio-1',
+      status: 'pending',
+      message: '分析任务已加入队列: HK00700',
+      analysisPhase: 'auto',
+    });
   });
 
   it('renders stale FX status with a manual refresh button', async () => {
@@ -345,8 +355,31 @@ describe('PortfolioPage FX refresh', () => {
 
     const hkRowCells = within(hkRow as HTMLTableRowElement).getAllByRole('cell');
     const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
-    expect(hkRowCells.at(-1)).toHaveClass('text-success');
-    expect(aaplRowCells.at(-1)).toHaveClass('text-secondary');
+    expect(hkRowCells.at(-2)).toHaveClass('text-success');
+    expect(aaplRowCells.at(-2)).toHaveClass('text-secondary');
+  });
+
+  it('submits manual analysis for a held position without exposing portfolio details in the UI call', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({ fxStale: true, positions: [
+      { symbol: 'HK00700', market: 'hk', currency: 'HKD', quantity: 10, avgCost: 400, totalCost: 4000, lastPrice: 420, marketValueBase: 4200, unrealizedPnlBase: 200, unrealizedPnlPct: 5, valuationCurrency: 'HKD', priceSource: 'history_close', priceDate: '2026-03-18', priceStale: true, priceAvailable: true },
+    ] }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    const row = screen.getByText('HK00700').closest('tr');
+    expect(row).not.toBeNull();
+    fireEvent.click(within(row as HTMLTableRowElement).getByRole('button', { name: '分析' }));
+
+    await waitFor(() => {
+      expect(analyzePosition).toHaveBeenCalledWith('HK00700', {
+        accountId: 1,
+        analysisPhase: 'auto',
+        force: false,
+      });
+    });
+    expect(await screen.findByText('已提交 HK00700 分析任务：task-portfolio-1')).toBeInTheDocument();
   });
 
   it('prefers disabled feedback over empty-pair feedback when refresh is disabled', async () => {

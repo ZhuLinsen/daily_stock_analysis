@@ -6,6 +6,7 @@ import type {
   BacktestResultsResponse,
   BacktestResultItem,
   PerformanceMetrics,
+  BacktestPhaseFilter,
 } from '../types/backtest';
 
 // ============ API ============
@@ -37,16 +38,18 @@ export const backtestApi = {
     evalWindowDays?: number;
     analysisDateFrom?: string;
     analysisDateTo?: string;
+    analysisPhase?: BacktestPhaseFilter;
     page?: number;
     limit?: number;
   } = {}): Promise<BacktestResultsResponse> => {
-    const { code, evalWindowDays, analysisDateFrom, analysisDateTo, page = 1, limit = 20 } = params;
+    const { code, evalWindowDays, analysisDateFrom, analysisDateTo, analysisPhase, page = 1, limit = 20 } = params;
 
     const queryParams: Record<string, string | number> = { page, limit };
     if (code) queryParams.code = code;
     if (evalWindowDays) queryParams.eval_window_days = evalWindowDays;
     if (analysisDateFrom) queryParams.analysis_date_from = analysisDateFrom;
     if (analysisDateTo) queryParams.analysis_date_to = analysisDateTo;
+    if (analysisPhase && analysisPhase !== 'all') queryParams.analysis_phase = analysisPhase;
 
     const response = await apiClient.get<Record<string, unknown>>(
       '/api/v1/backtest/results',
@@ -69,12 +72,14 @@ export const backtestApi = {
     evalWindowDays?: number;
     analysisDateFrom?: string;
     analysisDateTo?: string;
+    analysisPhase?: BacktestPhaseFilter;
   } = {}): Promise<PerformanceMetrics | null> => {
     try {
       const queryParams: Record<string, string | number> = {};
       if (params.evalWindowDays) queryParams.eval_window_days = params.evalWindowDays;
       if (params.analysisDateFrom) queryParams.analysis_date_from = params.analysisDateFrom;
       if (params.analysisDateTo) queryParams.analysis_date_to = params.analysisDateTo;
+      if (params.analysisPhase && params.analysisPhase !== 'all') queryParams.analysis_phase = params.analysisPhase;
       const response = await apiClient.get<Record<string, unknown>>(
         '/api/v1/backtest/performance',
         { params: queryParams },
@@ -96,12 +101,14 @@ export const backtestApi = {
     evalWindowDays?: number;
     analysisDateFrom?: string;
     analysisDateTo?: string;
+    analysisPhase?: BacktestPhaseFilter;
   } = {}): Promise<PerformanceMetrics | null> => {
     try {
       const queryParams: Record<string, string | number> = {};
       if (params.evalWindowDays) queryParams.eval_window_days = params.evalWindowDays;
       if (params.analysisDateFrom) queryParams.analysis_date_from = params.analysisDateFrom;
       if (params.analysisDateTo) queryParams.analysis_date_to = params.analysisDateTo;
+      if (params.analysisPhase && params.analysisPhase !== 'all') queryParams.analysis_phase = params.analysisPhase;
       const response = await apiClient.get<Record<string, unknown>>(
         `/api/v1/backtest/performance/${encodeURIComponent(code)}`,
         { params: queryParams },

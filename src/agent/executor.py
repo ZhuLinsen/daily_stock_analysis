@@ -129,6 +129,15 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -192,6 +201,8 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """
@@ -268,6 +279,15 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -328,6 +348,8 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """

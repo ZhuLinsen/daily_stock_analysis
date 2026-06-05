@@ -6,6 +6,7 @@ and validate idempotency/force semantics, result field correctness,
 summary creation, and query methods.
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -46,7 +47,16 @@ class BacktestServiceTestCase(unittest.TestCase):
                     stop_loss=95.0,
                     take_profit=110.0,
                     created_at=old_created_at,
-                    context_snapshot='{"enhanced_context": {"date": "2024-01-01"}}',
+                    context_snapshot=json.dumps(
+                        {
+                            "enhanced_context": {"date": "2024-01-01"},
+                            "market_phase_summary": {
+                                "phase": "premarket",
+                                "market": "cn",
+                                "trigger_source": "api",
+                            },
+                        }
+                    ),
                 )
             )
 
@@ -82,6 +92,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         trend_prediction: str,
         start_close: float,
         forward_bars: list[StockDaily],
+        phase: str = "intraday",
     ) -> None:
         with self.db.get_session() as session:
             session.add(
@@ -97,7 +108,16 @@ class BacktestServiceTestCase(unittest.TestCase):
                     stop_loss=None,
                     take_profit=None,
                     created_at=created_at,
-                    context_snapshot=f'{{"enhanced_context": {{"date": "{analysis_date.isoformat()}"}}}}',
+                    context_snapshot=json.dumps(
+                        {
+                            "enhanced_context": {"date": analysis_date.isoformat()},
+                            "market_phase_summary": {
+                                "phase": phase,
+                                "market": "cn",
+                                "trigger_source": "api",
+                            },
+                        }
+                    ),
                 )
             )
             session.add(
@@ -120,6 +140,33 @@ class BacktestServiceTestCase(unittest.TestCase):
     def _count_results(self) -> int:
         with self.db.get_session() as session:
             return session.query(BacktestResult).count()
+
+    def _make_backtest_result(
+        self,
+        *,
+        analysis_history_id: int,
+        analysis_date: date,
+        eval_window_days: int = 1,
+        engine_version: str = "v1",
+    ) -> BacktestResult:
+        return BacktestResult(
+            analysis_history_id=analysis_history_id,
+            code="600519",
+            analysis_date=analysis_date,
+            eval_window_days=eval_window_days,
+            engine_version=engine_version,
+            eval_status="completed",
+            evaluated_at=datetime(2024, 1, 20, 0, 0, 0),
+            operation_advice="买入",
+            position_recommendation="long",
+            start_price=100.0,
+            end_close=101.0,
+            stock_return_pct=1.0,
+            direction_expected="up",
+            direction_correct=True,
+            outcome="win",
+            simulated_return_pct=1.0,
+        )
 
     def test_force_semantics(self) -> None:
         service = BacktestService(self.db)
@@ -439,6 +486,231 @@ class BacktestServiceTestCase(unittest.TestCase):
                     analysis_date_from=date(2024, 1, 1),
                     analysis_date_to=date(2024, 1, 1),
                 )
+
+    def test_get_summary_phase_filter_cap_uses_phase_candidate_message(self) -> None:
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        with patch.object(BacktestService, "MAX_DYNAMIC_SUMMARY_ROWS", 0):
+            with self.assertRaisesRegex(ValueError, "Phase-filtered summary candidate set matches too many rows"):
+                service.get_summary(
+                    scope="stock",
+                    code="600519",
+                    analysis_phase="intraday",
+                )
+
+    def test_phase_filter_results_allows_exact_dynamic_cap(self) -> None:
+        service = BacktestService(self.db)
+        phase_snapshot = json.dumps({"market_phase_summary": {"phase": "intraday", "market": "cn"}})
+        rows = [
+            (
+                self._make_backtest_result(analysis_history_id=idx + 1, analysis_date=date(2024, 1, idx + 1)),
+                "贵州茅台",
+                "看多",
+                datetime(2024, 1, idx + 1, 0, 0, 0),
+                phase_snapshot,
+            )
+            for idx in range(2)
+        ]
+
+        class RepoStub:
+            def get_results_with_context_batch(self, **kwargs):
+                offset = int(kwargs["offset"])
+                limit = int(kwargs["limit"])
+                return rows[offset: offset + limit]
+
+        service.repo = RepoStub()
+
+        with patch.object(BacktestService, "MAX_DYNAMIC_SUMMARY_ROWS", 2):
+            data = service.get_recent_evaluations(
+                code="600519",
+                eval_window_days=1,
+                limit=10,
+                page=1,
+                analysis_phase="intraday",
+            )
+
+        self.assertEqual(data["total"], 2)
+        self.assertEqual(len(data["items"]), 2)
+
+    def test_phase_filter_without_window_matches_summary_window(self) -> None:
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+
+        with self.db.get_session() as session:
+            base_result = session.query(BacktestResult).filter(
+                BacktestResult.code == "600519",
+                BacktestResult.eval_window_days == 3,
+                BacktestResult.engine_version == "v1",
+            ).one()
+            session.add(
+                BacktestResult(
+                    analysis_history_id=base_result.analysis_history_id,
+                    code=base_result.code,
+                    analysis_date=base_result.analysis_date,
+                    eval_window_days=1,
+                    engine_version="v1",
+                    eval_status="completed",
+                    evaluated_at=datetime(2024, 1, 5, 0, 0, 0),
+                    operation_advice="买入",
+                    position_recommendation="long",
+                    start_price=100.0,
+                    end_close=96.0,
+                    stock_return_pct=-4.0,
+                    direction_expected="up",
+                    direction_correct=False,
+                    outcome="loss",
+                    simulated_return_pct=-4.0,
+                )
+            )
+            session.commit()
+
+        evaluations = service.get_recent_evaluations(
+            code="600519",
+            limit=10,
+            page=1,
+            analysis_phase="premarket",
+        )
+        self.assertEqual(evaluations["total"], 1)
+        self.assertEqual(evaluations["items"][0]["eval_window_days"], 1)
+
+        summary = service.get_summary(
+            scope="stock",
+            code="600519",
+            analysis_phase="premarket",
+        )
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["eval_window_days"], 1)
+        self.assertEqual(summary["total_evaluations"], 1)
+
+    def test_phase_filter_overfetches_before_pagination_and_updates_summary_breakdown(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=95.0, close=96.0),
+            ],
+            phase="intraday",
+        )
+
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=1, min_age_days=0, limit=20)
+
+        intraday = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=1,
+            page=1,
+            analysis_phase="intraday",
+        )
+        self.assertEqual(intraday["total"], 1)
+        self.assertEqual(len(intraday["items"]), 1)
+        self.assertEqual(intraday["items"][0]["market_phase"], "intraday")
+        self.assertEqual(intraday["items"][0]["market_phase_summary"]["phase"], "intraday")
+
+        premarket = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=1,
+            page=1,
+            analysis_phase="premarket",
+        )
+        self.assertEqual(premarket["total"], 1)
+        self.assertEqual(premarket["items"][0]["market_phase"], "premarket")
+
+        summary = service.get_summary(
+            scope="stock",
+            code="600519",
+            eval_window_days=1,
+            analysis_phase="intraday",
+        )
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["total_evaluations"], 1)
+        self.assertEqual(summary["diagnostics"]["phase_breakdown"]["intraday"], 1)
+        self.assertEqual(summary["diagnostics"]["phase_breakdown"]["premarket"], 0)
+        self.assertNotIn("premarket", summary["diagnostics"]["raw_phase_counts"])
+        self.assertEqual(summary["diagnostics"]["raw_phase_counts"]["intraday"], 1)
+
+    def test_phase_filter_buckets_detailed_internal_phases(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=95.0, close=96.0),
+            ],
+            phase="lunch_break",
+        )
+        self._seed_analysis(
+            query_id="q3",
+            analysis_date=date(2024, 1, 12),
+            created_at=datetime(2024, 1, 12, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 13), high=101.0, low=95.0, close=96.0),
+            ],
+            phase="closing_auction",
+        )
+        self._seed_analysis(
+            query_id="q4",
+            analysis_date=date(2024, 1, 14),
+            created_at=datetime(2024, 1, 14, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 15), high=101.0, low=95.0, close=96.0),
+            ],
+            phase="non_trading",
+        )
+
+        service = BacktestService(self.db)
+        service.run_backtest(code="600519", force=False, eval_window_days=1, min_age_days=0, limit=20)
+
+        intraday = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=10,
+            page=1,
+            analysis_phase="intraday",
+        )
+        self.assertEqual(intraday["total"], 2)
+        self.assertEqual(
+            {item["market_phase_summary"]["phase"] for item in intraday["items"]},
+            {"lunch_break", "closing_auction"},
+        )
+        self.assertTrue(all(item["market_phase"] == "intraday" for item in intraday["items"]))
+
+        unknown = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=10,
+            page=1,
+            analysis_phase="unknown",
+        )
+        self.assertEqual(unknown["total"], 1)
+        self.assertEqual(unknown["items"][0]["market_phase"], "unknown")
+        self.assertEqual(unknown["items"][0]["market_phase_summary"]["phase"], "non_trading")
+
+    def test_phase_filter_rejects_values_outside_public_query_contract(self) -> None:
+        service = BacktestService(self.db)
+
+        with self.assertRaisesRegex(ValueError, "analysis_phase must be one of"):
+            service.get_recent_evaluations(code=None, analysis_phase="lunch_break")
+
+        with self.assertRaisesRegex(ValueError, "analysis_phase must be one of"):
+            service.get_summary(code=None, scope="overall", analysis_phase="banana")
 
     def test_multi_stock_summaries(self) -> None:
         """Verify separate summaries for multiple stocks + correct overall aggregate."""

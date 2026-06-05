@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { motion } from 'motion/react';
 import { BarChart3, Bell, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { ALPHASIFT_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, alphasiftApi } from '../../api/alphasift';
@@ -13,6 +12,7 @@ import { ThemeToggle } from '../theme/ThemeToggle';
 type SidebarNavProps = {
   collapsed?: boolean;
   onNavigate?: () => void;
+  variant?: 'default' | 'rail';
 };
 
 type NavItem = {
@@ -34,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'settings', label: '设置', to: '/settings', icon: Settings2 },
 ];
 
-export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate }) => {
+export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate, variant = 'default' }) => {
   const { authEnabled, logout } = useAuth();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -68,19 +68,46 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
   }, []);
 
   const navItems = showAlphaSiftNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
+  const isRail = variant === 'rail';
+  const itemBaseClass = cn(
+    'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',
+    isRail
+      ? 'justify-center gap-2.5 px-2'
+      : collapsed
+        ? 'justify-center px-0'
+        : 'gap-3 px-[var(--nav-item-padding-x)]'
+  );
+  const itemInteractiveClass = cn(
+    itemBaseClass,
+    'hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
+  );
+  const itemActiveClass = 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] font-medium text-[hsl(var(--primary))]';
+  const itemIconClass = cn(isRail ? 'h-[18px] w-[18px]' : 'h-5 w-5', 'shrink-0');
+  const itemLabelClass = cn('truncate', isRail ? 'text-center' : '');
 
   return (
     <div className="flex h-full flex-col">
-      <div className={cn('mb-4 flex items-center gap-2 px-1', collapsed ? 'justify-center' : '')}>
-        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary-gradient text-[hsl(var(--primary-foreground))] shadow-[0_12px_28px_var(--nav-brand-shadow)]">
-          <BarChart3 className="h-5 w-5" />
+      <div
+        className={cn(
+          'flex items-center',
+          isRail ? 'mb-5 justify-center gap-2 pt-1' : 'mb-4 gap-2 px-1',
+          collapsed || isRail ? 'justify-center' : ''
+        )}
+      >
+        <div
+          className={cn(
+            'flex items-center justify-center bg-primary-gradient text-[hsl(var(--primary-foreground))] shadow-[0_12px_28px_var(--nav-brand-shadow)]',
+            isRail ? 'h-9 w-9 rounded-[1rem]' : 'h-10 w-10 rounded-2xl'
+          )}
+        >
+          <BarChart3 className={cn(isRail ? 'h-[19px] w-[19px]' : 'h-5 w-5')} />
         </div>
         {!collapsed ? (
-          <p className="min-w-0 truncate text-sm font-semibold text-foreground">DSA</p>
+          <p className={cn('min-w-0 truncate font-semibold text-foreground', isRail ? 'text-[0.95rem] leading-none' : 'text-sm')}>DSA</p>
         ) : null}
       </div>
 
-      <nav className="flex flex-1 flex-col gap-1.5" aria-label="主导航">
+      <nav className={cn('flex flex-col gap-1.5', isRail ? '' : 'flex-1')} aria-label="主导航">
         {navItems.map(({ key, label, to, icon: Icon, exact, badge }) => (
           <NavLink
             key={key}
@@ -90,28 +117,15 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
             aria-label={label}
             className={({ isActive }) =>
               cn(
-                'group relative flex items-center gap-3 border-y border-x-0 text-sm transition-all',
-                'h-[var(--nav-item-height)]',
-                collapsed ? 'justify-center px-0' : 'px-[var(--nav-item-padding-x)]',
-                isActive
-                  ? 'border-[var(--nav-active-border)] bg-[var(--nav-active-bg)] text-[hsl(var(--primary))] font-medium'
-                  : 'border-transparent text-secondary-text hover:bg-[var(--nav-hover-bg)] hover:text-foreground'
+                itemInteractiveClass,
+                isActive ? itemActiveClass : ''
               )
             }
           >
             {({ isActive }) => (
               <>
-                {isActive && (
-                  <motion.div 
-                    layoutId="activeIndicator"
-                    className="absolute top-0 bottom-0 left-0 w-[var(--nav-indicator-width)] bg-[var(--nav-indicator-bg)] shadow-[0_0_10px_var(--nav-indicator-shadow)]"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.2 }}
-                  />
-                )}
-                <Icon className={cn('ml-1 h-5 w-5 shrink-0', isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
-                {!collapsed ? <span className="truncate">{label}</span> : null}
+                <Icon className={cn(itemIconClass, isActive ? 'text-[var(--nav-icon-active)]' : 'text-current')} />
+                {!collapsed ? <span className={itemLabelClass}>{label}</span> : null}
                 {badge === 'completion' && completionBadge ? (
                   <StatusDot
                     tone="info"
@@ -127,23 +141,29 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
             )}
           </NavLink>
         ))}
-      </nav>
 
-      <div className="mt-4 mb-2">
-        <ThemeToggle variant="nav" collapsed={collapsed} />
-      </div>
+        <ThemeToggle
+          variant={isRail ? 'rail' : 'nav'}
+          collapsed={collapsed}
+          wrapperClassName="w-full"
+          triggerClassName={itemInteractiveClass}
+          triggerActiveClassName={itemActiveClass}
+          iconClassName={itemIconClass}
+          labelClassName={itemLabelClass}
+        />
+      </nav>
 
       {authEnabled ? (
         <button
           type="button"
           onClick={() => setShowLogoutConfirm(true)}
           className={cn(
-            'mt-5 flex h-11 w-full cursor-pointer select-none items-center gap-3 rounded-2xl border border-transparent px-3 text-sm text-secondary-text transition-all hover:border-border/70 hover:bg-hover hover:text-foreground',
-            collapsed ? 'justify-center px-2' : ''
+            itemInteractiveClass,
+            isRail ? 'mt-1.5' : 'mt-5'
           )}
         >
-          <LogOut className="h-5 w-5 shrink-0" />
-          {!collapsed ? <span>退出</span> : null}
+          <LogOut className={itemIconClass} />
+          {!collapsed ? <span className={itemLabelClass}>退出</span> : null}
         </button>
       ) : null}
 

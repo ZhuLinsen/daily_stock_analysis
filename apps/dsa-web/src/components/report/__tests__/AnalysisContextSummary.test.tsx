@@ -224,6 +224,21 @@ describe('ReportSummary analysis context placement', () => {
         reportType: 'detailed',
         reportLanguage: 'zh',
         createdAt: '2026-04-10T12:00:00',
+        marketPhaseSummary: {
+          market: 'cn',
+          phase: 'intraday',
+          marketLocalTime: '2026-04-10T10:30:00+08:00',
+          sessionDate: '2026-04-10',
+          effectiveDailyBarDate: '2026-04-09',
+          isTradingDay: true,
+          isMarketOpenNow: true,
+          isPartialBar: true,
+          minutesToOpen: null,
+          minutesToClose: 150,
+          triggerSource: 'api',
+          analysisIntent: 'auto',
+          warnings: [],
+        },
       },
       summary: {
         analysisSummary: 'summary',
@@ -258,6 +273,10 @@ describe('ReportSummary analysis context placement', () => {
     await waitFor(() => {
       expect(screen.getByText('暂无相关资讯')).toBeInTheDocument();
     });
+
+    expect(screen.getByText('市场阶段: CN · 盘中')).toBeInTheDocument();
+    expect(screen.getByText('日线未完成')).toBeInTheDocument();
+    expect(screen.getAllByText('质量分 82/100 可用')[0]).toBeInTheDocument();
 
     const strategy = screen.getByText('狙击点位');
     const news = screen.getByText('相关资讯');

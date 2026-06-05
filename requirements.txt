@@ -1,67 +1,69 @@
 # ===================================
-# A股自选股智能分析系统 - 依赖列表
+# Daily Stock Analysis - dependencies
 # ===================================
 
-# 核心依赖
-python-dotenv>=1.0.0        # 环境变量配置管理
-tenacity>=8.2.0             # 重试机制（指数退避）
-sqlalchemy>=2.0.0           # ORM数据库操作
-schedule>=1.2.0             # 定时任务调度
-exchange-calendars>=4.13.0   # 交易日历；4.5.x 与 pandas 3 不兼容（Timedelta "T"）
+# Core dependencies
+python-dotenv>=1.0.0        # Environment variable configuration
+tenacity>=8.2.0             # Retry support with exponential backoff
+sqlalchemy>=2.0.0           # ORM database access
+schedule>=1.2.0             # Scheduled task runner
+exchange-calendars>=4.13.0   # Trading calendars; 4.5.x is incompatible with pandas 3 Timedelta "T"
 
-# 数据源依赖（多源策略，按优先级排序）
-efinance>=0.5.5             # Priority 0: 东方财富数据源（最高优先级）https://github.com/Micro-sheep/efinance
-akshare>=1.12.0             # Priority 1: 东方财富爬虫数据源
-tushare>=1.4.0              # Priority 2: 挖地兔 Pro API
-pytdx>=1.72                 # Priority 2: 通达信行情服务器
-baostock>=0.8.0             # Priority 3: 证券宝数据
+# Data source dependencies, ordered by fallback priority
+efinance>=0.5.5             # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
+akshare>=1.12.0             # Priority 1: East Money crawler data source
+tushare>=1.4.0              # Priority 2: Tushare Pro API
+pytdx>=1.72                 # Priority 2: Tongdaxin quote servers
+baostock>=0.8.0             # Priority 3: Baostock data
 yfinance>=0.2.0             # Priority 4: Yahoo Finance (Fallback)
-longbridge>=0.2.77           # Priority 5: 长桥 OpenAPI（美股/港股兜底；OAuth 路径运行时检测 SDK 能力）
+longbridge>=0.2.77           # Priority 5: Longbridge OpenAPI fallback for US/HK stocks; OAuth capability checked at runtime
 tickflow>=0.1.0            # TickFlow official SDK (Issue #632, market review enhancement)
+# Built-in optional AlphaSift screening engine
+git+https://github.com/ZhuLinsen/alphasift.git@1a0ed8c99b3615c0cb1076e6029827ffc6de2344#egg=alphasift
 
-#飞书
-lark-oapi>=1.0.0             # 飞书API
+# Feishu
+lark-oapi>=1.0.0             # Feishu API
 
-# 数据处理
-pandas>=2.0.0               # 数据分析
+# Data processing
+pandas>=2.0.0               # Data analysis
 pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
 openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
-numpy>=1.24.0               # 数值计算
-json-repair>=0.55.1         # JSON 修复
+numpy>=1.24.0               # Numeric computing
+json-repair>=0.55.1         # JSON repair
 
-# AI 分析
+# AI analysis
 # Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.
 litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0   # Unified LLM client (Gemini/Anthropic/OpenAI/DeepSeek etc.)
 tiktoken>=0.8.0,<0.12.0    # BPE tokenizer for LLM token counting (pin <0.12 to avoid plugin registration issues, #537)
 openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept explicit)
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
 
-# 搜索引擎（用于获取股票新闻）
-tavily-python>=0.3.0        # Tavily 搜索 API（每月 1000 次免费）
-google-search-results>=2.4.0  # SerpAPI（每月 100 次免费）
+# Search engines for stock news
+tavily-python>=0.3.0        # Tavily Search API
+google-search-results>=2.4.0  # SerpAPI
 
-# 网络请求
-requests>=2.31.0            # HTTP 请求
-markdown2>=2.4.0            # Markdown 转 HTML
-imgkit>=1.2.0              # Markdown 转图片（需安装 wkhtmltopdf）
-fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
-httpx[socks]                # HTTP 客户端 + SOCKS 代理支持（OpenAI 可选依赖）
-dingtalk-stream >= 0.24.3    # 钉钉 Stream SDK
-# 数据库
-# SQLite 是 Python 内置，无需额外安装
+# Network requests
+requests>=2.31.0            # HTTP requests
+markdown2>=2.4.0            # Markdown to HTML
+imgkit>=1.2.0              # Markdown to image; requires wkhtmltopdf
+fake-useragent>=1.4.0       # Random User-Agent support
+httpx[socks]                # HTTP client with SOCKS proxy support; optional OpenAI dependency
+dingtalk-stream >= 0.24.3    # DingTalk Stream SDK
+# Database
+# SQLite is built into Python and does not need an extra package
 
-# Discord 机器人
-discord.py>=2.0.0              # Discord 机器人开发库
-PyNaCl>=1.5.0                  # Discord Interaction/Webhook Ed25519 签名验证
+# Discord bot
+discord.py>=2.0.0              # Discord bot development library
+PyNaCl>=1.5.0                  # Discord Interaction/Webhook Ed25519 signature verification
 
 # Web Content Extraction
 newspaper3k>=0.2.8          # Article extraction
 lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml versions
 
-# 报告模板引擎（Report Engine P0）
+# Report template engine (Report Engine P0)
 jinja2>=3.1.0               # Jinja2 template engine for report rendering
 
-# FastAPI Web 框架
-fastapi>=0.109.0            # 现代 Python Web 框架
-uvicorn[standard]>=0.27.0   # ASGI 服务器
+# FastAPI Web framework
+fastapi>=0.109.0            # Modern Python Web framework
+uvicorn[standard]>=0.27.0   # ASGI server
 python-multipart>=0.0.6     # FastAPI File/Form upload support

@@ -3,12 +3,14 @@ import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
-import type { AnalysisReport, HistoryItem, HistoryListResponse, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
+import type { AnalysisReport, HistoryItem, HistoryListResponse, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
 const PAGE_SIZE = 20;
 const STOCK_HISTORY_PAGE_SIZE = 20;
+const MARKET_REVIEW_HISTORY_PAGE_SIZE = 10;
+const MARKET_REVIEW_HISTORY_CODE = 'MARKET';
 
 type SelectionSource = 'manual' | 'autocomplete' | 'import' | 'image';
 
@@ -31,6 +33,7 @@ type SubmitAnalysisOptions = {
 let reportRequestSeq = 0;
 let analyzeRequestSeq = 0;
 let historyRequestSeq = 0;
+let marketReviewHistoryRequestSeq = 0;
 let stockHistoryRequestSeq = 0;
 let activeTaskRequestSeq = 0;
 let activeTaskLocalRevision = 0;
@@ -51,6 +54,13 @@ export interface StockPoolState {
   isLoadingMore: boolean;
   hasMore: boolean;
   currentPage: number;
+  marketReviewHistoryItems: HistoryItem[];
+  selectedMarketReviewHistoryIds: number[];
+  isLoadingMarketReviewHistory: boolean;
+  isLoadingMoreMarketReviewHistory: boolean;
+  isDeletingMarketReviewHistory: boolean;
+  marketReviewHistoryHasMore: boolean;
+  marketReviewHistoryPage: number;
   selectedReport: AnalysisReport | null;
   isLoadingReport: boolean;
   isHistoryTrendOpen: boolean;
@@ -64,6 +74,8 @@ export interface StockPoolState {
   stockHistoryFilters: StockHistoryFilters;
   activeTasks: TaskInfo[];
   markdownDrawerOpen: boolean;
+  stockBarItems: StockBarItem[];
+  isLoadingStockBar: boolean;
   setQuery: (query: string) => void;
   clearError: () => void;
   clearInlineMessages: () => void;
@@ -76,10 +88,16 @@ export interface StockPoolState {
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
+  loadMarketReviewHistory: () => Promise<void>;
+  refreshMarketReviewHistory: (silent?: boolean) => Promise<void>;
+  loadMoreMarketReviewHistory: () => Promise<void>;
   selectHistoryItem: (recordId: number) => Promise<void>;
   toggleHistorySelection: (recordId: number) => void;
   toggleSelectAllVisible: () => void;
   deleteSelectedHistory: () => Promise<void>;
+  toggleMarketReviewHistorySelection: (recordId: number) => void;
+  toggleSelectAllVisibleMarketReviewHistory: () => void;
+  deleteSelectedMarketReviewHistory: () => Promise<void>;
   submitAnalysis: (options?: SubmitAnalysisOptions) => Promise<void>;
   setNotify: (notify: boolean) => void;
   syncTaskCreated: (task: TaskInfo) => void;
@@ -88,6 +106,8 @@ export interface StockPoolState {
   refreshActiveTasks: () => Promise<void>;
   removeTask: (taskId: string) => void;
   resetDashboardState: () => void;
+  loadStockBar: () => Promise<void>;
+  refreshStockBar: () => Promise<void>;
 }
 
 const initialState = {
@@ -105,6 +125,13 @@ const initialState = {
   isLoadingMore: false,
   hasMore: true,
   currentPage: 1,
+  marketReviewHistoryItems: [] as HistoryItem[],
+  selectedMarketReviewHistoryIds: [] as number[],
+  isLoadingMarketReviewHistory: false,
+  isLoadingMoreMarketReviewHistory: false,
+  isDeletingMarketReviewHistory: false,
+  marketReviewHistoryHasMore: false,
+  marketReviewHistoryPage: 1,
   selectedReport: null as AnalysisReport | null,
   isLoadingReport: false,
   isHistoryTrendOpen: false,
@@ -122,6 +149,8 @@ const initialState = {
   },
   activeTasks: [] as TaskInfo[],
   markdownDrawerOpen: false,
+  stockBarItems: [] as StockBarItem[],
+  isLoadingStockBar: false,
 };
 
 function buildHistoryParams(page: number) {
@@ -130,6 +159,15 @@ function buildHistoryParams(page: number) {
     endDate: getTodayInShanghai(),
     page,
     limit: PAGE_SIZE,
+  };
+}
+
+function buildMarketReviewHistoryParams(page: number) {
+  return {
+    stockCode: MARKET_REVIEW_HISTORY_CODE,
+    reportType: 'market_review' as const,
+    page,
+    limit: MARKET_REVIEW_HISTORY_PAGE_SIZE,
   };
 }
 
@@ -362,6 +400,73 @@ async function fetchHistory(
   }
 }
 
+async function fetchMarketReviewHistory(
+  get: () => StockPoolState,
+  set: (partial: Partial<StockPoolState>) => void,
+  options: FetchHistoryOptions = {},
+): Promise<HistoryListResponse | null> {
+  const { reset = true, silent = false } = options;
+  const currentState = get();
+  const page = reset ? 1 : currentState.marketReviewHistoryPage + 1;
+  const requestId = ++marketReviewHistoryRequestSeq;
+
+  if (!silent) {
+    set(
+      reset
+        ? { isLoadingMarketReviewHistory: true, isLoadingMoreMarketReviewHistory: false, marketReviewHistoryPage: 1 }
+        : { isLoadingMoreMarketReviewHistory: true },
+    );
+  }
+
+  try {
+    const response = await historyApi.getList(buildMarketReviewHistoryParams(page));
+    if (requestId !== marketReviewHistoryRequestSeq) {
+      return null;
+    }
+
+    if (silent && reset) {
+      const existingIds = new Set(get().marketReviewHistoryItems.map((item) => item.id));
+      const newItems = response.items.filter((item) => !existingIds.has(item.id));
+      if (newItems.length > 0) {
+        set({ marketReviewHistoryItems: [...newItems, ...get().marketReviewHistoryItems] });
+      }
+    } else if (reset) {
+      set({
+        marketReviewHistoryItems: response.items,
+        marketReviewHistoryPage: 1,
+      });
+    } else {
+      set({
+        marketReviewHistoryItems: dedupeHistoryItems([...get().marketReviewHistoryItems, ...response.items]),
+        marketReviewHistoryPage: page,
+      });
+    }
+
+    const totalLoaded = reset ? response.items.length : get().marketReviewHistoryItems.length;
+    set({ marketReviewHistoryHasMore: totalLoaded < response.total });
+
+    const visibleIds = new Set(get().marketReviewHistoryItems.map((item) => item.id));
+    set({
+      selectedMarketReviewHistoryIds: get().selectedMarketReviewHistoryIds.filter((id) => visibleIds.has(id)),
+    });
+
+    return response;
+  } catch (error) {
+    if (requestId !== marketReviewHistoryRequestSeq) {
+      return null;
+    }
+    set({ error: getParsedApiError(error) });
+    return null;
+  } finally {
+    if (requestId === marketReviewHistoryRequestSeq) {
+      set({
+        isLoadingMarketReviewHistory: false,
+        isLoadingMoreMarketReviewHistory: false,
+      });
+    }
+  }
+}
+
 export const useStockPoolStore = create<StockPoolState>((set, get) => ({
   ...initialState,
 
@@ -434,6 +539,22 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       return;
     }
     await fetchHistory(get, set, { reset: false });
+  },
+
+  loadMarketReviewHistory: async () => {
+    await fetchMarketReviewHistory(get, set, { reset: true });
+  },
+
+  refreshMarketReviewHistory: async (silent = false) => {
+    await fetchMarketReviewHistory(get, set, { reset: true, silent });
+  },
+
+  loadMoreMarketReviewHistory: async () => {
+    const state = get();
+    if (state.isLoadingMoreMarketReviewHistory || !state.marketReviewHistoryHasMore) {
+      return;
+    }
+    await fetchMarketReviewHistory(get, set, { reset: false });
   },
 
   selectHistoryItem: async (recordId) => {
@@ -538,6 +659,65 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       set({ error: getParsedApiError(error) });
     } finally {
       set({ isDeletingHistory: false });
+    }
+  },
+
+  toggleMarketReviewHistorySelection: (recordId) => {
+    const selected = new Set(get().selectedMarketReviewHistoryIds);
+    if (selected.has(recordId)) {
+      selected.delete(recordId);
+    } else {
+      selected.add(recordId);
+    }
+
+    set({ selectedMarketReviewHistoryIds: Array.from(selected) });
+  },
+
+  toggleSelectAllVisibleMarketReviewHistory: () => {
+    const visibleIds = get().marketReviewHistoryItems.map((item) => item.id);
+    const selectedIds = get().selectedMarketReviewHistoryIds;
+    const visibleSet = new Set(visibleIds);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+
+    set({
+      selectedMarketReviewHistoryIds: allSelected
+        ? selectedIds.filter((id) => !visibleSet.has(id))
+        : Array.from(new Set([...selectedIds, ...visibleIds])),
+    });
+  },
+
+  deleteSelectedMarketReviewHistory: async () => {
+    const state = get();
+    const recordIds = Array.from(new Set(state.selectedMarketReviewHistoryIds));
+    if (recordIds.length === 0 || state.isDeletingMarketReviewHistory) {
+      return;
+    }
+
+    set({ isDeletingMarketReviewHistory: true });
+    try {
+      await historyApi.deleteRecords(recordIds);
+
+      const deletedIds = new Set(recordIds);
+      const selectedWasDeleted = state.selectedReport?.meta.id !== undefined
+        && state.selectedReport.meta.reportType === 'market_review'
+        && deletedIds.has(state.selectedReport.meta.id);
+
+      set({ selectedMarketReviewHistoryIds: [] });
+
+      const freshPage = await fetchMarketReviewHistory(get, set, { reset: true });
+
+      if (selectedWasDeleted) {
+        const nextItem = freshPage?.items?.[0];
+        if (nextItem) {
+          await get().selectHistoryItem(nextItem.id);
+        } else {
+          set({ selectedReport: null });
+        }
+      }
+    } catch (error) {
+      set({ error: getParsedApiError(error) });
+    } finally {
+      set({ isDeletingMarketReviewHistory: false });
     }
   },
 
@@ -705,6 +885,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
 
   resetDashboardState: () => {
     historyRequestSeq += 1;
+    marketReviewHistoryRequestSeq += 1;
     stockHistoryRequestSeq += 1;
     reportRequestSeq = 0;
     analyzeRequestSeq = 0;
@@ -712,5 +893,34 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     activeTaskLocalRevision += 1;
     dismissedTaskIds.clear();
     set({ ...initialState });
+  },
+
+  loadStockBar: async () => {
+    const state = get();
+    if (state.isLoadingStockBar) return;
+    set({ isLoadingStockBar: true });
+    try {
+      const response = await historyApi.getStockBarList({
+        startDate: getRecentStartDate(90),
+        endDate: getTodayInShanghai(),
+      });
+      set({ stockBarItems: response.items });
+    } catch {
+      // keep existing items on error
+    } finally {
+      set({ isLoadingStockBar: false });
+    }
+  },
+
+  refreshStockBar: async () => {
+    try {
+      const response = await historyApi.getStockBarList({
+        startDate: getRecentStartDate(90),
+        endDate: getTodayInShanghai(),
+      });
+      set({ stockBarItems: response.items });
+    } catch {
+      // keep existing items on error
+    }
   },
 }));

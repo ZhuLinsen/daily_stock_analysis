@@ -19,6 +19,102 @@ const baseSummary = {
 };
 
 describe('ReportOverview', () => {
+  it('renders final market phase and partial-bar labels from report metadata', () => {
+    render(
+      <ReportOverview
+        meta={{
+          ...baseMeta,
+          marketPhaseSummary: {
+            market: 'cn',
+            phase: 'intraday',
+            marketLocalTime: '2026-03-21T10:30:00+08:00',
+            sessionDate: '2026-03-21',
+            effectiveDailyBarDate: '2026-03-20',
+            isTradingDay: true,
+            isMarketOpenNow: true,
+            isPartialBar: true,
+            minutesToOpen: null,
+            minutesToClose: 150,
+            triggerSource: 'api',
+            analysisIntent: 'auto',
+            warnings: [],
+          },
+        }}
+        summary={baseSummary}
+      />,
+    );
+
+    expect(screen.getByLabelText('市场阶段: CN · 盘中')).toBeInTheDocument();
+    expect(screen.getByText('市场阶段: CN · 盘中')).toBeVisible();
+    expect(screen.getByLabelText('日线未完成')).toBeInTheDocument();
+  });
+
+  it('renders English final market phase and partial-bar labels', () => {
+    render(
+      <ReportOverview
+        meta={{
+          ...baseMeta,
+          reportLanguage: 'en',
+          marketPhaseSummary: {
+            market: 'us',
+            phase: 'postmarket',
+            marketLocalTime: '2026-03-21T16:30:00-04:00',
+            sessionDate: '2026-03-21',
+            effectiveDailyBarDate: '2026-03-21',
+            isTradingDay: true,
+            isMarketOpenNow: false,
+            isPartialBar: true,
+            minutesToOpen: null,
+            minutesToClose: null,
+            triggerSource: 'api',
+            analysisIntent: 'auto',
+            warnings: [],
+          },
+        }}
+        summary={baseSummary}
+      />,
+    );
+
+    expect(screen.getByLabelText('Market phase: US · Post-market')).toBeInTheDocument();
+    expect(screen.getByLabelText('Partial bar')).toBeInTheDocument();
+  });
+
+  it('renders unknown final phase without partial-bar label', () => {
+    render(
+      <ReportOverview
+        meta={{
+          ...baseMeta,
+          marketPhaseSummary: {
+            market: null,
+            phase: 'unknown',
+            marketLocalTime: null,
+            sessionDate: null,
+            effectiveDailyBarDate: null,
+            isTradingDay: null,
+            isMarketOpenNow: null,
+            isPartialBar: false,
+            minutesToOpen: null,
+            minutesToClose: null,
+            triggerSource: 'api',
+            analysisIntent: 'auto',
+            warnings: ['calendar_unavailable'],
+          },
+        }}
+        summary={baseSummary}
+      />,
+    );
+
+    expect(screen.getByText('市场阶段: 阶段未知')).toBeVisible();
+    expect(screen.queryByText('日线未完成')).not.toBeInTheDocument();
+  });
+
+  it('does not render a market phase placeholder for legacy reports', () => {
+    render(<ReportOverview meta={baseMeta} summary={baseSummary} />);
+
+    expect(screen.queryByText(/市场阶段/)).not.toBeInTheDocument();
+    expect(screen.queryByText('日线未完成')).not.toBeInTheDocument();
+  });
+
   it('renders related boards with leading and lagging markers', () => {
     render(
       <ReportOverview

@@ -8,7 +8,9 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import JSONResponse
 
+from api.v1.schemas.analysis import DuplicateTaskErrorResponse, TaskAccepted
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.portfolio import (
     PortfolioAccountCreateRequest,
@@ -26,11 +28,13 @@ from api.v1.schemas.portfolio import (
     PortfolioImportCommitResponse,
     PortfolioImportParseResponse,
     PortfolioImportTradeItem,
+    PortfolioPositionAnalysisRequest,
     PortfolioRiskResponse,
     PortfolioSnapshotResponse,
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
 )
+from src.services.task_queue import get_task_queue
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import (
@@ -453,6 +457,125 @@ def get_snapshot(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Get snapshot failed", exc)
+
+
+@router.post(
+    "/positions/{symbol}/analysis",
+    status_code=202,
+    response_model=TaskAccepted,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": DuplicateTaskErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Submit manual analysis for a held portfolio position",
+)
+def analyze_position(symbol: str, request: PortfolioPositionAnalysisRequest) -> TaskAccepted | JSONResponse:
+    service = PortfolioService()
+    try:
+        context = _resolve_position_analysis_context(service, symbol=symbol, account_id=request.account_id)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Resolve portfolio position failed", exc)
+
+    queue = get_task_queue()
+    accepted, duplicates = queue.submit_tasks_batch(
+        [context["symbol"]],
+        stock_name=None,
+        original_query=context["symbol"],
+        selection_source="manual",
+        query_source="portfolio",
+        portfolio_context=context,
+        report_type="detailed",
+        analysis_phase=request.analysis_phase,
+        force_refresh=bool(request.force),
+        notify=True,
+    )
+    if duplicates:
+        dup = duplicates[0]
+        error_response = DuplicateTaskErrorResponse(
+            error="duplicate_task",
+            message=str(dup),
+            stock_code=dup.stock_code,
+            existing_task_id=dup.existing_task_id,
+        )
+        return JSONResponse(status_code=409, content=error_response.model_dump())
+    task = accepted[0]
+    response = TaskAccepted(
+        task_id=task.task_id,
+        trace_id=task.trace_id or task.task_id,
+        status="pending",
+        message=f"分析任务已加入队列: {task.stock_code}",
+        analysis_phase=task.analysis_phase,
+    )
+    return response
+
+
+def _resolve_position_analysis_context(
+    service: PortfolioService,
+    *,
+    symbol: str,
+    account_id: Optional[int],
+) -> dict:
+    target = service._normalize_symbol_for_position(symbol)
+    if not target:
+        raise ValueError("symbol must not be empty")
+
+    snapshot = service.get_portfolio_snapshot(account_id=account_id, cost_method="fifo")
+    matches = []
+    for account in snapshot.get("accounts") or []:
+        for position in account.get("positions") or []:
+            position_symbol = service._normalize_symbol_for_position(
+                str(position.get("symbol") or "")
+            )
+            if position_symbol != target:
+                continue
+            try:
+                quantity = float(position.get("quantity") or 0)
+            except (TypeError, ValueError):
+                quantity = 0.0
+            if quantity <= 0:
+                continue
+            matches.append((account, position, position_symbol))
+
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "not_found", "message": f"No non-zero portfolio position for {target}"},
+        )
+    if account_id is None:
+        account_ids = {
+            int(account.get("account_id"))
+            for account, _, _ in matches
+            if account.get("account_id") is not None
+        }
+        if len(account_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "ambiguous_position_account",
+                    "message": f"{target} is held in multiple accounts; pass account_id",
+                },
+            )
+
+    account, position, position_symbol = matches[0]
+    return {
+        "account_id": account.get("account_id"),
+        "account_name": account.get("account_name"),
+        "symbol": position_symbol or target,
+        "market": position.get("market"),
+        "currency": position.get("currency"),
+        "quantity": position.get("quantity"),
+        "avg_cost": position.get("avg_cost"),
+        "total_cost": position.get("total_cost"),
+        "unrealized_pnl_base": position.get("unrealized_pnl_base"),
+        "unrealized_pnl_pct": position.get("unrealized_pnl_pct"),
+        "price_source": position.get("price_source"),
+        "price_provider": position.get("price_provider"),
+        "price_date": position.get("price_date"),
+        "price_stale": bool(position.get("price_stale")),
+        "price_available": bool(position.get("price_available", True)),
+        "cost_method": snapshot.get("cost_method") or "fifo",
+    }
 
 
 @router.post(

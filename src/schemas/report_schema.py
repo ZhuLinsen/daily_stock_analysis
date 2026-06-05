@@ -113,6 +113,18 @@ class BattlePlan(BaseModel):
     action_checklist: Optional[List[str]] = None
 
 
+class PhaseDecision(BaseModel):
+    """Market-phase-aware intraday decision guardrail output."""
+
+    phase_context: Optional[Dict[str, Any]] = None
+    action_window: Optional[str] = None
+    immediate_action: Optional[str] = None
+    watch_conditions: List[str] = Field(default_factory=list)
+    next_check_time: Optional[str] = None
+    confidence_reason: Optional[str] = None
+    data_limitations: List[str] = Field(default_factory=list)
+
+
 class Dashboard(BaseModel):
     """Dashboard block."""
 
@@ -120,6 +132,7 @@ class Dashboard(BaseModel):
     data_perspective: Optional[DataPerspective] = None
     intelligence: Optional[Intelligence] = None
     battle_plan: Optional[BattlePlan] = None
+    phase_decision: Optional[PhaseDecision] = None
 
 
 class AnalysisReportSchema(BaseModel):

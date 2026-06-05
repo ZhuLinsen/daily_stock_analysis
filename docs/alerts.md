@@ -331,6 +331,22 @@ P6 不做：
 - 不做 sector 级集中度告警；P6 集中度使用 symbol 维度 `top_weight_pct`。
 - 不做跨规则同标的通知合并、分钟线、多市场时区精确判定或 legacy JSON 扩展。
 
+## 阶段感知与公开摘要联动（Refs #1386 P6）
+
+本节描述 #1386 P6 的告警可见性联动，区别于上面的“P6 持仓与自选股联动”。本联动不新增告警表、不做 migration、不自动触发轻量 LLM 分析，只把触发当时可公开的 phase/pack 摘要写入既有触发历史。
+
+- `AlertTriggerItem` 保留 `diagnostics` 字符串，并新增派生字段 `market_phase_summary`、`analysis_context_pack_overview`、`analysis_visibility_source`。
+- 真实 `status=triggered` 的 worker 记录会在 JSON diagnostics 中合并 sibling key `analysis_visibility`，包含 `market_phase_summary`、`analysis_context_pack_overview`、`source`。旧纯文本 diagnostics 保留原文，API 派生字段返回 `null`，source 返回 `legacy_text`。
+- `analysis_visibility_source` 取值为 `alert_trigger_market_context`、`analysis_history_snapshot`、`evaluator_snapshot`、`legacy_text` 或 `null`。
+- symbol 目标使用 `get_market_for_stock(normalize_stock_code(effective_target))` 构造触发时 phase；`target_scope=market` 直接用 `normalize_market_region(target)`，不会把 `cn|hk|us` 当作股票代码推断；账户级无法唯一定位市场时允许 summary 落为 `unknown`。
+- `analysis_context_pack_overview` 只来自 evaluator 已带 overview 或最近 30 天内的历史 snapshot。最近历史查询复用历史服务的代码变体候选，并以 best-effort + 批内短缓存方式执行；缺失或解析失败返回 `null`，不伪造 pack。
+- 告警通知只输出公开摘要：阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations。通知不得输出 raw context pack、Prompt、新闻正文、完整 diagnostics JSON、webhook URL、token 或持仓敏感细节。
+- Web 告警历史展示 phase badge、数据质量等级和 limitations 空态；旧触发记录缺少公开摘要时不影响列表读取。
+
+#1386 P7 的用户边界：告警联动只解释触发时已经可公开的阶段和数据质量摘要，不会自动发起轻量 LLM 盘中分析，也不会新增告警表、规则类型、环境变量或 migration。需要阶段化分析时，仍应通过分析 API / Web 手动分析入口触发；告警通知只保留阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations。
+
+回滚本联动只需要 revert 对 worker/API/Web 的改动；已有 `diagnostics.analysis_visibility` 会作为普通 JSON diagnostics 保留，旧代码不会读取该 sibling key。
+
 ## P7 大盘红绿灯结构化告警
 
 P7 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 中新增 `target_scope=market`，消费结构化 `MarketLightSnapshot`，不解析 Markdown，不扩展 legacy `AGENT_EVENT_ALERT_RULES_JSON`，不新增表。大盘复盘历史仍写一条 `analysis_history(code=MARKET, report_type=market_review)`；多市场复盘通过 `context_snapshot.market_light_snapshots` 按 region 保存本次实际复盘的快照 map。

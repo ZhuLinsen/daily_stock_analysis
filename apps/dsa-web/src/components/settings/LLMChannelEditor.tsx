@@ -48,6 +48,8 @@ const KNOWN_MODEL_PREFIXES = new Set([
   'friendliai',
 ]);
 
+const CHANNEL_FIELD_SUFFIXES = ['PROTOCOL', 'BASE_URL', 'API_KEY', 'API_KEYS', 'MODELS', 'EXTRA_HEADERS', 'ENABLED'] as const;
+const CHANNEL_FIELD_KEY_PATTERN = /^LLM_([A-Z0-9_]+)_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
 const FALSEY_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 const RUNTIME_CAPABILITY_OPTIONS: Array<{ value: LLMCapabilityCheck; label: string; hint: string }> = [
@@ -103,7 +105,7 @@ interface RuntimeConfig {
 }
 
 interface LLMChannelEditorProps {
-  items: Array<{ key: string; value: string }>;
+  items: Array<{ key: string; value: string; rawValueExists?: boolean }>;
   configVersion: string;
   maskToken: string;
   onSaved: (updatedItems: Array<{ key: string; value: string }>) => void | Promise<void>;
@@ -172,6 +174,170 @@ function HelpLabel({
       />
     </div>
   );
+}
+
+function parseChannelFieldKeys(channel: ChannelConfig): string[] {
+  const upperName = channel.name.trim().toUpperCase();
+  return [
+    `LLM_${upperName}_PROTOCOL`,
+    `LLM_${upperName}_BASE_URL`,
+    `LLM_${upperName}_ENABLED`,
+    `LLM_${upperName}_API_KEY`,
+    `LLM_${upperName}_API_KEYS`,
+    `LLM_${upperName}_MODELS`,
+    `LLM_${upperName}_EXTRA_HEADERS`,
+  ];
+}
+
+function parseChannelFieldKeysFromName(name: string): string[] {
+  const upperName = name.trim().toUpperCase();
+  return CHANNEL_FIELD_SUFFIXES.map((suffix) => `LLM_${upperName}_${suffix}`);
+}
+
+function isChannelSecretFieldKey(key: string): boolean {
+  const match = CHANNEL_FIELD_KEY_PATTERN.exec(key.toUpperCase());
+  return match?.[2] === 'API_KEY' || match?.[2] === 'API_KEYS';
+}
+
+function resolveInitialChannelApiKeySource(
+  channelName: string,
+  initialItemValueByKey: Map<string, string>,
+  initialItemSourceByKey: Map<string, boolean>,
+): boolean | undefined {
+  const upperName = channelName.trim().toUpperCase();
+  const apiKeysKey = `LLM_${upperName}_API_KEYS`;
+  const apiKeyKey = `LLM_${upperName}_API_KEY`;
+
+  const apiKeysValue = (initialItemValueByKey.get(apiKeysKey) || '').trim();
+  const apiKeyValue = (initialItemValueByKey.get(apiKeyKey) || '').trim();
+
+  if (apiKeysValue && initialItemSourceByKey.has(apiKeysKey)) {
+    return initialItemSourceByKey.get(apiKeysKey);
+  }
+  if (apiKeyValue && initialItemSourceByKey.has(apiKeyKey)) {
+    return initialItemSourceByKey.get(apiKeyKey);
+  }
+
+  if (apiKeyValue) {
+    return initialItemSourceByKey.get(apiKeyKey);
+  }
+  if (apiKeysValue) {
+    return initialItemSourceByKey.get(apiKeysKey);
+  }
+  return initialItemSourceByKey.get(apiKeysKey) ?? initialItemSourceByKey.get(apiKeyKey);
+}
+
+function resolveInitialChannelApiKeyValue(
+  channelName: string,
+  itemValueByKey: Map<string, string>,
+  itemSourceByKey: Map<string, boolean>,
+): string {
+  const upperName = channelName.trim().toUpperCase();
+  const apiKeysKey = `LLM_${upperName}_API_KEYS`;
+  const apiKeyKey = `LLM_${upperName}_API_KEY`;
+
+  const apiKeysValue = (itemValueByKey.get(apiKeysKey) || '').trim();
+  const apiKeyValue = (itemValueByKey.get(apiKeyKey) || '').trim();
+
+  if (apiKeysValue && itemSourceByKey.has(apiKeysKey)) {
+    return apiKeysValue;
+  }
+  if (apiKeyValue && itemSourceByKey.has(apiKeyKey)) {
+    return apiKeyValue;
+  }
+  if (apiKeysValue) {
+    return apiKeysValue;
+  }
+  if (apiKeyValue) {
+    return apiKeyValue;
+  }
+  return itemValueByKey.get(apiKeysKey) || itemValueByKey.get(apiKeyKey) || '';
+}
+
+function buildChangedItemKeys(
+  channels: ChannelConfig[],
+  initialChannels: ChannelConfig[],
+  initialItemSourceByKey: Map<string, boolean>,
+  initialItemValueByKey: Map<string, string>,
+): Set<string> {
+  const changedKeys = new Set<string>();
+  const nextChannelNames = channels.map((channel) => channel.name.trim().toLowerCase()).join(',');
+  const previousChannelNames = initialChannels.map((channel) => channel.name.trim().toLowerCase()).join(',');
+
+  if (nextChannelNames !== previousChannelNames) {
+    changedKeys.add('LLM_CHANNELS');
+  }
+
+  const maxLength = Math.max(channels.length, initialChannels.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const current = channels[index];
+    const previous = initialChannels[index];
+    if (!current && !previous) {
+      continue;
+    }
+
+    if (!current) {
+      const previousKeys = parseChannelFieldKeys(previous);
+      for (const key of previousKeys) {
+        if (initialItemSourceByKey.get(key.toUpperCase()) !== false) {
+          changedKeys.add(key);
+        }
+      }
+      continue;
+    }
+
+    if (!previous) {
+      for (const key of parseChannelFieldKeys(current)) {
+        changedKeys.add(key);
+      }
+      continue;
+    }
+
+    const currentName = current.name.trim().toUpperCase();
+    const previousName = previous.name.trim().toUpperCase();
+    if (currentName !== previousName) {
+      const previousApiKeySource = resolveInitialChannelApiKeySource(
+        previous.name,
+        initialItemValueByKey,
+        initialItemSourceByKey,
+      );
+      const preserveRuntimeOnlySecret = previousApiKeySource === false && current.apiKey === previous.apiKey;
+      const previousKeys = parseChannelFieldKeys(previous);
+      for (const key of previousKeys) {
+        if (initialItemSourceByKey.get(key.toUpperCase()) !== false) {
+          changedKeys.add(key);
+        }
+      }
+
+      for (const key of parseChannelFieldKeys(current)) {
+        if (preserveRuntimeOnlySecret && isChannelSecretFieldKey(key)) {
+          continue;
+        }
+        changedKeys.add(key);
+      }
+      continue;
+    }
+
+    const prefix = `LLM_${currentName}`;
+    if (current.protocol !== previous.protocol) {
+      changedKeys.add(`${prefix}_PROTOCOL`);
+    }
+    if (current.baseUrl !== previous.baseUrl) {
+      changedKeys.add(`${prefix}_BASE_URL`);
+    }
+    if (current.enabled !== previous.enabled) {
+      changedKeys.add(`${prefix}_ENABLED`);
+    }
+    if (current.apiKey !== previous.apiKey) {
+      changedKeys.add(`${prefix}_API_KEY`);
+      changedKeys.add(`${prefix}_API_KEYS`);
+    }
+    if (current.models !== previous.models) {
+      changedKeys.add(`${prefix}_MODELS`);
+    }
+  }
+
+  return changedKeys;
 }
 
 const ChannelRow: React.FC<ChannelRowProps> = ({
@@ -1009,6 +1175,26 @@ function runtimeConfigsAreEqual(left: RuntimeConfig, right: RuntimeConfig): bool
     && left.fallbackModels.join(',') === right.fallbackModels.join(',');
 }
 
+function runtimeConfigChangedKeys(left: RuntimeConfig, right: RuntimeConfig): Set<string> {
+  const changed = new Set<string>();
+  if (left.primaryModel !== right.primaryModel) {
+    changed.add('LITELLM_MODEL');
+  }
+  if (left.agentPrimaryModel !== right.agentPrimaryModel) {
+    changed.add('AGENT_LITELLM_MODEL');
+  }
+  if (left.fallbackModels.join(',') !== right.fallbackModels.join(',')) {
+    changed.add('LITELLM_FALLBACK_MODELS');
+  }
+  if (left.temperature !== right.temperature) {
+    changed.add('LLM_TEMPERATURE');
+  }
+  if (left.visionModel !== right.visionModel) {
+    changed.add('VISION_MODEL');
+  }
+  return changed;
+}
+
 function resolveTemperatureFromItems(itemMap: Map<string, string>): string {
   const unified = itemMap.get('LLM_TEMPERATURE');
   if (unified) return unified;
@@ -1058,8 +1244,11 @@ function parseRuntimeConfigFromItems(items: Array<{ key: string; value: string }
   };
 }
 
-function parseChannelsFromItems(items: Array<{ key: string; value: string }>): ChannelConfig[] {
-  const itemMap = new Map(items.map((item) => [item.key, item.value]));
+function parseChannelsFromItems(
+  items: Array<{ key: string; value: string }>,
+  itemSourceByKey: Map<string, boolean> = new Map(),
+): ChannelConfig[] {
+  const itemMap = new Map(items.map((item) => [item.key.toUpperCase(), item.value]));
   const channelNames = (itemMap.get('LLM_CHANNELS') || '')
     .split(',')
     .map((segment) => segment.trim())
@@ -1076,7 +1265,7 @@ function parseChannelsFromItems(items: Array<{ key: string; value: string }>): C
       name: name.toLowerCase(),
       protocol: inferProtocol(itemMap.get(`LLM_${upperName}_PROTOCOL`) || '', baseUrl, models),
       baseUrl,
-      apiKey: itemMap.get(`LLM_${upperName}_API_KEYS`) || itemMap.get(`LLM_${upperName}_API_KEY`) || '',
+      apiKey: resolveInitialChannelApiKeyValue(name, itemMap, itemSourceByKey),
       models: rawModels,
       enabled: parseEnabled(itemMap.get(`LLM_${upperName}_ENABLED`)),
     };
@@ -1149,7 +1338,32 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   onSaved,
   disabled = false,
 }) => {
-  const initialChannels = useMemo(() => parseChannelsFromItems(items), [items]);
+  const initialItemSourceByKey = useMemo(() => {
+    const sourceByKey = new Map<string, boolean>();
+    for (const item of items) {
+      sourceByKey.set(item.key.toUpperCase(), item.rawValueExists !== false);
+    }
+    for (const [key, hasSource] of sourceByKey) {
+      if (hasSource) {
+        continue;
+      }
+      const match = CHANNEL_FIELD_KEY_PATTERN.exec(key);
+      if (!match) {
+        continue;
+      }
+      const channelName = match[1];
+      for (const channelKey of parseChannelFieldKeysFromName(channelName)) {
+        if (!sourceByKey.has(channelKey)) {
+          sourceByKey.set(channelKey, false);
+        }
+      }
+    }
+    return sourceByKey;
+  }, [items]);
+  const initialChannels = useMemo(
+    () => parseChannelsFromItems(items, initialItemSourceByKey),
+    [items, initialItemSourceByKey],
+  );
   const initialNames = useMemo(() => initialChannels.map((channel) => channel.name), [initialChannels]);
   const initialRuntimeConfig = useMemo(() => parseRuntimeConfigFromItems(items), [items]);
   const savedItemMap = useMemo(() => new Map(items.map((item) => [item.key.toUpperCase(), item.value])), [items]);
@@ -1433,7 +1647,23 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     setSaveWarnings([]);
 
     try {
-      const updateItems = channelsToUpdateItems(channels, initialNames, runtimeConfigForSave, managesRuntimeConfig);
+      const changedKeys = new Set<string>([
+        ...buildChangedItemKeys(channels, initialChannels, initialItemSourceByKey, savedItemMap),
+        ...runtimeConfigChangedKeys(runtimeConfigForSave, initialRuntimeConfig),
+      ]);
+      const updateItems = channelsToUpdateItems(channels, initialNames, runtimeConfigForSave, managesRuntimeConfig).filter(
+        (item) => {
+          const itemKey = item.key.toUpperCase();
+          const initialItemSource = initialItemSourceByKey.get(itemKey);
+          if (initialItemSource === false) {
+            return changedKeys.has(itemKey);
+          }
+          if (isChannelSecretFieldKey(itemKey) && initialItemSource === undefined) {
+            return changedKeys.has(itemKey);
+          }
+          return true;
+        },
+      );
       const response = await systemConfigApi.update({
         configVersion,
         maskToken,

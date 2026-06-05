@@ -323,6 +323,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                     "turnover_rate": "11.46",
                 },
             },
+            "market_phase_summary": _market_phase_summary(),
         }
 
         saved = self.db.save_analysis_history(
@@ -349,6 +350,100 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["change_pct"], -4.61)
         self.assertEqual(item["volume_ratio"], 1.17)
         self.assertEqual(item["turnover_rate"], 11.46)
+        self.assertEqual(item["market_phase_summary"]["phase"], "intraday")
+        self.assertEqual(item["market_phase_summary"]["minutes_to_close"], 300)
+
+    def test_market_review_history_can_be_filtered_without_stock_records(self) -> None:
+        """Market review records should be queryable as a dedicated history collection."""
+        stock_result = self._build_result()
+        market_result = AnalysisResult(
+            code="MARKET",
+            name="大盘复盘",
+            sentiment_score=50,
+            trend_prediction="大盘复盘",
+            operation_advice="查看复盘",
+            analysis_summary="大盘复盘摘要",
+        )
+
+        self.assertEqual(
+            self.db.save_analysis_history(
+                result=stock_result,
+                query_id="query_stock_history",
+                report_type="detailed",
+                news_content="个股正文",
+                context_snapshot=None,
+                save_snapshot=False,
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.db.save_analysis_history(
+                result=market_result,
+                query_id="query_market_review_history",
+                report_type="market_review",
+                news_content="大盘复盘正文",
+                context_snapshot={
+                    "report_kind": "market_review",
+                    "market_review_payload": {
+                        "kind": "market_review",
+                        "sections": [{"title": "复盘", "markdown": "结构化正文"}],
+                    },
+                },
+                save_snapshot=True,
+            ),
+            1,
+        )
+
+        service = HistoryService(self.db)
+        payload = service.get_history_list(
+            stock_code="MARKET",
+            report_type="market_review",
+            page=1,
+            limit=10,
+        )
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["stock_code"], "MARKET")
+        self.assertEqual(payload["items"][0]["report_type"], "market_review")
+
+    def test_distinct_stock_bar_excludes_market_review_records_by_default(self) -> None:
+        """The stock bar aggregation should not mix MARKET into ordinary stock entries."""
+        stock_result = self._build_result()
+        market_result = AnalysisResult(
+            code="MARKET",
+            name="大盘复盘",
+            sentiment_score=50,
+            trend_prediction="大盘复盘",
+            operation_advice="查看复盘",
+            analysis_summary="大盘复盘摘要",
+        )
+
+        self.assertEqual(
+            self.db.save_analysis_history(
+                result=stock_result,
+                query_id="query_stock_bar_stock",
+                report_type="detailed",
+                news_content="个股正文",
+                context_snapshot=None,
+                save_snapshot=False,
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.db.save_analysis_history(
+                result=market_result,
+                query_id="query_stock_bar_market",
+                report_type="market_review",
+                news_content="大盘复盘正文",
+                context_snapshot=None,
+                save_snapshot=False,
+            ),
+            1,
+        )
+
+        records = self.db.get_distinct_stocks_from_history(limit=10)
+
+        self.assertEqual([record.code for record in records], ["600519"])
 
     def test_history_list_matches_equivalent_suffixed_stock_codes(self) -> None:
         """Same-stock history should include rows saved with supported suffixed codes."""

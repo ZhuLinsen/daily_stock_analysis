@@ -140,6 +140,29 @@ class TestExtractStockCode(unittest.TestCase):
     def test_common_word_trend(self):
         self.assertEqual(_extract_stock_code("the TREND is up"), "")
 
+    def test_finance_abbrev_excluded(self):
+        for text in [
+            "TTM",
+            "市盈率 TTM 怎么看",
+            "PE 怎么看",
+            "PE TTM",
+            "WHAT IS PE",
+            "PE IS HIGH",
+            "WHAT IS TTM",
+            "YOY",
+            "QOQ",
+            "EBITDA",
+            "DCF",
+            "CAGR",
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(_extract_stock_code(text), "")
+
+    def test_finance_abbrev_before_real_ticker(self):
+        self.assertEqual(_extract_stock_code("PE AAPL 怎么看"), "AAPL")
+        self.assertEqual(_extract_stock_code("TTM AAPL 怎么看"), "AAPL")
+        self.assertEqual(_extract_stock_code("WHAT IS PE AAPL"), "AAPL")
+
     # --- Priority: A-share > HK > US ---
 
     def test_a_share_takes_priority_over_us(self):
@@ -164,7 +187,11 @@ class TestExtractStockCode(unittest.TestCase):
 
     def test_common_words_set_completeness(self):
         """Ensure critical finance terms are in _COMMON_WORDS."""
-        expected_in_set = {"BUY", "SELL", "HOLD", "ETF", "IPO", "RSI", "MACD", "STOCK", "TREND"}
+        expected_in_set = {
+            "BUY", "SELL", "HOLD", "ETF", "IPO", "RSI", "MACD", "STOCK", "TREND",
+            "TTM", "PE", "YOY", "QOQ", "EBITDA", "DCF", "CAGR",
+            "IS", "WHAT", "HIGH",
+        }
         self.assertTrue(expected_in_set.issubset(_COMMON_WORDS))
 
 
@@ -1103,6 +1130,17 @@ class TestDecisionAgentChatMode(unittest.TestCase):
         self.assertEqual(ctx.get_data("final_response_text"), "建议继续观察量价配合，分批参与。")
         self.assertIsNone(ctx.get_data("final_dashboard"))
         self.assertEqual(opinion.signal, "buy")
+
+    def test_decision_agent_prompt_requires_phase_decision(self):
+        from src.agent.agents.decision_agent import DecisionAgent
+
+        agent = DecisionAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        prompt = agent.system_prompt(AgentContext(query="分析 600519", stock_code="600519"))
+
+        self.assertIn("phase_decision", prompt)
+        self.assertIn("watch_conditions", prompt)
+        self.assertIn("data_limitations", prompt)
+        self.assertIn("confidence_level", prompt)
 
 
 class TestTechnicalAgentSkillPolicy(unittest.TestCase):

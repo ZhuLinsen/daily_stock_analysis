@@ -72,7 +72,7 @@ describe('alphasiftApi', () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it('rolls back ALPHASIFT_ENABLED when bundled AlphaSift is unavailable after enabling', async () => {
+  it('rolls back ALPHASIFT_ENABLED when bundled AlphaSift is unavailable', async () => {
     getConfig
       .mockResolvedValueOnce({ configVersion: 'v1', maskToken: '******' })
       .mockResolvedValueOnce({ configVersion: 'v2', maskToken: '******' });
@@ -82,10 +82,11 @@ describe('alphasiftApi', () => {
         enabled: true,
         available: false,
         install_spec_is_default: true,
+        diagnostics: { reason: 'missing_module' },
       },
     });
 
-    await expect(alphasiftApi.enable()).rejects.toThrow('AlphaSift');
+    await expect(alphasiftApi.enable()).rejects.toThrow('pip install -r requirements.txt');
 
     expect(updateConfig).toHaveBeenNthCalledWith(1, {
       configVersion: 'v1',
@@ -121,7 +122,7 @@ describe('alphasiftApi', () => {
 
     const result = await alphasiftApi.getStrategies();
 
-    expect(get).toHaveBeenCalledWith('/api/v1/alphasift/strategies');
+    expect(get).toHaveBeenCalledWith('/api/v1/alphasift/strategies', { timeout: 300000 });
     expect(result.enabled).toBe(true);
     expect(result.strategyCount).toBe(1);
     expect(result.strategies[0].id).toBe('dual_low');

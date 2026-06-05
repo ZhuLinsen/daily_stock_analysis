@@ -7,7 +7,7 @@
 | 渠道 | 类型 | Minimal key | Advanced key | 说明 |
 | --- | --- | --- | --- | --- |
 | 企业微信 | 静态配置 | `WECHAT_WEBHOOK_URL` | `WECHAT_MSG_TYPE` | 配置后参与批量通知发送 |
-| 飞书 Webhook | 静态配置 | `FEISHU_WEBHOOK_URL` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD` | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会单独开启群 Webhook 推送 |
+| 飞书 Webhook / App Bot | 静态配置 | `FEISHU_WEBHOOK_URL` 或 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_DOMAIN` | Webhook URL 优先；未配置 Webhook 时，App Bot 三元组可主动向指定群/用户推送。`FEISHU_STREAM_ENABLED` 仅代表事件订阅 / Stream Bot，不参与主动通知配置完成判断 |
 | Telegram | 静态配置 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `TELEGRAM_MESSAGE_THREAD_ID` | token 与 chat id 必须同时存在 |
 | 邮件 | 静态配置 | `EMAIL_SENDER`, `EMAIL_PASSWORD` | `EMAIL_RECEIVERS`, `EMAIL_SENDER_NAME` | `EMAIL_RECEIVERS` 留空时发给自己 |
 | Pushover | 静态配置 | `PUSHOVER_USER_KEY`, `PUSHOVER_API_TOKEN` | - | 两个 key 必须同时存在 |
@@ -34,6 +34,7 @@
 - `WEBHOOK_VERIFY_SSL` 是读取该配置的 webhook-style HTTPS 通知请求共用的证书校验开关。
 - WebPush、Apprise、更细粒度路由、跨进程降噪和真实每日摘要暂不进入运行时实现；相关配置如未来引入，应先更新本文档、`.env.example`、Web 元数据与回归测试。
 - Bark 保持 custom webhook 基线，不新增 `BARK_*` 一等配置。
+- 飞书 App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，不是新增依赖；标准源码安装、Docker、GitHub Actions daily workflow 和桌面构建链路均通过 `pip install -r requirements.txt` 安装。官方依据：[Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/)、[SDK repo](https://github.com/larksuite/oapi-sdk-python)。
 
 ## 报告渲染与分片
 
@@ -83,6 +84,11 @@
 | `DISCORD_WEBHOOK_URL` | minimal | discord | Secret | - |
 | `DISCORD_BOT_TOKEN` | minimal | discord | Secret | - |
 | `DISCORD_MAIN_CHANNEL_ID` | minimal | discord | Secret | - |
+| `FEISHU_APP_ID` | minimal | feishu | Secret | - |
+| `FEISHU_APP_SECRET` | minimal | feishu | Secret | - |
+| `FEISHU_CHAT_ID` | minimal | feishu | Variable or Secret | - |
+| `FEISHU_RECEIVE_ID_TYPE` | advanced | feishu | Variable or Secret | - |
+| `FEISHU_DOMAIN` | advanced | feishu | Variable or Secret | - |
 | `ASTRBOT_URL` | minimal | astrbot | Secret | - |
 | `ASTRBOT_TOKEN` | advanced | astrbot | Secret | - |
 | `SERVERCHAN3_SENDKEY` | minimal | serverchan3 | Secret | - |
@@ -279,7 +285,7 @@ python main.py --check-notify
 
 ## Docker
 
-Docker 场景可通过 `--env-file .env` / Compose `env_file` 注入运行时环境变量，也可以挂载 `.env` 让 Web 设置页和后端读写同一份配置文件。只注入环境变量但不挂载 `.env` 时，Web 设置页保存后的值在容器重启后可能被部署环境再次覆盖。
+Docker 场景可通过 `--env-file .env` / Compose `env_file` 注入通知相关环境变量。不要把宿主机 `.env` 作为单文件 bind mount 覆盖容器内 `/app/.env`，否则 Web 设置页保存配置时可能因 Docker mount point 限制导致原子替换或权限问题。新版 Web 设置页会在活跃 `.env` 缺少某些键时展示启动注入的同名环境变量作为兜底；如果需要让 WebUI 保存后的通知配置在容器重建后继续保留，请将 `ENV_FILE` 指向 `/app/data/runtime.env` 等可写数据卷文件，并同步更新或移除启动环境中的同名旧值，避免重启后被覆盖。
 
 降噪静默时段建议显式配置 `NOTIFICATION_TIMEZONE`，避免容器默认时区与预期不一致。自签名内网 webhook 可临时使用 `WEBHOOK_VERIFY_SSL=false`，但不要在公网链路关闭证书校验。
 

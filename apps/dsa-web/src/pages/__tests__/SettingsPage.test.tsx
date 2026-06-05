@@ -954,9 +954,63 @@ describe('SettingsPage', () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText('启用第三方项目 AlphaSift 提供的选股能力。')).toBeInTheDocument();
+    expect(screen.getByText('启用内置 AlphaSift 实验性质选股能力。')).toBeInTheDocument();
     expect(screen.queryByText(privateInstallSpec)).not.toBeInTheDocument();
     expect(screen.queryByText(/安装来源/)).not.toBeInTheDocument();
+  });
+
+  it('maps ALPHASIFT_ENABLED to the AlphaSift card instead of a generic settings field', () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: [
+          {
+            key: 'ALPHASIFT_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'ALPHASIFT_ENABLED',
+              category: 'data_source',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 16,
+            },
+          },
+          {
+            key: 'ALPHASIFT_INSTALL_SPEC',
+            value: '******',
+            rawValueExists: true,
+            isMasked: true,
+            schema: {
+              key: 'ALPHASIFT_INSTALL_SPEC',
+              category: 'data_source',
+              dataType: 'string',
+              uiControl: 'password',
+              isSensitive: true,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 17,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(screen.getByRole('button', { name: '开启选股' })).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-ALPHASIFT_ENABLED')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-field-ALPHASIFT_INSTALL_SPEC')).toBeInTheDocument();
   });
 
   it('refreshes AlphaSift state when the enable flow fails', async () => {
@@ -1168,6 +1222,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('heading', { name: '配置备份' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导出 .env' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导入 .env' })).toBeInTheDocument();
+    expect(screen.getByText(/Docker 部署中/)).toHaveTextContent('ENV_FILE');
   });
 
   it('disables env backup actions when web auth is not enabled', () => {

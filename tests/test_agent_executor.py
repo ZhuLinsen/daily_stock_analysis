@@ -28,7 +28,12 @@ try:
 except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
-from src.agent.executor import AgentExecutor, AgentResult
+from src.agent.executor import (
+    AGENT_SYSTEM_PROMPT,
+    LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT,
+    AgentExecutor,
+    AgentResult,
+)
 from src.agent.llm_adapter import LLMResponse, ToolCall
 from src.agent.runner import parse_dashboard_json, run_agent_loop, serialize_tool_result
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
@@ -124,6 +129,15 @@ SAMPLE_DASHBOARD = {
     "trend_analysis": "Upward trend",
     "technical_analysis": "MACD golden cross",
 }
+
+
+def test_agent_system_prompts_require_phase_decision_contract() -> None:
+    for prompt in (LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT):
+        assert '"phase_decision"' in prompt
+        assert '"watch_conditions"' in prompt
+        assert '"data_limitations"' in prompt
+        assert "quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated" in prompt
+        assert "`confidence_level` 不得为高" in prompt
 
 
 # ============================================================

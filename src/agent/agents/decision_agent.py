@@ -107,6 +107,16 @@ Important: ``decision_type`` must stay within the existing enum
 ``buy|hold|sell``. Express stronger conviction via ``confidence_level``,
 ``sentiment_score``, and the natural-language fields instead of inventing
 new decision_type values.
+
+The nested ``dashboard`` object must include ``phase_decision`` with these
+keys: ``phase_context``, ``action_window``, ``immediate_action``,
+``watch_conditions``, ``next_check_time``, ``confidence_reason``,
+``data_limitations``. For intraday/lunch-break/near-close phases, describe the
+current action, watch conditions, and next check point. For pre-market,
+non-trading, or unknown phases, do not invent today's intraday movement. If
+quote, daily bars, or technical data is stale, fallback, missing, fetch_failed,
+partial, or estimated, ``confidence_level`` must not be High/高 and the
+limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
 """
         if report_language == "en":
             return prompt + """

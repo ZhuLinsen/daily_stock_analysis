@@ -56,11 +56,8 @@ COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Bundle the default AlphaSift adapter in Docker images, matching desktop packages.
-RUN ALPHASIFT_INSTALL_SPEC="$(python -c 'from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC; print(DEFAULT_ALPHASIFT_INSTALL_SPEC)')" \
-    && test -n "$ALPHASIFT_INSTALL_SPEC" \
-    && python -m pip install --no-cache-dir "$ALPHASIFT_INSTALL_SPEC" \
-    && python -c "import alphasift.dsa_adapter"
+# Verify the bundled AlphaSift adapter from requirements.
+RUN python -c "import alphasift.dsa_adapter"
 
 # 确保数据目录存在并授权给 non-root 用户
 RUN mkdir -p /app/data /app/logs /app/reports && \

@@ -189,20 +189,21 @@ npm install
 npm run build
 ```
 
-2) 打包 Python 后端
+2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 依赖收集）
+
+- Windows：
 
 ```bash
-pip install pyinstaller
-pip install -r requirements.txt
-python -m PyInstaller --name stock_analysis --onefile --noconsole --add-data "static;static" --hidden-import=multipart --hidden-import=multipart.multipart main.py
+powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 ```
 
-将生成的 exe 复制到 `dist/backend/`：
+- macOS：
 
 ```bash
-mkdir dist\backend
-copy dist\stock_analysis.exe dist\backend\stock_analysis.exe
+bash scripts/build-backend-macos.sh
 ```
+
+该脚本会在安装依赖后执行 `--collect-all alphasift`，并校验打包产物中可导入 `alphasift.dsa_adapter`，避免分步命令遗漏内置 AlphaSift 模块。
 
 3) 打包 Electron 桌面应用
 

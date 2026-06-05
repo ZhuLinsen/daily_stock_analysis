@@ -82,6 +82,16 @@ WEBUI_PORT=8888
 
 项目的 `docker/docker-compose.yml` 在容器内部已经自动设置了 `WEBUI_HOST=0.0.0.0`，你不需要在 `.env` 里再改监听地址，Docker 会自动处理。
 
+Docker Compose 中的 `env_file: ../.env` 只会把 `.env` 作为**启动环境变量**注入容器，不会在容器内创建 `/app/.env`，也不会让 WebUI 保存配置时回写宿主机 `.env`。新版 WebUI 会在活跃 `.env` 文件缺少某些键时展示启动注入的同名环境变量作为兜底，因此页面上能看到 Docker 启动时注入的配置；但“导出 `.env`”仍只导出当前活跃配置文件内容。
+
+如果希望 WebUI 中保存的配置在容器删除、重建或升级后继续保留，请把活跃配置文件放到已挂载的数据卷中，例如在 Compose 的 `environment` 中增加：
+
+```yaml
+- ENV_FILE=/app/data/runtime.env
+```
+
+同时保留 `../data:/app/data` 挂载。注意：如果启动时的 `../.env`、`docker run -e` 或 Compose `environment:` 里还保留同名旧值，容器重启后这些启动环境变量仍可能覆盖运行时文件中的保存值；要让 WebUI 保存值接管，请同步更新或移除启动环境中的同名配置。
+
 ### 第二步：启动服务
 
 在项目根目录执行：

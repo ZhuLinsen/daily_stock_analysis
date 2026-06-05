@@ -46,16 +46,6 @@ if ($LASTEXITCODE -ne 0) {
   throw "pip install -r requirements.txt failed with exit code $LASTEXITCODE."
 }
 
-Write-Host 'Bundling AlphaSift desktop dependency...'
-$alphaSiftInstallSpec = (& $pythonBin -c "from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC; print(DEFAULT_ALPHASIFT_INSTALL_SPEC)").Trim()
-if ([string]::IsNullOrWhiteSpace($alphaSiftInstallSpec)) {
-  throw 'DEFAULT_ALPHASIFT_INSTALL_SPEC is empty; cannot bundle AlphaSift for desktop.'
-}
-& $pythonBin -m pip install $alphaSiftInstallSpec
-if ($LASTEXITCODE -ne 0) {
-  throw "pip install AlphaSift failed with exit code $LASTEXITCODE."
-}
-
 Write-Host 'Checking python-multipart availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import multipart, multipart.multipart")) {
   throw 'python-multipart is not importable in the selected Python environment.'
@@ -63,7 +53,7 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import multipart, multipart.
 
 Write-Host 'Checking AlphaSift adapter availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import alphasift.dsa_adapter")) {
-  throw 'alphasift.dsa_adapter is not importable after installing AlphaSift.'
+  throw 'alphasift.dsa_adapter is not importable after installing requirements.'
 }
 
 if (Test-Path 'dist\backend') {
@@ -110,6 +100,7 @@ $hiddenImports = @(
   'src.services.task_queue',
   'src.services.analysis_service',
   'src.services.history_service',
+  'src.services.alphasift_service',
   'uvicorn.logging',
   'uvicorn.loops',
   'uvicorn.loops.auto',

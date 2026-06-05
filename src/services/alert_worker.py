@@ -19,7 +19,19 @@ from src.agent.events import (
     parse_event_alert_rules,
     validate_event_alert_rule,
 )
+from data_provider.base import normalize_stock_code
+from src.analysis_context_pack_overview import (
+    ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY,
+    extract_analysis_context_pack_overview,
+)
+from src.core.trading_calendar import build_market_phase_context, get_market_for_stock
+from src.market_phase_summary import (
+    format_public_phase_pack_excerpt,
+    render_market_phase_summary,
+)
 from src.services.alert_service import AlertService
+from src.services.history_service import HistoryService
+from src.services.market_light_service import normalize_market_region
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +87,7 @@ class AlertWorker:
         self.fingerprint_ttl_seconds = max(1, int(fingerprint_ttl_seconds))
         self._trigger_fingerprints: Dict[str, float] = {}
         self._trigger_fingerprint_ttls: Dict[str, int] = {}
+        self._analysis_visibility_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
     @staticmethod
     def _default_config_provider():
@@ -120,6 +133,7 @@ class AlertWorker:
 
         monitor = EventMonitor()
         daily_cache: Dict[Any, Any] = {}
+        self._analysis_visibility_cache = {}
         for runtime_rule in runtime_rules:
             stats["evaluated"] += 1
             try:
@@ -279,7 +293,7 @@ class AlertWorker:
             "data_source": result.get("data_source"),
             "data_timestamp": result.get("data_timestamp"),
             "status": status,
-            "diagnostics": self._diagnostics_for_status(status, result),
+            "diagnostics": self._diagnostics_for_status(status, result, runtime_rule),
         }
         if self._should_deduplicate_trigger(runtime_rule, fields):
             row, created = self.service.repo.create_trigger_if_absent(fields)
@@ -323,11 +337,108 @@ class AlertWorker:
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _diagnostics_for_status(status: str, result: Dict[str, Any]) -> Optional[str]:
+    def _diagnostics_for_status(
+        self,
+        status: str,
+        result: Dict[str, Any],
+        runtime_rule: RuntimeAlertRule,
+    ) -> Optional[str]:
         if status == "triggered":
-            return result.get("diagnostics")
+            payload = self._diagnostics_payload(result.get("diagnostics"))
+            payload["analysis_visibility"] = self._build_analysis_visibility(runtime_rule, result)
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return result.get("message") or result.get("reason")
+
+    @staticmethod
+    def _diagnostics_payload(value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {"legacy_diagnostics": value}
+            return dict(parsed) if isinstance(parsed, dict) else {"legacy_diagnostics": value}
+        return {}
+
+    def _build_analysis_visibility(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        phase_summary = self._alert_market_phase_summary(runtime_rule)
+        overview = self._evaluator_pack_overview(result)
+        source = "evaluator_snapshot" if overview is not None else None
+        if overview is None:
+            overview = self._recent_history_pack_overview(runtime_rule)
+            if overview is not None:
+                source = "analysis_history_snapshot"
+        return {
+            "market_phase_summary": phase_summary,
+            "analysis_context_pack_overview": overview,
+            "source": source or "alert_trigger_market_context",
+        }
+
+    def _alert_market_phase_summary(self, runtime_rule: RuntimeAlertRule) -> Optional[Dict[str, Any]]:
+        try:
+            rule = getattr(runtime_rule, "rule", runtime_rule)
+            target_scope = str(getattr(rule, "target_scope", "") or "")
+            if target_scope == "market":
+                market = normalize_market_region(getattr(rule, "target", self._effective_target(runtime_rule)))
+            elif target_scope in {"portfolio_account"}:
+                market = None
+            else:
+                market = get_market_for_stock(normalize_stock_code(self._effective_target(runtime_rule)))
+            context = build_market_phase_context(
+                market=market,
+                trigger_source="alert",
+                analysis_phase="auto",
+            )
+            payload = context.to_dict() if hasattr(context, "to_dict") else context
+            return render_market_phase_summary(payload)
+        except Exception as exc:
+            logger.debug("[AlertWorker] phase summary unavailable: %s", exc)
+            return None
+
+    @staticmethod
+    def _evaluator_pack_overview(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        overview = result.get("analysis_context_pack_overview")
+        if overview is None:
+            diagnostics = result.get("diagnostics")
+            if isinstance(diagnostics, str):
+                try:
+                    diagnostics = json.loads(diagnostics)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    diagnostics = None
+            if isinstance(diagnostics, dict):
+                overview = diagnostics.get("analysis_context_pack_overview")
+        return extract_analysis_context_pack_overview({ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY: overview})
+
+    def _recent_history_pack_overview(self, runtime_rule: RuntimeAlertRule) -> Optional[Dict[str, Any]]:
+        rule = getattr(runtime_rule, "rule", runtime_rule)
+        target_scope = str(getattr(rule, "target_scope", "") or "")
+        if target_scope in {"market", "portfolio_account"}:
+            return None
+        target = self._effective_target(runtime_rule)
+        if not target or target == "?":
+            return None
+        cache_key = str(target).upper()
+        if cache_key in self._analysis_visibility_cache:
+            return self._analysis_visibility_cache[cache_key]
+        overview: Optional[Dict[str, Any]] = None
+        try:
+            candidates = HistoryService._history_code_filter_candidates(target)
+            records: List[Any] = []
+            for candidate in candidates:
+                records.extend(self.service.db.get_analysis_history(code=candidate, days=30, limit=1))
+            records = sorted(records, key=lambda item: getattr(item, "created_at", None) or datetime.min, reverse=True)
+            if records:
+                overview = extract_analysis_context_pack_overview(getattr(records[0], "context_snapshot", None))
+        except Exception as exc:
+            logger.debug("[AlertWorker] recent history overview unavailable for %s: %s", target, exc)
+            overview = None
+        self._analysis_visibility_cache[cache_key] = overview
+        return overview
 
     def _should_notify(self, rule_key: str, *, ttl_seconds: Optional[int] = None) -> bool:
         now = self.now_provider()
@@ -370,6 +481,17 @@ class AlertWorker:
         notification_service = self.notifier or NotificationService()
         title = f"Event Alert | {self._display_target(runtime_rule)}"
         content = result.get("reason") or result.get("message") or runtime_rule.rule.description or "Alert triggered"
+        diagnostics = self._diagnostics_payload(result.get("diagnostics"))
+        visibility = diagnostics.get("analysis_visibility") if isinstance(diagnostics.get("analysis_visibility"), dict) else None
+        if visibility is None:
+            visibility = self._build_analysis_visibility(runtime_rule, result)
+        excerpt = format_public_phase_pack_excerpt(
+            visibility.get("market_phase_summary"),
+            visibility.get("analysis_context_pack_overview"),
+            source=visibility.get("source"),
+        )
+        if excerpt:
+            content = f"{content}\n\n{excerpt}"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
 
         return notification_service.send_with_results(alert_text, route_type="alert")

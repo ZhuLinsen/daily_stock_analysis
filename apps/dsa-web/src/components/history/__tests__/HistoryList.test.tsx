@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { HistoryList } from '../HistoryList';
 import type { HistoryItem } from '../../../types/analysis';
@@ -35,6 +35,11 @@ const longChineseNameItem: HistoryItem = {
   sentimentScore: 75,
   operationAdvice: '持有',
   createdAt: '2026-03-16T08:00:00Z',
+  marketPhaseSummary: {
+    market: 'CN',
+    phase: 'non_trading',
+    warnings: [],
+  },
 };
 
 describe('HistoryList', () => {
@@ -103,11 +108,18 @@ describe('HistoryList', () => {
     );
 
     // '贵州茅台股票股份有限公司' (12 Chinese chars) should be truncated to '贵州茅台股票股份.' (8 chars + dot)
-    // The full name exists in a hidden span, visible on hover
     expect(screen.getByText('贵州茅台股票股份.')).toBeInTheDocument();
-    const fullNameHidden = screen.queryByText('贵州茅台股票股份有限公司');
-    expect(fullNameHidden).toBeInTheDocument();
-    expect(fullNameHidden).toHaveClass('hidden');
+    expect(screen.queryByText('贵州茅台股票股份有限公司')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: /^贵州茅台股票股份有限公司 600519 历史记录$/,
+      }),
+    ).toBeInTheDocument();
+
+    const actions = screen.getByTestId('history-card-actions');
+    const meta = screen.getByTestId('history-card-meta');
+    expect(within(actions).queryByText('CN · 非交易日')).not.toBeInTheDocument();
+    expect(within(meta).getByText('CN · 非交易日')).toBeVisible();
   });
 
   it('generates unique select-all ids across multiple instances', () => {

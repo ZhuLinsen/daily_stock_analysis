@@ -25,6 +25,7 @@ try:
         _build_analysis_report,
         _load_sync_fundamental_sources,
         get_analysis_status,
+        get_task_list,
     )
 except Exception:  # pragma: no cover - optional dependency environments
     create_app = None
@@ -35,6 +36,7 @@ except Exception:  # pragma: no cover - optional dependency environments
     _build_analysis_report = None
     _load_sync_fundamental_sources = None
     get_analysis_status = None
+    get_task_list = None
 
 from src.enums import ReportType
 from src.services.analysis_service import AnalysisService
@@ -278,6 +280,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             search_service=runtime_search,
             send_notification=False,
             override_region="cn,us",
+            return_structured=True,
         )
 
     def test_market_review_runtime_initializes_analyzer_for_litellm_provider(self) -> None:
@@ -329,6 +332,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             search_service=runtime_search,
             send_notification=False,
             override_region="cn",
+            return_structured=True,
         )
 
     def test_get_analysis_status_returns_market_review_report_from_queue(self) -> None:
@@ -342,10 +346,14 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             stock_name="大盘复盘",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
             progress=100,
-            result={"result": "市场复盘报告示例文本"},
+            result={
+                "result": "市场复盘报告示例文本",
+                "market_review_payload": {"kind": "market_review", "sections": []},
+            },
             error=None,
             original_query=None,
             selection_source=None,
+            analysis_phase="auto",
         )
 
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
@@ -353,6 +361,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(status.status, "completed")
         self.assertEqual(status.market_review_report, "市场复盘报告示例文本")
+        self.assertEqual(status.market_review_payload["kind"], "market_review")
         self.assertIsNone(status.result)
 
     def test_get_analysis_status_normalizes_completed_queue_result_contract(self) -> None:
@@ -378,6 +387,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             error=None,
             original_query=None,
             selection_source=None,
+            analysis_phase="auto",
             created_at=created_at,
             completed_at=datetime(2026, 5, 21, 17, 45, 0),
         )
@@ -419,6 +429,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             error=None,
             original_query=None,
             selection_source=None,
+            analysis_phase="auto",
             created_at=created_at,
             completed_at=datetime(2026, 5, 21, 17, 45, 0),
         )
@@ -773,6 +784,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         report_type="detailed",
                         force_refresh=False,
                         notify=True,
+                        analysis_phase="auto",
                     ),
                 )
 
@@ -823,9 +835,14 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     notify=True,
                     skills=None,
+                    analysis_phase="intraday",
                 ),
             )
 
+        self.assertEqual(
+            service_instance.analyze_stock.call_args.kwargs["analysis_phase"],
+            "intraday",
+        )
         details = result.report["details"]
         self.assertEqual(result.report["meta"]["market_phase_summary"]["phase"], "intraday")
         self.assertEqual(
@@ -891,6 +908,72 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         news_component = result["diagnostic_summary"]["components"]["news"]
         self.assertEqual(news_component["status"], "unknown")
+
+    def test_build_analysis_response_includes_market_phase_summary_from_result_snapshot(self) -> None:
+        service = AnalysisService()
+        phase_summary = _market_phase_summary()
+
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="600519",
+                name="贵州茅台",
+                current_price=1234.56,
+                change_pct=1.23,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="hold",
+                trend_prediction="up",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                diagnostic_context_snapshot={"market_phase_summary": phase_summary},
+                get_sniper_points=lambda: {},
+            ),
+            "q1",
+            report_type="full",
+        )
+
+        self.assertEqual(
+            result["report"]["meta"]["market_phase_summary"]["phase"],
+            "intraday",
+        )
+
+    def test_analysis_service_passes_analysis_phase_to_pipeline(self) -> None:
+        service = AnalysisService()
+        pipeline_instance = MagicMock()
+        pipeline_instance.process_single_stock.return_value = SimpleNamespace(
+            success=True,
+            code="600519",
+            name="贵州茅台",
+            current_price=1234.56,
+            change_pct=1.23,
+            model_used="test-model",
+            analysis_summary="summary",
+            operation_advice="hold",
+            trend_prediction="up",
+            sentiment_score=80,
+            news_summary="news",
+            technical_analysis="tech",
+            fundamental_analysis="fundamental",
+            risk_warning="risk",
+            get_sniper_points=lambda: {},
+        )
+
+        with patch("src.config.get_config", return_value=SimpleNamespace()), patch(
+            "src.core.pipeline.StockAnalysisPipeline",
+            return_value=pipeline_instance,
+        ) as pipeline_cls:
+            result = service.analyze_stock(
+                "600519",
+                report_type="detailed",
+                send_notification=False,
+                analysis_phase="postmarket",
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(pipeline_cls.call_args.kwargs["analysis_phase"], "postmarket")
 
     def test_build_analysis_report_extracts_fundamental_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:
@@ -1003,7 +1086,15 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             stock_code="600519",
             stock_name="贵州茅台",
             context_snapshot={
-                "enhanced_context": {"code": "600519"},
+                "enhanced_context": {
+                    "code": "600519",
+                    "portfolio_context": {
+                        "quantity": 100,
+                        "avg_cost": 1800,
+                        "unrealized_pnl_base": 5000,
+                    },
+                },
+                "portfolio_context": {"total_cost": 180000},
                 "analysis_context_pack_overview": overview,
                 "market_phase_summary": {
                     **phase_summary,
@@ -1035,6 +1126,70 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             "market_phase_summary",
             report.details.context_snapshot,
         )
+        self.assertNotIn(
+            "portfolio_context",
+            report.details.context_snapshot,
+        )
+        self.assertNotIn(
+            "portfolio_context",
+            report.details.context_snapshot["enhanced_context"],
+        )
+        self.assertNotIn("avg_cost", str(report.details.context_snapshot))
+
+    def test_build_analysis_report_falls_back_to_sanitized_report_meta_phase_summary(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        phase_summary = {
+            **_market_phase_summary(),
+            "warnings": ["api_key=secret"],
+            "market_phase_context": {"raw": True},
+        }
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {"market_phase_summary": phase_summary},
+                "summary": {},
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q-meta-phase",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot=None,
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
+        self.assertEqual(report.meta.market_phase_summary.warnings, ["[REDACTED]"])
+
+    def test_build_analysis_report_prefers_snapshot_phase_summary_over_report_meta(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        snapshot_summary = _market_phase_summary()
+        report = _build_analysis_report(
+            report_data={
+                "meta": {
+                    "market_phase_summary": {
+                        **snapshot_summary,
+                        "phase": "postmarket",
+                    },
+                },
+                "summary": {},
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q-snapshot-phase",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot={"market_phase_summary": snapshot_summary},
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
 
     def test_build_analysis_report_merges_partial_top_level_context_with_fallback(self) -> None:
         if _build_analysis_report is None:
@@ -1365,6 +1520,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.status, "completed")
         self.assertEqual(status.result.report["meta"]["current_price"], 1888.0)
         self.assertEqual(status.result.report["meta"]["change_pct"], 1.56)
+        self.assertIsNone(status.analysis_phase)
         self.assertEqual(
             status.result.report["meta"]["market_phase_summary"]["phase"],
             "intraday",
@@ -1443,6 +1599,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             error=None,
             original_query=None,
             selection_source=None,
+            analysis_phase="auto",
             skills=None,
             created_at=datetime(2026, 4, 10, 12, 0, 0),
             completed_at=datetime(2026, 4, 10, 12, 1, 0),
@@ -1494,16 +1651,18 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             limit=1,
         )
 
-    def test_get_analysis_status_in_memory_task_without_db_snapshot_omits_phase_summary(self) -> None:
+    def test_get_analysis_status_in_memory_task_without_db_snapshot_preserves_service_phase_summary(self) -> None:
         if get_analysis_status is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
+        phase_summary = _market_phase_summary()
         task = SimpleNamespace(
             task_id="task_no_snapshot_in_memory_1",
             stock_code="600519",
             stock_name="贵州茅台",
             status=TaskStatus.COMPLETED,
             progress=100,
+            analysis_phase="intraday",
             result={
                 "stock_code": "600519",
                 "stock_name": "贵州茅台",
@@ -1512,6 +1671,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         "query_id": "task_no_snapshot_in_memory_1",
                         "stock_code": "600519",
                         "stock_name": "贵州茅台",
+                        "market_phase_summary": phase_summary,
                     },
                     "summary": {"analysis_summary": "summary"},
                 },
@@ -1533,9 +1693,11 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             status = get_analysis_status("task_no_snapshot_in_memory_1")
 
         self.assertEqual(status.status, "completed")
+        self.assertEqual(status.analysis_phase, "intraday")
         self.assertIsNotNone(status.result)
-        self.assertIsNone(
-            status.result.report["meta"].get("market_phase_summary"),
+        self.assertEqual(
+            status.result.report["meta"]["market_phase_summary"]["phase"],
+            "intraday",
         )
         load_sources.assert_called_once_with(
             query_id="task_no_snapshot_in_memory_1",
@@ -1560,6 +1722,35 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 "#/components/schemas/BatchTaskAcceptedResponse",
             },
         )
+
+    def test_openapi_declares_backtest_phase_filter_enum_and_400(self) -> None:
+        if create_app is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = create_app(static_dir=Path(temp_dir))
+            paths = app.openapi()["paths"]
+
+        for path in (
+            "/api/v1/backtest/results",
+            "/api/v1/backtest/performance",
+            "/api/v1/backtest/performance/{code}",
+        ):
+            operation = paths[path]["get"]
+            self.assertIn("400", operation["responses"])
+            params = {param["name"]: param for param in operation["parameters"]}
+            schema = params["analysis_phase"]["schema"]
+            enum_values = set()
+            stack = [schema]
+            while stack:
+                current = stack.pop()
+                if not isinstance(current, dict):
+                    continue
+                enum_values.update(current.get("enum") or [])
+                stack.extend(current.get("anyOf") or [])
+                stack.extend(current.get("oneOf") or [])
+
+            self.assertEqual(enum_values, {"premarket", "intraday", "postmarket", "unknown"})
 
     def test_market_review_endpoint_accepts_omitted_body(self) -> None:
         if create_app is None or analysis_endpoint_module is None:
@@ -1600,6 +1791,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=False,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1623,6 +1815,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         report_type="detailed",
                         force_refresh=False,
                         async_mode=True,
+                        analysis_phase="auto",
                     ),
                     config=SimpleNamespace(),
                 )
@@ -1645,6 +1838,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         report_type="detailed",
                         force_refresh=False,
                         async_mode=True,
+                        analysis_phase="auto",
                     ),
                     config=SimpleNamespace(),
                 )
@@ -1673,6 +1867,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1685,6 +1880,50 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="AAPL.US",
             selection_source="manual",
             report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_async_passes_and_returns_analysis_phase(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        task = SimpleNamespace(
+            task_id="task-phase-1",
+            trace_id="trace-phase-1",
+            stock_code="600519",
+            analysis_phase="intraday",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([task], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="600519",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query=None,
+                    selection_source=None,
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="intraday",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(json.loads(response.body)["analysis_phase"], "intraday")
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["600519"],
+            stock_name=None,
+            original_query=None,
+            selection_source=None,
+            report_type="detailed",
+            analysis_phase="intraday",
             force_refresh=False,
             notify=True,
         )
@@ -1708,6 +1947,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1720,6 +1960,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="00700",
             selection_source="autocomplete",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1744,6 +1985,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1756,6 +1998,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="920493",
             selection_source="autocomplete",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1782,6 +2025,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                                 force_refresh=False,
                                 async_mode=True,
                                 notify=True,
+                                analysis_phase="auto",
                             ),
                             config=SimpleNamespace(),
                         )
@@ -1810,6 +2054,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     report_type="detailed",
                     force_refresh=False,
                     async_mode=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1822,6 +2067,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="HK00700",
             selection_source="manual",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1846,6 +2092,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1857,6 +2104,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="西安奕材-U",
             selection_source="manual",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1881,6 +2129,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1892,6 +2141,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="贵州茅台",
             selection_source="manual",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1915,6 +2165,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -1926,6 +2177,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="uploaded.csv",
             selection_source="import",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -1952,6 +2204,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         force_refresh=False,
                         async_mode=True,
                         notify=True,
+                        analysis_phase="auto",
                     ),
                     config=SimpleNamespace(),
                 )
@@ -1966,6 +2219,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         force_refresh=False,
                         async_mode=True,
                         notify=True,
+                        analysis_phase="auto",
                     ),
                     config=SimpleNamespace(),
                 )
@@ -2005,6 +2259,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                     force_refresh=False,
                     async_mode=True,
                     notify=True,
+                    analysis_phase="auto",
                 ),
                 config=SimpleNamespace(),
             )
@@ -2016,6 +2271,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             original_query="茅台,平安银行",
             selection_source="import",
             report_type="detailed",
+            analysis_phase="auto",
             force_refresh=False,
             notify=True,
         )
@@ -2110,6 +2366,44 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         mock_task_queue.unsubscribe.assert_called_once_with(never_queue)
 
+    def test_get_task_list_includes_analysis_phase_and_skills(self) -> None:
+        if get_task_list is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        task = SimpleNamespace(
+            task_id="task-list-phase",
+            trace_id="trace-list-phase",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=TaskStatus.PROCESSING,
+            progress=42,
+            message="running",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            started_at=datetime(2026, 4, 10, 12, 0, 1),
+            completed_at=None,
+            error=None,
+            original_query="茅台",
+            selection_source="manual",
+            analysis_phase="postmarket",
+            skills=["growth_quality"],
+        )
+        queue = MagicMock()
+        queue.list_all_tasks.return_value = [task]
+        queue.get_task_stats.return_value = {
+            "total": 1,
+            "pending": 0,
+            "processing": 1,
+            "completed": 0,
+            "failed": 0,
+        }
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = get_task_list(status=None, limit=20)
+
+        self.assertEqual(response.tasks[0].analysis_phase, "postmarket")
+        self.assertEqual(response.tasks[0].skills, ["growth_quality"])
+
 
 class BatchTaskQueueContractTestCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -2167,16 +2461,38 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         queue = AnalysisTaskQueue(max_workers=1)
         executor = CapturingExecutor()
         queue._executor = executor
+        broadcast_events = []
+        queue._broadcast_event = lambda event_type, data: broadcast_events.append((event_type, data))
         request_skills = ["growth_quality"]
+        portfolio_context = {
+            "account_id": 7,
+            "account_name": "Main",
+            "symbol": "600519",
+            "quantity": 100,
+        }
 
         accepted, duplicates = queue.submit_tasks_batch(
             ["600519"],
             report_type="detailed",
+            analysis_phase="intraday",
+            query_source="portfolio",
+            portfolio_context=portfolio_context,
             skills=request_skills,
         )
         request_skills.append("mutated_after_submit")
+        portfolio_context["quantity"] = 999
 
         self.assertEqual(duplicates, [])
+        self.assertEqual(accepted[0].analysis_phase, "intraday")
+        self.assertEqual(accepted[0].to_dict()["analysis_phase"], "intraday")
+        self.assertNotIn("portfolio_context", accepted[0].to_dict())
+        self.assertNotIn("query_source", accepted[0].to_dict())
+        self.assertNotIn("portfolio_context", broadcast_events[0][1])
+        self.assertNotIn("query_source", broadcast_events[0][1])
+        self.assertEqual(accepted[0].copy().analysis_phase, "intraday")
+        self.assertEqual(accepted[0].query_source, "portfolio")
+        self.assertEqual(accepted[0].portfolio_context["quantity"], 100)
+        self.assertEqual(accepted[0].copy().portfolio_context["quantity"], 100)
         self.assertEqual(accepted[0].skills, ["growth_quality"])
         self.assertIs(executor.calls[0][1][-1], accepted[0].skills)
 
@@ -2190,6 +2506,12 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
             accepted[0].skills,
         )
         self.assertEqual(service_instance.analyze_stock.call_args.kwargs["skills"], ["growth_quality"])
+        self.assertEqual(service_instance.analyze_stock.call_args.kwargs["analysis_phase"], "intraday")
+        self.assertEqual(service_instance.analyze_stock.call_args.kwargs["query_source"], "portfolio")
+        self.assertEqual(
+            service_instance.analyze_stock.call_args.kwargs["portfolio_context"]["quantity"],
+            100,
+        )
 
     def test_batch_submit_deduplicates_equivalent_stock_code_shapes(self) -> None:
         queue = AnalysisTaskQueue(max_workers=1)
@@ -2202,7 +2524,11 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         self.assertTrue(queue.is_analyzing("600519.SH"))
         self.assertEqual(queue.get_analyzing_task_id("600519.SH"), accepted[0].task_id)
 
-        accepted_again, duplicates_again = queue.submit_tasks_batch(["600519.SH"], report_type="detailed")
+        accepted_again, duplicates_again = queue.submit_tasks_batch(
+            ["600519.SH"],
+            report_type="detailed",
+            analysis_phase="intraday",
+        )
 
         self.assertEqual(accepted_again, [])
         self.assertEqual(len(duplicates_again), 1)

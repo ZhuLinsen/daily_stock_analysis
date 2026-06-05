@@ -431,6 +431,21 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.stock_list, ["600519", "000001"])
 
+    def test_refresh_stock_list_preserves_empty_required_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text("STOCK_LIST=\n", encoding="utf-8")
+
+            config = Config(stock_list=["600519"])
+            with patch.dict(os.environ, {"ENV_FILE": str(env_path)}, clear=True):
+                config.refresh_stock_list()
+
+        self.assertEqual(config.stock_list, [])
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(issue.severity == "error" and issue.field == "STOCK_LIST" for issue in issues)
+        )
+
     def test_parse_report_language_accepts_known_alias_without_warning(self) -> None:
         with self.assertNoLogs("src.config", level="WARNING"):
             parsed = Config._parse_report_language("zh-cn")

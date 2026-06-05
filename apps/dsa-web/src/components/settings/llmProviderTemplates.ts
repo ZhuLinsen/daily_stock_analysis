@@ -118,7 +118,7 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     label: 'MiniMax 官方',
     protocol: 'openai',
     baseUrl: 'https://api.minimax.io/v1',
-    placeholderModels: 'MiniMax-M2.7,MiniMax-M2.7-highspeed',
+    placeholderModels: 'MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed',
     capabilities: ['openai-compatible'],
     officialSources: [
       { label: 'MiniMax OpenAI API', url: 'https://platform.minimax.io/docs/api-reference/text-chat' },

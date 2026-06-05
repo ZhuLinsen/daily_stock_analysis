@@ -279,6 +279,23 @@ def test_alerts_doc_defines_p7_market_light_scope() -> None:
         assert token in doc
 
 
+def test_alerts_doc_covers_issue_1386_p7_user_visibility_boundary() -> None:
+    doc = _read_doc()
+    p7_section = doc.split("#1386 P7 的用户边界：", 1)[1].split(
+        "\n\n回滚本联动",
+        1,
+    )[0]
+
+    for token in (
+        "触发时已经可公开的阶段和数据质量摘要",
+        "不会自动发起轻量 LLM 盘中分析",
+        "不会新增告警表、规则类型、环境变量或 migration",
+        "分析 API / Web 手动分析入口",
+        "告警通知只保留阶段标签、trigger source、partial-bar warning、数据质量等级和前两条 limitations",
+    ):
+        assert token in p7_section
+
+
 def test_alerts_doc_defines_p8_user_and_deployment_boundaries() -> None:
     doc = _read_doc()
 

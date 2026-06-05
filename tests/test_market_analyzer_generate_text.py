@@ -1022,6 +1022,8 @@ class TestMarketAnalyzerBypassFix:
         assert "## 2026-03-05 大盘复盘" in result
         assert "### 一、盘面总览" in result
         assert "今日美股市场整体呈现**小幅下跌**态势" in result
+        assert "### 6. Strategy Framework" not in result
+        assert "### 六、策略框架" in result
         assert "### 1. Market Summary" not in result
         assert "US Market Recap" not in result
 
@@ -1141,9 +1143,26 @@ Sector text.
         assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
         assert "#### 领涨板块 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
-        assert "#### 近三日市场线索" in result
-        assert "AI算力板块走强" in result
+        assert "#### 近三日市场线索" not in result
+        assert "AI算力板块走强" not in result
+        assert "新闻。" in result
         assert "算力产业链延续活跃" not in result
+
+    def test_market_review_payload_sections_skip_top_report_title(self):
+        from src.market_analyzer import MarketAnalyzer
+
+        ma = MarketAnalyzer.__new__(MarketAnalyzer)
+        sections = ma._split_report_sections("""## 2026-06-03 大盘复盘
+
+> 今日指数分化。
+
+### 一、盘面总览
+正文
+""")
+
+        assert sections[0]["key"] == "overview"
+        assert "今日指数分化" in sections[0]["markdown"]
+        assert all(section["title"] != "2026-06-03 大盘复盘" for section in sections)
 
     def test_news_block_renders_title_source_and_link_only(self):
         from src.market_analyzer import MarketAnalyzer
@@ -1321,6 +1340,87 @@ Sector text.
         assert snapshot["dimensions"]["breadth"] == {"score": 50, "available": False}
         assert snapshot["dimensions"]["index"]["available"] is True
         assert snapshot["dimensions"]["limit"] == {"score": 50, "available": False}
+
+    def test_market_review_payload_omits_breadth_for_markets_without_stats(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+
+        payload = ma.build_market_review_payload(
+            MarketOverview(
+                date="2026-03-18",
+                indices=[
+                    MarketIndex(code="SPX", name="S&P 500", current=5200.0, change_pct=0.6),
+                ],
+                up_count=1000,
+                down_count=400,
+                limit_up_count=10,
+                limit_down_count=0,
+                total_amount=9800.0,
+            ),
+            [],
+            "美股复盘报告",
+            market_light_snapshot={"dimensions": {"breadth": {"score": 60, "available": True}}},
+        )
+
+        assert "breadth" not in payload
+        assert payload["indices"][0]["code"] == "SPX"
+
+    def test_market_review_payload_omits_breadth_for_cn_market_without_available_stats(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        payload = ma.build_market_review_payload(
+            MarketOverview(
+                date="2026-03-18",
+                indices=[
+                    MarketIndex(code="000001", name="上证指数", current=3200.0, change_pct=0.6),
+                ],
+                up_count=0,
+                down_count=0,
+                flat_count=0,
+                limit_up_count=0,
+                limit_down_count=0,
+                total_amount=0.0,
+            ),
+            [],
+            "A股复盘报告",
+            market_light_snapshot={"dimensions": {"breadth": {"score": 55, "available": False}}},
+        )
+
+        assert "breadth" not in payload
+        assert payload["indices"][0]["name"] == "上证指数"
+
+    def test_market_review_payload_includes_breadth_only_when_stats_available(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        payload = ma.build_market_review_payload(
+            MarketOverview(
+                date="2026-03-18",
+                indices=[
+                    MarketIndex(code="000001", name="上证指数", current=3200.0, change_pct=0.6),
+                ],
+                up_count=1200,
+                down_count=900,
+                flat_count=60,
+                limit_up_count=12,
+                limit_down_count=4,
+                total_amount=12345.0,
+            ),
+            [],
+            "A股复盘报告",
+            market_light_snapshot={"dimensions": {"breadth": {"score": 62, "available": True}}},
+        )
+
+        assert payload["breadth"] is not None
+        assert payload["breadth"]["up_count"] == 1200
+        assert payload["breadth"]["down_count"] == 900
+        assert payload["breadth"]["limit_up_count"] == 12
+        assert payload["breadth"]["total_amount"] == 12345.0
 
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE

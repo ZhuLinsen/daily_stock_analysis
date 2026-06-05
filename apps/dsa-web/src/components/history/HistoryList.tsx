@@ -18,6 +18,9 @@ interface HistoryListProps {
   onToggleItemSelection: (recordId: number) => void;
   onToggleSelectAll: () => void;
   onDeleteSelected: () => void;
+  title?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
   className?: string;
 }
 
@@ -38,6 +41,9 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   onToggleItemSelection,
   onToggleSelectAll,
   onDeleteSelected,
+  title = '历史分析',
+  emptyTitle = '暂无历史分析记录',
+  emptyDescription = '完成首次分析后，这里会保留最近结果。',
   className = '',
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -94,7 +100,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
         <div className="mb-4 space-y-3">
           <DashboardPanelHeader
             className="mb-1"
-            title="历史分析"
+            title={title}
             titleClassName="text-sm font-medium"
             leading={(
               <svg className="h-4 w-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -151,8 +157,8 @@ export const HistoryList: React.FC<HistoryListProps> = ({
           />
         ) : items.length === 0 ? (
           <DashboardStateBlock
-            title="暂无历史分析记录"
-            description="完成首次分析后，这里会保留最近结果。"
+            title={emptyTitle}
+            description={emptyDescription}
             icon={(
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />

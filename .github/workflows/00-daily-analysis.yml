@@ -259,7 +259,7 @@ jobs:
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
           MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
-          SEARXNG_BASE_URLS: ${{ secrets.SEARXNG_BASE_URLS }}
+          SEARXNG_BASE_URLS: ${{ vars.SEARXNG_BASE_URLS || secrets.SEARXNG_BASE_URLS }}
           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
           
           # ==========================================
@@ -317,6 +317,9 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_FOLDER_TOKEN: ${{ secrets.FEISHU_FOLDER_TOKEN }}
+          FEISHU_CHAT_ID: ${{ vars.FEISHU_CHAT_ID || secrets.FEISHU_CHAT_ID }}
+          FEISHU_RECEIVE_ID_TYPE: ${{ vars.FEISHU_RECEIVE_ID_TYPE || secrets.FEISHU_RECEIVE_ID_TYPE }}
+          FEISHU_DOMAIN: ${{ vars.FEISHU_DOMAIN || secrets.FEISHU_DOMAIN }}
 
           # 方式十：AstrBot
           ASTRBOT_URL: ${{ secrets.ASTRBOT_URL }}
@@ -443,7 +446,7 @@ jobs:
           echo "  ntfy: $([ -n "$NTFY_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Gotify: $([ -n "$GOTIFY_URL" ] && [ -n "$GOTIFY_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  飞书: $([ -n "$FEISHU_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  飞书: $( ([ -n "$FEISHU_WEBHOOK_URL" ] || ([ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && [ -n "$FEISHU_CHAT_ID" ]) ) && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Telegram: $([ -n "$TELEGRAM_BOT_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Discord: $([ -n "$DISCORD_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  AstrBot: $([ -n "$ASTRBOT_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"

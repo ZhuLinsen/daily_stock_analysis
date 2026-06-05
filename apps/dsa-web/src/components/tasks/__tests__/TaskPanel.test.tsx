@@ -15,6 +15,30 @@ const baseTask: TaskInfo = {
 };
 
 describe('TaskPanel', () => {
+  it('renders requested analysis phase badges for active tasks', () => {
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            analysisPhase: 'intraday',
+          },
+          {
+            ...baseTask,
+            taskId: 'task-2',
+            stockCode: 'AAPL',
+            stockName: 'Apple',
+            status: 'pending',
+            analysisPhase: 'auto',
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText('请求阶段: 盘中')).toBeInTheDocument();
+    expect(screen.getByLabelText('请求阶段: 自动阶段')).toBeInTheDocument();
+  });
+
   it('renders active tasks with preserved dashboard panel styling', () => {
     const { container } = render(
       <TaskPanel
@@ -43,6 +67,7 @@ describe('TaskPanel', () => {
     expect(screen.getByLabelText('任务状态：分析中')).toBeInTheDocument();
     expect(screen.getByText('运行诊断')).toBeInTheDocument();
     expect(screen.getAllByText('trace-task-1')).toHaveLength(2);
+    expect(screen.queryByText(/请求阶段:/)).not.toBeInTheDocument();
     expect(container.querySelector('.home-panel-card')).toBeTruthy();
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
   });

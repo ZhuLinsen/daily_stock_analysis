@@ -71,6 +71,7 @@ class PipelineAnalysisArtifacts:
     news_context: Optional[str]
     news_result_count: Optional[int]
     metadata: Dict[str, Any]
+    portfolio_context: Optional[Dict[str, Any]] = None
 
 
 class AnalysisContextBuilder:
@@ -93,6 +94,9 @@ class AnalysisContextBuilder:
         blocks["chip"] = _build_chip_block(artifacts)
         blocks["fundamentals"] = _build_fundamentals_block(artifacts)
         blocks["news"] = _build_news_block(artifacts)
+        portfolio_block = _build_portfolio_block(artifacts)
+        if portfolio_block is not None:
+            blocks["portfolio"] = portfolio_block
         data_quality = _build_data_quality(blocks, warnings=data_quality_warnings)
 
         return AnalysisContextPack(
@@ -442,6 +446,58 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
             )
         },
         metadata=metadata,
+    )
+
+
+def _build_portfolio_block(artifacts: PipelineAnalysisArtifacts) -> Optional[AnalysisContextBlock]:
+    context = _to_dict(artifacts.portfolio_context)
+    if not context:
+        return None
+
+    price_available = context.get("price_available")
+    price_stale = context.get("price_stale")
+    status = ContextFieldStatus.AVAILABLE
+    warnings: List[str] = []
+    if price_available is False:
+        status = ContextFieldStatus.MISSING
+        warnings.append("portfolio_price_unavailable")
+    elif price_stale is True:
+        status = ContextFieldStatus.STALE
+        warnings.append("portfolio_price_stale")
+
+    item_status = status if status != ContextFieldStatus.AVAILABLE else ContextFieldStatus.AVAILABLE
+    exposed_keys = (
+        "account_id",
+        "account_name",
+        "symbol",
+        "market",
+        "currency",
+        "quantity",
+        "avg_cost",
+        "total_cost",
+        "unrealized_pnl_base",
+        "unrealized_pnl_pct",
+        "price_source",
+        "price_provider",
+        "price_date",
+        "price_stale",
+        "price_available",
+        "cost_method",
+    )
+    items = {
+        key: AnalysisContextItem(status=item_status, value=context.get(key))
+        for key in exposed_keys
+        if key in context
+    }
+    if not items:
+        return None
+
+    return AnalysisContextBlock(
+        status=status,
+        items=items,
+        source="portfolio_context",
+        warnings=warnings,
+        metadata={"auxiliary": True, "quality_weighted": False},
     )
 
 

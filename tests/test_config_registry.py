@@ -259,6 +259,7 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "DEBUG",
         "MAX_WORKERS",
         "ANALYSIS_DELAY",
+        "SAVE_CONTEXT_SNAPSHOT",
         "MARKET_REVIEW_ENABLED",
         "MARKET_REVIEW_REGION",
         "MARKET_REVIEW_COLOR_SCHEME",
@@ -299,6 +300,21 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         field = get_field_definition("WEBUI_HOST")
         self.assertEqual(field["category"], "system")
         self.assertNotEqual(field["display_order"], 9000)
+
+    def test_save_context_snapshot_is_explicitly_registered(self):
+        field = get_field_definition("SAVE_CONTEXT_SNAPSHOT")
+
+        self.assertEqual(field["category"], "system")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertFalse(field["is_sensitive"])
+        self.assertTrue(field["is_editable"])
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["display_order"], 52)
+        self.assertEqual(field["help_key"], "settings.system.SAVE_CONTEXT_SNAPSHOT")
+        self.assertTrue(field.get("examples"))
+        self.assertTrue(field.get("docs"))
+        self.assertIn("analysis-context-pack.md#p6-", field["docs"][0]["href"])
 
     def test_restart_warning_codes_match_runtime_behavior(self):
         restart_required_keys = (

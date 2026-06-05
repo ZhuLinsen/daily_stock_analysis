@@ -40,6 +40,7 @@ def test_old_uninstaller_retry_quotes_install_location_parameter() -> None:
 def test_windows_auto_updater_reuses_current_install_directory() -> None:
     main_js = (DESKTOP_DIR / "main.js").read_text(encoding="utf-8")
 
-    assert "function quoteNsisDirectoryArgument" in main_js
     assert "const installDirectory = path.dirname(app.getPath('exe'));" in main_js
-    assert "updater.installDirectory = quoteNsisDirectoryArgument(installDirectory);" in main_js
+    assert "updater.installDirectory = installDirectory;" in main_js
+    assert 'updater.installDirectory = `"${installDirectory}"`' not in main_js
+    assert "quoteNsisDirectoryArgument" not in main_js

@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from api.v1.schemas.market_phase import MarketPhaseSummary
+
 
 class BacktestRunRequest(BaseModel):
     code: Optional[str] = Field(None, description="仅回测指定股票")
@@ -35,6 +37,8 @@ class BacktestResultItem(BaseModel):
     evaluated_at: Optional[str] = None
     operation_advice: Optional[str] = None
     trend_prediction: Optional[str] = None
+    market_phase: Optional[str] = None
+    market_phase_summary: Optional[MarketPhaseSummary] = None
     position_recommendation: Optional[str] = None
     start_price: Optional[float] = None
     end_close: Optional[float] = None

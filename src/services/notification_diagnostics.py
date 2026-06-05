@@ -8,6 +8,7 @@ from typing import List, Literal, Optional, Sequence, Tuple
 
 from src.config import Config
 from src.notification import ChannelDetector, NotificationChannel, NotificationService
+from src.notification_contracts import FEISHU_APP_BOT_ENV_GROUP, FEISHU_WEBHOOK_ENV_GROUP
 from src.notification_noise import (
     NOTIFICATION_SEVERITIES,
     P4_NOISE_ENV_KEYS,
@@ -87,8 +88,9 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         channel=NotificationChannel.FEISHU.value,
         display_name=ChannelDetector.get_channel_name(NotificationChannel.FEISHU),
         kind="configured",
-        minimal_keys=("FEISHU_WEBHOOK_URL",),
-        advanced_keys=("FEISHU_WEBHOOK_SECRET", "FEISHU_WEBHOOK_KEYWORD"),
+        minimal_keys=FEISHU_WEBHOOK_ENV_GROUP,
+        alternative_minimal_keys=(FEISHU_APP_BOT_ENV_GROUP,),
+        advanced_keys=("FEISHU_WEBHOOK_SECRET", "FEISHU_WEBHOOK_KEYWORD", "FEISHU_RECEIVE_ID_TYPE", "FEISHU_DOMAIN"),
     ),
     NotificationChannelSpec(
         channel=NotificationChannel.TELEGRAM.value,

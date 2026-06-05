@@ -3,6 +3,7 @@ import { ChevronDown, RefreshCw } from 'lucide-react';
 import { Badge, Card, StatusDot } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
+import { getRequestedPhaseLabel } from '../../utils/marketPhase';
 
 /**
  * 任务项组件属性
@@ -22,6 +23,8 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
   const statusTone = isProcessing ? 'info' : 'neutral';
   const progress = Math.max(0, Math.min(100, task.progress || 0));
   const traceId = (task.traceId || '').trim();
+  const requestedPhaseLabel = getRequestedPhaseLabel(task.analysisPhase, 'zh');
+  const requestedPhaseVariant = task.analysisPhase === 'auto' ? 'default' : 'info';
 
   return (
     <div className="home-subpanel flex items-center gap-3 px-3 py-2.5">
@@ -49,6 +52,13 @@ const TaskItem: React.FC<TaskItemProps> = ({ task }) => {
             {task.message}
           </p>
         )}
+        {requestedPhaseLabel ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Badge variant={requestedPhaseVariant} className="shrink-0 shadow-none" aria-label={requestedPhaseLabel}>
+              {requestedPhaseLabel}
+            </Badge>
+          </div>
+        ) : null}
         <div className="mt-2 flex items-center gap-2">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/8">
             <div

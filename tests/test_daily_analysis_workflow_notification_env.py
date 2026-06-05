@@ -68,6 +68,17 @@ def test_daily_analysis_maps_p6_channel_env_keys() -> None:
         assert key in env
 
 
+def test_daily_analysis_feishu_status_accepts_webhook_or_app_bot_triad() -> None:
+    status_line = next(
+        line
+        for line in WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+        if 'echo "  飞书:' in line
+    )
+
+    for key in ("FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"):
+        assert key in status_line
+
+
 def test_daily_analysis_keeps_deferred_behavior_switches_unmapped() -> None:
     env = _load_daily_analysis_env()
 

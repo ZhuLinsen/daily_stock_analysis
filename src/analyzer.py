@@ -192,7 +192,11 @@ class _AllModelsFailedError(Exception):
         self.last_usage = last_usage or {}
 
 
-def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
+def check_content_integrity(
+    result: "AnalysisResult",
+    *,
+    require_phase_decision: bool = False,
+) -> Tuple[bool, List[str]]:
     """
     Check mandatory fields for report content integrity.
     Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
@@ -243,6 +247,23 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
         stop_loss = sp.get("stop_loss")
         if _is_invalid_stop_loss(stop_loss):
             missing.append("dashboard.battle_plan.sniper_points.stop_loss")
+    if require_phase_decision:
+        phase_decision = dash.get("phase_decision")
+        phase_decision = phase_decision if isinstance(phase_decision, dict) else {}
+        if not isinstance(phase_decision.get("phase_context"), dict):
+            missing.append("dashboard.phase_decision.phase_context")
+        if _is_blank_text(phase_decision.get("action_window")):
+            missing.append("dashboard.phase_decision.action_window")
+        if _is_blank_text(phase_decision.get("immediate_action")):
+            missing.append("dashboard.phase_decision.immediate_action")
+        if not isinstance(phase_decision.get("watch_conditions"), list):
+            missing.append("dashboard.phase_decision.watch_conditions")
+        if _is_blank_text(phase_decision.get("next_check_time")):
+            missing.append("dashboard.phase_decision.next_check_time")
+        if _is_blank_text(phase_decision.get("confidence_reason")):
+            missing.append("dashboard.phase_decision.confidence_reason")
+        if not isinstance(phase_decision.get("data_limitations"), list):
+            missing.append("dashboard.phase_decision.data_limitations")
     return len(missing) == 0, missing
 
 
@@ -268,7 +289,30 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
             return not value.strip()
         return False
 
-    placeholder = get_placeholder_text(getattr(result, "report_language", "zh"))
+    report_language = normalize_report_language(getattr(result, "report_language", "zh"))
+    placeholder = get_placeholder_text(report_language)
+    phase_decision_placeholders = {
+        "dashboard.phase_decision.action_window": (
+            "Model did not provide a phase action window"
+            if report_language == "en"
+            else "模型未提供阶段化行动窗口"
+        ),
+        "dashboard.phase_decision.immediate_action": (
+            "Model did not provide a phase-aware immediate action"
+            if report_language == "en"
+            else "模型未提供阶段化即时动作"
+        ),
+        "dashboard.phase_decision.next_check_time": (
+            "Model did not provide a next check point"
+            if report_language == "en"
+            else "模型未提供下一次检查点"
+        ),
+        "dashboard.phase_decision.confidence_reason": (
+            "Model did not provide a phase confidence rationale"
+            if report_language == "en"
+            else "模型未提供阶段化置信度理由"
+        ),
+    }
     for field in missing_fields:
         if field == "sentiment_score":
             result.sentiment_score = 50
@@ -315,6 +359,25 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
                 battle_plan["sniper_points"] = sniper_points
             if _is_invalid_stop_loss(sniper_points.get("stop_loss")):
                 sniper_points["stop_loss"] = placeholder
+        elif field.startswith("dashboard.phase_decision."):
+            if not result.dashboard:
+                result.dashboard = {}
+            phase_decision = result.dashboard.get("phase_decision")
+            if not isinstance(phase_decision, dict):
+                phase_decision = {}
+                result.dashboard["phase_decision"] = phase_decision
+            if field == "dashboard.phase_decision.phase_context":
+                if not isinstance(phase_decision.get("phase_context"), dict):
+                    phase_decision["phase_context"] = {}
+            elif field == "dashboard.phase_decision.watch_conditions":
+                if not isinstance(phase_decision.get("watch_conditions"), list):
+                    phase_decision["watch_conditions"] = []
+            elif field == "dashboard.phase_decision.data_limitations":
+                if not isinstance(phase_decision.get("data_limitations"), list):
+                    phase_decision["data_limitations"] = []
+            elif field in phase_decision_placeholders:
+                if _is_blank_text(phase_decision.get(field.rsplit(".", 1)[-1])):
+                    phase_decision[field.rsplit(".", 1)[-1]] = phase_decision_placeholders[field]
 
 
 # ---------- chip_structure fallback (Issue #589) ----------
@@ -1696,6 +1759,16 @@ class GeminiAnalyzer:
                 "✅/⚠️/❌ 检查项5：筹码健康",
                 "✅/⚠️/❌ 检查项6：PE估值合理"
             ]
+        },
+
+        "phase_decision": {
+            "phase_context": {"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }
     },
 
@@ -1763,7 +1836,9 @@ class GeminiAnalyzer:
 - 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
-- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。"""
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -1854,6 +1929,16 @@ class GeminiAnalyzer:
                 "✅/⚠️/❌ 检查项5：仓位与止损计划明确",
                 "✅/⚠️/❌ 检查项6：估值/业绩/催化与结论匹配"
             ]
+        },
+
+        "phase_decision": {
+            "phase_context": {"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }
     },
 
@@ -1918,7 +2003,9 @@ class GeminiAnalyzer:
 - 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
-- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。"""
+- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 
@@ -2731,7 +2818,11 @@ class GeminiAnalyzer:
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
                     break
-                pass_integrity, missing_fields = self._check_content_integrity(result)
+                require_phase_decision = isinstance(context.get("market_phase_context"), dict)
+                pass_integrity, missing_fields = self._check_content_integrity(
+                    result,
+                    require_phase_decision=require_phase_decision,
+                )
                 if pass_integrity:
                     break
                 if retry_count < max_retries:
@@ -3317,9 +3408,14 @@ class GeminiAnalyzer:
 
         return snapshot
 
-    def _check_content_integrity(self, result: AnalysisResult) -> Tuple[bool, List[str]]:
+    def _check_content_integrity(
+        self,
+        result: AnalysisResult,
+        *,
+        require_phase_decision: bool = False,
+    ) -> Tuple[bool, List[str]]:
         """Delegate to module-level check_content_integrity."""
-        return check_content_integrity(result)
+        return check_content_integrity(result, require_phase_decision=require_phase_decision)
 
     def _build_integrity_complement_prompt(self, missing_fields: List[str], report_language: str = "zh") -> str:
         """Build complement instruction for missing mandatory fields."""
@@ -3339,6 +3435,20 @@ class GeminiAnalyzer:
                     lines.append("- dashboard.intelligence.risk_alerts: risk alert list (can be empty)")
                 elif f == "dashboard.battle_plan.sniper_points.stop_loss":
                     lines.append("- dashboard.battle_plan.sniper_points.stop_loss: stop-loss level")
+                elif f == "dashboard.phase_decision.phase_context":
+                    lines.append("- dashboard.phase_decision.phase_context: public market phase summary subset")
+                elif f == "dashboard.phase_decision.action_window":
+                    lines.append("- dashboard.phase_decision.action_window: phase-aware action window")
+                elif f == "dashboard.phase_decision.immediate_action":
+                    lines.append("- dashboard.phase_decision.immediate_action: act now / wait / watch / no intraday action")
+                elif f == "dashboard.phase_decision.watch_conditions":
+                    lines.append("- dashboard.phase_decision.watch_conditions: list of watch conditions")
+                elif f == "dashboard.phase_decision.next_check_time":
+                    lines.append("- dashboard.phase_decision.next_check_time: next check point or market-local time")
+                elif f == "dashboard.phase_decision.confidence_reason":
+                    lines.append("- dashboard.phase_decision.confidence_reason: confidence rationale and data limits")
+                elif f == "dashboard.phase_decision.data_limitations":
+                    lines.append("- dashboard.phase_decision.data_limitations: list of phase/data quality limitations")
             return "\n".join(lines)
 
         lines = ["### 补全要求：请在上方分析基础上补充以下必填内容，并输出完整 JSON："]
@@ -3355,6 +3465,20 @@ class GeminiAnalyzer:
                 lines.append("- dashboard.intelligence.risk_alerts: 风险警报列表（可为空数组）")
             elif f == "dashboard.battle_plan.sniper_points.stop_loss":
                 lines.append("- dashboard.battle_plan.sniper_points.stop_loss: 止损价")
+            elif f == "dashboard.phase_decision.phase_context":
+                lines.append("- dashboard.phase_decision.phase_context: 公开低敏市场阶段摘要子集")
+            elif f == "dashboard.phase_decision.action_window":
+                lines.append("- dashboard.phase_decision.action_window: 阶段化行动窗口")
+            elif f == "dashboard.phase_decision.immediate_action":
+                lines.append("- dashboard.phase_decision.immediate_action: 立即行动/等待确认/观察/无盘中动作")
+            elif f == "dashboard.phase_decision.watch_conditions":
+                lines.append("- dashboard.phase_decision.watch_conditions: 观察条件数组")
+            elif f == "dashboard.phase_decision.next_check_time":
+                lines.append("- dashboard.phase_decision.next_check_time: 下一次检查点或市场本地时间")
+            elif f == "dashboard.phase_decision.confidence_reason":
+                lines.append("- dashboard.phase_decision.confidence_reason: 置信度理由与数据限制")
+            elif f == "dashboard.phase_decision.data_limitations":
+                lines.append("- dashboard.phase_decision.data_limitations: 阶段/数据质量限制数组")
         return "\n".join(lines)
 
     def _build_integrity_retry_prompt(

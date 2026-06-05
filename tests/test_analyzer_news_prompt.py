@@ -119,6 +119,23 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("多头排列必须条件", prompt)
         self.assertIn("多头排列：MA5 > MA10 > MA20", prompt)
 
+    def test_analysis_prompt_requires_phase_decision_in_main_and_legacy_modes(self) -> None:
+        for legacy in (False, True):
+            with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+                analyzer = GeminiAnalyzer(
+                    skill_instructions="",
+                    default_skill_policy="",
+                    use_legacy_default_prompt=legacy,
+                )
+
+            prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
+
+            self.assertIn('"phase_decision"', prompt)
+            self.assertIn('"watch_conditions"', prompt)
+            self.assertIn('"data_limitations"', prompt)
+            self.assertIn("quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated", prompt)
+            self.assertIn("`confidence_level` 不得为高", prompt)
+
     def test_analysis_prompt_contains_actionability_guardrails(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
             analyzer = GeminiAnalyzer()

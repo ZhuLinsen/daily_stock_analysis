@@ -5,6 +5,7 @@ import { createParsedApiError } from '../../api/error';
 import { historyApi } from '../../api/history';
 import type { Message } from '../../stores/agentChatStore';
 import ChatPage from '../ChatPage';
+import { extractStockCodeFromMessage } from '../../utils/chatStockCode';
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -22,6 +23,9 @@ const {
   mockSendChat,
   mockGetSystemConfig,
   mockUpdateSystemConfig,
+  mockGetWatchlist,
+  mockAddToWatchlist,
+  mockRemoveFromWatchlist,
   mockDownloadSession,
   mockFormatSessionAsMarkdown,
 } = vi.hoisted(() => ({
@@ -30,6 +34,9 @@ const {
   mockSendChat: vi.fn(),
   mockGetSystemConfig: vi.fn(),
   mockUpdateSystemConfig: vi.fn(),
+  mockGetWatchlist: vi.fn(),
+  mockAddToWatchlist: vi.fn(),
+  mockRemoveFromWatchlist: vi.fn(),
   mockDownloadSession: vi.fn(),
   mockFormatSessionAsMarkdown: vi.fn(),
 }));
@@ -76,6 +83,9 @@ vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     getConfig: mockGetSystemConfig,
     update: mockUpdateSystemConfig,
+    getWatchlist: mockGetWatchlist,
+    addToWatchlist: mockAddToWatchlist,
+    removeFromWatchlist: mockRemoveFromWatchlist,
   },
 }));
 
@@ -158,6 +168,7 @@ beforeEach(() => {
   });
   mockDeleteChatSession.mockResolvedValue(undefined);
   mockSendChat.mockResolvedValue({ success: true });
+  mockGetWatchlist.mockResolvedValue([]);
   mockGetSystemConfig.mockResolvedValue({
     configVersion: 'cfg-v1',
     maskToken: 'mask-token',
@@ -922,5 +933,105 @@ describe('ChatPage', () => {
     fireEvent.click(jumpButton);
 
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+});
+
+describe('extractStockCodeFromMessage', () => {
+  it('returns 6-digit A-share code', () => {
+    expect(extractStockCodeFromMessage('分析 600519 趋势')).toBe('600519');
+    expect(extractStockCodeFromMessage('002460')).toBe('002460');
+  });
+
+  it('returns HK prefixed code (normalized)', () => {
+    expect(extractStockCodeFromMessage('分析 hk00700')).toBe('HK00700');
+  });
+
+  it('returns .HK suffix code (normalized to canonical)', () => {
+    expect(extractStockCodeFromMessage('00700.HK')).toBe('HK00700');
+    expect(extractStockCodeFromMessage('1810.HK')).toBe('HK01810');
+  });
+
+  it('returns code with .SH/.SZ suffix (normalized)', () => {
+    expect(extractStockCodeFromMessage('看 600519.SH')).toBe('600519');
+    expect(extractStockCodeFromMessage('000001.SZ')).toBe('000001');
+  });
+
+  it('returns US ticker like AAPL', () => {
+    expect(extractStockCodeFromMessage('分析 AAPL 走势')).toBe('AAPL');
+    expect(extractStockCodeFromMessage('TSLA')).toBe('TSLA');
+  });
+
+  it('does NOT return finance abbreviations as tickers', () => {
+    expect(extractStockCodeFromMessage('如果不考虑 TTM 呢')).toBeNull();
+    expect(extractStockCodeFromMessage('市盈率 TTM 怎么看')).toBeNull();
+    expect(extractStockCodeFromMessage('PE 怎么看')).toBeNull();
+    expect(extractStockCodeFromMessage('MACD 还没金叉吗')).toBeNull();
+    expect(extractStockCodeFromMessage('RSI 怎么看')).toBeNull();
+    expect(extractStockCodeFromMessage('WHAT IS PE')).toBeNull();
+    expect(extractStockCodeFromMessage('PE IS HIGH')).toBeNull();
+    expect(extractStockCodeFromMessage('WHAT IS TTM')).toBeNull();
+  });
+
+  it('skips finance abbreviations before a real ticker', () => {
+    expect(extractStockCodeFromMessage('PE AAPL 怎么看')).toBe('AAPL');
+    expect(extractStockCodeFromMessage('TTM AAPL 怎么看')).toBe('AAPL');
+    expect(extractStockCodeFromMessage('MACD AAPL 怎么看')).toBe('AAPL');
+    expect(extractStockCodeFromMessage('WHAT IS PE AAPL')).toBe('AAPL');
+  });
+
+  it('does NOT return exchange prefixes as tickers', () => {
+    expect(extractStockCodeFromMessage('分析 SH 走势')).toBeNull();
+    expect(extractStockCodeFromMessage('看看 BJ')).toBeNull();
+    expect(extractStockCodeFromMessage('HK')).toBeNull();
+    expect(extractStockCodeFromMessage('买入 SZ')).toBeNull();
+    expect(extractStockCodeFromMessage('US 市场')).toBeNull();
+    expect(extractStockCodeFromMessage('SS')).toBeNull();
+  });
+
+  it('returns null for messages without stock codes', () => {
+    expect(extractStockCodeFromMessage('茅台现在适合买入吗')).toBeNull();
+    expect(extractStockCodeFromMessage('大盘走势如何')).toBeNull();
+  });
+
+  it('matches prefixed code like SH600519 (normalized)', () => {
+    expect(extractStockCodeFromMessage('分析 SH600519')).toBe('600519');
+  });
+
+  it('returns SZ-prefixed code when standalone (normalized)', () => {
+    expect(extractStockCodeFromMessage('SZ000001')).toBe('000001');
+  });
+});
+
+describe('watchlist button with code variants', () => {
+  it('shows "从自选删除" when canonical code is in watchlist and user inputs variant', async () => {
+    mockGetWatchlist.mockResolvedValue(['600519', 'HK01810']);
+
+    render(
+      <MemoryRouter>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const textarea = await screen.findByPlaceholderText(/例如/);
+    fireEvent.change(textarea, { target: { value: '分析 600519.SH' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(await screen.findByText('从自选删除')).toBeInTheDocument();
+  });
+
+  it('shows "从自选删除" for HK variant codes', async () => {
+    mockGetWatchlist.mockResolvedValue(['HK01810']);
+
+    render(
+      <MemoryRouter>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const textarea = await screen.findByPlaceholderText(/例如/);
+    fireEvent.change(textarea, { target: { value: '分析 1810.HK' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(await screen.findByText('从自选删除')).toBeInTheDocument();
   });
 });

@@ -25,6 +25,8 @@ import {
 } from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
+import { extractStockCodeFromMessage } from '../utils/chatStockCode';
+import { normalizeStockCode } from '../utils/stockCode';
 
 // Quick question examples shown on empty state
 const QUICK_QUESTIONS = [
@@ -72,6 +74,11 @@ const ChatPage: React.FC = () => {
   const [contextCompressionError, setContextCompressionError] = useState<string | null>(null);
   const [copiedMessages, setCopiedMessages] = useState<Set<string>>(new Set());
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [watchlistCodes, setWatchlistCodes] = useState<string[]>([]);
+  const [isWatchlistActioning, setIsWatchlistActioning] = useState(false);
+  const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null);
+  const [activeStockCode, setActiveStockCode] = useState<string | null>(null);
+  const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -108,6 +115,66 @@ const ChatPage: React.FC = () => {
   useEffect(() => () => {
     isMountedRef.current = false;
   }, []);
+
+  const loadWatchlist = useCallback(async () => {
+    try {
+      const codes = await systemConfigApi.getWatchlist();
+      if (isMountedRef.current) {
+        setWatchlistCodes(codes);
+      }
+    } catch {
+      // ignore error silently
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadWatchlist();
+  }, [loadWatchlist]);
+
+  const stockInWatchlist = useCallback(
+    (stockCode: string) => watchlistCodes.includes(normalizeStockCode(stockCode)),
+    [watchlistCodes],
+  );
+
+  const handleToggleWatchlist = useCallback(
+    async (stockCode: string) => {
+      if (!stockCode || isWatchlistActioning) return;
+      setIsWatchlistActioning(true);
+      setWatchlistMessage(null);
+      try {
+        if (stockInWatchlist(stockCode)) {
+          const codes = await systemConfigApi.removeFromWatchlist(stockCode);
+          if (isMountedRef.current) {
+            setWatchlistCodes(codes);
+            setWatchlistMessage(`已从自选中移除 ${stockCode}`);
+          }
+        } else {
+          const codes = await systemConfigApi.addToWatchlist(stockCode);
+          if (isMountedRef.current) {
+            setWatchlistCodes(codes);
+            setWatchlistMessage(`已加入自选 ${stockCode}`);
+          }
+        }
+      } catch {
+        if (isMountedRef.current) {
+          setWatchlistMessage('操作失败，请重试');
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setIsWatchlistActioning(false);
+          if (watchlistMessageTimerRef.current !== null) {
+            window.clearTimeout(watchlistMessageTimerRef.current);
+          }
+          watchlistMessageTimerRef.current = window.setTimeout(() => {
+            if (isMountedRef.current) {
+              setWatchlistMessage(null);
+            }
+          }, 3000);
+        }
+      }
+    },
+    [isWatchlistActioning, stockInWatchlist],
+  );
 
   const {
     messages,
@@ -346,6 +413,7 @@ const ChatPage: React.FC = () => {
 
     const hydrationToken = ++followUpHydrationTokenRef.current;
     setInput(buildFollowUpPrompt(stock, name));
+    setActiveStockCode(stock);
     followUpContextRef.current = {
       stock_code: stock,
       stock_name: name,
@@ -376,6 +444,11 @@ const ChatPage: React.FC = () => {
       if (!msgText || loading) return;
       const usedSkillIds = normalizeSelectedSkillIds(overrideSkillIds ?? selectedSkillIds);
       const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
+
+      const stockCode = extractStockCodeFromMessage(msgText);
+      if (stockCode) {
+        setActiveStockCode(stockCode);
+      }
 
       const payload = {
         message: msgText,
@@ -1126,6 +1199,24 @@ const ChatPage: React.FC = () => {
                     </label>
                   );
                 })}
+              </div>
+            )}
+
+            {activeStockCode && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-text font-mono">{activeStockCode}</span>
+                <Button
+                  variant="secondary"
+                  size="xsm"
+                  isLoading={isWatchlistActioning}
+                  onClick={() => void handleToggleWatchlist(activeStockCode)}
+                  className="text-[11px]"
+                >
+                  {stockInWatchlist(activeStockCode) ? '从自选删除' : '加入自选'}
+                </Button>
+                {watchlistMessage && (
+                  <span className="text-[11px] text-secondary-text animate-in fade-in">{watchlistMessage}</span>
+                )}
               </div>
             )}
 

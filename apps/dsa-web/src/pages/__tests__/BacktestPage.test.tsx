@@ -111,16 +111,18 @@ describe('BacktestPage', () => {
     expect(screen.getByText('平均模拟收益')).toBeInTheDocument();
   });
 
-  it('filters results with stock code, window, and analysis date range when clicking Filter', async () => {
+  it('filters results with stock code, window, phase, and analysis date range when clicking Filter', async () => {
     render(<BacktestPage />);
 
     const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
+    const phaseSelect = screen.getByDisplayValue('全部阶段');
     const fromInput = screen.getByLabelText('分析开始日期');
     const toInput = screen.getByLabelText('分析结束日期');
 
     fireEvent.change(filterInput, { target: { value: 'aapl' } });
     fireEvent.change(windowInput, { target: { value: '20' } });
+    fireEvent.change(phaseSelect, { target: { value: 'intraday' } });
     fireEvent.change(fromInput, { target: { value: '2026-03-01' } });
     fireEvent.change(toInput, { target: { value: '2026-03-31' } });
     fireEvent.click(screen.getByRole('button', { name: '筛选' }));
@@ -131,6 +133,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 20,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
+        analysisPhase: 'intraday',
         page: 1,
         limit: 20,
       });
@@ -138,6 +141,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 20,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
+        analysisPhase: 'intraday',
       });
     });
   });
@@ -167,6 +171,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 15,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
         page: 1,
         limit: 20,
       });
@@ -174,6 +179,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 15,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
       });
     });
 
@@ -193,6 +199,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 1,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
         page: 1,
         limit: 20,
       });
@@ -200,6 +207,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 1,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
       });
     });
 

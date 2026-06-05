@@ -20,6 +20,12 @@ export function useHomeDashboardState() {
       isLoadingHistory: state.isLoadingHistory,
       isLoadingMore: state.isLoadingMore,
       hasMore: state.hasMore,
+      marketReviewHistoryItems: state.marketReviewHistoryItems,
+      selectedMarketReviewHistoryIds: state.selectedMarketReviewHistoryIds,
+      isLoadingMarketReviewHistory: state.isLoadingMarketReviewHistory,
+      isLoadingMoreMarketReviewHistory: state.isLoadingMoreMarketReviewHistory,
+      isDeletingMarketReviewHistory: state.isDeletingMarketReviewHistory,
+      marketReviewHistoryHasMore: state.marketReviewHistoryHasMore,
       selectedReport: state.selectedReport,
       isLoadingReport: state.isLoadingReport,
       isHistoryTrendOpen: state.isHistoryTrendOpen,
@@ -39,10 +45,16 @@ export function useHomeDashboardState() {
       loadInitialHistory: state.loadInitialHistory,
       refreshHistory: state.refreshHistory,
       loadMoreHistory: state.loadMoreHistory,
+      loadMarketReviewHistory: state.loadMarketReviewHistory,
+      refreshMarketReviewHistory: state.refreshMarketReviewHistory,
+      loadMoreMarketReviewHistory: state.loadMoreMarketReviewHistory,
       selectHistoryItem: state.selectHistoryItem,
       toggleHistorySelection: state.toggleHistorySelection,
       toggleSelectAllVisible: state.toggleSelectAllVisible,
       deleteSelectedHistory: state.deleteSelectedHistory,
+      toggleMarketReviewHistorySelection: state.toggleMarketReviewHistorySelection,
+      toggleSelectAllVisibleMarketReviewHistory: state.toggleSelectAllVisibleMarketReviewHistory,
+      deleteSelectedMarketReviewHistory: state.deleteSelectedMarketReviewHistory,
       submitAnalysis: state.submitAnalysis,
       syncTaskCreated: state.syncTaskCreated,
       syncTaskUpdated: state.syncTaskUpdated,
@@ -55,6 +67,10 @@ export function useHomeDashboardState() {
       closeHistoryTrend: state.closeHistoryTrend,
       setStockHistoryRange: state.setStockHistoryRange,
       loadMoreStockHistory: state.loadMoreStockHistory,
+      stockBarItems: state.stockBarItems,
+      isLoadingStockBar: state.isLoadingStockBar,
+      loadStockBar: state.loadStockBar,
+      refreshStockBar: state.refreshStockBar,
     })),
   );
 
@@ -62,10 +78,15 @@ export function useHomeDashboardState() {
     () => new Set(dashboardState.selectedHistoryIds),
     [dashboardState.selectedHistoryIds],
   );
+  const selectedMarketReviewHistoryIds = useMemo(
+    () => new Set(dashboardState.selectedMarketReviewHistoryIds),
+    [dashboardState.selectedMarketReviewHistoryIds],
+  );
 
   return {
     ...dashboardState,
     selectedIds,
+    selectedMarketReviewHistoryIds,
   };
 }
 

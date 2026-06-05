@@ -31,6 +31,7 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.market_phase_summary import extract_market_phase_summary
 from src.utils.data_processing import (
     extract_realtime_detail_fields,
     normalize_model_used,
@@ -134,6 +135,7 @@ class HistoryService:
     def get_history_list(
         self,
         stock_code: Optional[str] = None,
+        report_type: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         page: int = 1,
@@ -144,6 +146,7 @@ class HistoryService:
         
         Args:
             stock_code: Stock code filter
+            report_type: Report type filter
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             page: Page number
@@ -178,6 +181,7 @@ class HistoryService:
             # Use new paginated query method
             records, total = self.db.get_analysis_history_paginated(
                 code=stock_code,
+                report_type=report_type,
                 start_date=start_dt,
                 end_date=end_dt,
                 offset=offset,
@@ -258,6 +262,7 @@ class HistoryService:
         market_fields = self._extract_history_market_fields(
             getattr(record, "context_snapshot", None)
         )
+        market_phase_summary = extract_market_phase_summary(getattr(record, "context_snapshot", None))
 
         return {
             "id": record.id,
@@ -271,6 +276,7 @@ class HistoryService:
             "operation_advice": record.operation_advice,
             "model_used": normalize_model_used(model_used),
             "created_at": record.created_at.isoformat() if record.created_at else None,
+            "market_phase_summary": market_phase_summary,
             **market_fields,
         }
 

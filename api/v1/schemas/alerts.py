@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from api.v1.schemas.history import AnalysisContextPackOverview
+from api.v1.schemas.market_phase import MarketPhaseSummary
+
 
 TargetScopeValue = Literal["single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"]
 SeverityValue = Literal["info", "warning", "critical"]
@@ -105,6 +108,15 @@ class AlertTriggerItem(BaseModel):
     triggered_at: Optional[str] = None
     status: str
     diagnostics: Optional[str] = None
+    market_phase_summary: Optional[MarketPhaseSummary] = None
+    analysis_context_pack_overview: Optional[AnalysisContextPackOverview] = None
+    analysis_visibility_source: Optional[str] = Field(
+        None,
+        description=(
+            "公开摘要来源：alert_trigger_market_context / analysis_history_snapshot / "
+            "evaluator_snapshot / legacy_text / null"
+        ),
+    )
 
 
 class AlertTriggerListResponse(BaseModel):

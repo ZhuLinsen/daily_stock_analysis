@@ -77,7 +77,9 @@ describe('useTaskStream', () => {
           progress: 72,
           message: 'LLM 正在生成分析结果',
           report_type: 'detailed',
+          analysis_phase: 'intraday',
           created_at: '2026-03-29T08:00:00Z',
+          skills: ['growth_quality'],
         }),
       }),
     );
@@ -97,6 +99,8 @@ describe('useTaskStream', () => {
       error: undefined,
       originalQuery: undefined,
       selectionSource: undefined,
+      analysisPhase: 'intraday',
+      skills: ['growth_quality'],
     });
   });
 });

@@ -342,7 +342,7 @@ test('auto download prompt falls back to error when install path fails', async (
   assert.match(state.message, /更新安装失败/);
   assert.equal(state.updateMode, mainModule.UPDATE_MODE.AUTO);
   assert.deepEqual(quitAndInstallArgs, [true, true]);
-  assert.equal(fakeUpdater.installDirectory, `"${exeDir}"`);
+  assert.equal(fakeUpdater.installDirectory, exeDir);
   assert.equal(fs.existsSync(backupRoot), false);
   assert.equal(fs.existsSync(path.join(backupRoot, 'runtime-state.json')), false);
 

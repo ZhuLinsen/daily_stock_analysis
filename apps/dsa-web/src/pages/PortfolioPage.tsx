@@ -209,6 +209,8 @@ const PortfolioPage: React.FC = () => {
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [riskWarning, setRiskWarning] = useState<string | null>(null);
   const [writeWarning, setWriteWarning] = useState<string | null>(null);
+  const [positionAnalysisLoadingKey, setPositionAnalysisLoadingKey] = useState<string | null>(null);
+  const [positionAnalysisMessage, setPositionAnalysisMessage] = useState<string | null>(null);
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
   const [selectedBroker, setSelectedBroker] = useState('huatai');
@@ -467,6 +469,25 @@ const PortfolioPage: React.FC = () => {
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
   }, [snapshot]);
+
+  const handleAnalyzePosition = async (row: FlatPosition) => {
+    const key = `${row.accountId}-${row.symbol}-${row.market}`;
+    setPositionAnalysisLoadingKey(key);
+    setPositionAnalysisMessage(null);
+    setError(null);
+    try {
+      const task = await portfolioApi.analyzePosition(row.symbol, {
+        accountId: row.accountId,
+        analysisPhase: 'auto',
+        force: false,
+      });
+      setPositionAnalysisMessage(`已提交 ${row.symbol} 分析任务：${task.taskId}`);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setPositionAnalysisLoadingKey(null);
+    }
+  };
 
   const sectorPieData = useMemo(() => {
     const sectors = risk?.sectorConcentration?.topSectors || [];
@@ -868,6 +889,13 @@ const PortfolioPage: React.FC = () => {
           message={writeWarning}
         />
       ) : null}
+      {positionAnalysisMessage ? (
+        <InlineAlert
+          variant="success"
+          title="分析任务"
+          message={positionAnalysisMessage}
+        />
+      ) : null}
 
       {(showCreateAccount || !hasAccounts) ? (
         <Card padding="md">
@@ -1002,11 +1030,15 @@ const PortfolioPage: React.FC = () => {
                     <th className="text-right py-2 pr-2">市值</th>
                     <th className="text-right py-2">未实现盈亏</th>
                     <th className="text-right py-2">收益率</th>
+                    <th className="text-right py-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {positionRows.map((row) => (
-                    <tr key={`${row.accountId}-${row.symbol}-${row.market}`} className="border-b border-white/5">
+                  {positionRows.map((row) => {
+                    const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
+                    const analyzing = positionAnalysisLoadingKey === rowKey;
+                    return (
+                    <tr key={rowKey} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
@@ -1040,8 +1072,19 @@ const PortfolioPage: React.FC = () => {
                       >
                         {formatSignedPct(row.unrealizedPnlPct)}
                       </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => void handleAnalyzePosition(row)}
+                          disabled={analyzing}
+                          className="btn-secondary px-2 py-1 text-xs disabled:cursor-wait disabled:opacity-60"
+                        >
+                          {analyzing ? '提交中' : '分析'}
+                        </button>
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

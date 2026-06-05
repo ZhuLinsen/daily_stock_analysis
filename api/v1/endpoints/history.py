@@ -29,6 +29,8 @@ from api.v1.schemas.history import (
     ReportDetails,
     MarkdownReportResponse,
     RunDiagnosticSummaryResponse,
+    StockBarItem,
+    StockBarResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -57,6 +59,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _normalize_code_for_grouping(code: str) -> str:
+    """Normalize stock code for deduplication grouping.
+
+    Delegates to data_provider.base.normalize_stock_code which handles
+    SH600519, 600519.SH, HK00700, 00700.HK, BJ920748, etc.
+    """
+    from data_provider.base import normalize_stock_code
+    return normalize_stock_code(code or "")
+
+
 @router.get(
     "",
     response_model=HistoryListResponse,
@@ -69,6 +81,7 @@ router = APIRouter()
 )
 def get_history_list(
     stock_code: Optional[str] = Query(None, description="股票代码筛选"),
+    report_type: Optional[str] = Query(None, description="报告类型筛选，如 market_review"),
     start_date: Optional[str] = Query(None, description="开始日期 (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="页码（从 1 开始）"),
@@ -82,6 +95,7 @@ def get_history_list(
     
     Args:
         stock_code: 股票代码筛选
+        report_type: 报告类型筛选
         start_date: 开始日期
         end_date: 结束日期
         page: 页码
@@ -97,6 +111,7 @@ def get_history_list(
         # 使用 def 而非 async def，FastAPI 自动在线程池中执行
         result = service.get_history_list(
             stock_code=stock_code,
+            report_type=report_type,
             start_date=start_date,
             end_date=end_date,
             page=page,
@@ -120,7 +135,8 @@ def get_history_list(
                 volume_ratio=item.get("volume_ratio"),
                 turnover_rate=item.get("turnover_rate"),
                 model_used=item.get("model_used"),
-                created_at=item.get("created_at")
+                created_at=item.get("created_at"),
+                market_phase_summary=item.get("market_phase_summary"),
             )
             for item in result.get("items", [])
         ]
@@ -140,6 +156,37 @@ def get_history_list(
                 "error": "internal_error",
                 "message": f"查询历史列表失败: {str(e)}"
             }
+        )
+
+
+@router.delete(
+    "/by-code/{stock_code}",
+    response_model=DeleteHistoryResponse,
+    responses={
+        200: {"description": "删除成功"},
+        404: {"description": "未找到记录", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="按股票代码删除历史分析记录",
+    description="删除指定股票代码的所有分析历史记录（支持代码变体归一化匹配）",
+)
+def delete_history_by_code(
+    stock_code: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> DeleteHistoryResponse:
+    try:
+        candidates = HistoryService._history_code_filter_candidates(stock_code)
+        records, _ = db_manager.get_analysis_history_paginated(code=candidates, limit=10000)
+        record_ids = [r.id for r in records if r.id is not None]
+        if not record_ids:
+            return DeleteHistoryResponse(deleted=0)
+        deleted = db_manager.delete_analysis_history_records(record_ids)
+        return DeleteHistoryResponse(deleted=deleted)
+    except Exception as e:
+        logger.error(f"按股票代码删除历史记录失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"删除失败: {str(e)}"},
         )
 
 
@@ -185,6 +232,88 @@ def delete_history_records(
                 "error": "internal_error",
                 "message": f"删除历史记录失败: {str(e)}"
             }
+        )
+
+
+@router.get(
+    "/stocks",
+    response_model=StockBarResponse,
+    responses={
+        200: {"description": "不重复个股列表"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取不重复个股列表",
+    description="返回历史记录中每只股票的最新一条分析摘要，不包含大盘复盘（code=MARKET）。",
+)
+def get_stock_bar(
+    start_date: Optional[str] = Query(None, description="开始日期 (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
+    limit: int = Query(200, ge=1, le=500, description="最大返回数量"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> StockBarResponse:
+    try:
+        from datetime import date as date_type
+        from src.utils.data_processing import parse_json_field
+
+        start = date_type.fromisoformat(start_date) if start_date else None
+        end = date_type.fromisoformat(end_date) if end_date else None
+
+        # Fetch more than limit to compensate for normalization dedup shrinkage
+        # (e.g. 002460 + 002460.SZ both initially counted but merged to one)
+        fetch_limit = min(limit * 3, 500)
+        records = db_manager.get_distinct_stocks_from_history(
+            start_date=start,
+            end_date=end,
+            limit=fetch_limit,
+        )
+
+        # Deduplicate by normalized code, keeping the record with highest id
+        seen: dict = {}
+        for record in records:
+            norm_code = _normalize_code_for_grouping(record.code or "")
+            if norm_code not in seen or record.id > seen[norm_code].id:
+                seen[norm_code] = record
+
+        items = []
+        for norm_code in seen:
+            record = seen[norm_code]
+            raw_result = parse_json_field(getattr(record, "raw_result", None))
+            model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+
+            analysis_count = db_manager.get_analysis_history_paginated(
+                code=HistoryService._history_code_filter_candidates(
+                    record.code or "",
+                ),
+                limit=1,
+            )[1]
+            items.append(
+                StockBarItem(
+                    id=record.id,
+                    stock_code=record.code or "",
+                    stock_name=record.name,
+                    report_type=record.report_type,
+                    sentiment_score=record.sentiment_score,
+                    operation_advice=record.operation_advice,
+                    analysis_count=analysis_count,
+                    last_analysis_time=(
+                        record.created_at.isoformat() if record.created_at else None
+                    ),
+                    model_used=normalize_model_used(model_used),
+                    market_phase_summary=extract_market_phase_summary(getattr(record, "context_snapshot", None)),
+                )
+            )
+
+        items = items[:limit]
+        return StockBarResponse(total=len(items), items=items)
+
+    except Exception as e:
+        logger.error(f"查询个股栏失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"查询个股栏失败: {str(e)}",
+            },
         )
 
 

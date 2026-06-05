@@ -244,7 +244,14 @@ def test_extract_and_sanitize_handle_json_snapshot_strings() -> None:
     overview = render_analysis_context_pack_overview(_pack(), report_language="zh")
     snapshot = json.dumps(
         {
-            "enhanced_context": {"code": "600519"},
+            "enhanced_context": {
+                "code": "600519",
+                "portfolio_context": {
+                    "quantity": 100,
+                    "avg_cost": 1800,
+                },
+            },
+            "portfolio_context": {"total_cost": 180000},
             "analysis_context_pack_overview": overview,
             "market_phase_summary": {"phase": "intraday", "market": "cn"},
         },
