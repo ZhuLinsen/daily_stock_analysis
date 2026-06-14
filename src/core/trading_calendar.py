@@ -512,6 +512,12 @@ def get_open_markets_today() -> Set[str]:
 
     Returns:
         Set of market keys ('cn', 'hk', 'us') that are trading today
+
+    Grace period: if the current local time is before 06:00 (markets
+    have not opened yet), also accept the *previous* day as a valid
+    trading day.  This handles GitHub Actions scheduled workflows that
+    are delayed past midnight — the cron was intended for the previous
+    weekday but execution lands on Saturday/next-day early morning.
     """
     if not _XCALS_AVAILABLE:
         return {"cn", "hk", "us"}
@@ -519,9 +525,18 @@ def get_open_markets_today() -> Set[str]:
     for mkt, tz_name in MARKET_TIMEZONE.items():
         try:
             tz = ZoneInfo(tz_name)
-            today = datetime.now(tz).date()
+            now = datetime.now(tz)
+            today = now.date()
             if is_market_open(mkt, today):
                 result.add(mkt)
+            elif now.hour < 6:
+                # Grace period: delayed scheduled run that crossed midnight.
+                # Treat the previous calendar day as "today" for trading-day
+                # purposes so that a Friday analysis delayed to early Saturday
+                # morning is still recognised as Friday's run.
+                yesterday = today - timedelta(days=1)
+                if is_market_open(mkt, yesterday):
+                    result.add(mkt)
         except Exception as e:
             logger.warning("get_open_markets_today fail-open for %s: %s", mkt, e)
             result.add(mkt)

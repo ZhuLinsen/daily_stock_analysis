@@ -754,5 +754,76 @@ class ComputeEffectiveRegionTestCase(unittest.TestCase):
         self.assertEqual(result, "cn")
 
 
+class _GracePeriodFakeDatetime:
+    """Drop-in replacement for the datetime module with a frozen now()."""
+
+    def __init__(self, frozen_now):
+        self._frozen_now = frozen_now
+
+    def now(self, tz=None):
+        return self._frozen_now
+
+
+class GetOpenMarketsTodayGracePeriodTestCase(unittest.TestCase):
+    """Tests for the grace-period logic in get_open_markets_today().
+
+    When the current local time is before 06:00 and today is *not* a
+    trading day, the function should fall back to checking yesterday.
+    This handles GitHub Actions scheduled workflows delayed past midnight.
+    """
+
+    def _run_get_open(self, fake_now):
+        """Helper: run get_open_markets_today with a mocked datetime and is_market_open."""
+
+        def fake_is_market_open(market, check_date):
+            # Saturday never open; Friday open for cn/hk/us
+            if check_date == date(2026, 6, 13):  # Saturday
+                return False
+            if check_date == date(2026, 6, 12):  # Friday
+                return market in ("cn", "hk", "us")
+            return False
+
+        with patch.object(trading_calendar, "is_market_open", side_effect=fake_is_market_open), \
+             patch.object(trading_calendar, "_XCALS_AVAILABLE", True), \
+             patch.object(trading_calendar, "datetime", _GracePeriodFakeDatetime(fake_now)):
+            return trading_calendar.get_open_markets_today()
+
+    def test_saturday_early_morning_falls_back_to_friday(self):
+        """Delayed Friday run at Sat 02:30 → should recognise Friday as trading."""
+        fake_now = datetime(2026, 6, 13, 2, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+        result = self._run_get_open(fake_now)
+        self.assertIn("cn", result, "CN should be included via Friday fallback")
+        self.assertIn("hk", result, "HK should be included via Friday fallback")
+        self.assertIn("us", result, "US should be included via Friday fallback")
+
+    def test_saturday_after_6am_no_grace(self):
+        """At Sat 07:00 → grace period expired, returns empty."""
+        fake_now = datetime(2026, 6, 13, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        result = self._run_get_open(fake_now)
+        self.assertEqual(result, set(), "No markets should be included after 06:00")
+
+    def test_saturday_0559_still_in_grace(self):
+        """At Sat 05:59 → still within grace period."""
+        fake_now = datetime(2026, 6, 13, 5, 59, tzinfo=ZoneInfo("Asia/Shanghai"))
+        result = self._run_get_open(fake_now)
+        self.assertIn("cn", result)
+
+    def test_normal_weekday_no_grace_needed(self):
+        """Normal weekday (Wed 14:00) → today is trading, no grace needed."""
+
+        def fake_is_market_open(market, check_date):
+            if check_date == date(2026, 6, 10):  # Wednesday
+                return market in ("cn", "hk", "us")
+            return False
+
+        fake_now = datetime(2026, 6, 10, 14, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with patch.object(trading_calendar, "is_market_open", side_effect=fake_is_market_open), \
+             patch.object(trading_calendar, "_XCALS_AVAILABLE", True), \
+             patch.object(trading_calendar, "datetime", _GracePeriodFakeDatetime(fake_now)):
+            result = trading_calendar.get_open_markets_today()
+
+        self.assertEqual(result, {"cn", "hk", "us"})
+
+
 if __name__ == "__main__":
     unittest.main()
