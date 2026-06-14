@@ -1,12 +1,9 @@
 {
-  "openapi": "3.0.0",
+  "openapi": "3.1.0",
   "info": {
     "title": "Daily Stock Analysis API",
-    "description": "A股/港股/美股自选股智能分析系统 API\n\n## 功能模块\n- 股票分析：触发 AI 智能分析\n- 历史记录：查询历史分析报告\n- 股票数据：获取行情数据\n\n## 认证方式\n当前版本暂无认证要求",
-    "version": "1.0.0",
-    "contact": {
-      "name": "Daily Stock Analysis Team"
-    }
+    "description": "A股/港股/美股自选股智能分析系统 API\n\n## 功能模块\n- 股票分析：触发 AI 智能分析\n- 历史记录：查询历史分析报告\n- 股票数据：获取行情数据\n\n## 认证方式\n支持可选管理员认证：ADMIN_AUTH_ENABLED=true 时，除登录、状态、健康检查和 OpenAPI 文档外，/api/v1/* 需要有效管理员会话 Cookie；关闭时不强制认证。",
+    "version": "1.0.0"
   },
   "servers": [
     {
@@ -30,6 +27,10 @@
     {
       "name": "SystemConfig",
       "description": "系统配置管理接口"
+    },
+    {
+      "name": "DecisionSignals",
+      "description": "AI 决策信号资产接口"
     }
   ],
   "paths": {
@@ -55,6 +56,28 @@
         }
       }
     },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "根路径健康检查",
+        "description": "用于负载均衡器或监控系统检查服务状态；即使静态 Web 前端已构建，也返回 JSON 而不是 SPA HTML fallback。",
+        "operationId": "rootHealthCheck",
+        "responses": {
+          "200": {
+            "description": "服务健康",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "tags": [
@@ -63,6 +86,28 @@
         "summary": "健康检查",
         "description": "用于负载均衡器或监控系统检查服务状态",
         "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "服务健康",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "v1 健康检查",
+        "description": "API v1 前缀下的健康检查接口，用于监控系统和客户端探测服务状态。",
+        "operationId": "v1HealthCheck",
         "responses": {
           "200": {
             "description": "服务健康",
@@ -168,7 +213,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "筛选状态：pending, processing, completed, failed（支持逗号分隔多个）",
+            "description": "筛选状态：pending, processing, completed, failed, cancel_requested, cancelled（支持逗号分隔多个）",
             "schema": {
               "type": "string",
               "example": "pending,processing"
@@ -726,6 +771,827 @@
           }
         }
       }
+    },
+    "/api/v1/decision-signals": {
+      "post": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "创建或去重决策信号",
+        "description": "显式写入 DecisionSignal。命中同源去重键时返回已有记录和 created=false；若已有记录为 expired 且新请求为 active 并携带未来 expires_at，则原地刷新该记录；P1 不保证并发绝对幂等。",
+        "operationId": "createDecisionSignal",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionSignalCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalMutationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求字段非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体或路径参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "创建失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "查询决策信号列表",
+        "description": "分页查询 DecisionSignal；读取前会懒过期已到 expires_at 的 active 信号。holding_only=true 只读取 active 账户的 portfolio_positions 缓存持仓，不触发 portfolio snapshot replay。",
+        "operationId": "listDecisionSignals",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "market",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional market filter: cn/hk/us",
+              "title": "Market"
+            },
+            "description": "Optional market filter: cn/hk/us"
+          },
+          {
+            "name": "stock_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional stock code filter",
+              "title": "Stock Code"
+            },
+            "description": "Optional stock code filter"
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional decision action filter",
+              "title": "Action"
+            },
+            "description": "Optional decision action filter"
+          },
+          {
+            "name": "market_phase",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional market phase filter",
+              "title": "Market Phase"
+            },
+            "description": "Optional market phase filter"
+          },
+          {
+            "name": "source_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional source type filter",
+              "title": "Source Type"
+            },
+            "description": "Optional source type filter"
+          },
+          {
+            "name": "source_report_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional source report id filter",
+              "title": "Source Report Id"
+            },
+            "description": "Optional source report id filter"
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional trace id filter",
+              "title": "Trace Id"
+            },
+            "description": "Optional trace id filter"
+          },
+          {
+            "name": "trigger_source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional trigger source filter",
+              "title": "Trigger Source"
+            },
+            "description": "Optional trigger source filter"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional status filter",
+              "title": "Status"
+            },
+            "description": "Optional status filter"
+          },
+          {
+            "name": "created_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive created_at lower bound",
+              "title": "Created From"
+            },
+            "description": "Inclusive created_at lower bound"
+          },
+          {
+            "name": "created_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive created_at upper bound",
+              "title": "Created To"
+            },
+            "description": "Inclusive created_at upper bound"
+          },
+          {
+            "name": "expires_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive expires_at lower bound",
+              "title": "Expires From"
+            },
+            "description": "Inclusive expires_at lower bound"
+          },
+          {
+            "name": "expires_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive expires_at upper bound",
+              "title": "Expires To"
+            },
+            "description": "Inclusive expires_at upper bound"
+          },
+          {
+            "name": "holding_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Filter to active cached portfolio holdings only",
+              "default": false,
+              "title": "Holding Only"
+            },
+            "description": "Filter to active cached portfolio holdings only"
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional active portfolio account id for holding_only",
+              "title": "Account Id"
+            },
+            "description": "Optional active portfolio account id for holding_only"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询参数非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "查询参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decision-signals/latest/{stock_code}": {
+      "get": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "查询股票最新 active 决策信号",
+        "description": "返回指定股票最新 active 信号列表；读取前会执行懒过期。",
+        "operationId": "getLatestDecisionSignals",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "stock_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Stock Code"
+            }
+          },
+          {
+            "name": "market",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional market filter: cn/hk/us",
+              "title": "Market"
+            },
+            "description": "Optional market filter: cn/hk/us"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 1,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "路径或查询参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decision-signals/{signal_id}": {
+      "get": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "查询单条决策信号",
+        "description": "按 ID 查询单条 DecisionSignal；读取前会执行懒过期。",
+        "operationId": "getDecisionSignal",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "signal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Signal Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalItem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "信号不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "路径参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/decision-signals/{signal_id}/status": {
+      "patch": {
+        "tags": [
+          "DecisionSignals"
+        ],
+        "summary": "更新决策信号状态",
+        "description": "只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存，P1 不实现复杂状态机。",
+        "operationId": "updateDecisionSignalStatus",
+        "security": [
+          {
+            "AdminSessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "signal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Signal Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionSignalStatusUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionSignalItem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录或管理员会话无效（ADMIN_AUTH_ENABLED=true 时）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "状态非法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "信号不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体或路径参数校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "更新失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analysis/tasks/{task_id}/flow": {
+      "get": {
+        "tags": [
+          "Analysis"
+        ],
+        "summary": "获取分析任务运行流",
+        "description": "根据 task_id 查询活跃任务或已落库任务的运行流快照。活跃任务缺少诊断时返回 skeleton flow；完成任务可按同一 task_id/query_id 尝试读取历史诊断。",
+        "operationId": "getTaskRunFlow",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "分析任务 ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务运行流快照",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFlowSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或已过期",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/history/{record_id}/flow": {
+      "get": {
+        "tags": [
+          "History"
+        ],
+        "summary": "获取历史报告运行流",
+        "description": "根据历史记录 ID 或可解析的 query_id 获取历史报告运行流快照。旧历史缺少诊断时返回 skeleton/unknown 状态，不影响报告详情读取。",
+        "operationId": "getHistoryRunFlow",
+        "parameters": [
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "description": "历史记录主键 ID 或 query_id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史报告运行流快照",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFlowSnapshot"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "报告不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务器错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1248,6 +2114,26 @@
           "operation_advice": {
             "type": "string"
           },
+          "action": {
+            "type": "string",
+            "description": "结构化建议动作 taxonomy",
+            "nullable": true,
+            "enum": [
+              "buy",
+              "add",
+              "hold",
+              "reduce",
+              "sell",
+              "watch",
+              "avoid",
+              "alert"
+            ]
+          },
+          "action_label": {
+            "type": "string",
+            "description": "建议动作展示标签",
+            "nullable": true
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -1300,6 +2186,26 @@
               "operation_advice": {
                 "type": "string",
                 "description": "操作建议"
+              },
+              "action": {
+                "type": "string",
+                "description": "结构化建议动作 taxonomy",
+                "nullable": true,
+                "enum": [
+                  "buy",
+                  "add",
+                  "hold",
+                  "reduce",
+                  "sell",
+                  "watch",
+                  "avoid",
+                  "alert"
+                ]
+              },
+              "action_label": {
+                "type": "string",
+                "description": "建议动作展示标签",
+                "nullable": true
               },
               "trend_prediction": {
                 "type": "string",
@@ -1868,26 +2774,1202 @@
           "current_config_version"
         ]
       },
-      "ErrorResponse": {
+      "DecisionAction": {
+        "type": "string",
+        "enum": [
+          "buy",
+          "add",
+          "hold",
+          "reduce",
+          "sell",
+          "watch",
+          "avoid",
+          "alert"
+        ],
+        "description": "八态建议动作，独立于旧 decision_type=buy|hold|sell 统计口径。"
+      },
+      "MarketPhaseValue": {
+        "type": "string",
+        "enum": [
+          "premarket",
+          "intraday",
+          "lunch_break",
+          "closing_auction",
+          "postmarket",
+          "non_trading",
+          "unknown"
+        ]
+      },
+      "DecisionSignalCreateRequest": {
+        "properties": {
+          "stock_code": {
+            "type": "string",
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Stock Code"
+          },
+          "stock_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "maxLength": 64,
+            "title": "Stock Name"
+          },
+          "market": {
+            "type": "string",
+            "enum": [
+              "cn",
+              "hk",
+              "us"
+            ],
+            "title": "Market"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "analysis",
+              "agent",
+              "alert",
+              "market_review",
+              "manual"
+            ],
+            "title": "Source Type"
+          },
+          "source_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "maxLength": 64,
+            "title": "Source Agent"
+          },
+          "source_report_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Report Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "maxLength": 64,
+            "title": "Trace Id"
+          },
+          "market_phase": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "premarket",
+                  "intraday",
+                  "lunch_break",
+                  "closing_auction",
+                  "postmarket",
+                  "non_trading",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Phase"
+          },
+          "trigger_source": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Trigger Source"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "add",
+              "hold",
+              "reduce",
+              "sell",
+              "watch",
+              "avoid",
+              "alert"
+            ],
+            "title": "Action"
+          },
+          "action_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "maxLength": 32,
+            "title": "Action Label"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "intraday",
+                  "1d",
+                  "3d",
+                  "5d",
+                  "10d",
+                  "swing",
+                  "long"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon"
+          },
+          "entry_low": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Low"
+          },
+          "entry_high": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry High"
+          },
+          "stop_loss": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Loss"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          },
+          "invalidation": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "watch_conditions": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Conditions"
+          },
+          "reason": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk_summary": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Summary"
+          },
+          "catalyst_summary": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst Summary"
+          },
+          "evidence": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "data_quality_summary": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Quality Summary"
+          },
+          "plan_quality": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "partial",
+                  "minimal",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Quality"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "invalidated",
+                  "closed",
+                  "archived"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          },
+          "report_language": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "zh",
+                  "en"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Language"
+          }
+        },
         "type": "object",
+        "required": [
+          "stock_code",
+          "market",
+          "source_type",
+          "trigger_source",
+          "action"
+        ],
+        "title": "DecisionSignalCreateRequest"
+      },
+      "DecisionSignalStatusUpdateRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "invalidated",
+              "closed",
+              "archived"
+            ],
+            "title": "Status"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "DecisionSignalStatusUpdateRequest"
+      },
+      "DecisionSignalItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "stock_code": {
+            "type": "string",
+            "title": "Stock Code"
+          },
+          "stock_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Name"
+          },
+          "market": {
+            "type": "string",
+            "title": "Market"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "source_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Agent"
+          },
+          "source_report_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Report Id"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          },
+          "market_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Phase"
+          },
+          "trigger_source": {
+            "type": "string",
+            "title": "Trigger Source"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "action_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Label"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "horizon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon"
+          },
+          "entry_low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Low"
+          },
+          "entry_high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry High"
+          },
+          "stop_loss": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Loss"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          },
+          "invalidation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidation"
+          },
+          "watch_conditions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Conditions"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Summary"
+          },
+          "catalyst_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalyst Summary"
+          },
+          "evidence": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "data_quality_summary": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Quality Summary"
+          },
+          "plan_quality": {
+            "type": "string",
+            "title": "Plan Quality"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "metadata": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "stock_code",
+          "market",
+          "source_type",
+          "trigger_source",
+          "action",
+          "plan_quality",
+          "status"
+        ],
+        "title": "DecisionSignalItem"
+      },
+      "DecisionSignalMutationResponse": {
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/DecisionSignalItem"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item",
+          "created"
+        ],
+        "title": "DecisionSignalMutationResponse"
+      },
+      "DecisionSignalListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "DecisionSignalListResponse"
+      },
+      "ErrorResponse": {
         "properties": {
           "error": {
             "type": "string",
-            "description": "错误类型"
+            "title": "Error",
+            "description": "错误类型",
+            "example": "validation_error"
           },
           "message": {
             "type": "string",
-            "description": "错误详情"
+            "title": "Message",
+            "description": "错误详情",
+            "example": "请求参数错误"
           },
           "detail": {
-            "type": "object",
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail",
             "description": "附加错误信息"
           }
         },
+        "type": "object",
         "required": [
           "error",
           "message"
+        ],
+        "title": "ErrorResponse",
+        "description": "错误响应",
+        "example": {
+          "error": "not_found",
+          "message": "资源不存在"
+        }
+      },
+      "RunFlowLane": {
+        "type": "object",
+        "description": "运行流泳道定义",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "稳定泳道 ID"
+          },
+          "label": {
+            "type": "string",
+            "description": "展示标签"
+          },
+          "order": {
+            "type": "integer",
+            "description": "展示顺序"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "order"
         ]
+      },
+      "RunFlowNode": {
+        "type": "object",
+        "description": "运行流中的一个节点",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "稳定节点 ID"
+          },
+          "lane": {
+            "type": "string",
+            "description": "所属泳道 ID"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "entry",
+              "queue",
+              "data_source",
+              "analysis",
+              "model",
+              "artifact",
+              "notification"
+            ],
+            "description": "节点类型"
+          },
+          "label": {
+            "type": "string",
+            "description": "展示标签"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "degraded",
+              "fallback",
+              "timeout",
+              "cancel_requested",
+              "cancelled",
+              "skipped",
+              "unknown"
+            ],
+            "description": "节点状态"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true,
+            "description": "Provider、模型或通知渠道名称"
+          },
+          "started_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "开始时间 ISO 字符串"
+          },
+          "ended_at": {
+            "type": "string",
+            "nullable": true,
+            "description": "结束时间 ISO 字符串"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "description": "耗时毫秒数"
+          },
+          "attempts": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1,
+            "description": "节点代表的尝试次数"
+          },
+          "record_count": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "description": "返回记录数"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true,
+            "description": "短脱敏状态说明"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "脱敏后的低敏元数据",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "lane",
+          "kind",
+          "label",
+          "status"
+        ]
+      },
+      "RunFlowEdge": {
+        "type": "object",
+        "description": "运行流中的有向连线",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "稳定连线 ID"
+          },
+          "from": {
+            "type": "string",
+            "description": "来源节点 ID"
+          },
+          "to": {
+            "type": "string",
+            "description": "目标节点 ID"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "data",
+              "control",
+              "fallback",
+              "retry"
+            ],
+            "description": "连线类型"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "degraded",
+              "fallback",
+              "timeout",
+              "cancel_requested",
+              "cancelled",
+              "skipped",
+              "unknown"
+            ],
+            "description": "连线状态"
+          },
+          "label": {
+            "type": "string",
+            "nullable": true,
+            "description": "短展示标签"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true,
+            "description": "短脱敏说明"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "脱敏后的低敏元数据",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to",
+          "kind",
+          "status"
+        ]
+      },
+      "RunFlowEvent": {
+        "type": "object",
+        "description": "运行流事件",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "稳定事件 ID"
+          },
+          "timestamp": {
+            "type": "string",
+            "nullable": true,
+            "description": "事件时间 ISO 字符串"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "success",
+              "warning",
+              "danger"
+            ],
+            "description": "事件严重级别"
+          },
+          "type": {
+            "type": "string",
+            "description": "稳定事件类型"
+          },
+          "node_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "关联节点 ID"
+          },
+          "title": {
+            "type": "string",
+            "description": "短标题"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true,
+            "description": "短脱敏说明"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "脱敏后的低敏元数据",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "type",
+          "title"
+        ]
+      },
+      "RunFlowSummary": {
+        "type": "object",
+        "description": "运行流摘要指标",
+        "properties": {
+          "elapsed_ms": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0,
+            "description": "观测到的总耗时毫秒数"
+          },
+          "bottleneck_node_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "耗时最长节点 ID"
+          },
+          "failed_attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "失败尝试次数"
+          },
+          "fallback_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "fallback 或 retry 转换次数"
+          },
+          "model": {
+            "type": "string",
+            "nullable": true,
+            "description": "诊断中观测到的脱敏模型名"
+          },
+          "data_source_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "数据来源节点数量"
+          },
+          "event_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "事件数量"
+          }
+        },
+        "required": [
+          "failed_attempts",
+          "fallback_count",
+          "data_source_count",
+          "event_count"
+        ]
+      },
+      "RunFlowSnapshot": {
+        "type": "object",
+        "description": "任务或历史报告运行流快照",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "任务 ID 或 query_id"
+          },
+          "trace_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "诊断 trace ID"
+          },
+          "stock_code": {
+            "type": "string",
+            "description": "股票代码"
+          },
+          "stock_name": {
+            "type": "string",
+            "nullable": true,
+            "description": "股票名称"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "success",
+              "failed",
+              "degraded",
+              "fallback",
+              "timeout",
+              "cancel_requested",
+              "cancelled",
+              "skipped",
+              "unknown"
+            ],
+            "description": "整体运行流状态"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunFlowSummary"
+          },
+          "lanes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFlowLane"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFlowNode"
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFlowEdge"
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFlowEvent"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "description": "快照生成时间 ISO 字符串"
+          }
+        },
+        "required": [
+          "task_id",
+          "stock_code",
+          "status",
+          "summary",
+          "lanes",
+          "nodes",
+          "edges",
+          "events",
+          "generated_at"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "AdminSessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "dsa_session"
       }
     }
   }

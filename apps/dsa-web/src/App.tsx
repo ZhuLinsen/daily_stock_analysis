@@ -8,6 +8,7 @@ import {
   StandaloneRouteBoundary,
 } from './components/layout/RouteBoundary';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { UiLanguageProvider, useUiLanguage } from './contexts/UiLanguageContext';
 import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
 
@@ -24,6 +25,7 @@ const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const AppContent: React.FC = () => {
   const location = useLocation();
   const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
+  const { t } = useUiLanguage();
 
   useEffect(() => {
     useAgentChatStore.getState().setCurrentRoute(location.pathname);
@@ -44,7 +46,7 @@ const AppContent: React.FC = () => {
           className="btn-primary"
           onClick={() => void refreshStatus()}
         >
-          重试
+          {t('common.retry')}
         </button>
       </div>
     );
@@ -90,11 +92,13 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <Router>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
-    </Router>
+    <UiLanguageProvider>
+      <Router>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </Router>
+    </UiLanguageProvider>
   );
 };
 

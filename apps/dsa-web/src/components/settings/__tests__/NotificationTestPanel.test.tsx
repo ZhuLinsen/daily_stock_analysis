@@ -1,5 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import { useUiLanguage, UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { NotificationTestPanel } from '../NotificationTestPanel';
 
 const testNotificationChannel = vi.hoisted(() => vi.fn());
@@ -58,6 +61,90 @@ describe('NotificationTestPanel', () => {
     expect(await screen.findByText('测试成功')).toBeInTheDocument();
     expect(screen.getByText('HTTP 200')).toBeInTheDocument();
     expect(screen.getByText('https://example.com/hook?token=***')).toBeInTheDocument();
+  });
+
+  it('uses translated defaults when UI language changes and user has not edited fields', async () => {
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+    const SwitchHarness = ({ children }: { children: ReactNode }) => {
+      const { setLanguage } = useUiLanguage();
+      return (
+        <div>
+          <button type="button" onClick={() => setLanguage('en')}>
+            switch-en
+          </button>
+          {children}
+        </div>
+      );
+    };
+
+    render(
+      <UiLanguageProvider>
+        <SwitchHarness>
+          <NotificationTestPanel
+            items={[{ key: 'CUSTOM_WEBHOOK_URLS', value: 'https://example.com/hook?token=secret' }]}
+            maskToken="******"
+          />
+        </SwitchHarness>
+      </UiLanguageProvider>
+    );
+
+    const titleInput = screen.getByLabelText('标题');
+    const contentInput = screen.getByLabelText('正文');
+
+    expect(titleInput).toHaveValue('DSA 通知测试');
+    expect(contentInput).toHaveValue('这是一条来自 DSA Web 设置页的通知测试消息。');
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+
+    await waitFor(() => {
+      expect(titleInput).toHaveValue('DSA notification test');
+      expect(contentInput).toHaveValue('This is a test notification from the DSA Web settings page.');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /发送测试|Send test/ }));
+    await waitFor(() => expect(testNotificationChannel).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'DSA notification test',
+      content: 'This is a test notification from the DSA Web settings page.',
+      timeoutSeconds: 20,
+    })));
+  });
+
+  it('preserves user-edited notification defaults when language switches', async () => {
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
+
+    const SwitchHarness = ({ children }: { children: ReactNode }) => {
+      const { setLanguage } = useUiLanguage();
+      return (
+        <div>
+          <button type="button" onClick={() => setLanguage('en')}>
+            switch-en
+          </button>
+          {children}
+        </div>
+      );
+    };
+
+    render(
+      <UiLanguageProvider>
+        <SwitchHarness>
+          <NotificationTestPanel
+            items={[{ key: 'CUSTOM_WEBHOOK_URLS', value: 'https://example.com/hook?token=secret' }]}
+            maskToken="******"
+          />
+        </SwitchHarness>
+      </UiLanguageProvider>
+    );
+
+    const titleInput = screen.getByLabelText('标题');
+    const contentInput = screen.getByLabelText('正文');
+
+    fireEvent.change(titleInput, { target: { value: '自定义标题' } });
+    fireEvent.change(contentInput, { target: { value: '自定义正文' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+    expect(titleInput).toHaveValue('自定义标题');
+    expect(contentInput).toHaveValue('自定义正文');
   });
 
   it('renders custom webhook partial failure attempts', async () => {

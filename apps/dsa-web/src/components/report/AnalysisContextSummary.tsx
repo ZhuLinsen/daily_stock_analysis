@@ -62,6 +62,8 @@ const TEXT = {
     source: '来源',
     warnings: '告警',
     missingReasons: '缺失原因',
+    inputScope: '本次分析输入',
+    evidenceScope: '仅代表进入本次 LLM 的输入，不等同于数据源运行成功',
     qualityScore: '质量分',
     limitations: '数据限制',
     newsResultCount: '新闻结果数',
@@ -90,6 +92,8 @@ const TEXT = {
     source: 'Source',
     warnings: 'Warnings',
     missingReasons: 'Missing Reasons',
+    inputScope: 'Analysis Input',
+    evidenceScope: 'Shows inputs included in this LLM run, not provider run success',
     qualityScore: 'Quality',
     limitations: 'Data Limitations',
     newsResultCount: 'News Results',
@@ -112,6 +116,29 @@ const TEXT = {
     },
   },
 } as const;
+
+const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
+  zh: {
+    daily_bars_missing: '未进入分析输入',
+    news_context_missing: '未进入分析输入',
+    realtime_quote_missing: '未进入分析输入',
+    trend_result_missing: '未进入分析输入',
+    fundamental_context_missing: '未进入分析输入',
+    chip_distribution_missing: '未进入分析输入',
+    today_missing: '今日数据未进入分析输入',
+    yesterday_missing: '昨日数据未进入分析输入',
+  },
+  en: {
+    daily_bars_missing: 'Not included in analysis input',
+    news_context_missing: 'Not included in analysis input',
+    realtime_quote_missing: 'Not included in analysis input',
+    trend_result_missing: 'Not included in analysis input',
+    fundamental_context_missing: 'Not included in analysis input',
+    chip_distribution_missing: 'Not included in analysis input',
+    today_missing: 'Today data not included in analysis input',
+    yesterday_missing: 'Yesterday data not included in analysis input',
+  },
+};
 
 const STATUS_ORDER: AnalysisContextPackBlockStatus[] = [
   'available',
@@ -158,6 +185,11 @@ const formatLimitation = (
   return language === 'zh' ? `${label}：${statusLabel}` : `${label}: ${statusLabel}`;
 };
 
+const formatMissingReason = (reason: string, language: ReportLanguage): string => {
+  const label = MISSING_REASON_LABELS[language][reason];
+  return label ? `${label} (${reason})` : reason;
+};
+
 export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
   overview,
   language = 'zh',
@@ -200,6 +232,9 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
               <span className="mt-0.5 block truncate text-base font-semibold text-foreground">
                 {text.title}
               </span>
+              <span className="mt-1 block text-xs leading-5 text-muted-text">
+                {text.evidenceScope}
+              </span>
             </span>
           </div>
           <span className="flex min-w-0 flex-wrap items-center justify-end gap-2">
@@ -223,6 +258,9 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                 {text.triggerSource}: {triggerSource}
               </span>
             ) : null}
+            <span className="home-accent-chip px-2 py-0.5 text-xs text-muted-text">
+              {text.inputScope}
+            </span>
             <ChevronDown className="h-4 w-4 shrink-0 text-muted-text transition-transform group-open:rotate-180" aria-hidden="true" />
           </span>
         </summary>
@@ -248,6 +286,9 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                     {item}
                   </span>
                 ))}
+                <span className="home-accent-chip px-2 py-0.5">
+                  {text.inputScope}
+                </span>
               </div>
             ) : undefined}
           />
@@ -308,7 +349,9 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                   ) : null}
                   {block.missingReasons?.length ? (
                     <p className="mt-2 text-xs leading-5 text-muted-text">
-                      {text.missingReasons}: {block.missingReasons.join(', ')}
+                      {text.missingReasons}: {block.missingReasons
+                        .map((reason) => formatMissingReason(reason, reportLanguage))
+                        .join(', ')}
                     </p>
                   ) : null}
                 </div>
@@ -328,6 +371,9 @@ export const AnalysisContextSummary: React.FC<AnalysisContextSummaryProps> = ({
                   {item}
                 </span>
               ))}
+              <span className="home-accent-chip px-2 py-0.5">
+                {text.inputScope}
+              </span>
             </div>
           ) : null}
         </div>

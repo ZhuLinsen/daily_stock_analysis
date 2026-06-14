@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AnalysisReport, MarketReviewPayload } from '../../../types/analysis';
 import { MarketReviewReportView } from '../MarketReviewReportView';
@@ -173,5 +173,23 @@ describe('MarketReviewReportView', () => {
     expect(screen.getByText('S&P 500')).toBeInTheDocument();
     expect(screen.queryByText('Advancers')).not.toBeInTheDocument();
     expect(screen.queryByText('Decliners')).not.toBeInTheDocument();
+  });
+
+  it('opens run flow for historical market review records', () => {
+    const onOpenRunFlow = vi.fn();
+
+    render(
+      <MarketReviewReportView
+        payload={combinedMarketReviewPayload}
+        content="# 大盘复盘"
+        recordId={7}
+        reportLanguage="zh"
+        onOpenRunFlow={onOpenRunFlow}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '查看历史记录 7 运行流' }));
+
+    expect(onOpenRunFlow).toHaveBeenCalledWith(7);
   });
 });

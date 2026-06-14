@@ -146,6 +146,7 @@ class MarketCommand(BotCommand):
                 search_service=search_service,
                 send_notification=True,
                 override_region=override_region,
+                trigger_source="bot",
             )
             if review_report:
                 logger.info("[MarketCommand] 大盘复盘完成并已推送")

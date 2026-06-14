@@ -15,7 +15,9 @@ from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, Eval
 from src.market_phase_summary import extract_market_phase_summary, normalize_analysis_phase_bucket
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.stock_repo import StockRepository
+from src.schemas.decision_action import build_action_fields
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager
+from src.utils.data_processing import parse_json_field
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +262,7 @@ class BacktestService:
             limit=limit,
         )
         items = []
-        for result, stock_name, trend_prediction, _created_at, context_snapshot in rows:
+        for result, stock_name, trend_prediction, _created_at, context_snapshot, raw_result, report_type in rows:
             summary = extract_market_phase_summary(context_snapshot)
             items.append(
                 self._result_to_dict(
@@ -269,6 +271,8 @@ class BacktestService:
                     trend_prediction,
                     market_phase_summary=summary,
                     market_phase=self._phase_bucket_from_summary(summary),
+                    raw_result=raw_result,
+                    report_type=report_type,
                 )
             )
         return {"total": total, "page": page, "limit": limit, "items": items}
@@ -431,7 +435,17 @@ class BacktestService:
         sql_offset = 0
         scanned = 0
         matched_total = 0
-        page_rows: List[Tuple[BacktestResult, Optional[str], Optional[str], Optional[Dict[str, Any]], str]] = []
+        page_rows: List[
+            Tuple[
+                BacktestResult,
+                Optional[str],
+                Optional[str],
+                Optional[Dict[str, Any]],
+                str,
+                Optional[str],
+                Optional[str],
+            ]
+        ] = []
 
         while True:
             remaining_probe_rows = self.MAX_DYNAMIC_SUMMARY_ROWS + 1 - scanned
@@ -454,20 +468,36 @@ class BacktestService:
             if scanned > self.MAX_DYNAMIC_SUMMARY_ROWS:
                 raise ValueError("Phase-filtered results match too many rows; narrow the analysis date range or stock code.")
             sql_offset += len(batch)
-            for result, stock_name, trend_prediction, _created_at, context_snapshot in batch:
+            for (
+                result,
+                stock_name,
+                trend_prediction,
+                _created_at,
+                context_snapshot,
+                raw_result,
+                report_type,
+            ) in batch:
                 summary = extract_market_phase_summary(context_snapshot)
                 bucket = self._phase_bucket_from_summary(summary)
                 if bucket != phase_bucket:
                     continue
                 if matched_total >= page_offset and len(page_rows) < limit:
-                    page_rows.append((result, stock_name, trend_prediction, summary, bucket))
+                    page_rows.append((result, stock_name, trend_prediction, summary, bucket, raw_result, report_type))
                 matched_total += 1
             if len(batch) < batch_limit:
                 break
 
         items = [
-            self._result_to_dict(result, stock_name, trend_prediction, market_phase_summary=summary, market_phase=bucket)
-            for result, stock_name, trend_prediction, summary, bucket in page_rows
+            self._result_to_dict(
+                result,
+                stock_name,
+                trend_prediction,
+                market_phase_summary=summary,
+                market_phase=bucket,
+                raw_result=raw_result,
+                report_type=report_type,
+            )
+            for result, stock_name, trend_prediction, summary, bucket, raw_result, report_type in page_rows
         ]
         return {"total": matched_total, "page": page, "limit": limit, "items": items}
 
@@ -610,7 +640,17 @@ class BacktestService:
         trend_prediction: Optional[str] = None,
         market_phase_summary: Optional[Dict[str, Any]] = None,
         market_phase: Optional[str] = None,
+        raw_result: Optional[Any] = None,
+        report_type: Optional[str] = None,
     ) -> Dict[str, Any]:
+        parsed_raw_result = parse_json_field(raw_result)
+        raw = parsed_raw_result if isinstance(parsed_raw_result, dict) else {}
+        action_fields = build_action_fields(
+            operation_advice=raw.get("operation_advice") or row.operation_advice,
+            explicit_action=raw.get("action"),
+            report_type=report_type or ("market_review" if row.code == "market_review" else None),
+            report_language=raw.get("report_language"),
+        )
         return {
             "analysis_history_id": row.analysis_history_id,
             "code": row.code,
@@ -621,6 +661,8 @@ class BacktestService:
             "eval_status": row.eval_status,
             "evaluated_at": row.evaluated_at.isoformat() if row.evaluated_at else None,
             "operation_advice": row.operation_advice,
+            "action": action_fields["action"],
+            "action_label": action_fields["action_label"],
             "trend_prediction": trend_prediction,
             "market_phase": market_phase,
             "market_phase_summary": market_phase_summary,

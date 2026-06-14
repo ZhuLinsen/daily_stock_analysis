@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -134,10 +134,6 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_endpoint_module,
             "_try_acquire_market_review_lock",
             return_value=lock_token,
-        ), patch.object(
-            analysis_endpoint_module,
-            "_compute_market_review_override_region",
-            return_value=None,
         ), patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
             response = trigger_market_review(
                 request=request,
@@ -154,6 +150,105 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(kwargs["stock_name"], "大盘复盘")
         self.assertEqual(kwargs["message"], "大盘复盘任务已提交")
 
+    def test_trigger_market_review_accepts_request_level_report_language(self) -> None:
+        if trigger_market_review is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        request = SimpleNamespace(send_notification=True, report_language="en")
+        config = SimpleNamespace(trading_day_check_enabled=False, report_language="zh", market_review_region="cn")
+        lock_token = object()
+        task_payload: dict[str, object] = {}
+
+        runtime_notifier = MagicMock()
+        runtime_search = MagicMock()
+        runtime_analyzer = MagicMock()
+
+        task_queue = MagicMock()
+
+        def _capture_background_task(task_fn, **kwargs):
+            task_payload["background_task"] = task_fn
+            return SimpleNamespace(task_id="market-task-1")
+
+        task_queue.submit_background_task.side_effect = _capture_background_task
+
+        with patch.object(
+            analysis_endpoint_module,
+            "_try_acquire_market_review_lock",
+            return_value=lock_token,
+        ), patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(runtime_notifier, runtime_analyzer, runtime_search),
+        ), patch("src.core.market_review.run_market_review") as run_market_review, patch(
+            "api.v1.endpoints.analysis.get_task_queue",
+            return_value=task_queue,
+        ), patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+            return_value=None,
+        ):
+            trigger_market_review(request=request, config=config)
+            self.assertIn("background_task", task_payload)
+            task_payload["background_task"]()
+
+        call_kwargs = run_market_review.call_args.kwargs
+        self.assertEqual(call_kwargs["send_notification"], True)
+        self.assertIsNone(call_kwargs["override_region"])
+        self.assertEqual(call_kwargs["trigger_source"], "api")
+        runtime_config = call_kwargs.get("config")
+        self.assertIsNotNone(runtime_config)
+        self.assertEqual(getattr(runtime_config, "report_language", None), "en")
+        self.assertIsNot(runtime_config, config)
+
+    def test_trigger_market_review_accepts_camel_case_report_language_alias(self) -> None:
+        if trigger_market_review is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        request = analysis_endpoint_module.MarketReviewRequest.model_validate({
+            "send_notification": True,
+            "reportLanguage": "en",
+        })
+        config = SimpleNamespace(trading_day_check_enabled=False, report_language="zh", market_review_region="cn")
+        task_payload: dict[str, object] = {}
+
+        runtime_notifier = MagicMock()
+        runtime_search = MagicMock()
+        runtime_analyzer = MagicMock()
+
+        task_queue = MagicMock()
+
+        def _capture_background_task(task_fn, **kwargs):
+            task_payload["background_task"] = task_fn
+            return SimpleNamespace(task_id="market-task-1")
+
+        task_queue.submit_background_task.side_effect = _capture_background_task
+
+        with patch.object(
+            analysis_endpoint_module,
+            "_try_acquire_market_review_lock",
+            return_value=object(),
+        ), patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(runtime_notifier, runtime_analyzer, runtime_search),
+        ), patch("src.core.market_review.run_market_review") as run_market_review, patch(
+            "api.v1.endpoints.analysis.get_task_queue",
+            return_value=task_queue,
+        ), patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+            return_value=None,
+        ):
+            response = trigger_market_review(request=request, config=config)
+            self.assertEqual(response.status, "accepted")
+            self.assertIn("background_task", task_payload)
+            task_payload["background_task"]()
+
+        call_kwargs = run_market_review.call_args.kwargs
+        runtime_config = call_kwargs.get("config")
+        self.assertEqual(getattr(runtime_config, "report_language", None), "en")
+        self.assertEqual(call_kwargs["trigger_source"], "api")
+
     def test_trigger_market_review_rejects_duplicate_submission(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -165,10 +260,6 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch.object(
             analysis_endpoint_module,
             "_try_acquire_market_review_lock",
-            return_value=None,
-        ), patch.object(
-            analysis_endpoint_module,
-            "_compute_market_review_override_region",
             return_value=None,
         ), patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
             with self.assertRaises(Exception) as ctx:
@@ -199,11 +290,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
             task_queue = MagicMock()
             try:
-                with patch.object(
-                    analysis_endpoint_module,
-                    "_compute_market_review_override_region",
-                    return_value=None,
-                ), patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
+                with patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
                     with self.assertRaises(Exception) as ctx:
                         trigger_market_review(
                             request=SimpleNamespace(send_notification=True),
@@ -215,29 +302,38 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(getattr(ctx.exception, "status_code", None), 409)
         task_queue.submit_background_task.assert_not_called()
 
-    def test_trigger_market_review_skips_when_configured_markets_closed(self) -> None:
+    def test_trigger_market_review_submits_even_when_configured_markets_closed(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         task_queue = MagicMock()
+        task_queue.submit_background_task.return_value = SimpleNamespace(task_id="market-task-manual")
         request = SimpleNamespace(send_notification=True)
         config = SimpleNamespace(trading_day_check_enabled=True, market_review_region="cn")
+        lock_token = object()
 
-        with patch.object(
-            analysis_endpoint_module,
-            "_compute_market_review_override_region",
+        with patch(
+            "src.core.trading_calendar.get_open_markets_today",
+            return_value=set(),
+        ) as get_open_markets_today, patch(
+            "src.core.trading_calendar.compute_effective_region",
             return_value="",
-        ), patch.object(analysis_endpoint_module, "_try_acquire_market_review_lock") as acquire, \
-             patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
+        ) as compute_effective_region, patch.object(
+            analysis_endpoint_module,
+            "_try_acquire_market_review_lock",
+            return_value=lock_token,
+        ) as acquire, patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
             response = trigger_market_review(
                 request=request,
                 config=config,
             )
 
         self.assertEqual(response.status, "accepted")
-        self.assertIn("非交易日", response.message)
-        acquire.assert_not_called()
-        task_queue.submit_background_task.assert_not_called()
+        self.assertEqual(response.task_id, "market-task-manual")
+        get_open_markets_today.assert_not_called()
+        compute_effective_region.assert_not_called()
+        acquire.assert_called_once_with(config)
+        task_queue.submit_background_task.assert_called_once()
 
     def test_run_market_review_background_uses_configured_pipeline(self) -> None:
         if analysis_endpoint_module is None:
@@ -278,9 +374,11 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             notifier=runtime_notifier,
             analyzer=runtime_analyzer,
             search_service=runtime_search,
+            config=config,
             send_notification=False,
             override_region="cn,us",
             return_structured=True,
+            trigger_source="api",
         )
 
     def test_market_review_runtime_initializes_analyzer_for_litellm_provider(self) -> None:
@@ -313,6 +411,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         runtime_notifier = MagicMock()
         runtime_search = MagicMock()
         runtime_analyzer = MagicMock()
+        market_review_config = SimpleNamespace()
         with patch.object(
             analysis_endpoint_module,
             "_build_market_review_runtime",
@@ -322,7 +421,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 send_notification=False,
                 override_region="cn",
                 lock_token=None,
-                config=SimpleNamespace(),
+                config=market_review_config,
             )
 
         self.assertEqual(result, {"result": "report"})
@@ -330,10 +429,49 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             notifier=runtime_notifier,
             analyzer=runtime_analyzer,
             search_service=runtime_search,
+            config=market_review_config,
             send_notification=False,
             override_region="cn",
             return_structured=True,
+            trigger_source="api",
         )
+
+    def test_run_market_review_uses_request_scoped_config_language(self) -> None:
+        from src.core.market_review import run_market_review
+
+        global_config = SimpleNamespace(report_language="zh", market_review_region="cn")
+        scoped_config = SimpleNamespace(report_language="en", market_review_region="cn")
+        notifier = MagicMock()
+        notifier.save_report_to_file.return_value = "market_review.md"
+        notifier.is_available.return_value = False
+        review_result = SimpleNamespace(
+            report="Market review body",
+            market_light_snapshot={},
+            structured_payload={
+                "kind": "market_review",
+                "language": "en",
+                "sections": [{"key": "summary", "title": "Summary", "markdown": "Market review body"}],
+            },
+        )
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = review_result
+
+        with patch("src.core.market_review.get_config", return_value=global_config) as get_config_mock, \
+             patch("src.core.market_review.MarketAnalyzer", return_value=market_analyzer) as market_analyzer_cls, \
+             patch("src.core.market_review._persist_market_review_history") as persist:
+            result = run_market_review(
+                notifier=notifier,
+                search_service=MagicMock(),
+                send_notification=False,
+                return_structured=True,
+                config=scoped_config,
+            )
+
+        get_config_mock.assert_not_called()
+        market_analyzer_cls.assert_called_once()
+        self.assertIs(market_analyzer_cls.call_args.kwargs["config"], scoped_config)
+        self.assertEqual(result.market_review_payload["language"], "en")
+        self.assertEqual(persist.call_args.kwargs["config"].report_language, "en")
 
     def test_get_analysis_status_returns_market_review_report_from_queue(self) -> None:
         if get_analysis_status is None or analysis_endpoint_module is None:
@@ -364,6 +502,38 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.market_review_payload["kind"], "market_review")
         self.assertIsNone(status.result)
 
+    def test_get_analysis_status_accepts_cancel_states_from_queue(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        for task_status in (
+            analysis_endpoint_module.TaskStatusEnum.CANCEL_REQUESTED,
+            analysis_endpoint_module.TaskStatusEnum.CANCELLED,
+        ):
+            with self.subTest(task_status=task_status.value):
+                queue = MagicMock()
+                queue.get_task.return_value = SimpleNamespace(
+                    task_id=f"task-{task_status.value}",
+                    trace_id=f"trace-{task_status.value}",
+                    stock_code="600519",
+                    stock_name="贵州茅台",
+                    status=task_status,
+                    progress=42,
+                    result=None,
+                    error=None,
+                    original_query=None,
+                    selection_source=None,
+                    analysis_phase="auto",
+                    skills=[],
+                )
+
+                with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+                    status = get_analysis_status(f"task-{task_status.value}")
+
+                self.assertEqual(status.status, task_status.value)
+                self.assertEqual(status.progress, 42)
+                self.assertIsNone(status.result)
+
     def test_get_analysis_status_normalizes_completed_queue_result_contract(self) -> None:
         if get_analysis_status is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -381,7 +551,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 "stock_name": "贵州茅台",
                 "report": {
                     "meta": {"query_id": "task-queue-1", "stock_code": "600519"},
-                    "summary": {"analysis_summary": "summary"},
+                    "summary": {"analysis_summary": "summary", "operation_advice": "不建议买入"},
                 },
             },
             error=None,
@@ -405,6 +575,61 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             status.result.report["summary"]["analysis_summary"],
             "summary",
         )
+        self.assertEqual(status.result.report["summary"]["operation_advice"], "不建议买入")
+        self.assertEqual(status.result.report["summary"]["action"], "avoid")
+        self.assertEqual(status.result.report["summary"]["action_label"], "回避")
+
+    def test_get_analysis_status_prefers_raw_result_action_over_summary_action(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-action-conflict",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {
+                        "query_id": "task-queue-action-conflict",
+                        "stock_code": "600519",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                    },
+                    "summary": {
+                        "analysis_summary": "summary",
+                        "operation_advice": "持有观察",
+                        "action": "buy",
+                    },
+                    "details": {
+                        "raw_result": {
+                            "operation_advice": "持有观察",
+                            "action": "watch",
+                            "report_language": "zh",
+                        },
+                    },
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            status = get_analysis_status("task-queue-action-conflict")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.report["summary"]["action"], "watch")
+        self.assertEqual(status.result.report["summary"]["action_label"], "观望")
 
     def test_get_analysis_status_preserves_queue_report_created_at_when_enriching(self) -> None:
         if get_analysis_status is None or analysis_endpoint_module is None:
@@ -1006,6 +1231,67 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.5)
+
+    def test_build_analysis_report_derives_decision_action_fields(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {"report_type": "detailed", "report_language": "zh"},
+                "summary": {
+                    "analysis_summary": "等待确认",
+                    "operation_advice": "不建议买入",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 45,
+                },
+                "strategy": {},
+                "details": {"decision_type": "buy"},
+            },
+            query_id="q1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot=None,
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertEqual(report.summary.operation_advice, "不建议买入")
+        self.assertEqual(report.summary.action, "avoid")
+        self.assertEqual(report.summary.action_label, "回避")
+
+    def test_build_analysis_report_reads_decision_action_from_raw_result(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {"report_type": "detailed", "report_language": "zh"},
+                "summary": {
+                    "analysis_summary": "等待确认",
+                    "operation_advice": "持有观察",
+                    "action": "buy",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 45,
+                },
+                "strategy": {},
+                "details": {
+                    "action": "sell",
+                    "raw_result": {
+                        "operation_advice": "持有观察",
+                        "action": "watch",
+                        "report_language": "zh",
+                    },
+                },
+            },
+            query_id="q1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot=None,
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertEqual(report.summary.action, "watch")
+        self.assertEqual(report.summary.action_label, "观望")
 
     def test_build_analysis_report_stringifies_strategy_price_fields(self) -> None:
         if _build_analysis_report is None:
@@ -1766,18 +2052,22 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertNotIn("required", request_body)
 
+        task_queue = MagicMock()
+        task_queue.submit_background_task.return_value = SimpleNamespace(task_id="market-task-omitted")
+
         with patch.object(
             analysis_endpoint_module,
-            "_compute_market_review_override_region",
-            return_value="",
-        ):
+            "_try_acquire_market_review_lock",
+            return_value=object(),
+        ), patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
             response = trigger_market_review(
                 request=None,
                 config=config,
             )
 
         self.assertTrue(response.send_notification)
-        self.assertIn("非交易日", response.message)
+        self.assertEqual(response.task_id, "market-task-omitted")
+        task_queue.submit_background_task.assert_called_once()
 
     def test_trigger_analysis_rejects_blank_only_stock_inputs(self) -> None:
         if trigger_analysis is None:
@@ -1883,6 +2173,41 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             analysis_phase="auto",
             force_refresh=False,
             notify=True,
+        )
+
+    def test_trigger_analysis_accepts_camel_case_report_language_alias(self) -> None:
+        if trigger_analysis is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        task = SimpleNamespace(
+            task_id="task-report-language-1",
+            trace_id="trace-report-language-1",
+            stock_code="600519",
+            analysis_phase="auto",
+        )
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([task], [])
+
+        request = analysis_endpoint_module.AnalyzeRequest.model_validate({
+            "stock_code": "600519",
+            "async_mode": True,
+            "reportLanguage": "en",
+        })
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = trigger_analysis(request=request, config=SimpleNamespace())
+
+        self.assertEqual(response.status_code, 202)
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["600519"],
+            stock_name=None,
+            original_query=None,
+            selection_source=None,
+            report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+            report_language="en",
         )
 
     def test_trigger_analysis_async_passes_and_returns_analysis_phase(self) -> None:
@@ -2494,7 +2819,8 @@ class BatchTaskQueueContractTestCase(unittest.TestCase):
         self.assertEqual(accepted[0].portfolio_context["quantity"], 100)
         self.assertEqual(accepted[0].copy().portfolio_context["quantity"], 100)
         self.assertEqual(accepted[0].skills, ["growth_quality"])
-        self.assertIs(executor.calls[0][1][-1], accepted[0].skills)
+        self.assertIs(executor.calls[0][1][5], accepted[0].skills)
+        self.assertIsNone(executor.calls[0][1][6])
 
         service_instance = MagicMock()
         service_instance.analyze_stock.return_value = {"stock_name": "贵州茅台"}

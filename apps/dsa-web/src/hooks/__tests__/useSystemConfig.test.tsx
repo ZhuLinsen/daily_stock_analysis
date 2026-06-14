@@ -109,6 +109,24 @@ const sampleLlmConfig = {
         displayOrder: 30,
       },
     },
+    {
+      key: 'OPENAI_VISION_MODEL',
+      value: 'gpt-4o-vision',
+      rawValueExists: true,
+      isMasked: false,
+      schema: {
+        key: 'OPENAI_VISION_MODEL',
+        category: 'ai_model',
+        dataType: 'string',
+        uiControl: 'text',
+        isSensitive: false,
+        isRequired: false,
+        isEditable: true,
+        options: [],
+        validation: {},
+        displayOrder: 35,
+      },
+    },
   ],
 };
 
@@ -146,6 +164,9 @@ describe('useSystemConfig', () => {
         if (item.key === 'OPENAI_BASE_URL') {
           return { ...item, value: 'https://api.example.org/v1' };
         }
+        if (item.key === 'OPENAI_VISION_MODEL') {
+          return { ...item, value: 'gpt-4o-mini-vision' };
+        }
         return item;
       }),
     };
@@ -166,6 +187,7 @@ describe('useSystemConfig', () => {
     act(() => {
       result.current.setDraftValue('LITELLM_MODEL', 'qwen/qwen2.5');
       result.current.setDraftValue('OPENAI_BASE_URL', 'https://api.example.org/v1');
+      result.current.setDraftValue('OPENAI_VISION_MODEL', 'gpt-4o-mini-vision');
     });
 
     expect(result.current.hasDirty).toBe(true);
@@ -179,6 +201,7 @@ describe('useSystemConfig', () => {
       items: [
         { key: 'LITELLM_MODEL', value: 'qwen/qwen2.5' },
         { key: 'OPENAI_BASE_URL', value: 'https://api.example.org/v1' },
+        { key: 'OPENAI_VISION_MODEL', value: 'gpt-4o-mini-vision' },
       ],
     });
     expect(update).toHaveBeenCalledTimes(1);
@@ -189,9 +212,11 @@ describe('useSystemConfig', () => {
       items: [
         { key: 'LITELLM_MODEL', value: 'qwen/qwen2.5' },
         { key: 'OPENAI_BASE_URL', value: 'https://api.example.org/v1' },
+        { key: 'OPENAI_VISION_MODEL', value: 'gpt-4o-mini-vision' },
       ],
     });
     expect(result.current.serverItems.find((item) => item.key === 'OPENAI_BASE_URL')?.value).toBe('https://api.example.org/v1');
+    expect(result.current.serverItems.find((item) => item.key === 'OPENAI_VISION_MODEL')?.value).toBe('gpt-4o-mini-vision');
     expect(result.current.hasDirty).toBe(false);
     expect(result.current.dirtyCount).toBe(0);
   });
@@ -227,5 +252,59 @@ describe('useSystemConfig', () => {
 
     expect(validate).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('preserves unrelated runtime model fields when saving non-runtime config keys', async () => {
+    const stockUpdatedConfig = {
+      ...sampleLlmConfig,
+      items: sampleLlmConfig.items.map((item) => {
+        if (item.key === 'STOCK_LIST') {
+          return { ...item, value: 'SH600000,SH600519' };
+        }
+        return item;
+      }),
+    };
+
+    getConfig.mockResolvedValueOnce(sampleLlmConfig);
+    getConfig.mockResolvedValueOnce(stockUpdatedConfig);
+
+    const { result } = renderHook(() => useSystemConfig());
+
+    await act(async () => {
+      await result.current.load();
+    });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600000,SH600519');
+    });
+
+    expect(result.current.hasDirty).toBe(true);
+    expect(result.current.dirtyCount).toBe(1);
+
+    await act(async () => {
+      await result.current.save();
+    });
+
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(validate).toHaveBeenCalledWith({
+      items: [{ key: 'STOCK_LIST', value: 'SH600000,SH600519' }],
+    });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith({
+      configVersion: 'v1',
+      maskToken: '******',
+      reloadNow: true,
+      items: [{ key: 'STOCK_LIST', value: 'SH600000,SH600519' }],
+    });
+
+    expect(result.current.serverItems.find((item) => item.key === 'LITELLM_MODEL')?.value).toBe('gpt-5.0');
+    expect(result.current.serverItems.find((item) => item.key === 'OPENAI_BASE_URL')?.value).toBe('https://api.openai.com/v1');
+    expect(result.current.serverItems.find((item) => item.key === 'OPENAI_VISION_MODEL')?.value).toBe('gpt-4o-vision');
+    expect(result.current.hasDirty).toBe(false);
+    expect(result.current.dirtyCount).toBe(0);
   });
 });

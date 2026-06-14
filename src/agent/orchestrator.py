@@ -41,6 +41,7 @@ from src.agent.protocols import (
     normalize_decision_signal,
 )
 from src.agent.runner import parse_dashboard_json
+from src.agent.stock_scope import resolve_stock_scope
 from src.agent.tools.registry import ToolRegistry
 from src.agent.chat_context import build_visible_chat_history
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
@@ -312,9 +313,12 @@ class AgentOrchestrator:
         from src.agent.executor import AgentResult
         from src.agent.conversation import conversation_manager
 
-        ctx = self._build_context(message, context)
+        scope_resolution = resolve_stock_scope(message, context)
+        ctx = self._build_context(message, scope_resolution.effective_context)
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
+        if scope_resolution.stock_scope is not None:
+            ctx.meta["stock_scope"] = scope_resolution.stock_scope
 
         conversation_manager.get_or_create(session_id)
         config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
@@ -710,6 +714,9 @@ class AgentOrchestrator:
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
             if context.get("market_phase_context"):
                 ctx.meta["market_phase_context"] = context["market_phase_context"]
+            daily_market_context = context.get("daily_market_context")
+            if isinstance(daily_market_context, dict) and daily_market_context:
+                ctx.meta["daily_market_context"] = dict(daily_market_context)
             analysis_context_pack_summary = context.get("analysis_context_pack_summary")
             if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
                 ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
@@ -1389,7 +1396,7 @@ _COMMON_WORDS: set[str] = {
     "STOCK", "TRADE", "PRICE", "INDEX", "FUND",
     "HIGH", "LOW", "OPEN", "CLOSE", "STOP", "LOSS",
     "TREND", "BULL", "BEAR", "RISK", "CASH", "BOND",
-    "MACD", "VWAP", "BOLL",
+    "MACD", "VWAP", "BOLL", "KDJ",
     "TTM", "LTM", "NTM", "FWD", "YOY", "QOQ", "YTD",
     "EBIT", "EBITDA", "DCF", "CAGR", "FCF", "NAV", "AUM",
     "PE", "PB",

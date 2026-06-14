@@ -11,6 +11,23 @@ import type {
   PortfolioStopLossMode,
 } from '../../types/alerts';
 import type { PortfolioAccountItem } from '../../types/portfolio';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import { formatUiText, type UiLanguage } from '../../i18n/uiText';
+import {
+  ALERT_CHANGE_DIRECTION_OPTIONS,
+  ALERT_CROSS_DIRECTION_OPTIONS,
+  ALERT_FORM_TEXT,
+  ALERT_MARKET_LIGHT_STATUS_OPTIONS,
+  ALERT_MARKET_REGION_OPTIONS,
+  ALERT_MARKET_TYPE_OPTIONS,
+  ALERT_PORTFOLIO_TYPE_OPTIONS,
+  ALERT_PRICE_DIRECTION_OPTIONS,
+  ALERT_SEVERITY_OPTIONS,
+  ALERT_STOP_LOSS_MODE_OPTIONS,
+  ALERT_SYMBOL_TYPE_OPTIONS,
+  ALERT_TARGET_SCOPE_OPTIONS,
+  ALERT_THRESHOLD_DIRECTION_OPTIONS,
+} from '../../locales/featureText';
 import { validateStockCode } from '../../utils/validation';
 import { Button, Card, Checkbox, Input, Select } from '../common';
 
@@ -103,12 +120,18 @@ function defaultAlertTypeForScope(scope: AlertTargetScope): AlertType {
   return scope === 'portfolio_account' ? 'portfolio_stop_loss' : 'price_cross';
 }
 
-function optionsForScope(scope: AlertTargetScope) {
-  if (scope === 'market') return MARKET_ALERT_TYPE_OPTIONS;
-  return scope === 'portfolio_account' ? PORTFOLIO_ALERT_TYPE_OPTIONS : SYMBOL_ALERT_TYPE_OPTIONS;
+function optionsForScope(scope: AlertTargetScope, language: UiLanguage) {
+  if (language === 'zh') {
+    if (scope === 'market') return MARKET_ALERT_TYPE_OPTIONS;
+    return scope === 'portfolio_account' ? PORTFOLIO_ALERT_TYPE_OPTIONS : SYMBOL_ALERT_TYPE_OPTIONS;
+  }
+  if (scope === 'market') return ALERT_MARKET_TYPE_OPTIONS[language];
+  return scope === 'portfolio_account' ? ALERT_PORTFOLIO_TYPE_OPTIONS[language] : ALERT_SYMBOL_TYPE_OPTIONS[language];
 }
 
 export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmitting = false }) => {
+  const { language } = useUiLanguage();
+  const text = ALERT_FORM_TEXT[language];
   const [name, setName] = useState('');
   const [targetScope, setTargetScope] = useState<AlertTargetScope>('single_symbol');
   const [target, setTarget] = useState('');
@@ -151,21 +174,21 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       .catch((error: unknown) => {
         if (cancelled) return;
         setAccounts([]);
-        setAccountsError(error instanceof Error ? error.message : '账户加载失败');
+        setAccountsError(error instanceof Error ? error.message : text.accountLoadFailed);
       });
     return () => {
       cancelled = true;
     };
-  }, [targetScope]);
+  }, [targetScope, text.accountLoadFailed]);
 
-  const alertTypeOptions = useMemo(() => optionsForScope(targetScope), [targetScope]);
+  const alertTypeOptions = useMemo(() => optionsForScope(targetScope, language), [language, targetScope]);
   const portfolioTargetOptions = useMemo(() => [
-    { value: 'all', label: '全部账户' },
+    { value: 'all', label: text.allAccounts },
     ...accounts.map((account) => ({
       value: String(account.id),
       label: `${account.name} #${account.id}`,
     })),
-  ], [accounts]);
+  ], [accounts, text.allAccounts]);
 
   const resetParameters = (nextType: AlertType) => {
     if (nextType === 'price_cross') {
@@ -217,7 +240,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const parsePositiveNumber = (value: string, label: string): number | null => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) {
-      setFormError(`${label}必须是大于 0 的数字`);
+      setFormError(formatUiText(text.positiveNumber, { label }));
       return null;
     }
     return parsed;
@@ -226,7 +249,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const parseIntegerInRange = (value: string, label: string, min = 2, max = 250): number | null => {
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-      setFormError(`${label}必须是 ${min} 到 ${max} 的整数`);
+      setFormError(formatUiText(text.integerRange, { label, min, max }));
       return null;
     }
     return parsed;
@@ -234,22 +257,22 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
   const parseFiniteNumber = (value: string, label: string): number | null => {
     if (value.trim() === '') {
-      setFormError(`${label}不能为空`);
+      setFormError(formatUiText(text.required, { label }));
       return null;
     }
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) {
-      setFormError(`${label}必须是有效数字`);
+      setFormError(formatUiText(text.finiteNumber, { label }));
       return null;
     }
     return parsed;
   };
 
   const parseRsiThreshold = (value: string): number | null => {
-    const parsed = parseFiniteNumber(value, 'RSI 阈值');
+    const parsed = parseFiniteNumber(value, text.rsiThreshold);
     if (parsed == null) return null;
     if (parsed < 0 || parsed > 100) {
-      setFormError('RSI 阈值必须在 0 到 100 之间');
+      setFormError(text.rsiRange);
       return null;
     }
     return parsed;
@@ -257,7 +280,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
   const ensureRequiredBarsWithinLimit = (label: string, requiredBars: number): boolean => {
     if (requiredBars > MAX_REQUESTED_DAYS) {
-      setFormError(`${label} 周期组合需要 ${requiredBars} 根日线，最多支持 ${MAX_REQUESTED_DAYS} 根`);
+      setFormError(formatUiText(text.requiredBarsLimit, { label, requiredBars, max: MAX_REQUESTED_DAYS }));
       return false;
     }
     return true;
@@ -265,38 +288,38 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
   const buildParameters = (): AlertRuleCreateRequest['parameters'] | null => {
     if (alertType === 'price_cross') {
-      const parsedPrice = parsePositiveNumber(price, '价格阈值');
+      const parsedPrice = parsePositiveNumber(price, text.priceThreshold);
       if (parsedPrice == null) return null;
       return { direction: priceDirection, price: parsedPrice };
     }
     if (alertType === 'price_change_percent') {
-      const parsedChangePct = parsePositiveNumber(changePct, '涨跌幅阈值');
+      const parsedChangePct = parsePositiveNumber(changePct, text.changePctThreshold);
       if (parsedChangePct == null) return null;
       return { direction: changeDirection, changePct: parsedChangePct };
     }
     if (alertType === 'volume_spike') {
-      const parsedMultiplier = parsePositiveNumber(multiplier, '成交量倍数');
+      const parsedMultiplier = parsePositiveNumber(multiplier, text.volumeMultiplier);
       if (parsedMultiplier == null) return null;
       return { multiplier: parsedMultiplier };
     }
     if (alertType === 'ma_price_cross') {
-      const parsedWindow = parseIntegerInRange(window, '均线周期');
+      const parsedWindow = parseIntegerInRange(window, text.maWindow);
       if (parsedWindow == null) return null;
       return { direction: thresholdDirection, window: parsedWindow };
     }
     if (alertType === 'rsi_threshold') {
-      const parsedPeriod = parseIntegerInRange(period, 'RSI 周期');
+      const parsedPeriod = parseIntegerInRange(period, text.rsiPeriod);
       const parsedThreshold = parseRsiThreshold(threshold);
       if (parsedPeriod == null || parsedThreshold == null) return null;
       return { direction: thresholdDirection, period: parsedPeriod, threshold: parsedThreshold };
     }
     if (alertType === 'macd_cross') {
-      const parsedFast = parseIntegerInRange(fastPeriod, '快线周期');
-      const parsedSlow = parseIntegerInRange(slowPeriod, '慢线周期');
-      const parsedSignal = parseIntegerInRange(signalPeriod, '信号周期');
+      const parsedFast = parseIntegerInRange(fastPeriod, text.fastPeriod);
+      const parsedSlow = parseIntegerInRange(slowPeriod, text.slowPeriod);
+      const parsedSignal = parseIntegerInRange(signalPeriod, text.signalPeriod);
       if (parsedFast == null || parsedSlow == null || parsedSignal == null) return null;
       if (parsedFast >= parsedSlow) {
-        setFormError('快线周期必须小于慢线周期');
+        setFormError(text.fastLessThanSlow);
         return null;
       }
       if (!ensureRequiredBarsWithinLimit('MACD', parsedSlow + parsedSignal + 1)) return null;
@@ -308,16 +331,16 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       };
     }
     if (alertType === 'kdj_cross') {
-      const parsedPeriod = parseIntegerInRange(period, 'KDJ 周期');
-      const parsedK = parseIntegerInRange(kPeriod, 'K 平滑周期');
-      const parsedD = parseIntegerInRange(dPeriod, 'D 平滑周期');
+      const parsedPeriod = parseIntegerInRange(period, text.kdjPeriod);
+      const parsedK = parseIntegerInRange(kPeriod, text.kPeriod);
+      const parsedD = parseIntegerInRange(dPeriod, text.dPeriod);
       if (parsedPeriod == null || parsedK == null || parsedD == null) return null;
       if (!ensureRequiredBarsWithinLimit('KDJ', parsedPeriod + parsedK + parsedD + 1)) return null;
       return { direction: crossDirection, period: parsedPeriod, kPeriod: parsedK, dPeriod: parsedD };
     }
     if (alertType === 'cci_threshold') {
-      const parsedPeriod = parseIntegerInRange(period, 'CCI 周期');
-      const parsedThreshold = parseFiniteNumber(threshold, 'CCI 阈值');
+      const parsedPeriod = parseIntegerInRange(period, text.cciPeriod);
+      const parsedThreshold = parseFiniteNumber(threshold, text.cciThreshold);
       if (parsedPeriod == null || parsedThreshold == null) return null;
       return { direction: thresholdDirection, period: parsedPeriod, threshold: parsedThreshold };
     }
@@ -326,13 +349,13 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     }
     if (alertType === 'market_light_status') {
       if (marketLightStatuses.length === 0) {
-        setFormError('至少选择一个红绿灯状态');
+        setFormError(text.noMarketStatus);
         return null;
       }
       return { statuses: marketLightStatuses };
     }
     if (alertType === 'market_light_score_drop') {
-      const parsedMinDrop = parsePositiveNumber(minDrop, 'Score 下降阈值');
+      const parsedMinDrop = parsePositiveNumber(minDrop, text.scoreDropThreshold);
       if (parsedMinDrop == null) return null;
       return { minDrop: parsedMinDrop };
     }
@@ -356,7 +379,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (targetScope === 'single_symbol') {
       const targetValidation = validateStockCode(target);
       if (!targetValidation.valid) {
-        setFormError(targetValidation.message ?? '股票代码格式不正确');
+        setFormError(language === 'en' ? text.invalidStockCode : (targetValidation.message ?? text.invalidStockCode));
         return;
       }
       resolvedTarget = targetValidation.normalized;
@@ -407,7 +430,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (targetScope === 'single_symbol') {
       return (
         <Input
-          label="标的代码"
+          label={text.targetCode}
           value={target}
           onChange={(event) => setTarget(event.target.value)}
           placeholder="600519 / AAPL / hk00700"
@@ -418,7 +441,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (targetScope === 'watchlist') {
       return (
         <Input
-          label="目标"
+          label={text.target}
           value="default"
           onChange={() => undefined}
           disabled
@@ -428,9 +451,9 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (targetScope === 'market') {
       return (
         <Select
-          label="市场区域"
+          label={text.marketRegion}
           value={marketRegion}
-          options={MARKET_REGION_OPTIONS}
+          options={language === 'zh' ? MARKET_REGION_OPTIONS : ALERT_MARKET_REGION_OPTIONS[language]}
           disabled={isSubmitting}
           onChange={(value) => setMarketRegion(value as MarketRegion)}
         />
@@ -439,7 +462,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     return (
       <div className="space-y-2">
         <Select
-          label="账户"
+          label={text.account}
           value={portfolioTarget}
           options={portfolioTargetOptions}
           disabled={isSubmitting}
@@ -451,26 +474,26 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   };
 
   return (
-    <Card title="创建告警规则" subtitle="Web 告警中心" variant="bordered" padding="md">
+    <Card title={text.cardTitle} subtitle={text.cardSubtitle} variant="bordered" padding="md">
       <form className="space-y-4" noValidate onSubmit={(event) => void handleSubmit(event)}>
         <div className="grid gap-4 md:grid-cols-2">
           <Input
-            label="规则名称"
+            label={text.ruleName}
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="可选，例如 茅台价格突破"
+            placeholder={text.ruleNamePlaceholder}
             disabled={isSubmitting}
           />
           <Select
-            label="目标范围"
+            label={text.targetScope}
             value={targetScope}
-            options={TARGET_SCOPE_OPTIONS}
+            options={language === 'zh' ? TARGET_SCOPE_OPTIONS : ALERT_TARGET_SCOPE_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={handleScopeChange}
           />
           {renderTargetControl()}
           <Select
-            label="规则类型"
+            label={text.ruleType}
             value={alertType}
             options={alertTypeOptions}
             disabled={isSubmitting}
@@ -481,9 +504,9 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             }}
           />
           <Select
-            label="严重级别"
+            label={text.severity}
             value={severity}
-            options={SEVERITY_OPTIONS}
+            options={language === 'zh' ? SEVERITY_OPTIONS : ALERT_SEVERITY_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={(value) => setSeverity(value as AlertSeverity)}
           />
@@ -492,14 +515,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'price_cross' ? (
           <div className="grid gap-4 md:grid-cols-2">
             <Select
-              label="方向"
+              label={text.direction}
               value={priceDirection}
-              options={PRICE_DIRECTION_OPTIONS}
+              options={language === 'zh' ? PRICE_DIRECTION_OPTIONS : ALERT_PRICE_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setPriceDirection(value as 'above' | 'below')}
             />
             <Input
-              label="价格阈值"
+              label={text.priceThreshold}
               type="number"
               min="0"
               step="0.0001"
@@ -513,14 +536,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'price_change_percent' ? (
           <div className="grid gap-4 md:grid-cols-2">
             <Select
-              label="方向"
+              label={text.direction}
               value={changeDirection}
-              options={CHANGE_DIRECTION_OPTIONS}
+              options={language === 'zh' ? CHANGE_DIRECTION_OPTIONS : ALERT_CHANGE_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setChangeDirection(value as 'up' | 'down')}
             />
             <Input
-              label="涨跌幅阈值（%）"
+              label={text.changePctThreshold}
               type="number"
               min="0"
               step="0.01"
@@ -533,7 +556,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
         {alertType === 'volume_spike' ? (
           <Input
-            label="成交量放大倍数"
+            label={text.volumeMultiplier}
             type="number"
             min="0"
             step="0.01"
@@ -546,14 +569,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'ma_price_cross' ? (
           <div className="grid gap-4 md:grid-cols-2">
             <Select
-              label="穿越方向"
+              label={text.maDirection}
               value={thresholdDirection}
-              options={THRESHOLD_DIRECTION_OPTIONS}
+              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
             <Input
-              label="均线周期"
+              label={text.maWindow}
               type="number"
               min="2"
               max="250"
@@ -568,14 +591,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'rsi_threshold' ? (
           <div className="grid gap-4 md:grid-cols-3">
             <Select
-              label="阈值方向"
+              label={text.thresholdDirection}
               value={thresholdDirection}
-              options={THRESHOLD_DIRECTION_OPTIONS}
+              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
             <Input
-              label="RSI 周期"
+              label={text.rsiPeriod}
               type="number"
               min="2"
               max="250"
@@ -585,7 +608,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="RSI 阈值"
+              label={text.rsiThreshold}
               type="number"
               min="0"
               max="100"
@@ -600,14 +623,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'macd_cross' ? (
           <div className="grid gap-4 md:grid-cols-4">
             <Select
-              label="交叉方向"
+              label={text.crossDirection}
               value={crossDirection}
-              options={CROSS_DIRECTION_OPTIONS}
+              options={language === 'zh' ? CROSS_DIRECTION_OPTIONS : ALERT_CROSS_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setCrossDirection(value as 'bullish_cross' | 'bearish_cross')}
             />
             <Input
-              label="快线周期"
+              label={text.fastPeriod}
               type="number"
               min="2"
               max="250"
@@ -617,7 +640,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="慢线周期"
+              label={text.slowPeriod}
               type="number"
               min="2"
               max="250"
@@ -627,7 +650,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="信号周期"
+              label={text.signalPeriod}
               type="number"
               min="2"
               max="250"
@@ -642,14 +665,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'kdj_cross' ? (
           <div className="grid gap-4 md:grid-cols-4">
             <Select
-              label="交叉方向"
+              label={text.crossDirection}
               value={crossDirection}
-              options={CROSS_DIRECTION_OPTIONS}
+              options={language === 'zh' ? CROSS_DIRECTION_OPTIONS : ALERT_CROSS_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setCrossDirection(value as 'bullish_cross' | 'bearish_cross')}
             />
             <Input
-              label="KDJ 周期"
+              label={text.kdjPeriod}
               type="number"
               min="2"
               max="250"
@@ -659,7 +682,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="K 平滑周期"
+              label={text.kPeriod}
               type="number"
               min="2"
               max="250"
@@ -669,7 +692,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="D 平滑周期"
+              label={text.dPeriod}
               type="number"
               min="2"
               max="250"
@@ -684,14 +707,14 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
         {alertType === 'cci_threshold' ? (
           <div className="grid gap-4 md:grid-cols-3">
             <Select
-              label="阈值方向"
+              label={text.thresholdDirection}
               value={thresholdDirection}
-              options={THRESHOLD_DIRECTION_OPTIONS}
+              options={language === 'zh' ? THRESHOLD_DIRECTION_OPTIONS : ALERT_THRESHOLD_DIRECTION_OPTIONS[language]}
               disabled={isSubmitting}
               onChange={(value) => setThresholdDirection(value as 'above' | 'below')}
             />
             <Input
-              label="CCI 周期"
+              label={text.cciPeriod}
               type="number"
               min="2"
               max="250"
@@ -701,7 +724,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
               disabled={isSubmitting}
             />
             <Input
-              label="CCI 阈值"
+              label={text.cciThreshold}
               type="number"
               step="0.01"
               value={threshold}
@@ -713,9 +736,9 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
         {alertType === 'portfolio_stop_loss' ? (
           <Select
-            label="止损模式"
+            label={text.stopLossMode}
             value={stopLossMode}
-            options={STOP_LOSS_MODE_OPTIONS}
+            options={language === 'zh' ? STOP_LOSS_MODE_OPTIONS : ALERT_STOP_LOSS_MODE_OPTIONS[language]}
             disabled={isSubmitting}
             onChange={(value) => setStopLossMode(value as PortfolioStopLossMode)}
           />
@@ -723,9 +746,9 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
         {alertType === 'market_light_status' ? (
           <div className="space-y-2">
-            <div className="text-sm font-medium text-foreground">触发状态</div>
+            <div className="text-sm font-medium text-foreground">{text.triggerStatus}</div>
             <div className="grid gap-3 sm:grid-cols-2">
-              {MARKET_LIGHT_STATUS_OPTIONS.map((option) => (
+              {(language === 'zh' ? MARKET_LIGHT_STATUS_OPTIONS : ALERT_MARKET_LIGHT_STATUS_OPTIONS[language]).map((option) => (
                 <Checkbox
                   key={option.value}
                   label={option.label}
@@ -740,7 +763,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
         {alertType === 'market_light_score_drop' ? (
           <Input
-            label="Score 下降阈值"
+            label={text.scoreDropThreshold}
             type="number"
             min="0"
             max="100"
@@ -753,13 +776,13 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Checkbox
-            label="创建后立即启用"
+            label={text.enableAfterCreate}
             checked={enabled}
             onChange={(event) => setEnabled(event.target.checked)}
             disabled={isSubmitting}
           />
-          <Button type="submit" isLoading={isSubmitting} loadingText="创建中...">
-            创建规则
+          <Button type="submit" isLoading={isSubmitting} loadingText={text.creating}>
+            {text.create}
           </Button>
         </div>
         {formError ? <p role="alert" className="text-sm text-danger">{formError}</p> : null}

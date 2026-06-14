@@ -219,19 +219,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Validate release tag and extract changelog
-        id: changelog
+      - name: Validate release tag
         run: |
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION="${RELEASE_TAG#v}"
-          # Extract the section for this version from CHANGELOG.md
-          BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" docs/CHANGELOG.md)
-          if [[ -z "$BODY" ]]; then
-            echo "Warning: no CHANGELOG entry found for ${VERSION}"
-            BODY="See [CHANGELOG](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/CHANGELOG.md) for details."
-          fi
-          # Write changelog content + install instructions to file
-          echo "$BODY" > /tmp/release_body.md
 
       - uses: actions/download-artifact@v7
         with:
@@ -246,7 +236,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          body_path: /tmp/release_body.md
-          generate_release_notes: true
+          generate_release_notes: false
           files: dist/release-assets/*
           fail_on_unmatched_files: true

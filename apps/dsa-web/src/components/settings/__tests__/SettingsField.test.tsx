@@ -1,8 +1,42 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import { UiLanguageProvider, useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { SettingsField } from '../SettingsField';
 
 describe('SettingsField', () => {
+  it('prefers localized Chinese field titles over backend schema titles', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'STOCK_LIST',
+          value: '600519',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'STOCK_LIST',
+            title: 'Stock List',
+            category: 'base',
+            dataType: 'string',
+            uiControl: 'text',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 1,
+          },
+        }}
+        value="600519"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('自选股列表')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Stock List')).not.toBeInTheDocument();
+  });
+
   it('renders sensitive field metadata and validation errors', () => {
     const onChange = vi.fn();
 
@@ -381,5 +415,92 @@ describe('SettingsField', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '自选股列表' })).not.toBeInTheDocument();
+  });
+
+  it('uses per-field schema titles even when helpKey is shared by multiple fields', () => {
+    const restoreLanguage = localStorage.getItem(UI_LANGUAGE_STORAGE_KEY);
+    localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+
+    try {
+      const SchemaTitleSwitcher = ({ children }: { children: ReactNode }) => {
+        const { setLanguage } = useUiLanguage();
+        return (
+          <div>
+            <button type="button" onClick={() => setLanguage('en')}>
+              switch-en
+            </button>
+            {children}
+          </div>
+        );
+      };
+
+      render(
+        <UiLanguageProvider>
+          <SchemaTitleSwitcher>
+            <SettingsField
+              item={{
+                key: 'OPENAI_MODEL',
+                value: 'gemini/gemini-3.1-pro-preview',
+                rawValueExists: true,
+                isMasked: false,
+                schema: {
+                  key: 'OPENAI_MODEL',
+                  category: 'ai_model',
+                  dataType: 'string',
+                  uiControl: 'text',
+                  isSensitive: false,
+                  isRequired: false,
+                  isEditable: true,
+                  options: [],
+                  validation: {},
+                  displayOrder: 10,
+                  title: 'Primary model',
+                  helpKey: 'settings.llm_channel.primary_model',
+                  description: 'Primary model description',
+                },
+              }}
+              value="gemini/gemini-3.1-pro-preview"
+              onChange={vi.fn()}
+            />
+            <SettingsField
+              item={{
+                key: 'OPENAI_VISION_MODEL',
+                value: 'gemini/gemini-2.0-flash',
+                rawValueExists: true,
+                isMasked: false,
+                schema: {
+                  key: 'OPENAI_VISION_MODEL',
+                  category: 'ai_model',
+                  dataType: 'string',
+                  uiControl: 'text',
+                  isSensitive: false,
+                  isRequired: false,
+                  isEditable: true,
+                  options: [],
+                  validation: {},
+                  displayOrder: 11,
+                  title: 'Vision model',
+                  helpKey: 'settings.llm_channel.primary_model',
+                  description: 'Vision model description',
+                },
+              }}
+              value="gemini/gemini-2.0-flash"
+              onChange={vi.fn()}
+            />
+          </SchemaTitleSwitcher>
+        </UiLanguageProvider>
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch-en' }));
+
+      expect(screen.getByLabelText('Primary model')).toBeInTheDocument();
+      expect(screen.getByLabelText('Vision model')).toBeInTheDocument();
+    } finally {
+      if (restoreLanguage) {
+        localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, restoreLanguage);
+      } else {
+        localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+      }
+    }
   });
 });

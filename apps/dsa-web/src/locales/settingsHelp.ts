@@ -539,7 +539,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制非交易日是否跳过分析。',
     usage: '默认 true；需要强制运行可设为 false 或使用 --force-run。',
     valueNotes: ['会结合市场日历判断 A 股、港股、美股等市场是否开市。'],
-    impact: ['影响定时任务和手动运行是否在休市日执行。'],
+    impact: ['影响定时任务、CLI 和 GitHub Actions 手动运行是否在休市日执行；Web/API 大盘复盘按钮会直接提交任务。'],
     notes: ['关闭后休市日可能生成缺少实时行情的报告。'],
   },
   'settings.system.HTTP_PROXY': {
@@ -1016,9 +1016,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.system.market_review': {
     title: '大盘分析',
     summary: '控制大盘分析功能的开关、覆盖市场和配色方案。',
-    usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；MARKET_REVIEW_REGION 选择市场（cn/hk/us/both）；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
+    usage: 'MARKET_REVIEW_ENABLED 开启大盘分析；DAILY_MARKET_CONTEXT_ENABLED 默认开启，会把当日大盘摘要用于个股分析 Prompt 与保守护栏；MARKET_REVIEW_REGION 选择市场（cn/hk/us/both）；MARKET_REVIEW_COLOR_SCHEME 选择配色。',
     valueNotes: [
       'cn 覆盖 A 股，hk 覆盖港股，us 覆盖美股，both 覆盖全部。',
+      '默认开启 DAILY_MARKET_CONTEXT_ENABLED；设为 false 后仍可生成大盘复盘报告，但个股分析不会读取大盘摘要或软化买入/加仓建议。',
       '配色方案影响大盘报告中指数涨跌的颜色显示：green_up 为绿涨红跌，red_up 为红涨绿跌。',
     ],
     impact: ['影响分析报告中大盘概览部分的内容和视觉呈现。'],
@@ -1504,7 +1505,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls whether analysis is skipped on non-trading days.',
     usage: 'Default true. Set false or use --force-run to override.',
     valueNotes: ['Uses market calendars for A-share, HK, US, and other supported markets.'],
-    impact: ['Affects whether manual and scheduled runs execute on holidays.'],
+    impact: ['Affects scheduled jobs, CLI runs, and GitHub Actions manual runs on holidays; the Web/API market-review button submits directly.'],
     notes: ['Disabling it can produce reports with missing realtime quotes on closed markets.'],
   },
   'settings.system.HTTP_PROXY': {
@@ -1981,9 +1982,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.system.market_review': {
     title: 'Market Review',
     summary: 'Controls the market review feature: on/off, coverage region, and color scheme.',
-    usage: 'MARKET_REVIEW_ENABLED toggles market review; MARKET_REVIEW_REGION selects markets (cn/hk/us/both); MARKET_REVIEW_COLOR_SCHEME selects colors.',
+    usage: 'MARKET_REVIEW_ENABLED toggles market review; DAILY_MARKET_CONTEXT_ENABLED is on by default and controls whether the daily market summary is injected into stock-analysis prompts and conservative guardrails; MARKET_REVIEW_REGION selects markets (cn/hk/us/both); MARKET_REVIEW_COLOR_SCHEME selects colors.',
     valueNotes: [
       'cn covers A-shares, hk covers Hong Kong, us covers US stocks, both covers all.',
+      'DAILY_MARKET_CONTEXT_ENABLED is enabled by default; set it to false to keep market review reports running without injecting the summary into stock analysis or softening buy/add advice.',
       'Color scheme affects how index changes are displayed: green_up = green for gains/red for losses; red_up = red for gains/green for losses.',
     ],
     impact: ['Affects the market overview section in analysis reports.'],
@@ -2014,7 +2016,7 @@ export function getSettingsHelpContent(
 
   if (fallbackDescription) {
     return {
-      title: '配置说明',
+      title: locale?.toLowerCase().startsWith('en') ? 'Configuration help' : '配置说明',
       summary: fallbackDescription,
     };
   }

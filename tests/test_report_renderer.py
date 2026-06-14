@@ -159,7 +159,7 @@ class TestReportRenderer(unittest.TestCase):
         self.assertNotIn("分析模型", hidden)
         self.assertNotIn("gemini/gemini-2.5-flash", hidden)
 
-    def test_render_templates_include_public_phase_pack_excerpt(self) -> None:
+    def test_render_templates_show_compact_market_status_only(self) -> None:
         r = _make_result()
         r.market_phase_summary = {
             "phase": "intraday",
@@ -178,11 +178,12 @@ class TestReportRenderer(unittest.TestCase):
         out = render("brief", [r])
 
         self.assertIsNotNone(out)
-        self.assertIn("阶段：intraday", out)
-        self.assertIn("盘中数据提示", out)
-        self.assertIn("数据质量: limited", out)
-        self.assertIn("限制: quote: stale", out)
-        self.assertIn("限制: news: missing", out)
+        self.assertIn("市场状态：A股 · 盘中", out)
+        self.assertNotIn("阶段：intraday", out)
+        self.assertNotIn("盘中数据提示", out)
+        self.assertNotIn("数据质量: limited", out)
+        self.assertNotIn("限制: quote: stale", out)
+        self.assertNotIn("限制: news: missing", out)
         self.assertNotIn("technical: fallback", out)
         self.assertNotIn("raw context pack", out)
 
@@ -194,6 +195,26 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertNotIn("摘要来源", out)
         self.assertNotIn("evaluator snapshot", out)
+
+    def test_render_market_status_preserves_input_order(self) -> None:
+        cn = _make_result(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=60,
+        )
+        cn.market_phase_summary = {"market": "cn", "phase": "postmarket"}
+        us = _make_result(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=90,
+        )
+        us.market_phase_summary = {"market": "us", "phase": "premarket"}
+
+        out = render("markdown", [cn, us], summary_only=True)
+
+        self.assertIsNotNone(out)
+        self.assertIn("市场状态：A股 · 盘后", out)
+        self.assertNotIn("市场状态：美股 · 盘前", out)
 
     def test_render_markdown_footer_uses_consistent_separator(self) -> None:
         r = _make_result(model_used="gemini/gemini-2.5-flash")

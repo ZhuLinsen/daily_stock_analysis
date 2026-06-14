@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { systemConfigApi } from '../api/systemConfig';
-import { normalizeStockCode } from '../utils/stockCode';
+import { findMatchingStockCode, includesStockCode } from '../utils/stockCode';
 
 export interface UseWatchlistReturn {
   watchlistCodes: string[];
@@ -65,7 +65,7 @@ export function useWatchlist(): UseWatchlistReturn {
   }, []);
 
   const isInWatchlist = useCallback(
-    (stockCode: string) => codes.includes(normalizeStockCode(stockCode)),
+    (stockCode: string) => includesStockCode(codes, stockCode),
     [codes],
   );
 
@@ -102,12 +102,13 @@ export function useWatchlist(): UseWatchlistReturn {
   }, [isActioning, showMessage]);
 
   const toggleWatchlist = useCallback(async (stockCode: string) => {
-    if (isInWatchlist(stockCode)) {
-      await removeFromWatchlist(stockCode);
+    const existingStockCode = findMatchingStockCode(codes, stockCode);
+    if (existingStockCode) {
+      await removeFromWatchlist(existingStockCode);
     } else {
       await addToWatchlist(stockCode);
     }
-  }, [isInWatchlist, removeFromWatchlist, addToWatchlist]);
+  }, [codes, removeFromWatchlist, addToWatchlist]);
 
   return {
     watchlistCodes: codes,

@@ -934,19 +934,41 @@ class EfinanceFetcher(BaseFetcher):
                 current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']
             ):
                 df = _realtime_cache['data']
+                logger.info(
+                    "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                    "api=ef.stock.get_realtime_quotes action=cache_hit cache_age=%.0fs",
+                    current_time - _realtime_cache['timestamp'],
+                )
             else:
-                logger.info("[API调用] ef.stock.get_realtime_quotes() 获取市场统计...")
+                started_at = time.monotonic()
+                logger.info(
+                    "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                    "api=ef.stock.get_realtime_quotes action=request_start"
+                )
                 df = _ef_call_with_timeout(ef.stock.get_realtime_quotes)
+                elapsed = time.monotonic() - started_at
+                logger.info(
+                    "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                    "api=ef.stock.get_realtime_quotes action=request_complete elapsed=%.2fs",
+                    elapsed,
+                )
                 _realtime_cache['data'] = df
                 _realtime_cache['timestamp'] = current_time
 
             if df is None or df.empty:
-                logger.warning("[API返回] 市场统计数据为空")
+                logger.warning(
+                    "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                    "api=ef.stock.get_realtime_quotes action=parse status=empty"
+                )
                 return None
 
             return self._calc_market_stats(df)
         except Exception as e:
-            logger.error(f"[efinance] 获取市场统计失败: {e}")
+            logger.error(
+                "[MarketStats] component=market_stats provider=EfinanceFetcher "
+                "api=ef.stock.get_realtime_quotes action=failed error=%s",
+                e,
+            )
             return None
         
     def _calc_market_stats(

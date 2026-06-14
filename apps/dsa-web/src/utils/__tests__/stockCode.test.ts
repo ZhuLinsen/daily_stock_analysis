@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeStockCode } from '../stockCode';
+import { areStockCodesEquivalent, findMatchingStockCode, includesStockCode, normalizeStockCode } from '../stockCode';
 
 describe('normalizeStockCode', () => {
   it('keeps clean A-share codes as-is', () => {
@@ -34,6 +34,11 @@ describe('normalizeStockCode', () => {
     expect(normalizeStockCode('hk1810')).toBe('HK01810');
   });
 
+  it('normalizes pure 5-digit HK codes to canonical prefix form', () => {
+    expect(normalizeStockCode('00700')).toBe('HK00700');
+    expect(normalizeStockCode('01810')).toBe('HK01810');
+  });
+
   it('normalizes HK suffix to canonical prefix form', () => {
     expect(normalizeStockCode('00700.HK')).toBe('HK00700');
     expect(normalizeStockCode('1810.HK')).toBe('HK01810');
@@ -44,6 +49,7 @@ describe('normalizeStockCode', () => {
     expect(normalizeStockCode('AAPL')).toBe('AAPL');
     expect(normalizeStockCode('TSLA')).toBe('TSLA');
     expect(normalizeStockCode('GOOGL')).toBe('GOOGL');
+    expect(normalizeStockCode('BRK.B')).toBe('BRK.B');
   });
 
   it('is case-insensitive for prefixes', () => {
@@ -59,9 +65,29 @@ describe('normalizeStockCode', () => {
   });
 
   it('handles HK variants as equivalent', () => {
-    const codes = ['HK00700', '00700.HK', 'hk00700'];
+    const codes = ['00700', 'HK00700', '00700.HK', 'hk00700'];
     const normalized = codes.map(normalizeStockCode);
     expect(new Set(normalized).size).toBe(1);
     expect(normalized[0]).toBe('HK00700');
+  });
+
+  it('compares stock-code variants with both sides normalized', () => {
+    expect(areStockCodesEquivalent('00700', 'HK00700')).toBe(true);
+    expect(areStockCodesEquivalent('01810', '1810.HK')).toBe(true);
+    expect(areStockCodesEquivalent('aapl', 'AAPL')).toBe(true);
+    expect(areStockCodesEquivalent('00700', 'HK01810')).toBe(false);
+    expect(areStockCodesEquivalent('', 'HK00700')).toBe(false);
+  });
+
+  it('finds raw watchlist entries that match normalized current codes', () => {
+    const codes = ['600519', '00700', 'aapl'];
+
+    expect(includesStockCode(codes, '600519.SH')).toBe(true);
+    expect(includesStockCode(codes, 'HK00700')).toBe(true);
+    expect(includesStockCode(codes, '00700.HK')).toBe(true);
+    expect(includesStockCode(codes, 'AAPL')).toBe(true);
+    expect(includesStockCode(codes, 'HK01810')).toBe(false);
+    expect(findMatchingStockCode(codes, 'HK00700')).toBe('00700');
+    expect(findMatchingStockCode(codes, 'AAPL')).toBe('aapl');
   });
 });

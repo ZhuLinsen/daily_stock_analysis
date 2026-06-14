@@ -45,6 +45,38 @@ _PUBLIC_SOURCE_LABELS_EN = {
     "evaluator_snapshot": "evaluator snapshot",
     "legacy_text": "legacy text",
 }
+_MARKET_STATUS_PREFIX = {
+    "zh": "市场状态",
+    "en": "Market status",
+}
+_MARKET_LABELS_ZH = {
+    "cn": "A股",
+    "hk": "港股",
+    "us": "美股",
+}
+_MARKET_LABELS_EN = {
+    "cn": "A-shares",
+    "hk": "Hong Kong",
+    "us": "US",
+}
+_PHASE_LABELS_ZH = {
+    "premarket": "盘前",
+    "intraday": "盘中",
+    "lunch_break": "午间休市",
+    "closing_auction": "临近收盘",
+    "postmarket": "盘后",
+    "non_trading": "非交易日",
+    "unknown": "阶段未知",
+}
+_PHASE_LABELS_EN = {
+    "premarket": "Pre-market",
+    "intraday": "Intraday",
+    "lunch_break": "Lunch break",
+    "closing_auction": "Near close",
+    "postmarket": "Post-market",
+    "non_trading": "Non-trading",
+    "unknown": "Unknown phase",
+}
 
 
 def render_market_phase_summary(phase_context: Any) -> Optional[Dict[str, Any]]:
@@ -144,6 +176,34 @@ def format_public_phase_pack_excerpt(
             lines.append(f"- {'limitation' if lang == 'en' else '限制'}: {item}")
 
     return "\n".join(lines)
+
+
+def format_public_market_status_line(
+    market_phase_summary: Any,
+    *,
+    report_language: str = "zh",
+) -> str:
+    """Format one compact market/phase line for aggregate reports."""
+    phase_summary = _as_mapping(market_phase_summary)
+    if not phase_summary:
+        return ""
+    phase = _safe_phase(phase_summary.get("phase"))
+    if phase is None:
+        return ""
+
+    lang = "en" if str(report_language or "").lower().startswith("en") else "zh"
+    phase_labels = _PHASE_LABELS_EN if lang == "en" else _PHASE_LABELS_ZH
+    market_labels = _MARKET_LABELS_EN if lang == "en" else _MARKET_LABELS_ZH
+    phase_label = phase_labels.get(phase, phase)
+    market = _safe_text(phase_summary.get("market"))
+    market_key = market.lower()
+    if market_key:
+        market_label = market_labels.get(market_key, market.upper() if lang == "en" else market)
+        value = f"{market_label} · {phase_label}"
+    else:
+        value = phase_label
+    separator = ": " if lang == "en" else "："
+    return f"{_MARKET_STATUS_PREFIX[lang]}{separator}{value}"
 
 
 def _as_mapping(value: Any) -> Optional[Mapping[str, Any]]:

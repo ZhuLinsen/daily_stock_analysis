@@ -26,7 +26,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from dotenv import dotenv_values
 from src.config import setup_env
@@ -44,12 +44,25 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
 
+if os.getenv("DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE") == "1":
+    import importlib
+    import sys
+
+    try:
+        importlib.import_module("alphasift.dsa_adapter")
+    except Exception as exc:
+        print(f"ERROR: packaged AlphaSift adapter import failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print("OK: packaged AlphaSift adapter import succeeded")
+    sys.exit(0)
+
 import argparse
 import logging
 import sys
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from data_provider.base import canonical_stock_code
 from src.webui_frontend import prepare_webui_frontend_assets
@@ -59,6 +72,7 @@ from src.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
+_PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 
 
 def _get_active_env_path() -> Path:
@@ -66,6 +80,26 @@ def _get_active_env_path() -> Path:
     if env_file:
         return Path(env_file)
     return Path(__file__).resolve().parent / ".env"
+
+
+def _is_public_bind_host(host: str) -> bool:
+    return (host or "").strip().lower() in _PUBLIC_BIND_HOSTS
+
+
+def _warn_if_public_webui_without_auth(host: str) -> None:
+    if not _is_public_bind_host(host):
+        return
+
+    from src.auth import is_auth_enabled
+
+    if is_auth_enabled():
+        return
+    logger.warning(
+        "WEBUI_HOST=%s binds the Web UI to a public interface while "
+        "ADMIN_AUTH_ENABLED=false. Keep this service behind a trusted network "
+        "boundary or enable admin authentication before exposing it.",
+        host,
+    )
 
 
 def _read_active_env_values() -> Optional[Dict[str, str]]:
@@ -429,9 +463,9 @@ def _compute_trading_day_filter(
 
 def _run_market_review_with_shared_lock(
     config: Config,
-    run_market_review_func: Callable[..., Optional[str]],
+    run_market_review_func: Callable[..., Any],
     **kwargs: Any,
-) -> Optional[str]:
+) -> Any:
     from src.core.market_review_lock import (
         release_market_review_lock,
         try_acquire_market_review_lock,
@@ -443,9 +477,21 @@ def _run_market_review_with_shared_lock(
         return None
 
     try:
-        return run_market_review_func(**kwargs)
+        params = dict(kwargs)
+        params.setdefault("config", config)
+        return run_market_review_func(**params)
     finally:
         release_market_review_lock(lock_token)
+
+
+def _is_multi_market_region(region: str) -> bool:
+    normalized = str(region or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized == "both":
+        return True
+    parts = {item.strip() for item in normalized.split(",") if item.strip()}
+    return len(parts) > 1
 
 
 def _refresh_stock_index_cache_for_analysis(config: Config) -> None:
@@ -463,6 +509,130 @@ def _refresh_stock_index_cache_for_analysis(config: Config) -> None:
             logger.debug("[stock-index] 分析前刷新未完成，继续使用本地索引: %s", result.error)
     except Exception as exc:  # noqa: BLE001 - stock index freshness must not block analysis.
         logger.warning("[stock-index] 分析前刷新股票索引失败，继续执行分析: %s", exc)
+
+
+def _prime_daily_market_context(
+    config: Config,
+    pipeline: Any,
+    *,
+    region: str,
+    no_market_review: bool,
+    allow_generate: bool,
+    force_refresh: bool = False,
+    target_date: Optional[date] = None,
+    return_full_report: bool = False,
+    require_current_query_match: bool = False,
+) -> Union[str, Tuple[str, str]]:
+    """Load/reuse the run's market context, avoiding unbounded background generation."""
+    if no_market_review or not region:
+        return ("", "") if return_full_report else ""
+
+    from src.services.daily_market_context import DailyMarketContextService
+
+    if not _is_multi_market_region(region):
+        service = getattr(pipeline, "_daily_market_context_service", None)
+        if service is None:
+            service = DailyMarketContextService(db_manager=pipeline.db)
+            pipeline._daily_market_context_service = service
+    else:
+        service = DailyMarketContextService(db_manager=pipeline.db)
+
+    get_context_kwargs = {
+        "region": region,
+        "config": config,
+        "notifier": pipeline.notifier,
+        "analyzer": pipeline.analyzer,
+        "search_service": pipeline.search_service,
+        "force_refresh": force_refresh,
+        "allow_generate": allow_generate,
+        "persist_market_review_history": False,
+        "target_date": target_date,
+        "require_query_id_match": require_current_query_match,
+    }
+    current_query_id = getattr(pipeline, "query_id", None)
+    if isinstance(current_query_id, str) and current_query_id.strip():
+        get_context_kwargs["current_query_id"] = current_query_id
+
+    context = service.get_context(**get_context_kwargs)
+    if context is None:
+        return ("", "") if return_full_report else ""
+
+    # Runtime context generation is preload-only and must not replace the full
+    # market review run, except the query-scoped fallback after that run fails.
+    if context.source != "analysis_history" and not (
+        require_current_query_match and context.source == "market_review_runtime"
+    ):
+        return ("", "") if return_full_report else ""
+
+    summary = str(getattr(context, "summary", ""))
+    full_report = str(getattr(context, "full_report", "") or "")
+    if return_full_report:
+        return summary, full_report
+    return summary
+
+
+def _can_reuse_market_context_for_review(summary: str, region: str) -> bool:
+    if not summary:
+        return False
+    normalized = str(region or "").strip().lower()
+    if normalized == "both":
+        return False
+    parts = {item.strip() for item in normalized.split(",") if item.strip()}
+    return len(parts) <= 1
+
+
+def _resolve_daily_market_context_target_date(
+    region: str,
+    current_time: datetime,
+) -> date:
+    normalized_region = str(region or "cn").strip().lower()
+    market = normalized_region if normalized_region in {"cn", "hk", "us"} else "cn"
+
+    from src.core.trading_calendar import get_effective_trading_date
+
+    return get_effective_trading_date(market, current_time=current_time)
+
+
+def _market_review_report_text(review_result: Any) -> str:
+    if review_result is None:
+        return ""
+    report = getattr(review_result, "report", None)
+    if isinstance(report, str):
+        return report
+    return review_result if isinstance(review_result, str) else ""
+
+
+def _save_reused_market_review_report(
+    notifier: Any,
+    market_report: str,
+    *,
+    config: Config,
+    trigger_source: str,
+    region: str,
+) -> None:
+    body = str(market_report or "").strip()
+    if not body:
+        return
+    title = (
+        "# 🎯 Market Review"
+        if str(getattr(config, "report_language", "zh")).strip().lower() == "en"
+        else "# 🎯 大盘复盘"
+    )
+    if not any(body.startswith(item) for item in ("# 🎯 大盘复盘", "# 🎯 Market Review")):
+        body = f"{title}\n\n{body}"
+    try:
+        date_str = datetime.now().strftime('%Y%m%d')
+        report_filename = f"market_review_{date_str}.md"
+        filepath = notifier.save_report_to_file(body, report_filename)
+        logger.info(
+            "[MarketReview] component=market_review action=save_reused_report "
+            "trigger_source=%s region=%s path=%s",
+            trigger_source,
+            region,
+            filepath,
+        )
+    except Exception as exc:
+        logger.warning("复用大盘上下文保存大盘复盘报告失败: %s", exc)
 
 
 def run_full_analysis(
@@ -519,53 +689,187 @@ def run_full_analysis(
         if getattr(args, 'no_context_snapshot', False):
             save_context_snapshot = False
         query_id = uuid.uuid4().hex
+        market_review_region = (
+            effective_region
+            if effective_region is not None
+            else (getattr(config, 'market_review_region', 'cn') or 'cn')
+        )
+        should_run_market_review = (
+            config.market_review_enabled
+            and not args.no_market_review
+            and (market_review_region or '') != ''
+        )
+        should_use_daily_market_context = (
+            should_run_market_review
+            and getattr(config, 'daily_market_context_enabled', True)
+        )
+        analysis_reference_time = datetime.now(timezone.utc)
+        daily_market_context_target_date = None
+        if should_use_daily_market_context:
+            daily_market_context_target_date = _resolve_daily_market_context_target_date(
+                market_review_region,
+                analysis_reference_time,
+            )
+        market_report = ""
+        market_context_summary = ""
+        market_context_full_report = ""
+        market_context_generated_during_stock = False
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=args.workers,
             query_id=query_id,
             query_source="cli",
-            save_context_snapshot=save_context_snapshot
+            save_context_snapshot=save_context_snapshot,
+            daily_market_context_enabled=should_use_daily_market_context,
+            daily_market_context_allow_generate=should_use_daily_market_context,
         )
+        if should_use_daily_market_context:
+            # Prompt-side context can reuse historical summaries, while full-merge
+            # content must avoid silently reusing unrelated historical reports.
+            _prime_daily_market_context(
+                config,
+                pipeline=pipeline,
+                region=market_review_region,
+                no_market_review=args.no_market_review,
+                allow_generate=False,
+                target_date=daily_market_context_target_date,
+                return_full_report=False,
+            )
+            (
+                market_context_summary,
+                market_context_full_report,
+            ) = _prime_daily_market_context(
+                config,
+                pipeline=pipeline,
+                region=market_review_region,
+                no_market_review=args.no_market_review,
+                allow_generate=False,
+                target_date=daily_market_context_target_date,
+                return_full_report=True,
+                require_current_query_match=True,
+            )
 
         # 1. 运行个股分析
         results = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
             send_notification=not args.no_notify,
-            merge_notification=merge_notification
+            merge_notification=merge_notification,
+            current_time=analysis_reference_time,
         )
+
+        if should_use_daily_market_context and not market_context_summary:
+            (
+                market_context_summary,
+                market_context_full_report,
+            ) = _prime_daily_market_context(
+                config,
+                pipeline=pipeline,
+                region=market_review_region,
+                no_market_review=args.no_market_review,
+                allow_generate=False,
+                target_date=daily_market_context_target_date,
+                return_full_report=True,
+                require_current_query_match=True,
+            )
+            market_context_generated_during_stock = bool(market_context_summary)
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
         analysis_delay = getattr(config, 'analysis_delay', 0)
-        if (
-            analysis_delay > 0
-            and config.market_review_enabled
-            and not args.no_market_review
-            and effective_region != ''
-        ):
-            logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
-            time.sleep(analysis_delay)
 
         # 2. 运行大盘复盘（如果启用且不是仅个股模式）
-        market_report = ""
-        if (
-            config.market_review_enabled
-            and not args.no_market_review
-            and effective_region != ''
-        ):
-            review_result = _run_market_review_with_shared_lock(
-                config,
-                run_market_review,
-                notifier=pipeline.notifier,
-                analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service,
-                send_notification=not args.no_notify,
-                merge_notification=merge_notification,
-                override_region=effective_region,
+        if should_run_market_review:
+            schedule_mode = bool(
+                getattr(args, 'schedule', False)
+                or getattr(config, 'schedule_enabled', False)
             )
+            review_trigger_source = "schedule" if schedule_mode else "cli"
+            can_reuse_market_context = (
+                _can_reuse_market_context_for_review(
+                    market_context_summary,
+                    market_review_region,
+                )
+                if should_use_daily_market_context
+                else False
+            )
+
+            can_skip_market_review = (
+                (merge_notification or market_context_generated_during_stock)
+                and can_reuse_market_context
+                and bool(market_context_full_report or market_context_summary)
+            )
+            if can_skip_market_review:
+                market_report = market_context_full_report or market_context_summary
+                logger.info(
+                    "复盘上下文可复用，跳过重复大盘复盘并复用上下文内容。"
+                )
+                _save_reused_market_review_report(
+                    pipeline.notifier,
+                    market_report,
+                    config=config,
+                    trigger_source=review_trigger_source,
+                    region=market_review_region,
+                )
+                if (
+                    market_context_generated_during_stock
+                    and not merge_notification
+                    and not args.no_notify
+                    and pipeline.notifier.is_available()
+                ):
+                    if pipeline.notifier.send(
+                        f"# 📈 大盘复盘\n\n{market_report}",
+                        email_send_to_all=True,
+                        route_type="report",
+                    ):
+                        logger.info("复用本轮大盘上下文推送大盘复盘成功")
+                    else:
+                        logger.warning("复用本轮大盘上下文推送大盘复盘失败")
+
+            review_result = None
+            if not can_skip_market_review:
+                if analysis_delay > 0:
+                    logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
+                    time.sleep(analysis_delay)
+
+                review_result = _run_market_review_with_shared_lock(
+                    config,
+                    run_market_review,
+                    notifier=pipeline.notifier,
+                    analyzer=pipeline.analyzer,
+                    search_service=pipeline.search_service,
+                    send_notification=not args.no_notify,
+                    merge_notification=merge_notification,
+                    override_region=market_review_region,
+                    query_id=query_id,
+                    trigger_source=review_trigger_source,
+                )
+                # 如果复盘仍未执行成功，再做一次复用历史/缓存读取（防止与并发运行竞态）。
+                if not review_result and should_use_daily_market_context:
+                    (
+                        market_context_summary,
+                        market_context_full_report,
+                    ) = _prime_daily_market_context(
+                        config,
+                        pipeline=pipeline,
+                        region=market_review_region,
+                        no_market_review=args.no_market_review,
+                        allow_generate=False,
+                        target_date=daily_market_context_target_date,
+                        return_full_report=True,
+                        require_current_query_match=True,
+                    )
+                    can_reuse_market_context = _can_reuse_market_context_for_review(
+                        market_context_summary,
+                        market_review_region,
+                    )
+                elif not review_result:
+                    can_reuse_market_context = False
+
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
-                market_report = review_result
+                market_report = _market_review_report_text(review_result)
+            elif can_reuse_market_context:
+                market_report = market_context_full_report or market_context_summary
 
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
@@ -673,8 +977,17 @@ def start_api_server(host: str, port: int, config: Config) -> None:
         port: 监听端口
         config: 配置对象
     """
+    import socket
     import threading
     import uvicorn
+
+    probe = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+    except OSError as exc:
+        raise RuntimeError(f"FastAPI port is not available: {host}:{port}") from exc
+    finally:
+        probe.close()
 
     def run_server():
         level_name = (config.log_level or "INFO").lower()
@@ -853,6 +1166,7 @@ def main() -> int:
             args.host = os.getenv('WEBUI_HOST')
         if args.port == 8000 and os.getenv('WEBUI_PORT'):
             args.port = int(os.getenv('WEBUI_PORT'))
+        _warn_if_public_webui_without_auth(args.host)
 
     bot_clients_started = False
     if start_serve:
@@ -863,6 +1177,9 @@ def main() -> int:
             bot_clients_started = True
         except Exception as e:
             logger.error(f"启动 FastAPI 服务失败: {e}")
+            if args.serve_only:
+                return 1
+            start_serve = False
 
     if bot_clients_started:
         start_bot_stream_clients(config)
@@ -930,6 +1247,7 @@ def main() -> int:
                 search_service=search_service,
                 send_notification=not args.no_notify,
                 override_region=effective_region,
+                trigger_source="cli",
             )
             return 0
 

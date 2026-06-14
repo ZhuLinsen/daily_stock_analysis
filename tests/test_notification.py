@@ -630,7 +630,7 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("*分析模型：gemini/gemini-2.5-flash*", out)
 
     @mock.patch("src.notification.get_config")
-    def test_generated_reports_include_public_phase_pack_excerpt_only(self, mock_get_config: mock.MagicMock):
+    def test_aggregate_reports_show_compact_market_status_only(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
         service = NotificationService()
         result = AnalysisResult(
@@ -657,15 +657,49 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_brief_report([result], report_date="2026-02-01")
 
-        self.assertIn("阶段：intraday", out)
-        self.assertIn("触发来源：portfolio", out)
-        self.assertIn("盘中数据提示", out)
-        self.assertIn("数据质量: limited", out)
-        self.assertIn("限制: quote: stale", out)
-        self.assertIn("限制: news: missing", out)
+        self.assertIn("市场状态：A股 · 盘中", out)
+        self.assertNotIn("阶段：intraday", out)
+        self.assertNotIn("触发来源：portfolio", out)
+        self.assertNotIn("盘中数据提示", out)
+        self.assertNotIn("数据质量: limited", out)
+        self.assertNotIn("限制: quote: stale", out)
+        self.assertNotIn("限制: news: missing", out)
         self.assertNotIn("portfolio_context: hidden", out)
         self.assertNotIn("raw context pack", out)
         self.assertNotIn("prompt", out.lower())
+
+    @mock.patch("src.notification.get_config")
+    def test_template_dashboard_report_uses_single_market_status_line(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=True)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.market_phase_summary = {
+            "phase": "postmarket",
+            "market": "cn",
+            "trigger_source": "cli",
+        }
+        result.analysis_context_pack_overview = {
+            "data_quality": {
+                "level": "good",
+                "limitations": ["technical: partial"],
+            }
+        }
+
+        out = service.generate_dashboard_report([result], report_date="2026-02-01")
+
+        self.assertIn("市场状态：A股 · 盘后", out)
+        self.assertEqual(out.count("市场状态："), 1)
+        self.assertNotIn("阶段：postmarket", out)
+        self.assertNotIn("触发来源：cli", out)
+        self.assertNotIn("数据质量: good", out)
+        self.assertNotIn("technical: partial", out)
 
     @mock.patch("src.notification.get_config")
     def test_generated_reports_skip_phase_pack_excerpt_when_summary_missing(self, mock_get_config: mock.MagicMock):

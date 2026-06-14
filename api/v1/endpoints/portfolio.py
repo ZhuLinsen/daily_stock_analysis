@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
+from api.v1.errors import api_error
 from api.v1.schemas.analysis import DuplicateTaskErrorResponse, TaskAccepted
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.portfolio import (
@@ -50,25 +51,16 @@ router = APIRouter()
 
 
 def _bad_request(exc: Exception) -> HTTPException:
-    return HTTPException(
-        status_code=400,
-        detail={"error": "validation_error", "message": str(exc)},
-    )
+    return api_error(400, "validation_error", str(exc))
 
 
 def _internal_error(message: str, exc: Exception) -> HTTPException:
     logger.error(f"{message}: {exc}", exc_info=True)
-    return HTTPException(
-        status_code=500,
-        detail={"error": "internal_error", "message": f"{message}: {str(exc)}"},
-    )
+    return api_error(500, "internal_error", f"{message}: {str(exc)}")
 
 
 def _conflict_error(*, error: str, message: str) -> HTTPException:
-    return HTTPException(
-        status_code=409,
-        detail={"error": error, "message": message},
-    )
+    return api_error(409, error, message)
 
 
 def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
@@ -140,10 +132,7 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
             is_active=request.is_active,
         )
         if updated is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Account not found: {account_id}"},
-            )
+            raise api_error(404, "not_found", f"Account not found: {account_id}")
         return PortfolioAccountItem(**updated)
     except HTTPException:
         raise
@@ -163,10 +152,7 @@ def delete_account(account_id: int):
     try:
         ok = service.deactivate_account(account_id)
         if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Account not found: {account_id}"},
-            )
+            raise api_error(404, "not_found", f"Account not found: {account_id}")
         return {"deleted": 1}
     except HTTPException:
         raise
@@ -254,10 +240,7 @@ def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
     try:
         ok = service.delete_trade_event(trade_id)
         if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Trade not found: {trade_id}"},
-            )
+            raise api_error(404, "not_found", f"Trade not found: {trade_id}")
         return PortfolioDeleteResponse(deleted=1)
     except PortfolioBusyError as exc:
         raise _conflict_error(error="portfolio_busy", message=str(exc))
@@ -335,10 +318,7 @@ def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
     try:
         ok = service.delete_cash_ledger_event(entry_id)
         if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Cash ledger entry not found: {entry_id}"},
-            )
+            raise api_error(404, "not_found", f"Cash ledger entry not found: {entry_id}")
         return PortfolioDeleteResponse(deleted=1)
     except PortfolioBusyError as exc:
         raise _conflict_error(error="portfolio_busy", message=str(exc))
@@ -421,10 +401,7 @@ def delete_corporate_action(action_id: int) -> PortfolioDeleteResponse:
     try:
         ok = service.delete_corporate_action_event(action_id)
         if not ok:
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "not_found", "message": f"Corporate action not found: {action_id}"},
-            )
+            raise api_error(404, "not_found", f"Corporate action not found: {action_id}")
         return PortfolioDeleteResponse(deleted=1)
     except PortfolioBusyError as exc:
         raise _conflict_error(error="portfolio_busy", message=str(exc))
@@ -538,10 +515,7 @@ def _resolve_position_analysis_context(
             matches.append((account, position, position_symbol))
 
     if not matches:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "not_found", "message": f"No non-zero portfolio position for {target}"},
-        )
+        raise api_error(404, "not_found", f"No non-zero portfolio position for {target}")
     if account_id is None:
         account_ids = {
             int(account.get("account_id"))
@@ -549,12 +523,10 @@ def _resolve_position_analysis_context(
             if account.get("account_id") is not None
         }
         if len(account_ids) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "ambiguous_position_account",
-                    "message": f"{target} is held in multiple accounts; pass account_id",
-                },
+            raise api_error(
+                400,
+                "ambiguous_position_account",
+                f"{target} is held in multiple accounts; pass account_id",
             )
 
     account, position, position_symbol = matches[0]

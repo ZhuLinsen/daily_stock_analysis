@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,18 @@ _SECRET_REDACTIONS = (
         "Bearer <redacted>",
     ),
 )
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(authorization|api[_-]?key|access[_-]?token|(?:^|[_-])(?:auth|refresh|session|bearer)?[_-]?token$|secret|password|passwd|cookie|"
+    r"webhook|sendkey|prompt|raw[_-]?prompt|raw[_-]?response|headers?|proxy)"
+)
+_WEBHOOK_URL_RE = re.compile(r"https?://[^\s]+?(?:webhook|token|key|secret|sendkey)[^\s]*", re.IGNORECASE)
+_LOCAL_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:/.-])(?:/(?:home|Users|root|var|tmp|opt|etc)/[^\s,;]+|[A-Za-z]:\\[^\s,;]+)"
+)
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|token|secret|password|passwd|cookie|webhook|sendkey|"
+    r"prompt|raw[_-]?prompt|raw[_-]?response)\s*[:=]\s*([^\s,&;]+)"
+)
 
 
 def build_trace_id() -> str:
@@ -71,7 +84,7 @@ def build_trace_id() -> str:
 
 
 def sanitize_diagnostic_text(value: Any, *, max_length: int = 300) -> Optional[str]:
-    """Return a short diagnostic string with obvious credentials redacted."""
+    """Return a short diagnostic string with sensitive details redacted."""
     if value is None:
         return None
 
@@ -81,10 +94,49 @@ def sanitize_diagnostic_text(value: Any, *, max_length: int = 300) -> Optional[s
 
     for pattern, replacement in _SECRET_REDACTIONS:
         text = pattern.sub(replacement, text)
+    text = _WEBHOOK_URL_RE.sub("<redacted-url>", text)
+    text = _LOCAL_ABSOLUTE_PATH_RE.sub("<redacted-path>", text)
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
 
     if len(text) > max_length:
         return f"{text[:max_length].rstrip()}..."
     return text
+
+
+def safe_diagnostic_key(value: Any) -> str:
+    """Normalize a diagnostic object key after applying text redaction."""
+    text = sanitize_diagnostic_text(value, max_length=80) or ""
+    return re.sub(r"[^A-Za-z0-9_]+", "_", text.strip().lower()).strip("_")[:80]
+
+
+def sanitize_diagnostic_metadata(value: Any, *, depth: int = 0) -> Any:
+    """Recursively redact diagnostic metadata before it reaches API/SSE payloads."""
+    if depth > 3:
+        return "<truncated>"
+    if isinstance(value, Mapping):
+        sanitized: Dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 20:
+                sanitized["truncated"] = True
+                break
+            safe_key = safe_diagnostic_key(key)
+            if not safe_key:
+                continue
+            if _SENSITIVE_KEY_RE.search(str(key)):
+                sanitized[safe_key] = "<redacted>"
+                continue
+            safe_value = sanitize_diagnostic_metadata(item, depth=depth + 1)
+            if safe_value not in (None, "", [], {}):
+                sanitized[safe_key] = safe_value
+        return sanitized
+    if isinstance(value, list):
+        items = [sanitize_diagnostic_metadata(item, depth=depth + 1) for item in value[:8]]
+        return [item for item in items if item not in (None, "", [], {})]
+    if isinstance(value, tuple):
+        return sanitize_diagnostic_metadata(list(value), depth=depth)
+    if isinstance(value, (int, float, bool)):
+        return value
+    return sanitize_diagnostic_text(value, max_length=160)
 
 
 @dataclass
@@ -274,18 +326,40 @@ class RunDiagnosticContext:
     llm_runs: List[LLMRun] = field(default_factory=list)
     notification_runs: List[NotificationRun] = field(default_factory=list)
     history_runs: List[HistoryRun] = field(default_factory=list)
+    event_sink: Optional[Callable[[Dict[str, Any]], None]] = None
+    flow_event_index: int = 0
+    provider_attempt_index_by_type: Dict[str, int] = field(default_factory=dict)
 
     def record_provider_run(self, provider_run: ProviderRun) -> None:
         self.provider_runs.append(provider_run)
+        data_type_key = _safe_event_key(provider_run.data_type) or "provider"
+        attempt_index = self.provider_attempt_index_by_type.get(data_type_key, 0) + 1
+        self.provider_attempt_index_by_type[data_type_key] = attempt_index
+        self._emit_flow_event(_provider_flow_event(self, provider_run, attempt_index))
 
     def record_llm_run(self, llm_run: LLMRun) -> None:
         self.llm_runs.append(llm_run)
+        self._emit_flow_event(_llm_flow_event(self, llm_run, len(self.llm_runs)))
 
     def record_notification_run(self, notification_run: NotificationRun) -> None:
         self.notification_runs.append(notification_run)
+        self._emit_flow_event(_notification_flow_event(self, notification_run, len(self.notification_runs)))
 
     def record_history_run(self, history_run: HistoryRun) -> None:
         self.history_runs.append(history_run)
+        self._emit_flow_event(_history_flow_event(self, history_run, len(self.history_runs)))
+
+    def _emit_flow_event(self, event: Dict[str, Any]) -> None:
+        if self.event_sink is None:
+            return
+        try:
+            self.flow_event_index += 1
+            event_payload = sanitize_diagnostic_metadata(event)
+            event_payload = dict(event_payload) if isinstance(event_payload, Mapping) else {}
+            event_payload["id"] = event_payload.get("id") or f"flow_{self.flow_event_index:04d}"
+            self.event_sink(event_payload)
+        except Exception as exc:  # pragma: no cover - defensive fail-open guard
+            logger.warning("run-flow event sink failed: %s", exc)
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -312,6 +386,7 @@ def activate_run_diagnostic_context(
     query_id: Optional[str] = None,
     stock_code: Optional[str] = None,
     trigger_source: Optional[str] = None,
+    event_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Token:
     """Activate a diagnostic context and return its reset token."""
     context = RunDiagnosticContext(
@@ -320,6 +395,7 @@ def activate_run_diagnostic_context(
         query_id=query_id,
         stock_code=stock_code,
         trigger_source=trigger_source,
+        event_sink=event_sink,
     )
     return _CURRENT_CONTEXT.set(context)
 
@@ -342,6 +418,236 @@ def current_diagnostic_snapshot() -> Optional[Dict[str, Any]]:
     except Exception as exc:  # pragma: no cover - defensive fail-open guard
         logger.warning("run diagnostic snapshot failed: %s", exc)
         return None
+
+
+_DATA_TYPE_LABELS = {
+    "realtime_quote": "实时行情",
+    "daily_data": "日线K线",
+    "daily_bars": "日线K线",
+    "technical": "技术指标",
+    "news": "新闻舆情",
+    "news_search": "新闻舆情",
+    "fundamental": "基本面",
+    "fundamentals": "基本面",
+    "chip": "筹码结构",
+}
+
+
+def _safe_event_key(value: Any) -> str:
+    return safe_diagnostic_key(value)
+
+
+def _clean_metadata(value: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        str(key): item
+        for key, item in value.items()
+        if item not in (None, "", [], {})
+    }
+
+
+def _flow_status_for_success(success: bool, *, fallback: bool = False, skipped: bool = False) -> str:
+    if skipped:
+        return "skipped"
+    if success:
+        return "fallback" if fallback else "success"
+    return "failed"
+
+
+def _started_at_from_end_and_duration(end: Any, duration_ms: Optional[int]) -> Optional[str]:
+    if duration_ms is None or duration_ms < 0:
+        return None
+    if isinstance(end, datetime):
+        parsed = end
+    elif isinstance(end, str) and "T" in end:
+        normalized = end[:-1] + "+00:00" if end.endswith("Z") else end
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+    return (parsed - timedelta(milliseconds=duration_ms)).isoformat()
+
+
+def _provider_flow_event(
+    context: RunDiagnosticContext,
+    run: ProviderRun,
+    index: int,
+) -> Dict[str, Any]:
+    data_type = _safe_event_key(run.data_type) or "provider"
+    provider_key = _safe_event_key(run.provider) or "unknown"
+    label = _DATA_TYPE_LABELS.get(data_type, data_type)
+    fallback = bool(run.fallback_from or run.fallback_to)
+    status = _flow_status_for_success(run.success, fallback=fallback)
+    node_id = f"provider_{data_type}_{provider_key}_{index}"
+    started_at = _started_at_from_end_and_duration(run.created_at, run.latency_ms)
+    message = (
+        f"{label} {run.provider} 成功"
+        if run.success
+        else f"{label} {run.provider} 失败：{run.error_message_sanitized or run.error_type or '未知错误'}"
+    )
+    return {
+        "timestamp": run.created_at,
+        "severity": "success" if run.success else "warning",
+        "type": "provider_run",
+        "node_id": node_id,
+        "title": f"{label}{'成功' if run.success else '失败'}",
+        "message": sanitize_diagnostic_text(message, max_length=220),
+        "metadata": _clean_metadata(
+            {
+                "trace_id": context.trace_id,
+                "provider": run.provider,
+                "data_type": run.data_type,
+                "operation": run.operation,
+                "duration_ms": run.latency_ms,
+                "record_count": run.record_count,
+                "fallback_from": run.fallback_from,
+                "fallback_to": run.fallback_to,
+                "error_type": run.error_type,
+                "node": {
+                    "id": node_id,
+                    "lane": "data_source",
+                    "kind": "data_source",
+                    "label": f"{label} · {run.provider}",
+                    "status": status,
+                    "provider": run.provider,
+                    "started_at": started_at,
+                    "ended_at": run.created_at,
+                    "duration_ms": run.latency_ms,
+                    "record_count": run.record_count,
+                    "message": message,
+                },
+            }
+        ),
+    }
+
+
+def _llm_flow_event(
+    context: RunDiagnosticContext,
+    run: LLMRun,
+    index: int,
+) -> Dict[str, Any]:
+    call_type = _safe_event_key(run.call_type) or "analysis"
+    model = run.model or run.provider or "unknown"
+    status = _flow_status_for_success(run.success, fallback=bool(run.fallback_model or index > 1))
+    node_id = f"llm_{call_type}_{index}"
+    started_at = _started_at_from_end_and_duration(run.created_at, run.duration_ms)
+    message = (
+        f"LLM {model} 成功"
+        if run.success
+        else f"LLM {model} 失败：{run.error_message_sanitized or run.error_type or '未知错误'}"
+    )
+    return {
+        "timestamp": run.created_at,
+        "severity": "success" if run.success else "danger",
+        "type": "llm_run",
+        "node_id": node_id,
+        "title": f"LLM {'成功' if run.success else '失败'}",
+        "message": sanitize_diagnostic_text(message, max_length=220),
+        "metadata": _clean_metadata(
+            {
+                "trace_id": context.trace_id,
+                "provider": run.provider,
+                "model": run.model,
+                "call_type": run.call_type,
+                "duration_ms": run.duration_ms,
+                "fallback_model": run.fallback_model,
+                "error_type": run.error_type,
+                "node": {
+                    "id": node_id,
+                    "lane": "analysis",
+                    "kind": "model",
+                    "label": "LLM 生成",
+                    "status": status,
+                    "provider": model,
+                    "started_at": started_at,
+                    "ended_at": run.created_at,
+                    "duration_ms": run.duration_ms,
+                    "message": message,
+                },
+            }
+        ),
+    }
+
+
+def _history_flow_event(
+    context: RunDiagnosticContext,
+    run: HistoryRun,
+    index: int,
+) -> Dict[str, Any]:
+    node_id = "history_save" if index == 1 else f"history_save_{index}"
+    status = "success" if run.report_saved else "failed"
+    message = "报告历史已保存" if run.report_saved else f"报告历史保存失败：{run.error_message_sanitized or '未知错误'}"
+    return {
+        "timestamp": run.created_at,
+        "severity": "success" if run.report_saved else "danger",
+        "type": "history_run",
+        "node_id": node_id,
+        "title": "历史保存成功" if run.report_saved else "历史保存失败",
+        "message": sanitize_diagnostic_text(message, max_length=220),
+        "metadata": _clean_metadata(
+            {
+                "trace_id": context.trace_id,
+                "metadata_saved": run.metadata_saved,
+                "analysis_history_id": run.analysis_history_id,
+                "node": {
+                    "id": node_id,
+                    "lane": "artifact",
+                    "kind": "artifact",
+                    "label": "保存报告",
+                    "status": status,
+                    "message": message,
+                },
+            }
+        ),
+    }
+
+
+def _notification_flow_event(
+    context: RunDiagnosticContext,
+    run: NotificationRun,
+    index: int,
+) -> Dict[str, Any]:
+    channel = run.channel or "unknown"
+    channel_key = _safe_event_key(channel) or "unknown"
+    skipped = run.status in {"skipped", "not_configured"}
+    status = _flow_status_for_success(run.success, skipped=skipped)
+    node_id = f"notification_{channel_key}_{index}"
+    if status == "success":
+        title = "通知发送成功"
+        message = f"{channel} 通知发送成功"
+    elif status == "skipped":
+        title = "通知跳过"
+        message = f"{channel} 通知跳过"
+    else:
+        title = "通知失败"
+        message = f"{channel} 通知失败：{run.error_message_sanitized or run.status or '未知错误'}"
+    return {
+        "timestamp": run.created_at,
+        "severity": "success" if status == "success" else ("warning" if status == "skipped" else "danger"),
+        "type": "notification_run",
+        "node_id": node_id,
+        "title": title,
+        "message": sanitize_diagnostic_text(message, max_length=220),
+        "metadata": _clean_metadata(
+            {
+                "trace_id": context.trace_id,
+                "channel": channel,
+                "status": run.status,
+                "attempts": run.attempts,
+                "node": {
+                    "id": node_id,
+                    "lane": "artifact",
+                    "kind": "notification",
+                    "label": f"推送通知 · {channel}",
+                    "status": status,
+                    "provider": channel,
+                    "attempts": run.attempts,
+                    "message": message,
+                },
+            }
+        ),
+    }
 
 
 def record_provider_run(
@@ -482,6 +788,15 @@ _SUMMARY_STATUS_LABELS = {
     "failed": "失败",
     "unknown": "未知",
 }
+_ANALYSIS_INPUT_STATUS_MESSAGES = {
+    "missing": "未进入本次分析输入",
+    "partial": "本次分析输入仅部分可用",
+    "fallback": "本次分析输入使用降级数据",
+    "stale": "本次分析输入使用过期数据",
+    "estimated": "本次分析输入使用估算数据",
+    "fetch_failed": "输入块显示抓取失败",
+    "not_supported": "输入块标记为不支持",
+}
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -510,6 +825,79 @@ def _component(
         status=status,
         message=message,
         details=clean_details,
+    )
+
+
+def _analysis_context_overview(context_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    overview = context_snapshot.get("analysis_context_pack_overview")
+    if not isinstance(overview, dict):
+        overview = context_snapshot.get("analysisContextPackOverview")
+    return overview if isinstance(overview, dict) else {}
+
+
+def _analysis_input_block(
+    context_snapshot: Dict[str, Any],
+    block_key: str,
+) -> Dict[str, Any]:
+    blocks = _analysis_context_overview(context_snapshot).get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, dict) and block.get("key") == block_key:
+                return block
+    if isinstance(blocks, dict):
+        block = blocks.get(block_key)
+        if isinstance(block, dict):
+            return block
+    return {}
+
+
+def _analysis_input_status_message(block: Dict[str, Any]) -> Optional[str]:
+    status = str(block.get("status") or "").strip()
+    if status == "available" or not status:
+        return None
+    return _ANALYSIS_INPUT_STATUS_MESSAGES.get(status, f"输入块状态为 {status}")
+
+
+def _list_text(value: Any, *, limit: int = 5) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    result: List[str] = []
+    for item in value:
+        text = str(item).strip() if item is not None else ""
+        if text and text not in result:
+            result.append(text)
+    return result[:limit]
+
+
+def _reconcile_daily_provider_with_analysis_input(
+    component: RunDiagnosticComponent,
+    context_snapshot: Dict[str, Any],
+) -> RunDiagnosticComponent:
+    input_block = _analysis_input_block(context_snapshot, "daily_bars")
+    input_message = _analysis_input_status_message(input_block)
+    if not input_message or component.status not in {"ok", "degraded"}:
+        return component
+
+    details = dict(component.details or {})
+    details.update(
+        {
+            "provider_run_status": component.status,
+            "analysis_input_block": "daily_bars",
+            "analysis_input_status": input_block.get("status"),
+            "analysis_input_source": input_block.get("source"),
+            "analysis_input_missing_reasons": _list_text(
+                input_block.get("missing_reasons")
+            ),
+            "evidence_scope": "provider_run_vs_analysis_input",
+        }
+    )
+    provider = details.get("provider") or "unknown"
+    return _component(
+        component.key,
+        component.label,
+        "degraded",
+        f"{component.label}{provider} 成功，但{input_message}",
+        details,
     )
 
 
@@ -580,11 +968,29 @@ def _provider_component(
 
 def _news_component(context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]) -> RunDiagnosticComponent:
     label = "新闻搜索"
+    input_block = _analysis_input_block(context_snapshot, "news")
+    input_message = _analysis_input_status_message(input_block)
     has_retrieval_news = "news_retrieval_content" in context_snapshot
     has_snapshot_news = has_retrieval_news or "news_content" in context_snapshot
     news_result_count = context_snapshot.get("news_result_count")
     if isinstance(news_result_count, int):
         if news_result_count > 0:
+            if input_message:
+                return _component(
+                    "news",
+                    label,
+                    "degraded",
+                    f"新闻检索返回 {news_result_count} 条结果，但新闻{input_message}；报告页相关资讯可能来自后续检索或历史持久化",
+                    {
+                        "record_count": news_result_count,
+                        "analysis_input_block": "news",
+                        "analysis_input_status": input_block.get("status"),
+                        "analysis_input_missing_reasons": _list_text(
+                            input_block.get("missing_reasons")
+                        ),
+                        "evidence_scope": "retrieval_vs_analysis_input",
+                    },
+                )
             return _component(
                 "news",
                 label,
@@ -593,6 +999,21 @@ def _news_component(context_snapshot: Dict[str, Any], raw_result: Dict[str, Any]
                 {"record_count": news_result_count},
             )
         return _component("news", label, "degraded", "新闻搜索无结果", {"record_count": 0})
+    if input_message:
+        return _component(
+            "news",
+            label,
+            "unknown",
+            f"新闻{input_message}；报告页相关资讯可能来自后续检索或历史持久化",
+            {
+                "analysis_input_block": "news",
+                "analysis_input_status": input_block.get("status"),
+                "analysis_input_missing_reasons": _list_text(
+                    input_block.get("missing_reasons")
+                ),
+                "evidence_scope": "analysis_input_only",
+            },
+        )
     if has_snapshot_news and not has_retrieval_news:
         return _component("news", label, "unknown", "新闻检索未记录原始证据，可能未尝试或未启用")
     return _component("news", label, "unknown", "新闻搜索未记录诊断信息")
@@ -752,6 +1173,12 @@ def build_run_diagnostic_summary(
         if isinstance(run, dict)
     ]
 
+    daily_data_component = _provider_component(
+        key="daily_data",
+        label="日线数据",
+        data_type="daily_data",
+        provider_runs=provider_runs,
+    )
     components = {
         "realtime_quote": _provider_component(
             key="realtime_quote",
@@ -759,11 +1186,9 @@ def build_run_diagnostic_summary(
             data_type="realtime_quote",
             provider_runs=provider_runs,
         ),
-        "daily_data": _provider_component(
-            key="daily_data",
-            label="日线数据",
-            data_type="daily_data",
-            provider_runs=provider_runs,
+        "daily_data": _reconcile_daily_provider_with_analysis_input(
+            daily_data_component,
+            snapshot,
         ),
         "news": _news_component(snapshot, raw),
         "llm": _llm_component(diagnostics, raw),

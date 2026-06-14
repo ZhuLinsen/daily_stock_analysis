@@ -122,6 +122,7 @@ class MarketAnalyzer:
         search_service: Optional[SearchService] = None,
         analyzer=None,
         region: str = "cn",
+        config: Optional[Any] = None,
     ):
         """
         初始化大盘分析器
@@ -130,14 +131,18 @@ class MarketAnalyzer:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
             region: 市场区域 cn=A股 us=美股
+            config: 本次复盘使用的配置；未传时读取全局配置
         """
-        self.config = get_config()
+        self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
         self.region = region if region in ("cn", "us", "hk") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
+
+    def _log_context(self) -> str:
+        return f"component=market_review region={self.region}"
 
     def _get_review_language(self) -> str:
         return normalize_report_language(
@@ -350,7 +355,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         indices = []
 
         try:
-            logger.info("[大盘] 获取主要指数实时行情...")
+            logger.info("[大盘] %s action=get_main_indices status=start", self._log_context())
 
             # 使用 DataFetcherManager 获取指数行情（按 region 切换）
             data_list = self.data_manager.get_main_indices(region=self.region)
@@ -374,21 +379,25 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     indices.append(index)
 
             if not indices:
-                logger.warning("[大盘] 所有行情数据源失败，将依赖新闻搜索进行分析")
+                logger.warning("[大盘] %s action=get_main_indices status=empty", self._log_context())
             else:
-                logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
+                logger.info(
+                    "[大盘] %s action=get_main_indices status=success count=%d",
+                    self._log_context(),
+                    len(indices),
+                )
 
         except Exception as e:
-            logger.error(f"[大盘] 获取指数行情失败: {e}")
+            logger.error("[大盘] %s action=get_main_indices status=failed error=%s", self._log_context(), e)
 
         return indices
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
         try:
-            logger.info("[大盘] 获取市场涨跌统计...")
+            logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
-            stats = self.data_manager.get_market_stats()
+            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
@@ -398,17 +407,27 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
 
-                logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
-                          f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
-                          f"成交额:{overview.total_amount:.0f}亿")
+                logger.info(
+                    "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
+                    "limit_up=%s limit_down=%s amount=%.0f亿",
+                    self._log_context(),
+                    overview.up_count,
+                    overview.down_count,
+                    overview.flat_count,
+                    overview.limit_up_count,
+                    overview.limit_down_count,
+                    overview.total_amount,
+                )
+            else:
+                logger.warning("[大盘] %s action=get_market_stats status=empty", self._log_context())
 
         except Exception as e:
-            logger.error(f"[大盘] 获取涨跌统计失败: {e}")
+            logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
         try:
-            logger.info("[大盘] 获取板块涨跌榜...")
+            logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
             top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
 
@@ -416,11 +435,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.top_sectors = top_sectors
                 overview.bottom_sectors = bottom_sectors
 
-                logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+                logger.info(
+                    "[大盘] %s action=get_sector_rankings status=success top=%s bottom=%s",
+                    self._log_context(),
+                    [s['name'] for s in overview.top_sectors],
+                    [s['name'] for s in overview.bottom_sectors],
+                )
+            else:
+                logger.warning("[大盘] %s action=get_sector_rankings status=empty", self._log_context())
 
         except Exception as e:
-            logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
+            logger.error("[大盘] %s action=get_sector_rankings status=failed error=%s", self._log_context(), e)
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
@@ -451,7 +476,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             新闻列表
         """
         if not self.search_service:
-            logger.warning("[大盘] 搜索服务未配置，跳过新闻搜索")
+            logger.warning(
+                "[大盘] %s action=search_market_news status=skipped reason=no_search_service",
+                self._log_context(),
+            )
             return []
         
         all_news = []
@@ -466,7 +494,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         }
         
         try:
-            logger.info("[大盘] 开始搜索市场新闻...")
+            logger.info("[大盘] %s action=search_market_news status=start", self._log_context())
             
             # 根据 region 设置搜索上下文名称，避免美股搜索被解读为 A 股语境
             market_name = market_names.get(self.region, "大盘")
@@ -479,12 +507,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 )
                 if response and response.results:
                     all_news.extend(response.results)
-                    logger.info(f"[大盘] 搜索 '{query}' 获取 {len(response.results)} 条结果")
+                    logger.info(
+                        "[大盘] %s action=search_market_news status=query_success count=%d",
+                        self._log_context(),
+                        len(response.results),
+                    )
             
-            logger.info(f"[大盘] 共获取 {len(all_news)} 条市场新闻")
+            logger.info(
+                "[大盘] %s action=search_market_news status=success count=%d",
+                self._log_context(),
+                len(all_news),
+            )
             
         except Exception as e:
-            logger.error(f"[大盘] 搜索市场新闻失败: {e}")
+            logger.error("[大盘] %s action=search_market_news status=failed error=%s", self._log_context(), e)
         
         return all_news
     
@@ -500,22 +536,32 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             大盘复盘报告文本
         """
         if not self.analyzer or not self.analyzer.is_available():
-            logger.warning("[大盘] AI分析器未配置或不可用，使用模板生成报告")
+            logger.warning(
+                "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
+                self._log_context(),
+            )
             return self._generate_template_review(overview, news)
 
         # 构建 Prompt
         prompt = self._build_review_prompt(overview, news)
 
-        logger.info("[大盘] 调用大模型生成复盘报告...")
+        logger.info("[大盘] %s action=generate_review status=start", self._log_context())
         # Use the public generate_text() entry point - never access private analyzer attributes.
         review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
 
         if review:
-            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+            logger.info(
+                "[大盘] %s action=generate_review status=success length=%d",
+                self._log_context(),
+                len(review),
+            )
             # Inject structured data tables into LLM prose sections
             return self._inject_data_into_review(review, overview, news)
 
-        logger.warning("[大盘] 大模型返回为空，使用模板报告")
+        logger.warning(
+            "[大盘] %s action=generate_review status=fallback_template reason=empty_llm_response",
+            self._log_context(),
+        )
         return self._generate_template_review(overview, news)
 
     def build_market_review_payload(

@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useId, useState } from 'react';
 import { Lock, Key } from 'lucide-react';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
 import { EyeToggleIcon } from './EyeToggleIcon';
 
@@ -35,6 +36,7 @@ export const Input = ({
   onPasswordVisibleChange,
   ...props 
 }: InputProps) => {
+  const { t } = useUiLanguage();
   const generatedId = useId();
   const inputId = id ?? props.name ?? generatedId;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -102,7 +104,7 @@ export const Input = ({
         }
         onPasswordVisibleChange?.(nextVisible);
       }}
-      aria-label={visible ? '隐藏内容' : '显示内容'}
+      aria-label={visible ? t('common.hideContent') : t('common.showContent')}
       tabIndex={-1}
     >
       <EyeToggleIcon visible={visible} />

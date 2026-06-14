@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { AlertRuleForm } from '../AlertRuleForm';
 
 const { getAccounts } = vi.hoisted(() => ({
@@ -19,8 +21,18 @@ describe('AlertRuleForm', () => {
     onSubmit.mockReset();
     onSubmit.mockResolvedValue(undefined);
     getAccounts.mockReset();
+    window.localStorage.clear();
     getAccounts.mockResolvedValue({ accounts: [{ id: 9, name: 'Main', market: 'us', baseCurrency: 'USD', isActive: true }] });
   });
+
+  function renderEnglishForm() {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    render(
+      <UiLanguageProvider>
+        <AlertRuleForm onSubmit={onSubmit} />
+      </UiLanguageProvider>,
+    );
+  }
 
   it('submits a price_cross rule payload', async () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
@@ -208,6 +220,18 @@ describe('AlertRuleForm', () => {
         parameters: { mode: 'breach' },
       }));
     });
+  });
+
+  it('renders portfolio alert type options in English UI mode', async () => {
+    renderEnglishForm();
+
+    fireEvent.change(screen.getByLabelText('Target scope'), { target: { value: 'portfolio_account' } });
+
+    await waitFor(() => expect(getAccounts).toHaveBeenCalledWith(false));
+    expect(screen.getByRole('option', { name: 'Portfolio drawdown' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Portfolio stop loss' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Info' })).toBeInTheDocument();
+    expect(screen.queryByText('组合回撤')).not.toBeInTheDocument();
   });
 
   it('submits a market light status rule payload', async () => {

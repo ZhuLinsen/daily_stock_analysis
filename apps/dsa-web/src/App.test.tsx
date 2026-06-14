@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import * as AuthContext from './contexts/AuthContext';
+import { UI_LANGUAGE_STORAGE_KEY } from './utils/uiLanguage';
 
 type AuthState = ReturnType<typeof AuthContext.useAuth>;
 
@@ -84,6 +85,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   chatPageShouldThrow.value = false;
   window.history.pushState({}, '', '/');
+  localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
   vi.mocked(AuthContext.useAuth).mockReturnValue(makeAuthState());
 });
 

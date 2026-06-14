@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
 from src.config import get_config
-from src.market_phase_summary import format_public_phase_pack_excerpt
+from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
 from src.report_language import (
     get_localized_stock_name,
     get_report_labels,
@@ -157,6 +157,17 @@ def render(
             report_language=report_language,
         )
 
+    def market_status_line() -> str:
+        for source_results in (results or [], sorted_results):
+            for result in source_results:
+                line = format_public_market_status_line(
+                    getattr(result, "market_phase_summary", None),
+                    report_language=report_language,
+                )
+                if line:
+                    return line
+        return ""
+
     context: Dict[str, Any] = {
         "report_date": report_date,
         "report_timestamp": report_timestamp,
@@ -170,6 +181,7 @@ def render(
         "report_language": report_language,
         "models_used": models_used,
         "show_llm_model": show_llm_model,
+        "market_status_line": market_status_line(),
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,

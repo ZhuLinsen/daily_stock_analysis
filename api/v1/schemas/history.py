@@ -14,6 +14,7 @@ from typing import Optional, List, Any, Dict, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.v1.schemas.market_phase import MarketPhaseSummary
+from src.schemas.decision_action import DecisionAction
 
 
 class HistoryItem(BaseModel):
@@ -31,6 +32,8 @@ class HistoryItem(BaseModel):
         description="情绪评分（历史数据可能超出 0-100 范围，读取时不做约束）",
     )
     operation_advice: Optional[str] = Field(None, description="操作建议")
+    action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
+    action_label: Optional[str] = Field(None, description="建议动作展示标签")
     current_price: Optional[float] = Field(None, description="分析时股价")
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
     volume_ratio: Optional[float] = Field(None, description="分析时量比")
@@ -148,6 +151,8 @@ class ReportSummary(BaseModel):
     
     analysis_summary: Optional[str] = Field(None, description="关键结论")
     operation_advice: Optional[str] = Field(None, description="操作建议")
+    action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
+    action_label: Optional[str] = Field(None, description="建议动作展示标签")
     trend_prediction: Optional[str] = Field(None, description="趋势预测")
     sentiment_score: Optional[int] = Field(
         None,
@@ -317,6 +322,8 @@ class StockBarItem(BaseModel):
         description="最新情绪评分",
     )
     operation_advice: Optional[str] = Field(None, description="最新操作建议")
+    action: Optional[DecisionAction] = Field(None, description="结构化建议动作 taxonomy")
+    action_label: Optional[str] = Field(None, description="建议动作展示标签")
     analysis_count: int = Field(..., description="该股票的历史分析总次数")
     last_analysis_time: Optional[str] = Field(None, description="最近一次分析时间")
     model_used: Optional[str] = Field(

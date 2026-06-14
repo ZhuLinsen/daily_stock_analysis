@@ -64,7 +64,7 @@
 
 ## 🚀 快速開始
 
-### 方式一：GitHub Actions（推薦）
+### 方式一：[GitHub Actions（推薦）](https://www.bilibili.com/video/BV11FEb66EXG/)
 
 > 5 分鐘完成部署，零成本，無需伺服器。
 
@@ -138,7 +138,7 @@
 
 預設每個工作日 18:00（北京時間）自動執行，也可手動觸發。預設非交易日（含 A/H/US 節假日）不執行；強制運行、交易日檢查、斷點續傳等規則見 [完整指南](./full-guide.md#定时任务配置)。
 
-### 方式二：本地運行 / Docker 部署
+### 方式二：[客戶端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地運行 / Docker 部署
 
 ```bash
 # 克隆項目

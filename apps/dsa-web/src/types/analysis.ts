@@ -21,10 +21,12 @@ export interface AnalysisRequest {
   selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
   notify?: boolean;
   skills?: string[];
+  reportLanguage?: ReportLanguage;
 }
 
 export interface MarketReviewRequest {
   sendNotification?: boolean;
+  reportLanguage?: ReportLanguage;
 }
 
 export interface MarketReviewAccepted {
@@ -92,10 +94,14 @@ export type SentimentLabel =
   | 'Bullish'
   | 'Very Bullish';
 
+export type DecisionAction = 'buy' | 'add' | 'hold' | 'reduce' | 'sell' | 'watch' | 'avoid' | 'alert';
+
 /** Report summary section */
 export interface ReportSummary {
   analysisSummary: string;
   operationAdvice: string;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
   trendPrediction: string;
   sentimentScore: number;
   sentimentLabel?: SentimentLabel;
@@ -338,7 +344,7 @@ export type AnalyzeResponse = AnalysisResult | AnalyzeAsyncResponse;
 export interface TaskStatus {
   taskId: string;
   traceId?: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancel_requested' | 'cancelled';
   progress?: number;
   result?: AnalysisResult;
   marketReviewReport?: string;
@@ -357,7 +363,7 @@ export interface TaskInfo {
   traceId?: string;
   stockCode: string;
   stockName?: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancel_requested' | 'cancelled';
   progress: number;
   message?: string;
   reportType: string;
@@ -400,6 +406,8 @@ export interface HistoryItem {
   analysisSummary?: string;
   sentimentScore?: number;
   operationAdvice?: string;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
   currentPrice?: number;
   changePct?: number;
   volumeRatio?: number;
@@ -461,6 +469,8 @@ export interface StockBarItem {
   reportType?: string;
   sentimentScore?: number;
   operationAdvice?: string;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
   analysisCount: number;
   lastAnalysisTime?: string;
   modelUsed?: string;

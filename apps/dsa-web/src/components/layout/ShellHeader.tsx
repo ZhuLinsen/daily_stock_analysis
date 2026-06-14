@@ -1,6 +1,9 @@
 import type React from 'react';
 import { Menu, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import type { UiTextKey } from '../../i18n/uiText';
+import { UiLanguageToggle } from '../i18n/UiLanguageToggle';
 import { ThemeToggle } from '../theme/ThemeToggle';
 
 type ShellHeaderProps = {
@@ -9,11 +12,14 @@ type ShellHeaderProps = {
   onOpenMobileNav: () => void;
 };
 
-const TITLES: Record<string, { title: string; description: string }> = {
-  '/': { title: '首页', description: '股票分析与历史报告工作台' },
-  '/chat': { title: '问股', description: '多轮策略问答与历史会话管理' },
-  '/backtest': { title: '回测', description: '回测任务与结果浏览' },
-  '/settings': { title: '设置', description: '系统配置、模型与认证管理' },
+const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
+  '/': { title: 'layout.route.home.title', description: 'layout.route.home.description' },
+  '/chat': { title: 'layout.route.chat.title', description: 'layout.route.chat.description' },
+  '/portfolio': { title: 'layout.route.portfolio.title', description: 'layout.route.portfolio.description' },
+  '/screening': { title: 'layout.route.screening.title', description: 'layout.route.screening.description' },
+  '/backtest': { title: 'layout.route.backtest.title', description: 'layout.route.backtest.description' },
+  '/alerts': { title: 'layout.route.alerts.title', description: 'layout.route.alerts.description' },
+  '/settings': { title: 'layout.route.settings.title', description: 'layout.route.settings.description' },
 };
 
 export const ShellHeader: React.FC<ShellHeaderProps> = ({
@@ -22,7 +28,8 @@ export const ShellHeader: React.FC<ShellHeaderProps> = ({
   onOpenMobileNav,
 }) => {
   const location = useLocation();
-  const current = TITLES[location.pathname] ?? { title: 'Daily Stock Analysis', description: 'Web workspace' };
+  const { t } = useUiLanguage();
+  const current = TITLES[location.pathname];
 
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/84 backdrop-blur-xl">
@@ -31,7 +38,7 @@ export const ShellHeader: React.FC<ShellHeaderProps> = ({
           type="button"
           onClick={onOpenMobileNav}
           className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/70 text-secondary-text transition-colors hover:bg-hover hover:text-foreground lg:hidden"
-          aria-label="打开导航菜单"
+          aria-label={t('layout.openNav')}
         >
           <Menu className="h-5 w-5" />
         </button>
@@ -40,16 +47,17 @@ export const ShellHeader: React.FC<ShellHeaderProps> = ({
           type="button"
           onClick={onToggleSidebar}
           className="hidden h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/70 text-secondary-text transition-colors hover:bg-hover hover:text-foreground lg:inline-flex"
-          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          aria-label={collapsed ? t('layout.expandSidebar') : t('layout.collapseSidebar')}
         >
           {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
         </button>
 
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-foreground">{current.title}</p>
-          <p className="truncate text-xs text-secondary-text">{current.description}</p>
+          <p className="truncate text-sm font-semibold text-foreground">{current ? t(current.title) : t('layout.appFallbackTitle')}</p>
+          <p className="truncate text-xs text-secondary-text">{current ? t(current.description) : t('layout.appFallbackDescription')}</p>
         </div>
 
+        <UiLanguageToggle />
         <ThemeToggle />
       </div>
     </header>

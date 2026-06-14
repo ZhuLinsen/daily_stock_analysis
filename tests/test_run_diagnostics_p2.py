@@ -114,6 +114,34 @@ def _history_record(*, context_snapshot: dict | None) -> SimpleNamespace:
     )
 
 
+def _analysis_context_overview(*, blocks: list[dict]) -> dict:
+    counts = {
+        "available": 0,
+        "missing": 0,
+        "not_supported": 0,
+        "fallback": 0,
+        "stale": 0,
+        "estimated": 0,
+        "partial": 0,
+        "fetch_failed": 0,
+    }
+    for block in blocks:
+        status = block["status"]
+        counts[status] += 1
+    return {
+        "pack_version": "1.0",
+        "subject": {
+            "code": "600519",
+            "stock_name": "贵州茅台",
+            "market": "cn",
+        },
+        "blocks": blocks,
+        "counts": counts,
+        "warnings": [],
+        "metadata": {},
+    }
+
+
 class _FakeHistoryDb:
     def __init__(self, record: SimpleNamespace | None):
         self.record = record
@@ -233,6 +261,95 @@ class RunDiagnosticsP2TestCase(unittest.TestCase):
         self.assertEqual(summary["components"]["notification"]["status"], "ok")
         self.assertIn("trace_id: trace-p2", summary["copy_text"])
         self.assertNotIn("secret", summary["copy_text"])
+
+    def test_daily_provider_success_with_missing_analysis_input_is_degraded(self) -> None:
+        summary = build_run_diagnostic_summary(
+            context_snapshot={
+                "diagnostics": _diagnostic_snapshot(),
+                "analysis_context_pack_overview": _analysis_context_overview(
+                    blocks=[
+                        {
+                            "key": "daily_bars",
+                            "label": "日线",
+                            "status": "missing",
+                            "source": "storage.get_analysis_context",
+                            "warnings": [],
+                            "missing_reasons": ["daily_bars_missing"],
+                        }
+                    ]
+                ),
+            },
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        daily = summary["components"]["daily_data"]
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(daily["status"], "degraded")
+        self.assertIn("未进入本次分析输入", daily["message"])
+        self.assertEqual(daily["details"]["analysis_input_status"], "missing")
+        self.assertEqual(
+            daily["details"]["analysis_input_missing_reasons"],
+            ["daily_bars_missing"],
+        )
+
+    def test_news_input_missing_mentions_followup_related_news_scope(self) -> None:
+        summary = build_run_diagnostic_summary(
+            context_snapshot={
+                "diagnostics": _diagnostic_snapshot(),
+                "analysis_context_pack_overview": _analysis_context_overview(
+                    blocks=[
+                        {
+                            "key": "news",
+                            "label": "新闻",
+                            "status": "missing",
+                            "source": None,
+                            "warnings": [],
+                            "missing_reasons": ["news_context_missing"],
+                        }
+                    ]
+                ),
+            },
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        news = summary["components"]["news"]
+        self.assertEqual(news["status"], "unknown")
+        self.assertIn("未进入本次分析输入", news["message"])
+        self.assertIn("后续检索", news["message"])
+        self.assertEqual(news["details"]["analysis_input_status"], "missing")
+
+    def test_news_results_with_missing_analysis_input_are_degraded(self) -> None:
+        summary = build_run_diagnostic_summary(
+            context_snapshot={
+                "diagnostics": _diagnostic_snapshot(),
+                "news_result_count": 3,
+                "analysis_context_pack_overview": _analysis_context_overview(
+                    blocks=[
+                        {
+                            "key": "news",
+                            "label": "新闻",
+                            "status": "missing",
+                            "source": None,
+                            "warnings": [],
+                            "missing_reasons": ["news_context_missing"],
+                        }
+                    ]
+                ),
+            },
+            raw_result={"success": True, "model_used": "deepseek-chat"},
+            report_saved=True,
+        )
+
+        news = summary["components"]["news"]
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(news["status"], "degraded")
+        self.assertEqual(news["details"]["record_count"], 3)
+        self.assertEqual(news["details"]["analysis_input_status"], "missing")
+        self.assertEqual(news["details"]["evidence_scope"], "retrieval_vs_analysis_input")
+        self.assertIn("新闻检索返回 3 条结果", news["message"])
+        self.assertIn("未进入本次分析输入", news["message"])
 
     def test_summary_marks_llm_failure_as_failed(self) -> None:
         diagnostics = _diagnostic_snapshot()

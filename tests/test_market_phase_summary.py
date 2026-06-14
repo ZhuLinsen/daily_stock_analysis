@@ -6,6 +6,7 @@ import json
 from src.market_phase_summary import (
     MARKET_PHASE_SUMMARY_KEY,
     extract_market_phase_summary,
+    format_public_market_status_line,
     format_public_phase_pack_excerpt,
     normalize_analysis_phase_bucket,
     render_market_phase_summary,
@@ -159,3 +160,32 @@ def test_format_public_phase_pack_excerpt_limits_and_redacts_public_fields() -> 
 
 def test_format_public_phase_pack_excerpt_returns_empty_without_summary_or_pack() -> None:
     assert format_public_phase_pack_excerpt(None, None, source="evaluator_snapshot") == ""
+
+
+def test_format_public_market_status_line_localizes_compact_summary() -> None:
+    assert (
+        format_public_market_status_line(
+            {"market": "cn", "phase": "postmarket"},
+            report_language="zh",
+        )
+        == "市场状态：A股 · 盘后"
+    )
+    assert (
+        format_public_market_status_line(
+            {"market": "us", "phase": "premarket"},
+            report_language="en",
+        )
+        == "Market status: US · Pre-market"
+    )
+
+
+def test_format_public_market_status_line_returns_empty_without_valid_phase() -> None:
+    assert format_public_market_status_line(None, report_language="zh") == ""
+    assert format_public_market_status_line({"market": "cn"}, report_language="zh") == ""
+    assert (
+        format_public_market_status_line(
+            {"market": "cn", "phase": "bad_phase"},
+            report_language="zh",
+        )
+        == ""
+    )

@@ -8,6 +8,7 @@ import { Badge, Button, Card, ScoreGauge } from '../common';
 import { formatDateTime } from '../../utils/format';
 import { getMarketPhaseSummaryLabel, getPartialBarLabel } from '../../utils/marketPhase';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 
 interface ReportOverviewProps {
   meta: ReportMeta;
@@ -86,6 +87,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
   details,
   watchlist,
 }) => {
+  const { t } = useUiLanguage();
   const reportLanguage = normalizeReportLanguage(meta.reportLanguage);
   const text = getReportText(reportLanguage);
   const marketPhaseLabel = getMarketPhaseSummaryLabel(meta.marketPhaseSummary, reportLanguage);
@@ -296,7 +298,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
           {watchlist && meta.reportType !== 'market_review' && (
             <Card variant="bordered" padding="sm" className="home-panel-card">
               <div className="text-center space-y-3">
-                <span className="label-uppercase">自选</span>
+                <span className="label-uppercase">{t('report.watchlist')}</span>
                 <div className="text-xs text-muted-text font-mono">{meta.stockCode}</div>
                 <Button
                   variant={watchlist.isInWatchlist(meta.stockCode) ? 'danger-subtle' : 'secondary'}
@@ -305,7 +307,7 @@ export const ReportOverview: React.FC<ReportOverviewProps> = ({
                   onClick={() => watchlist.onToggle(meta.stockCode)}
                   className="w-full text-xs"
                 >
-                  {watchlist.isInWatchlist(meta.stockCode) ? '从自选删除' : '加入自选'}
+                  {watchlist.isInWatchlist(meta.stockCode) ? t('report.removeFromWatchlist') : t('report.addToWatchlist')}
                 </Button>
                 {watchlist.actionMessage && (
                   <p className="text-[11px] text-secondary-text animate-in fade-in">{watchlist.actionMessage}</p>

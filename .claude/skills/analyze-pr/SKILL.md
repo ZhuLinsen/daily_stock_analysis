@@ -45,6 +45,7 @@ gh run view <run_id> --log-failed
 - `Scope Of Change`
 - `Issue Link`
 - `Verification Commands And Results`
+- `Visual Evidence`（仅当 PR 修改报告格式、报告渲染效果或 Web UI 界面时要求截图或替代可视证据）
 - `Compatibility And Risk`
 - `Rollback Plan`
 
@@ -55,6 +56,8 @@ gh run view <run_id> --log-failed
 - 已验证的调用链路覆盖面
 - 旧配置是否会被静默改写、清空、迁移或保持不变
 - 最小回滚路径（通常是 revert 本 PR）
+
+若 PR 修改报告格式、报告渲染效果或 Web UI 界面，还要检查 `Visual Evidence` 是否附受影响报告 / 页面截图；涉及前后差异时优先检查前后对比。若无法截图，描述中应说明原因与替代可视证据。
 
 ### Step 3: 优先使用 CI / Diff 证据
 

@@ -25,11 +25,13 @@ from src.agent.chat_context import build_agent_chat_context_bundle
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.provider_trace import extract_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
+from src.agent.stock_scope import StockScope, resolve_stock_scope
 from src.storage import get_db
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
 from src.market_phase_prompt import format_market_phase_prompt_section
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +558,9 @@ class AgentExecutor:
         """
         from src.agent.conversation import conversation_manager
 
+        scope_resolution = resolve_stock_scope(message, context)
+        context = scope_resolution.effective_context
+
         # Build system prompt with skills
         skills_section = ""
         if self.skill_instructions:
@@ -613,6 +618,12 @@ class AgentExecutor:
                 strategy = context["previous_strategy"]
                 strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
                 context_parts.append(f"上次策略分析:\n{strategy_text}")
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                context_parts.append(daily_market_context_section.strip())
             if context_parts:
                 context_msg = "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts)
                 messages.append({"role": "user", "content": context_msg})
@@ -625,7 +636,13 @@ class AgentExecutor:
         # Persist the user turn immediately so the session appears in history during processing
         user_message_id = conversation_manager.add_message(session_id, "user", message)
 
-        result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
+        result = self._run_loop(
+            messages,
+            tool_decls,
+            parse_dashboard=False,
+            progress_callback=progress_callback,
+            stock_scope=scope_resolution.stock_scope,
+        )
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
@@ -718,7 +735,14 @@ class AgentExecutor:
                     exc_info=True,
                 )
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+    def _run_loop(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_decls: List[Dict[str, Any]],
+        parse_dashboard: bool,
+        progress_callback: Optional[Callable] = None,
+        stock_scope: Optional[StockScope] = None,
+    ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
         This preserves the exact same observable behaviour as the original
@@ -732,6 +756,7 @@ class AgentExecutor:
             max_steps=self.max_steps,
             progress_callback=progress_callback,
             max_wall_clock_seconds=self.timeout_seconds,
+            stock_scope=stock_scope,
         )
 
         model_str = loop_result.model
@@ -784,6 +809,13 @@ class AgentExecutor:
             )
             if market_phase_section:
                 parts.append(market_phase_section)
+
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                parts.append(daily_market_context_section)
 
             analysis_context_pack_summary = context.get("analysis_context_pack_summary")
             if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:

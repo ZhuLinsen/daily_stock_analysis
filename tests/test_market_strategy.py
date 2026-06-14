@@ -3,7 +3,7 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.market_analyzer import MarketAnalyzer, MarketOverview
@@ -70,6 +70,27 @@ class TestMarketAnalyzerStrategyPrompt(unittest.TestCase):
         self.assertIn("A-share Three-Phase Recap Strategy", prompt)
         self.assertNotIn("### 一、市场总结", prompt)
         self.assertNotIn("A股市场三段式复盘策略", prompt)
+
+    def test_market_stats_passes_market_review_purpose(self):
+        analyzer = MarketAnalyzer.__new__(MarketAnalyzer)
+        analyzer.region = "hk"
+        analyzer.data_manager = MagicMock()
+        analyzer.data_manager.get_market_stats.return_value = {
+            "up_count": 3,
+            "down_count": 2,
+            "flat_count": 1,
+            "limit_up_count": 0,
+            "limit_down_count": 0,
+            "total_amount": 12.0,
+        }
+        overview = MarketOverview(date="2026-02-24")
+
+        analyzer._get_market_statistics(overview)
+
+        analyzer.data_manager.get_market_stats.assert_called_once_with(
+            purpose="market_review:hk"
+        )
+        self.assertEqual(overview.up_count, 3)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for health check endpoints: /api/health and /api/v1/health."""
+"""Tests for health check endpoints: /health, /api/health and /api/v1/health."""
 
 import tempfile
 import unittest
@@ -17,7 +17,7 @@ def _make_client():
 
 
 class HealthEndpointTestCase(unittest.TestCase):
-    """Both /api/health and /api/v1/health should return 200 with valid payload."""
+    """Health endpoints should return 200 with valid payload."""
 
     @classmethod
     def setUpClass(cls):
@@ -34,12 +34,32 @@ class HealthEndpointTestCase(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertIn("timestamp", body)
 
+    def test_root_health_returns_200(self):
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertIn("timestamp", body)
+
     def test_api_v1_health_returns_200(self):
         resp = self.client.get("/api/v1/health")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["status"], "ok")
         self.assertIn("timestamp", body)
+
+    def test_root_health_is_not_handled_by_spa_fallback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            static_dir = Path(temp_dir)
+            (static_dir / "assets").mkdir()
+            (static_dir / "index.html").write_text("<!doctype html><div id=\"root\"></div>", encoding="utf-8")
+
+            client = TestClient(create_app(static_dir=static_dir))
+            resp = client.get("/health")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("application/json", resp.headers["content-type"])
+        self.assertEqual(resp.json()["status"], "ok")
 
 
 class HealthEndpointAuthEnabledTestCase(unittest.TestCase):
@@ -58,6 +78,11 @@ class HealthEndpointAuthEnabledTestCase(unittest.TestCase):
 
     def test_api_health_returns_200_when_auth_enabled(self):
         resp = self.client.get("/api/health")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "ok")
+
+    def test_root_health_returns_200_when_auth_enabled(self):
+        resp = self.client.get("/health")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["status"], "ok")
 

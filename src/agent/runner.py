@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.tools.registry import ToolRegistry
+from src.agent.stock_scope import StockScope
 from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
@@ -156,6 +157,52 @@ def _is_non_retriable_tool_result(result: Any) -> bool:
         and bool(result.get("error"))
         and result.get("retriable") is False
     )
+
+
+def _is_stock_scoped_tool(tool_registry: ToolRegistry, tool_name: str) -> bool:
+    tool_def = tool_registry.resolve(tool_name)
+    if tool_def is None:
+        return False
+    return any(param.name == "stock_code" for param in tool_def.parameters)
+
+
+def _normalize_guard_stock_code(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    raw = value if isinstance(value, str) else str(value)
+    normalized = _normalize_tool_stock_code(raw)
+    return normalized if isinstance(normalized, str) else str(normalized)
+
+
+def _guard_tool_stock_scope(tool_registry: ToolRegistry, tool_name: str, arguments: Dict[str, Any], stock_scope: Optional[StockScope]) -> Optional[Dict[str, Any]]:
+    if stock_scope is None or not isinstance(arguments, dict):
+        return None
+    if not _is_stock_scoped_tool(tool_registry, tool_name):
+        return None
+    if "stock_code" not in arguments:
+        return None
+
+    requested = _normalize_guard_stock_code(arguments.get("stock_code"))
+
+    expected = _normalize_guard_stock_code(stock_scope.expected_stock_code)
+    allowed = {
+        normalized
+        for code in stock_scope.allowed_stock_codes
+        for normalized in [_normalize_guard_stock_code(code)]
+        if normalized
+    }
+    if requested and (requested == expected or requested in allowed):
+        return None
+
+    return {
+        "error": "stock_scope_violation",
+        "expected_stock_code": expected,
+        "requested_stock_code": requested,
+        "allowed_stock_codes": sorted(allowed),
+        "retriable": False,
+    }
 
 
 def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
@@ -368,6 +415,7 @@ def run_agent_loop(
     thinking_labels: Optional[Dict[str, str]] = None,
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
+    stock_scope: Optional[StockScope] = None,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -536,6 +584,7 @@ def run_agent_loop(
                 tool_calls_log,
                 non_retriable_tool_results,
                 tool_wait_timeout_seconds=effective_tool_timeout,
+                stock_scope=stock_scope,
             )
 
             # Append tool results preserving original call order
@@ -618,6 +667,7 @@ def _execute_tools(
     tool_calls_log: List[Dict[str, Any]],
     non_retriable_tool_results: Optional[Dict[str, str]] = None,
     tool_wait_timeout_seconds: Optional[float] = None,
+    stock_scope: Optional[StockScope] = None,
 ) -> List[Dict[str, Any]]:
     """Execute one or more tool calls, returning ordered result dicts.
 
@@ -627,6 +677,20 @@ def _execute_tools(
     def _exec_single(tc_item):
         t0 = time.time()
         cache_key = _build_tool_cache_key(tc_item.name, tc_item.arguments)
+        guard_result = _guard_tool_stock_scope(tool_registry, tc_item.name, tc_item.arguments, stock_scope)
+        if guard_result is not None:
+            dur = round(time.time() - t0, 2)
+            result_str = serialize_tool_result(guard_result)
+            if cache_key and non_retriable_tool_results is not None:
+                non_retriable_tool_results[cache_key] = result_str
+            logger.warning(
+                "Tool '%s' blocked by stock scope: requested=%s expected=%s allowed=%s",
+                tc_item.name,
+                guard_result.get("requested_stock_code"),
+                guard_result.get("expected_stock_code"),
+                guard_result.get("allowed_stock_codes"),
+            )
+            return tc_item, result_str, False, dur, False, guard_result
 
         if cache_key and non_retriable_tool_results is not None and cache_key in non_retriable_tool_results:
             dur = round(time.time() - t0, 2)
@@ -635,7 +699,7 @@ def _execute_tools(
                 tc_item.name,
                 tc_item.arguments,
             )
-            return tc_item, non_retriable_tool_results[cache_key], False, dur, True
+            return tc_item, non_retriable_tool_results[cache_key], False, dur, True, None
 
         try:
             res = tool_registry.execute(tc_item.name, **tc_item.arguments)
@@ -648,7 +712,7 @@ def _execute_tools(
             ok = False
             logger.warning("Tool '%s' failed: %s", tc_item.name, e)
         dur = round(time.time() - t0, 2)
-        return tc_item, res_str, ok, dur, False
+        return tc_item, res_str, ok, dur, False, None
 
     results: List[Dict[str, Any]] = []
 
@@ -663,7 +727,7 @@ def _execute_tools(
             try:
                 future = pool.submit(ctx.run, _exec_single, tc)
                 try:
-                    _, result_str, success, dur, cached = future.result(timeout=tool_wait_timeout_seconds)
+                    _, result_str, success, dur, cached, guard_result = future.result(timeout=tool_wait_timeout_seconds)
                 except FuturesTimeoutError:
                     timeout_triggered = True
                     future.cancel()
@@ -676,10 +740,11 @@ def _execute_tools(
                     success = False
                     dur = round(tool_wait_timeout_seconds, 2)
                     cached = False
+                    guard_result = None
             finally:
                 pool.shutdown(wait=not timeout_triggered, cancel_futures=timeout_triggered)
         else:
-            _, result_str, success, dur, cached = _exec_single(tc)
+            _, result_str, success, dur, cached, guard_result = _exec_single(tc)
         if progress_callback:
             progress_callback({"type": "tool_done", "step": step, "tool": tc.name, "success": success, "duration": dur})
         log_entry = {
@@ -693,6 +758,13 @@ def _execute_tools(
                     log_entry["timeout"] = True
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
+        if guard_result is not None:
+            log_entry.update({
+                "guarded": True,
+                "expected_stock_code": guard_result.get("expected_stock_code"),
+                "requested_stock_code": guard_result.get("requested_stock_code"),
+                "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
+            })
         tool_calls_log.append(log_entry)
         results.append({"tc": tc, "result_str": result_str})
     else:
@@ -710,14 +782,22 @@ def _execute_tools(
                 timeout=tool_wait_timeout_seconds if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0 else None,
             ):
                 pending.discard(future)
-                tc_item, result_str, success, dur, cached = future.result()
+                tc_item, result_str, success, dur, cached, guard_result = future.result()
                 if progress_callback:
                     progress_callback({"type": "tool_done", "step": step, "tool": tc_item.name, "success": success, "duration": dur})
-                tool_calls_log.append({
+                log_entry = {
                     "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
                     "success": success, "duration": dur, "result_length": len(result_str),
                     "cached": cached,
-                })
+                }
+                if guard_result is not None:
+                    log_entry.update({
+                        "guarded": True,
+                        "expected_stock_code": guard_result.get("expected_stock_code"),
+                        "requested_stock_code": guard_result.get("requested_stock_code"),
+                        "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
+                    })
+                tool_calls_log.append(log_entry)
                 results.append({"tc": tc_item, "result_str": result_str})
         except FuturesTimeoutError:
             timeout_triggered = True

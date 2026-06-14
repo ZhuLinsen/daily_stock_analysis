@@ -187,6 +187,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         snapshot = pipeline._build_context_snapshot(
             enhanced_context={
                 "code": "600519",
+                "daily_market_context_summary": "仅供prompt注入，不应入库存档",
                 "market_phase_context": _phase_payload(),
                 "portfolio_context": {
                     "quantity": 100,
@@ -201,6 +202,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
 
         self.assertNotIn("market_phase_context", snapshot["enhanced_context"])
         self.assertNotIn("portfolio_context", snapshot["enhanced_context"])
+        self.assertNotIn("daily_market_context_summary", snapshot["enhanced_context"])
         self.assertNotIn("avg_cost", str(snapshot))
 
     def test_agent_analysis_artifacts_helper_maps_initial_context_zero_fetch(self):

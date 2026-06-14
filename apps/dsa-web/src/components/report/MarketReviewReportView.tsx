@@ -1,7 +1,8 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { BarChart3, Clipboard, FileText, Gauge, Layers, ShieldAlert, TrendingUp, WalletCards } from 'lucide-react';
+import { BarChart3, Clipboard, FileText, Gauge, Layers, ShieldAlert, TrendingUp, WalletCards, Workflow } from 'lucide-react';
 import { historyApi } from '../../api/history';
+import { formatUiText, UI_TEXT } from '../../i18n/uiText';
 import type {
   AnalysisReport,
   MarketReviewPayload,
@@ -21,6 +22,7 @@ interface MarketReviewReportViewProps {
   payload?: MarketReviewPayload | null;
   reportLanguage?: ReportLanguage;
   className?: string;
+  onOpenRunFlow?: (recordId: number) => void;
 }
 
 type CopyType = 'markdown' | 'text';
@@ -262,9 +264,11 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   payload: providedPayload,
   reportLanguage = 'zh',
   className = '',
+  onOpenRunFlow,
 }) => {
   const normalizedReportLanguage = normalizeReportLanguage(reportLanguage);
   const text = getReportText(normalizedReportLanguage);
+  const runFlowText = UI_TEXT[normalizedReportLanguage];
   const marketReviewText = MARKET_REVIEW_TEXT[normalizedReportLanguage];
   const [loadedMarkdown, setLoadedMarkdown] = useState<LoadedMarkdown | null>(null);
   const [loadError, setLoadError] = useState<LoadError | null>(null);
@@ -295,6 +299,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
     [marketReviewPayload],
   );
   const showStructuredMarketTitles = Boolean(marketReviewPayload?.markets);
+  const canOpenRunFlow = recordId !== undefined && onOpenRunFlow;
 
   useEffect(() => {
     if (!recordId || providedContent || hasStructuredContent) {
@@ -384,6 +389,20 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            {canOpenRunFlow ? (
+              <Tooltip content={runFlowText['runFlow.open']}>
+                <span className="inline-flex">
+                  <button
+                    type="button"
+                    onClick={() => onOpenRunFlow(recordId)}
+                    className="home-surface-button flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text hover:text-foreground"
+                    aria-label={formatUiText(runFlowText['runFlow.openHistoryAria'], { recordId })}
+                  >
+                    <Workflow className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </span>
+              </Tooltip>
+            ) : null}
             <Tooltip content={text.copyMarkdownSource}>
               <span className="inline-flex">
                 <button

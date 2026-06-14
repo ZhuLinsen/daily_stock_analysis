@@ -38,6 +38,7 @@ from src.config import (
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
+from src.services.run_diagnostics import record_provider_run
 
 logger = logging.getLogger(__name__)
 
@@ -2125,6 +2126,8 @@ class SearchService:
     NEWS_OVERSAMPLE_FACTOR = 2
     NEWS_OVERSAMPLE_MAX = 10
     FUTURE_TOLERANCE_DAYS = 1
+    ANALYTICAL_INTEL_LOOKBACK_DAYS = 180
+    ANALYTICAL_INTEL_DIMENSIONS = {"market_analysis", "earnings"}
     _CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
     _US_STOCK_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
     _DIRECT_NEWS_CATEGORY = "direct_company_news"
@@ -2159,6 +2162,96 @@ class SearchService:
     _OFFICIAL_SOURCE_TERMS = (
         "cninfo", "sse.com", "szse.cn", "hkexnews", "sec.gov", "nasdaq.com",
         "nyse.com", "上交所", "深交所", "港交所", "证券交易所",
+    )
+    _OFFICIAL_SOURCE_HOSTS = (
+        "cninfo.com.cn", "sse.com", "sse.com.cn", "szse.cn", "hkexnews.hk",
+        "sec.gov", "nasdaq.com", "nyse.com",
+    )
+    _OFFICIAL_SOURCE_LABELS = (
+        "cninfo", "hkexnews", "巨潮资讯", "巨潮资讯网",
+        "上交所", "深交所", "港交所", "证券交易所",
+        "上海证券交易所", "深圳证券交易所", "香港交易所", "香港联合交易所",
+    )
+    _LOW_QUALITY_DOWNLOAD_ACTION_TERMS = (
+        "下载", "安装", "下载安装", "下载安装到手机", "下载链接",
+        "免费下载", "客户端下载", "应用下载", "官方app下载",
+        "安装包", "apk", "download", "install", "installer",
+    )
+    _LOW_QUALITY_DOWNLOAD_INTENT_TERMS = (
+        "安装包", "客户端下载", "应用下载", "下载安装", "下载安装到手机",
+        "下载链接", "免费下载", "旧版下载", "极速版下载", "官方app下载",
+    )
+    _LOW_QUALITY_APP_CONTEXT_TERMS = (
+        "好评", "评分", "版本", "大小", "适用年龄", "开发者", "应用",
+        "ratings", "reviews", "stars", "version", "developer", "package",
+    )
+    _LOW_QUALITY_APP_METADATA_TERMS = (
+        "版本", "大小", "适用年龄", "开发者", "应用", "应用商店",
+        "安卓版", "苹果版", "官方版", "最新版", "version", "developer",
+        "package", "mobile app",
+    )
+    _LOW_QUALITY_APP_PAGE_DETAIL_TERMS = (
+        "客户端", "安卓版", "苹果版", "官方版", "最新版", "应用商店",
+        "下载安装到手机", "一键下载", "旧版下载", "极速版下载",
+    )
+    _LOW_QUALITY_FILE_SIZE_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:kb|mb|gb)\b", re.IGNORECASE)
+    _LOW_QUALITY_RATING_RE = re.compile(
+        r"(?:\d{1,3}\s*%\s*好评|好评率|用户评分|"
+        r"(?:用户)?评分\s*[:：]?\s*(?:10|[0-9])(?:\.\d{1,2})?|"
+        r"\b\d(?:\.\d)?\s*(?:stars?|ratings?|reviews?)\b)",
+        re.IGNORECASE,
+    )
+    _LOW_QUALITY_URL_RE = re.compile(
+        r"(?:^|[/_.=-])(?:download|downloads|apk|ipa|exe|dmg|installer|"
+        r"software|soft|game|games|app|apps|package)(?:$|[/_.?&=-])",
+        re.IGNORECASE,
+    )
+    _BUSINESS_APP_METRIC_RE = re.compile(
+        r"(?:(?:下载量|安装量|装机量|应用下载|应用安装|app下载|app安装).{0,12}"
+        r"(?:增长|同比|环比|上升|增加|提升|突破|达到|达|超过|超|累计|接近|保持|创新高|下降|下滑|减少|回落|放缓|持平|承压|低迷)|"
+        r"(?:增长|同比|环比|上升|增加|提升|突破|达到|达|超过|超|累计|接近|保持|创新高|下降|下滑|减少|回落|放缓|持平|承压|低迷)"
+        r".{0,12}(?:下载量|安装量|装机量|应用下载|应用安装|app下载|app安装)|"
+        r"\b(?:downloads?|installs?)\b.{0,16}"
+        r"\b(?:grew|growth|rose|increase|increased|surged|reached|reach|reaches|"
+        r"hit|hits|topped|totaled|totalled|exceeded|exceeds|surpassed|surpasses|"
+        r"fell|fall|declined|decline|decreased|dropped|drop|slowed|flat|weakened)\b|"
+        r"\b(?:grew|growth|rose|increase|increased|surged|reached|reach|reaches|"
+        r"hit|hits|topped|totaled|totalled|exceeded|exceeds|surpassed|surpasses|"
+        r"fell|fall|declined|decline|decreased|dropped|drop|slowed|flat|weakened)\b"
+        r".{0,16}\b(?:downloads?|installs?)\b)",
+        re.IGNORECASE,
+    )
+    _ADULT_SERVICE_SPAM_STRONG_TERMS = (
+        "上门特殊服务", "同城约", "约炮", "援交", "楼凤", "外围女",
+        "外围服务", "包夜", "大保健", "莞式", "推油",
+        "成人服务", "adult service", "escort service",
+        "sex service", "call girl",
+    )
+    _ADULT_SERVICE_SPAM_AMBIGUOUS_TERMS = (
+        "全套服务", "色情",
+    )
+    _ADULT_SERVICE_SPAM_CONTEXT_TERMS = (
+        "小姐", "上门", "预约", "同城", "按摩", "保健", "足浴", "桑拿",
+        "会所", "技师", "全套", "套餐", "vip",
+    )
+    _ADULT_SERVICE_SPAM_CONTACT_RE = re.compile(
+        r"(?:^|[^a-z0-9])(?:yue|vx|wx|qq|wechat|weixin|微信号?|微[信讯]|"
+        r"电话|手机|联系电话|tel|phone)"
+        r"[-_:\s：]*[a-z0-9][a-z0-9_-]{2,}(?:[^a-z0-9]|$)",
+        re.IGNORECASE,
+    )
+    _ADULT_SERVICE_SPAM_CONTACT_CONTEXT_TERMS = (
+        "小姐", "上门", "同城", "预约",
+        "全套", "包夜", "大保健", "推油",
+        "约炮", "援交", "成人", "色情",
+    )
+    _ADULT_SERVICE_REMEDIATION_TERMS = (
+        "治理", "整治", "下架", "处罚", "监管", "打击", "清理",
+        "封禁", "整改", "内容安全", "低俗内容", "平台风险",
+    )
+    _ADULT_SERVICE_SOLICITATION_TERMS = (
+        "上门", "同城", "预约", "套餐", "包夜", "大保健",
+        "推油", "联系", "咨询", "加微信", "加qq", "vip",
     )
 
     def __init__(
@@ -2633,6 +2726,229 @@ class SearchService:
         return any(term.lower() in lower for term in terms)
 
     @classmethod
+    def _contains_any_low_quality_news_term(cls, text: str, terms: Tuple[str, ...]) -> bool:
+        lower = (text or "").lower()
+        if not lower:
+            return False
+
+        for term in terms:
+            normalized_term = term.lower()
+            if not normalized_term:
+                continue
+            if normalized_term.isascii() and re.search(r"[a-z0-9]", normalized_term):
+                pattern = r"(?<![A-Za-z0-9])" + re.escape(normalized_term) + r"(?![A-Za-z0-9])"
+                if re.search(pattern, lower):
+                    return True
+                continue
+            if normalized_term in lower:
+                return True
+        return False
+
+    @staticmethod
+    def _candidate_hostname(value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw or re.search(r"\s", raw):
+            return ""
+
+        parse_value = (
+            raw
+            if re.match(r"^[a-z][a-z0-9+.-]*://", raw) or raw.startswith("//")
+            else f"//{raw}"
+        )
+        return (urlparse(parse_value).hostname or "").rstrip(".")
+
+    @staticmethod
+    def _source_resembles_hostname(value: Any) -> bool:
+        raw = str(value or "").strip().lower()
+        if not raw or re.search(r"\s", raw):
+            return False
+        if re.match(r"^[a-z][a-z0-9+.-]*://", raw) or raw.startswith("//"):
+            return True
+        return bool(re.search(r"\.[a-z0-9-]{2,}(?::\d+)?/?$", raw))
+
+    @classmethod
+    def _is_trusted_official_news_source(cls, item: SearchResult) -> bool:
+        """Only trust official exemptions from trusted hosts; fallback to labels only when URL host is absent."""
+        url_host = cls._candidate_hostname(item.url)
+        source_label = str(item.source or "").strip().lower()
+        source_host = (
+            cls._candidate_hostname(item.source)
+            if cls._source_resembles_hostname(item.source)
+            else ""
+        )
+
+        if url_host:
+            # 有 URL 时以 URL 主机为准，避免 source label/host 伪装的官方放行。
+            return any(
+                url_host == official_host or url_host.endswith(f".{official_host}")
+                for official_host in cls._OFFICIAL_SOURCE_HOSTS
+            )
+
+        if source_host:
+            return any(
+                source_host == official_host or source_host.endswith(f".{official_host}")
+                for official_host in cls._OFFICIAL_SOURCE_HOSTS
+            )
+
+        return source_label in cls._OFFICIAL_SOURCE_LABELS
+
+    @classmethod
+    def _has_low_quality_news_page_signal(cls, item: SearchResult) -> bool:
+        """Detect app/download/listing pages without relying on a domain blocklist."""
+        content_text = " ".join(filter(None, [item.title, item.snippet])).lower()
+        parsed_url = urlparse(item.url or "")
+        url_surface = unquote(
+            " ".join(filter(None, [parsed_url.netloc, parsed_url.path, parsed_url.query]))
+        ).lower()
+
+        has_app_context = cls._contains_any_low_quality_news_term(
+            content_text,
+            cls._LOW_QUALITY_APP_CONTEXT_TERMS,
+        )
+        has_app_metadata = cls._contains_any_low_quality_news_term(
+            content_text,
+            cls._LOW_QUALITY_APP_METADATA_TERMS,
+        )
+        has_download_action = cls._contains_any_low_quality_news_term(
+            content_text,
+            cls._LOW_QUALITY_DOWNLOAD_ACTION_TERMS,
+        )
+        has_download_intent = cls._contains_any_low_quality_news_term(
+            content_text,
+            cls._LOW_QUALITY_DOWNLOAD_INTENT_TERMS,
+        )
+        has_app_page_detail = cls._contains_any_low_quality_news_term(
+            content_text,
+            cls._LOW_QUALITY_APP_PAGE_DETAIL_TERMS,
+        )
+        has_file_size = bool(cls._LOW_QUALITY_FILE_SIZE_RE.search(content_text))
+        has_rating = bool(cls._LOW_QUALITY_RATING_RE.search(content_text))
+        has_url_signal = bool(cls._LOW_QUALITY_URL_RE.search(url_surface))
+        has_business_app_metric = bool(cls._BUSINESS_APP_METRIC_RE.search(content_text))
+        has_app_listing_detail = (
+            has_file_size
+            or has_rating
+            or cls._contains_any_low_quality_news_term(
+                content_text,
+                (
+                    "版本", "适用年龄", "开发者", "应用商店", "安卓版",
+                    "苹果版", "官方版", "最新版", "version", "developer",
+                    "package",
+                ),
+            )
+        )
+        has_strong_app_page_evidence = (
+            has_app_listing_detail
+            and (
+                has_url_signal
+                or has_download_intent
+                or (has_download_action and has_app_metadata)
+            )
+        )
+        has_business_app_metric_only = (
+            has_business_app_metric
+            and not has_strong_app_page_evidence
+        )
+        has_app_listing_context = (
+            not has_business_app_metric_only
+            and has_app_context
+            and has_app_metadata
+            and (has_download_action or has_download_intent)
+            and (has_file_size or has_rating)
+        )
+        has_content_download_page = (
+            not has_business_app_metric_only
+            and (
+                (has_download_intent and (has_app_page_detail or has_file_size or has_rating))
+                or (has_download_action and (has_app_metadata or has_file_size))
+            )
+        )
+        has_url_backed_download_page = (
+            not has_business_app_metric_only
+            and has_url_signal
+            and (
+                has_file_size
+                or has_download_intent
+                or (has_download_action and has_app_metadata)
+                or (has_app_metadata and has_rating)
+            )
+        )
+
+        return (
+            has_content_download_page
+            or has_app_listing_context
+            or has_url_backed_download_page
+        )
+
+    @classmethod
+    def _has_adult_service_spam_news_page_signal(cls, item: SearchResult) -> bool:
+        """Detect adult-service spam by content signals instead of domain names."""
+        combined_text = " ".join(
+            filter(None, [item.title, item.snippet, item.source, item.url])
+        ).lower()
+
+        if cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_SPAM_STRONG_TERMS,
+        ):
+            return True
+        has_contact_signal = bool(cls._ADULT_SERVICE_SPAM_CONTACT_RE.search(combined_text))
+        has_remediation_context = cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_REMEDIATION_TERMS,
+        )
+        if has_remediation_context and not has_contact_signal:
+            return False
+
+        if (
+            "外围" in combined_text
+            and cls._contains_any_news_term(
+                combined_text,
+                ("上门", "同城", "约炮", "援交", "包夜", "大保健", "推油", "小姐", "技师"),
+            )
+        ):
+            return True
+
+        context_hits = sum(
+            1
+            for term in cls._ADULT_SERVICE_SPAM_CONTEXT_TERMS
+            if term.lower() in combined_text
+        )
+        has_service_anchor = cls._contains_any_news_term(
+            combined_text,
+            ("小姐", "按摩", "足浴", "桑拿", "会所", "技师"),
+        )
+        has_adult_specific_anchor = cls._contains_any_news_term(
+            combined_text,
+            (
+                "小姐", "约炮", "援交", "楼凤", "外围", "包夜",
+                "大保健", "莞式", "推油", "成人", "色情",
+            ),
+        )
+        if has_contact_signal:
+            return has_adult_specific_anchor and cls._contains_any_news_term(
+                combined_text,
+                cls._ADULT_SERVICE_SPAM_CONTACT_CONTEXT_TERMS,
+            )
+        has_solicitation_signal = cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_SOLICITATION_TERMS,
+        )
+        has_ambiguous_adult_phrase = cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_SPAM_AMBIGUOUS_TERMS,
+        )
+        if has_ambiguous_adult_phrase:
+            return has_service_anchor and has_solicitation_signal
+
+        return (
+            has_adult_specific_anchor
+            and has_service_anchor
+            and has_solicitation_signal
+            and context_hits >= 3
+        )
+
+    @classmethod
     def _score_news_relevance(
         cls,
         item: SearchResult,
@@ -2724,7 +3040,7 @@ class SearchService:
                 direct_signal += 12
             add_reason("命中公告/财报/交易等公司事件词")
 
-        if cls._contains_any_news_term(f"{source} {url}", cls._OFFICIAL_SOURCE_TERMS):
+        if cls._is_trusted_official_news_source(item):
             score += 8
             add_reason("来源接近公告或交易所渠道")
 
@@ -2815,6 +3131,72 @@ class SearchService:
         return SearchResponse(
             query=response.query,
             results=limited_results,
+            provider=response.provider,
+            success=response.success,
+            error_message=response.error_message,
+            search_time=response.search_time,
+        )
+
+    @classmethod
+    def _filter_ranked_news_for_context(
+        cls,
+        response: SearchResponse,
+        *,
+        log_scope: str,
+    ) -> SearchResponse:
+        """Drop obvious non-news pages and zero-relevance fillers from ranked results."""
+        if not response.success or not response.results:
+            return response
+
+        candidates: List[SearchResult] = []
+        dropped_low_quality = 0
+        dropped_adult_spam = 0
+        dropped_zero_relevance = 0
+
+        for item in response.results:
+            is_official_source = cls._is_trusted_official_news_source(item)
+            if (
+                not is_official_source
+                and cls._has_low_quality_news_page_signal(item)
+            ):
+                dropped_low_quality += 1
+                continue
+            if (
+                not is_official_source
+                and cls._has_adult_service_spam_news_page_signal(item)
+            ):
+                dropped_adult_spam += 1
+                continue
+            candidates.append(item)
+
+        meaningful_candidates = [
+            item
+            for item in candidates
+            if item.relevance_category == cls._DIRECT_NEWS_CATEGORY
+            or (item.relevance_score or 0) > 0
+        ]
+        if meaningful_candidates:
+            dropped_zero_relevance = len(candidates) - len(meaningful_candidates)
+            filtered_results = meaningful_candidates
+        else:
+            filtered_results = candidates
+
+        if dropped_low_quality or dropped_adult_spam or dropped_zero_relevance:
+            logger.info(
+                "[新闻准入] %s: provider=%s, total=%s, kept=%s, "
+                "drop_low_quality=%s, drop_adult_spam=%s, drop_zero_relevance=%s",
+                log_scope,
+                response.provider,
+                len(response.results),
+                len(filtered_results),
+                dropped_low_quality,
+                dropped_adult_spam,
+                dropped_zero_relevance,
+            )
+
+        return SearchResponse(
+            query=response.query,
+            results=filtered_results,
             provider=response.provider,
             success=response.success,
             error_message=response.error_message,
@@ -3022,6 +3404,7 @@ class SearchService:
         search_days: int,
         max_results: int,
         log_scope: str,
+        keep_unknown: bool = False,
     ) -> SearchResponse:
         """Hard-filter results by published_date recency and normalize date strings."""
         if not response.success or not response.results:
@@ -3039,6 +3422,22 @@ class SearchService:
         for item in response.results:
             published = self._normalize_news_publish_date(item.published_date)
             if published is None:
+                if keep_unknown:
+                    filtered.append(
+                        SearchResult(
+                            title=item.title,
+                            snippet=item.snippet,
+                            url=item.url,
+                            source=item.source,
+                            published_date=item.published_date,
+                            relevance_score=item.relevance_score,
+                            relevance_category=item.relevance_category,
+                            relevance_reasons=item.relevance_reasons,
+                        )
+                    )
+                    if len(filtered) >= max_results:
+                        break
+                    continue
                 dropped_unknown += 1
                 continue
             if published < earliest:
@@ -3146,6 +3545,34 @@ class SearchService:
             search_time=response.search_time,
         )
 
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> int:
+        return max(0, int((time.monotonic() - started_at) * 1000))
+
+    @staticmethod
+    def _record_news_search_run(
+        *,
+        provider: str,
+        operation: str,
+        success: bool,
+        latency_ms: Optional[int] = None,
+        record_count: Optional[int] = None,
+        cache_hit: Optional[bool] = None,
+        error_type: Optional[str] = None,
+        error_message: Optional[Any] = None,
+    ) -> None:
+        record_provider_run(
+            data_type="news_search",
+            provider=provider,
+            operation=operation,
+            success=success,
+            latency_ms=latency_ms,
+            error_type=error_type,
+            error_message=error_message,
+            cache_hit=cache_hit,
+            record_count=record_count,
+        )
+
     def search_stock_news(
         self,
         stock_code: str,
@@ -3216,16 +3643,43 @@ class SearchService:
         cached, cache_owner, cache_event = self._get_cached_or_reserve(cache_key)
         if cached is not None:
             logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
+            self._record_news_search_run(
+                provider=cached.provider or "SearchCache",
+                operation="search_stock_news_cache",
+                success=bool(cached.success),
+                latency_ms=0,
+                record_count=len(cached.results or []),
+                cache_hit=True,
+                error_message=cached.error_message,
+            )
             return cached
 
         if not cache_owner and cache_event is not None:
             cached = self._wait_for_cached(cache_key, cache_event)
             if cached is not None:
                 logger.info(f"使用并发填充后的缓存搜索结果: {stock_name}({stock_code})")
+                self._record_news_search_run(
+                    provider=cached.provider or "SearchCache",
+                    operation="search_stock_news_cache_wait",
+                    success=bool(cached.success),
+                    latency_ms=0,
+                    record_count=len(cached.results or []),
+                    cache_hit=True,
+                    error_message=cached.error_message,
+                )
                 return cached
             cached, cache_owner, cache_event = self._get_cached_or_reserve(cache_key)
             if cached is not None:
                 logger.info(f"使用等待后命中的缓存搜索结果: {stock_name}({stock_code})")
+                self._record_news_search_run(
+                    provider=cached.provider or "SearchCache",
+                    operation="search_stock_news_cache_retry",
+                    success=bool(cached.success),
+                    latency_ms=0,
+                    record_count=len(cached.results or []),
+                    cache_hit=True,
+                    error_message=cached.error_message,
+                )
                 return cached
 
         try:
@@ -3248,7 +3702,19 @@ class SearchService:
                         )
                     )
 
-                response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
+                started_at = time.monotonic()
+                try:
+                    response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
+                except Exception as exc:
+                    self._record_news_search_run(
+                        provider=provider.name,
+                        operation="search_stock_news",
+                        success=False,
+                        latency_ms=self._elapsed_ms(started_at),
+                        error_type=type(exc).__name__,
+                        error_message=exc,
+                    )
+                    raise
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,
@@ -3270,10 +3736,33 @@ class SearchService:
                         max_results=provider_max_results,
                         log_scope=f"{stock_code}:{provider.name}:stock_news",
                     )
-                    limited_response = self._limit_search_response(
+                    admitted_response = self._filter_ranked_news_for_context(
                         ranked_response,
+                        log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    )
+                    limited_response = self._limit_search_response(
+                        admitted_response,
                         max_results=max_results,
                     )
+                    admitted_count = len(limited_response.results or [])
+                    self._record_news_search_run(
+                        provider=provider.name,
+                        operation="search_stock_news",
+                        success=bool(limited_response.success and limited_response.results),
+                        latency_ms=self._elapsed_ms(started_at),
+                        record_count=admitted_count,
+                        error_type=None if admitted_count else "NoUsableNews",
+                        error_message=None if admitted_count else (
+                            response.error_message or "过滤后无有效新闻"
+                        ),
+                    )
+                    if not admitted_count:
+                        logger.info(
+                            "%s 搜索成功但准入过滤后无有效新闻，继续尝试下一引擎",
+                            provider.name,
+                        )
+                        continue
+
                     stats = self._news_relevance_stats(
                         limited_response,
                         prefer_chinese=prefer_chinese,
@@ -3327,6 +3816,18 @@ class SearchService:
                             provider.name,
                         )
                 else:
+                    filtered_count = len(filtered_response.results or []) if filtered_response.success else 0
+                    self._record_news_search_run(
+                        provider=provider.name,
+                        operation="search_stock_news",
+                        success=bool(filtered_response.success and filtered_response.results),
+                        latency_ms=self._elapsed_ms(started_at),
+                        record_count=filtered_count,
+                        error_type=None if filtered_count else "NoUsableNews",
+                        error_message=None if filtered_count else (
+                            response.error_message or "过滤后无有效新闻"
+                        ),
+                    )
                     if response.success and not filtered_response.results:
                         logger.info(
                             "%s 搜索成功但过滤后无有效新闻，继续尝试下一引擎",
@@ -3579,26 +4080,45 @@ class SearchService:
             provider = available_providers[provider_index % len(available_providers)]
             provider_index += 1
             
-            logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
+            request_days = (
+                self.ANALYTICAL_INTEL_LOOKBACK_DAYS
+                if dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS
+                else search_days
+            )
+
+            logger.info(
+                "[情报搜索] %s: 使用 %s，请求窗口: 近%s天",
+                dim['desc'],
+                provider.name,
+                request_days,
+            )
 
             if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
                 response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
-                    days=search_days,
+                    days=request_days,
                     topic=dim['tavily_topic'],
                 )
             else:
                 response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
-                    days=search_days,
+                    days=request_days,
                 )
             if dim['strict_freshness']:
                 filtered_response = self._filter_news_response(
                     response,
                     search_days=search_days,
                     max_results=provider_max_results,
+                    log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                )
+            elif dim['name'] in self.ANALYTICAL_INTEL_DIMENSIONS:
+                filtered_response = self._filter_news_response(
+                    response,
+                    search_days=self.ANALYTICAL_INTEL_LOOKBACK_DAYS,
+                    max_results=provider_max_results,
+                    keep_unknown=True,
                     log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
                 )
             else:
@@ -3611,8 +4131,16 @@ class SearchService:
                 stock_code=stock_code,
                 stock_name=stock_name,
                 prefer_chinese=self._should_prefer_chinese_news(stock_code, stock_name),
-                max_results=target_per_dimension,
+                max_results=provider_max_results,
                 log_scope=f"{stock_code}:{provider.name}:{dim['name']}:rank",
+            )
+            filtered_response = self._filter_ranked_news_for_context(
+                filtered_response,
+                log_scope=f"{stock_code}:{provider.name}:{dim['name']}:admission",
+            )
+            filtered_response = self._limit_search_response(
+                filtered_response,
+                max_results=target_per_dimension,
             )
             results[dim['name']] = filtered_response
             search_count += 1

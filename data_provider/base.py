@@ -1375,12 +1375,12 @@ class DataFetcherManager:
 
         # Issue #455: PREFETCH_REALTIME_QUOTES=false 可禁用预取，避免全市场拉取
         if not getattr(config, "prefetch_realtime_quotes", True):
-            logger.debug("[预取] PREFETCH_REALTIME_QUOTES=false，跳过批量预取")
+            logger.debug("[预取] component=realtime_prefetch action=skip reason=disabled")
             return 0
 
         # 如果实时行情被禁用，跳过预取
         if not config.enable_realtime_quote:
-            logger.debug("[预取] 实时行情功能已禁用，跳过预取")
+            logger.debug("[预取] component=realtime_prefetch action=skip reason=realtime_quote_disabled")
             return 0
         
         # 检查优先级中是否包含全量拉取数据源
@@ -1400,15 +1400,29 @@ class DataFetcherManager:
         
         # 如果没有全量数据源，或者全量数据源排在第 3 位之后，跳过预取
         if first_bulk_source_index is None or first_bulk_source_index >= 2:
-            logger.info(f"[预取] 当前优先级使用轻量级数据源(sina/tencent)，无需预取")
+            logger.info(
+                "[预取] component=realtime_prefetch action=skip reason=no_early_bulk_source priority=%s",
+                priority,
+            )
             return 0
         
         # 如果股票数量少于 5 个，不进行批量预取（逐个查询更高效）
         if len(stock_codes) < 5:
-            logger.info(f"[预取] 股票数量 {len(stock_codes)} < 5，跳过批量预取")
+            logger.info(
+                "[预取] component=realtime_prefetch action=skip reason=small_batch "
+                "stock_count=%d threshold=5 bulk_source=%s",
+                len(stock_codes),
+                priority_list[first_bulk_source_index],
+            )
             return 0
         
-        logger.info(f"[预取] 开始批量预取实时行情，共 {len(stock_codes)} 只股票...")
+        bulk_source = priority_list[first_bulk_source_index]
+        logger.info(
+            "[预取] component=realtime_prefetch action=start stock_count=%d bulk_source=%s first_code=%s",
+            len(stock_codes),
+            bulk_source,
+            stock_codes[0],
+        )
         
         # 尝试通过 efinance 或 akshare 预取
         # 只需要调用一次 get_realtime_quote，缓存机制会自动拉取全市场数据
@@ -1418,14 +1432,30 @@ class DataFetcherManager:
             quote = self.get_realtime_quote(first_code)
             
             if quote:
-                logger.info(f"[预取] 批量预取完成，缓存已填充")
+                logger.info(
+                    "[预取] component=realtime_prefetch action=complete status=success "
+                    "stock_count=%d bulk_source=%s",
+                    len(stock_codes),
+                    bulk_source,
+                )
                 return len(stock_codes)
             else:
-                logger.warning(f"[预取] 批量预取失败，将使用逐个查询模式")
+                logger.warning(
+                    "[预取] component=realtime_prefetch action=complete status=failed "
+                    "stock_count=%d bulk_source=%s fallback=per_stock",
+                    len(stock_codes),
+                    bulk_source,
+                )
                 return 0
                 
         except Exception as e:
-            logger.error(f"[预取] 批量预取异常: {e}")
+            logger.error(
+                "[预取] component=realtime_prefetch action=complete status=error "
+                "stock_count=%d bulk_source=%s error=%s",
+                len(stock_codes),
+                bulk_source,
+                e,
+            )
             return 0
 
     @staticmethod
@@ -2116,27 +2146,72 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self) -> Dict[str, Any]:
+    def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""
+        logger.info("[MarketStats] component=market_stats action=start purpose=%s", purpose)
         tickflow_fetcher = self._get_tickflow_fetcher()
         if tickflow_fetcher is not None:
+            started_at = time.monotonic()
             try:
                 data = tickflow_fetcher.get_market_stats()
+                elapsed = time.monotonic() - started_at
                 if data:
-                    logger.info("[TickFlowFetcher] 获取市场统计成功")
+                    logger.info(
+                        "[MarketStats] component=market_stats action=provider_success "
+                        "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
+                        purpose,
+                        elapsed,
+                    )
                     return data
+                logger.info(
+                    "[MarketStats] component=market_stats action=provider_empty "
+                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs",
+                    purpose,
+                    elapsed,
+                )
             except Exception as e:
-                logger.warning(f"[TickFlowFetcher] 获取市场统计失败: {e}")
+                elapsed = time.monotonic() - started_at
+                logger.warning(
+                    "[MarketStats] component=market_stats action=provider_failed "
+                    "purpose=%s provider=TickFlowFetcher elapsed=%.2fs error=%s",
+                    purpose,
+                    elapsed,
+                    e,
+                )
 
         for fetcher in self._fetchers:
+            started_at = time.monotonic()
             try:
                 data = fetcher.get_market_stats()
+                elapsed = time.monotonic() - started_at
                 if data:
-                    logger.info(f"[{fetcher.name}] 获取市场统计成功")
+                    logger.info(
+                        "[MarketStats] component=market_stats action=provider_success "
+                        "purpose=%s provider=%s elapsed=%.2fs",
+                        purpose,
+                        fetcher.name,
+                        elapsed,
+                    )
                     return data
+                logger.info(
+                    "[MarketStats] component=market_stats action=provider_empty "
+                    "purpose=%s provider=%s elapsed=%.2fs",
+                    purpose,
+                    fetcher.name,
+                    elapsed,
+                )
             except Exception as e:
-                logger.warning(f"[{fetcher.name}] 获取市场统计失败: {e}")
+                elapsed = time.monotonic() - started_at
+                logger.warning(
+                    "[MarketStats] component=market_stats action=provider_failed "
+                    "purpose=%s provider=%s elapsed=%.2fs error=%s",
+                    purpose,
+                    fetcher.name,
+                    elapsed,
+                    e,
+                )
                 continue
+        logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
         return {}
 
     def _run_with_timeout(

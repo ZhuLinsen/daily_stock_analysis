@@ -122,10 +122,21 @@ def _missing_asset_media_type(asset_path: str) -> str:
         return content_type
     return "text/plain"
 
+
+def _warn_if_open_cors_without_auth() -> None:
+    if is_auth_enabled():
+        return
+    logger.warning(
+        "CORS_ALLOW_ALL=true is enabled while ADMIN_AUTH_ENABLED is false. "
+        "The API will accept browser requests from any origin; only use this "
+        "on trusted local networks or enable admin authentication."
+    )
+
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
+from src.auth import is_auth_enabled
 from src.data.stock_index_loader import find_existing_stock_index_path
 from src.services.system_config_service import SystemConfigService
 from src.services.stock_index_remote_service import (
@@ -210,7 +221,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             "- 历史记录：查询历史分析报告\n"
             "- 股票数据：获取行情数据\n\n"
             "## 认证方式\n"
-            "支持可选的运行时认证（通过 WebUI 设置页面启用/关闭）"
+            "支持可选管理员认证：ADMIN_AUTH_ENABLED=true 时，除登录、状态、健康检查和 "
+            "OpenAPI 文档外，/api/v1/* 需要有效管理员会话 Cookie；关闭时不强制认证。"
         ),
         version="1.0.0",
         lifespan=app_lifespan,
@@ -236,6 +248,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
     allow_credentials = not allow_all_origins
     if allow_all_origins:
+        _warn_if_open_cors_without_auth()
         allowed_origins = ["*"]
     
     app.add_middleware(
@@ -304,6 +317,13 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             """根路由 - 前端未构建时返回引导页面"""
             return HTMLResponse(content=_FRONTEND_NOT_BUILT_HTML)
     
+    @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["Health"],
+        summary="健康检查",
+        description="用于负载均衡器或监控系统检查服务状态"
+    )
     @app.get(
         "/api/health",
         response_model=HealthResponse,

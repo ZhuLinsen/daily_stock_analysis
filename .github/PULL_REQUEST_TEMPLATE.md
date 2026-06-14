@@ -42,6 +42,14 @@ python -m pytest -m "not network"
 
 关键输出/结论 / Key output & conclusion:
 
+## Visual Evidence (if applicable)
+
+若本 PR 修改报告格式、报告渲染效果或 Web UI 界面，请在此处附受影响报告 / 页面截图；涉及前后差异时，优先附前后对比。Issue / PR 过程截图、审查截图、一次性验收截图和临时可视证据请放在 PR 描述、PR 评论、GitHub 附件、Actions artifact 或外部可访问链接中，不要作为仓库文件合入。
+*(EN) If this PR changes report formatting, report rendering, or Web UI, attach screenshots of the affected report/page here; before/after screenshots are preferred when relevant. Issue/PR process screenshots, review screenshots, one-off acceptance screenshots, and temporary visual evidence should be linked from the PR body/comments, GitHub attachments, Actions artifacts, or external accessible evidence; do not commit them as repository files.)*
+
+- 截图链接 / Screenshot links:
+- 不适用原因 / Reason if not applicable:
+
 ## Compatibility And Risk
 
 请说明兼容性影响、潜在风险（如无请写 `None`）。  
@@ -82,4 +90,5 @@ python -m pytest -m "not network"
 - [ ] 已提供可复现的验证命令与结果 / Reproducible verification commands and results are included
 - [ ] 已评估兼容性与风险 / Compatibility and risk have been assessed
 - [ ] 已提供回滚方案 / A rollback plan is provided
+- [ ] 若修改报告格式或 Web UI 界面，已在 PR 描述/评论附受影响报告 / 页面截图，且未把一次性验收截图作为仓库文件合入 / If report formatting or Web UI changed, affected report/page screenshots are linked in the PR body/comments and one-off acceptance screenshots are not committed as repository files
 - [ ] 若涉及用户可见变更，已同步更新相关文档与 `docs/CHANGELOG.md`；`README.md` 仅在首页级信息变化时更新，细节优先写入 `docs/*.md` / If user-visible changes are included, relevant docs and `docs/CHANGELOG.md` are updated; `README.md` is updated only for homepage-level changes, with details kept in `docs/*.md`

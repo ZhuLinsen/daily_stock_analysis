@@ -2,8 +2,20 @@ import { expect, test, type Page } from '@playwright/test';
 
 const smokePassword = process.env.DSA_WEB_SMOKE_PASSWORD;
 
+if (!smokePassword) {
+  test.skip(true, 'Set DSA_WEB_SMOKE_PASSWORD to run report markdown smoke tests.');
+}
+
+test.use({ locale: 'zh-CN' });
+
+const UI_LANGUAGE_STORAGE_KEY = 'dsa.uiLanguage';
+
 async function login(page: Page) {
   test.skip(!smokePassword, 'Set DSA_WEB_SMOKE_PASSWORD to run report markdown tests.');
+
+  await page.addInitScript((storageKey) => {
+    window.localStorage.setItem(storageKey, 'zh');
+  }, UI_LANGUAGE_STORAGE_KEY);
 
   // Navigate to login page
   await page.goto('/login');

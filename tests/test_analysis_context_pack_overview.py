@@ -246,12 +246,15 @@ def test_extract_and_sanitize_handle_json_snapshot_strings() -> None:
         {
             "enhanced_context": {
                 "code": "600519",
+                "daily_market_context_summary": "仅供Prompt，历史复盘摘要",
                 "portfolio_context": {
                     "quantity": 100,
                     "avg_cost": 1800,
                 },
+                "daily_market_context": {"summary": "大盘偏弱，谨慎"},
             },
             "portfolio_context": {"total_cost": 180000},
+            "daily_market_context_summary": "根快照大盘摘要（应清理）",
             "analysis_context_pack_overview": overview,
             "market_phase_summary": {"phase": "intraday", "market": "cn"},
         },
@@ -263,7 +266,12 @@ def test_extract_and_sanitize_handle_json_snapshot_strings() -> None:
 
     assert extracted is not None
     assert extracted["subject"]["code"] == "600519"
-    assert sanitized == {"enhanced_context": {"code": "600519"}}
+    assert sanitized == {
+        "enhanced_context": {
+            "code": "600519",
+            "daily_market_context": {"summary": "大盘偏弱，谨慎"},
+        }
+    }
 
 
 def test_extract_reprojects_persisted_overview_to_public_schema() -> None:

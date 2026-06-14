@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import type { SystemConfigFieldSchema } from '../../types/systemConfig';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { getSettingsHelpContent } from '../../locales/settingsHelp';
 import { cn } from '../../utils/cn';
 import { Tooltip } from '../common';
@@ -98,7 +99,8 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
   docs: providedDocs,
   description,
 }) => {
-  const help = getSettingsHelpContent(helpKey ?? schema?.helpKey, description);
+  const { language, t } = useUiLanguage();
+  const help = getSettingsHelpContent(helpKey ?? schema?.helpKey, description, language);
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -106,6 +108,9 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
   const titleId = useId();
   const examples = providedExamples ?? schema?.examples ?? [];
   const docs = providedDocs?.length ? providedDocs : schema?.docs?.length ? schema.docs : help?.docs ?? [];
+  const helpButtonLabel = language === 'en'
+    ? `View ${title} configuration help`
+    : `查看 ${title} 配置说明`;
 
   useEffect(() => {
     if (!open) {
@@ -175,13 +180,13 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
 
   return (
     <>
-      <Tooltip content="查看配置说明">
+      <Tooltip content={t('settings.helpTooltip')}>
         <span className="inline-flex">
           <button
             ref={buttonRef}
             type="button"
             className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-muted-text transition-colors hover:border-[var(--settings-border)] hover:bg-[var(--settings-surface-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15"
-            aria-label={`查看 ${title} 配置说明`}
+            aria-label={helpButtonLabel}
             aria-expanded={open}
             aria-controls={open ? titleId : undefined}
             onClick={() => setOpen(true)}
@@ -197,7 +202,7 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
               <button
                 type="button"
                 className="absolute inset-0 cursor-default"
-                aria-label="关闭配置说明"
+                aria-label={t('settings.helpClose')}
                 tabIndex={-1}
                 onClick={() => setOpen(false)}
               />
@@ -230,35 +235,35 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
                     type="button"
                     onClick={() => setOpen(false)}
                     className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-card/80 text-secondary-text transition-colors hover:bg-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15"
-                    aria-label="关闭配置说明"
+                    aria-label={t('settings.helpClose')}
                   >
                     <X aria-hidden="true" className="h-4 w-4" />
                   </button>
                 </div>
 
                 <div className="space-y-5 overflow-y-auto px-5 py-5">
-                  <HelpSection title="用途">
+                  <HelpSection title={t('settings.helpPurpose')}>
                     {help.usage ? <p className="text-sm leading-6 text-secondary-text">{help.usage}</p> : null}
                   </HelpSection>
 
-                  <HelpSection title="取值说明">
+                  <HelpSection title={t('settings.helpValueNotes')}>
                     <HelpList items={help.valueNotes} />
                   </HelpSection>
 
-                  <HelpSection title="配置样例">
+                  <HelpSection title={t('settings.helpExamples')}>
                     <CodeExamples examples={examples} />
                   </HelpSection>
 
-                  <HelpSection title="影响范围">
+                  <HelpSection title={t('settings.helpImpact')}>
                     <HelpList items={help.impact} />
                   </HelpSection>
 
-                  <HelpSection title="注意事项">
+                  <HelpSection title={t('settings.helpNotes')}>
                     <HelpList items={help.notes} />
                   </HelpSection>
 
                   {hasItems(docs) ? (
-                    <HelpSection title="相关文档">
+                    <HelpSection title={t('settings.helpRelatedDocs')}>
                       <div className="flex flex-wrap gap-2">
                         {docs.map((doc) => (
                           <a

@@ -1,6 +1,7 @@
 import { Component } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { InlineAlert } from '../common';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
 
 interface SettingsPanelErrorBoundaryProps {
@@ -9,6 +10,13 @@ interface SettingsPanelErrorBoundaryProps {
   resetKey?: string | number;
   className?: string;
   diagnosticHint?: ReactNode;
+}
+
+interface SettingsPanelErrorBoundaryLabels {
+  loadFailedSuffix: string;
+  runtimeErrorMessage: string;
+  defaultDiagnosticHint: string;
+  errorSummaryPrefix: string;
 }
 
 interface SettingsPanelErrorBoundaryState {
@@ -56,8 +64,8 @@ function getSafeErrorSummary(error: unknown) {
   return `${sanitized.slice(0, MAX_ERROR_SUMMARY_LENGTH)}...`;
 }
 
-export class SettingsPanelErrorBoundary extends Component<
-  SettingsPanelErrorBoundaryProps,
+class SettingsPanelErrorBoundaryImpl extends Component<
+  SettingsPanelErrorBoundaryProps & { labels: SettingsPanelErrorBoundaryLabels },
   SettingsPanelErrorBoundaryState
 > {
   override state: SettingsPanelErrorBoundaryState = {
@@ -90,21 +98,21 @@ export class SettingsPanelErrorBoundary extends Component<
     return (
       <div className={cn('rounded-[1.5rem] border settings-border bg-card/94 p-5 shadow-soft-card-strong backdrop-blur-sm', this.props.className)}>
         <InlineAlert
-          title={`${this.props.title}加载失败`}
+          title={`${this.props.title}${this.props.labels.loadFailedSuffix}`}
           variant="danger"
           message={(
             <div className="space-y-2">
               <p>
-                该设置区域发生前端运行时异常，页面其他设置仍可继续使用。
+                {this.props.labels.runtimeErrorMessage}
               </p>
               {this.props.diagnosticHint ? (
                 <p>{this.props.diagnosticHint}</p>
               ) : (
-                <p>请补充 release 版本、运行环境和触发入口，便于定位问题。</p>
+                <p>{this.props.labels.defaultDiagnosticHint}</p>
               )}
               {this.state.errorSummary ? (
                 <p className="break-words font-mono text-xs opacity-80">
-                  错误摘要：{this.state.errorSummary}
+                  {this.props.labels.errorSummaryPrefix}{this.state.errorSummary}
                 </p>
               ) : null}
             </div>
@@ -114,3 +122,22 @@ export class SettingsPanelErrorBoundary extends Component<
     );
   }
 }
+
+export const SettingsPanelErrorBoundary = (props: SettingsPanelErrorBoundaryProps) => {
+  const { language } = useUiLanguage();
+  const labels: SettingsPanelErrorBoundaryLabels = language === 'en'
+    ? {
+        loadFailedSuffix: ' failed to load',
+        runtimeErrorMessage: 'This settings area hit a frontend runtime error. Other settings remain usable.',
+        defaultDiagnosticHint: 'Provide the release version, runtime environment, and trigger path to help diagnose the issue.',
+        errorSummaryPrefix: 'Error summary: ',
+      }
+    : {
+        loadFailedSuffix: '加载失败',
+        runtimeErrorMessage: '该设置区域发生前端运行时异常，页面其他设置仍可继续使用。',
+        defaultDiagnosticHint: '请补充 release 版本、运行环境和触发入口，便于定位问题。',
+        errorSummaryPrefix: '错误摘要：',
+      };
+
+  return <SettingsPanelErrorBoundaryImpl {...props} labels={labels} />;
+};

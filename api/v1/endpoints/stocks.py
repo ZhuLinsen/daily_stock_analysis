@@ -109,6 +109,14 @@ def _validate_and_normalize_stock_code(code: str) -> str:
     return normalize_stock_code(stripped)
 
 
+def _watchlist_match_key(code: str) -> str:
+    """Return the equivalence key used for watchlist add/remove matching."""
+    normalized = normalize_stock_code(code.strip())
+    if re.fullmatch(r"\d{5}", normalized):
+        return f"HK{normalized}"
+    return normalized.upper()
+
+
 @router.post(
     "/extract-from-image",
     response_model=ExtractFromImageResponse,
@@ -346,8 +354,8 @@ def add_to_watchlist(
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
         codes = _read_watchlist_codes(service)
-        normalized_existing = [normalize_stock_code(c) for c in codes]
-        if validated not in normalized_existing:
+        existing_keys = [_watchlist_match_key(c) for c in codes]
+        if _watchlist_match_key(validated) not in existing_keys:
             codes.append(request.stock_code.strip())
             _write_watchlist_codes(service, codes)
         return WatchlistResponse(stock_codes=codes, message=f"已加入 {request.stock_code.strip()}")
@@ -379,10 +387,11 @@ def remove_from_watchlist(
     try:
         validated = _validate_and_normalize_stock_code(request.stock_code)
         codes = _read_watchlist_codes(service)
-        normalized_existing = [normalize_stock_code(c) for c in codes]
-        if validated in normalized_existing:
-            idx = normalized_existing.index(validated)
-            removed = codes.pop(idx)
+        existing_keys = [_watchlist_match_key(c) for c in codes]
+        requested_key = _watchlist_match_key(validated)
+        if requested_key in existing_keys:
+            idx = existing_keys.index(requested_key)
+            codes.pop(idx)
             _write_watchlist_codes(service, codes)
         return WatchlistResponse(stock_codes=codes, message=f"已移除 {request.stock_code.strip()}")
     except HTTPException:

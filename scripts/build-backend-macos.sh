@@ -136,76 +136,11 @@ if ! "${packaged_entry}" --help >/tmp/alphasift-packaged-help.log 2>&1; then
   exit 1
 fi
 
-if "${PYTHON_BIN}" -S - <<'PY' "${packaged_root}"
-import pathlib
-import sys
-import zipfile
-import importlib
-
-
-def _as_importable_paths(root: pathlib.Path):
-    candidates = [root]
-    internal = root / "_internal"
-    if internal.is_dir():
-        candidates.append(internal)
-
-    for base in candidates:
-        yield base
-        for archive_name in ("*.pyz", "*.zip"):
-            for archive in base.glob(archive_name):
-                yield archive
-
-
-def _can_import_from_candidates(root: pathlib.Path) -> bool:
-    for candidate in _as_importable_paths(root):
-        if not candidate.exists():
-            continue
-
-        baseline_path = list(sys.path)
-        sys.path = [str(candidate)]
-        for key in list(sys.modules):
-            if key == "alphasift" or key.startswith("alphasift."):
-                del sys.modules[key]
-
-        try:
-            importlib.invalidate_caches()
-            importlib.import_module("alphasift.dsa_adapter")
-            print(f"OK (import) from: {candidate}")
-            return True
-        except Exception:
-            continue
-        finally:
-            sys.path = baseline_path
-
-    return False
-
-
-def _zip_contains_alphasift_adapter(root: pathlib.Path) -> bool:
-    for candidate in _as_importable_paths(root):
-        if not candidate.is_file() or candidate.suffix not in {".pyz", ".zip"}:
-            continue
-
-        try:
-            with zipfile.ZipFile(candidate, "r") as zf:
-                for name in zf.namelist():
-                    normalized = name.replace("\\", "/").lstrip("/")
-                    if normalized.startswith("alphasift/dsa_adapter.") or normalized.startswith("alphasift/dsa_adapter/"):
-                        print(f"OK (archive) from: {candidate}")
-                        return True
-        except Exception:
-            continue
-
-    return False
-
-
-root = pathlib.Path(sys.argv[1]).resolve()
-if not _can_import_from_candidates(root) and not _zip_contains_alphasift_adapter(root):
-    raise SystemExit(f"Missing alphasift adapter in packaged artifact: {root}")
-PY
-then
-  echo "Verifying packaged AlphaSift importability..."
+if DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE=1 "${packaged_entry}" >/tmp/alphasift-packaged-import.log 2>&1; then
+  cat /tmp/alphasift-packaged-import.log
 else
-  echo "ERROR: packaged backend artifact is missing alphasift modules in ${packaged_root}."
+  echo "ERROR: packaged backend artifact cannot import alphasift.dsa_adapter."
+  cat /tmp/alphasift-packaged-import.log
   exit 1
 fi
 

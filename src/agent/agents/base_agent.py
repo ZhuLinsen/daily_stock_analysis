@@ -23,6 +23,7 @@ from src.agent.skills.defaults import extract_skill_id
 from src.agent.tools.registry import ToolRegistry
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.report_language import normalize_report_language
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class BaseAgent(ABC):
                 max_steps=self.max_steps,
                 progress_callback=progress_callback,
                 max_wall_clock_seconds=timeout_seconds,
+                stock_scope=ctx.meta.get("stock_scope"),
             )
 
             result.tokens_used = loop_result.total_tokens
@@ -178,6 +180,13 @@ class BaseAgent(ABC):
         )
         if market_phase_section:
             messages.append({"role": "user", "content": market_phase_section})
+
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            ctx.meta.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            messages.append({"role": "user", "content": daily_market_context_section})
 
         analysis_context_pack_summary = ctx.meta.get("analysis_context_pack_summary")
         if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:

@@ -303,6 +303,44 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(item["direction_expected"], "up")
         self.assertTrue(item["direction_correct"])
 
+    def test_get_recent_evaluations_prefers_persisted_raw_action(self) -> None:
+        service = BacktestService(self.db)
+
+        with self.db.get_session() as session:
+            history = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "q1").one()
+            history.operation_advice = "持有观察"
+            history.raw_result = json.dumps(
+                {
+                    "operation_advice": "持有观察",
+                    "action": "watch",
+                    "action_label": "观望",
+                },
+                ensure_ascii=False,
+            )
+            result = self._make_backtest_result(
+                analysis_history_id=history.id,
+                analysis_date=date(2024, 1, 1),
+                eval_window_days=1,
+            )
+            result.operation_advice = "持有观察"
+            result.position_recommendation = "long"
+            session.add(result)
+            session.commit()
+
+        data = service.get_recent_evaluations(
+            code="600519",
+            eval_window_days=1,
+            limit=10,
+            page=1,
+        )
+
+        self.assertEqual(data["total"], 1)
+        item = data["items"][0]
+        self.assertEqual(item["operation_advice"], "持有观察")
+        self.assertEqual(item["action"], "watch")
+        self.assertEqual(item["action_label"], "观望")
+        self.assertEqual(item["position_recommendation"], "long")
+
     def test_get_recent_evaluations_supports_tracking_fields_and_analysis_date_filters(self) -> None:
         self._seed_analysis(
             query_id="q2",
@@ -436,6 +474,10 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(evaluations["total"], 1)
         self.assertEqual(len(evaluations["items"]), 1)
         self.assertEqual(evaluations["items"][0]["engine_version"], "v1")
+        self.assertEqual(evaluations["items"][0]["operation_advice"], "买入")
+        self.assertEqual(evaluations["items"][0]["action"], "buy")
+        self.assertEqual(evaluations["items"][0]["action_label"], "买入")
+        self.assertEqual(evaluations["items"][0]["position_recommendation"], "long")
 
         # Without explicit eval_window_days, summary infers the smallest
         # window from matched rows (window=1 in this dataset) instead of
@@ -502,6 +544,10 @@ class BacktestServiceTestCase(unittest.TestCase):
     def test_phase_filter_results_allows_exact_dynamic_cap(self) -> None:
         service = BacktestService(self.db)
         phase_snapshot = json.dumps({"market_phase_summary": {"phase": "intraday", "market": "cn"}})
+        raw_result = json.dumps(
+            {"operation_advice": "持有观察", "action": "watch", "action_label": "观望"},
+            ensure_ascii=False,
+        )
         rows = [
             (
                 self._make_backtest_result(analysis_history_id=idx + 1, analysis_date=date(2024, 1, idx + 1)),
@@ -509,6 +555,8 @@ class BacktestServiceTestCase(unittest.TestCase):
                 "看多",
                 datetime(2024, 1, idx + 1, 0, 0, 0),
                 phase_snapshot,
+                raw_result,
+                "simple",
             )
             for idx in range(2)
         ]
@@ -532,6 +580,8 @@ class BacktestServiceTestCase(unittest.TestCase):
 
         self.assertEqual(data["total"], 2)
         self.assertEqual(len(data["items"]), 2)
+        self.assertEqual(data["items"][0]["action"], "watch")
+        self.assertEqual(data["items"][0]["action_label"], "观望")
 
     def test_phase_filter_without_window_matches_summary_window(self) -> None:
         service = BacktestService(self.db)

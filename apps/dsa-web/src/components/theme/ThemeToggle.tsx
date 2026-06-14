@@ -2,6 +2,8 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { Check, Monitor, Moon, Sun } from 'lucide-react';
 import { useTheme } from 'next-themes';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
+import type { UiTextKey } from '../../i18n/uiText';
 import { cn } from '../../utils/cn';
 
 type ThemeOption = 'light' | 'dark' | 'system';
@@ -9,22 +11,22 @@ type ThemeToggleVariant = 'default' | 'nav' | 'rail';
 
 const THEME_OPTIONS: Array<{
   value: ThemeOption;
-  label: string;
+  labelKey: UiTextKey;
   icon: typeof Sun;
 }> = [
-  { value: 'light', label: '浅色', icon: Sun },
-  { value: 'dark', label: '深色', icon: Moon },
-  { value: 'system', label: '跟随系统', icon: Monitor },
+  { value: 'light', labelKey: 'theme.light', icon: Sun },
+  { value: 'dark', labelKey: 'theme.dark', icon: Moon },
+  { value: 'system', labelKey: 'theme.system', icon: Monitor },
 ];
 
-function resolveThemeLabel(theme: string | undefined) {
+function resolveThemeLabel(theme: string | undefined, t: (key: UiTextKey) => string) {
   switch (theme) {
     case 'light':
-      return '浅色';
+      return t('theme.light');
     case 'dark':
-      return '深色';
+      return t('theme.dark');
     default:
-      return '跟随系统';
+      return t('theme.system');
   }
 }
 
@@ -48,6 +50,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
   labelClassName,
 }) => {
   const { theme, resolvedTheme, setTheme } = useTheme();
+  const { t } = useUiLanguage();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -93,22 +96,22 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
         )}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="切换主题"
+        aria-label={t('theme.toggle')}
       >
         <TriggerIcon className={iconClassName ?? cn('shrink-0', isRailVariant ? 'h-[18px] w-[18px]' : isNavVariant ? 'h-5 w-5' : 'h-4 w-4')} />
         {isRailVariant ? (
-          <span className={labelClassName}>主题</span>
+          <span className={labelClassName}>{t('theme.theme')}</span>
         ) : isNavVariant ? (
-          collapsed ? null : <span className="truncate text-[1.02rem] font-medium">主题</span>
+          collapsed ? null : <span className="truncate text-[1.02rem] font-medium">{t('theme.theme')}</span>
         ) : (
-          <span className="hidden sm:inline">{resolveThemeLabel(activeTheme)}</span>
+          <span className="hidden sm:inline">{resolveThemeLabel(activeTheme, t)}</span>
         )}
       </button>
 
       {open ? (
         <div
           role="menu"
-          aria-label="主题模式"
+          aria-label={t('theme.menu')}
           className={cn(
             'z-[100] min-w-[8rem] overflow-hidden rounded-2xl border border-border/70 bg-elevated p-1.5 shadow-[0_24px_48px_rgba(3,8,20,0.32)] backdrop-blur-xl',
             isNavVariant || isRailVariant
@@ -116,7 +119,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
               : 'absolute right-0 mt-2'
           )}
         >
-          {THEME_OPTIONS.map(({ value, label, icon: Icon }) => {
+          {THEME_OPTIONS.map(({ value, labelKey, icon: Icon }) => {
             const isActive = activeTheme === value;
             return (
               <button
@@ -137,7 +140,7 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
               >
                 <span className="flex items-center gap-2">
                   <Icon className="h-4 w-4" />
-                  {label}
+                  {t(labelKey)}
                 </span>
                 {isActive ? <Check className="h-4 w-4 text-cyan" /> : null}
               </button>

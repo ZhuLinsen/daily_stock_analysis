@@ -5,8 +5,11 @@ import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { agentApi } from '../../api/agent';
 import { historyApi } from '../../api/history';
 import { systemConfigApi } from '../../api/systemConfig';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { useStockPoolStore } from '../../stores';
+import type { RunFlowSnapshot } from '../../types/runFlow';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import HomePage from '../HomePage';
 
 const navigateMock = vi.fn();
@@ -26,7 +29,9 @@ vi.mock('../../api/history', () => ({
     getNews: vi.fn().mockResolvedValue({ total: 0, items: [] }),
     getMarkdown: vi.fn().mockResolvedValue('# report'),
     getDiagnostics: vi.fn(),
+    getRecordFlow: vi.fn(),
     getStockBarList: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+    deleteByCode: vi.fn(),
   },
 }));
 
@@ -39,6 +44,7 @@ vi.mock('../../api/analysis', async () => {
       triggerMarketReview: vi.fn(),
       getStatus: vi.fn(),
       getTasks: vi.fn(),
+      getTaskFlow: vi.fn(),
     },
   };
 });
@@ -115,10 +121,67 @@ const marketReviewHistoryReport = {
   },
 };
 
+const runFlowSnapshot: RunFlowSnapshot = {
+  taskId: 'task-1',
+  traceId: 'trace-1',
+  stockCode: '600519',
+  stockName: '贵州茅台',
+  status: 'running',
+  generatedAt: '2026-06-08T08:00:00Z',
+  summary: {
+    elapsedMs: 1200,
+    failedAttempts: 0,
+    fallbackCount: 0,
+    dataSourceCount: 1,
+    eventCount: 1,
+  },
+  lanes: [
+    { id: 'entry', label: '入口', order: 1 },
+    { id: 'analysis', label: '分析引擎', order: 2 },
+  ],
+  nodes: [
+    {
+      id: 'request',
+      lane: 'entry',
+      kind: 'entry',
+      label: '用户请求',
+      status: 'success',
+    },
+    {
+      id: 'analysis',
+      lane: 'analysis',
+      kind: 'analysis',
+      label: '分析流程',
+      status: 'running',
+    },
+  ],
+  edges: [
+    {
+      id: 'request-analysis',
+      from: 'request',
+      to: 'analysis',
+      kind: 'control',
+      status: 'running',
+      label: '调度',
+    },
+  ],
+  events: [
+    {
+      id: 'evt-1',
+      timestamp: '2026-06-08T08:00:00Z',
+      severity: 'info',
+      type: 'task_started',
+      nodeId: 'analysis',
+      title: '任务开始',
+    },
+  ],
+};
+
 describe('HomePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     navigateMock.mockReset();
+    window.localStorage.clear();
     useStockPoolStore.getState().resetDashboardState();
     vi.mocked(analysisApi.getTasks).mockResolvedValue({
       total: 0,
@@ -134,6 +197,8 @@ describe('HomePage', () => {
       components: {},
       copyText: 'data_status: unknown',
     });
+    vi.mocked(historyApi.getRecordFlow).mockResolvedValue(runFlowSnapshot);
+    vi.mocked(analysisApi.getTaskFlow).mockResolvedValue(runFlowSnapshot);
     vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
       isComplete: true,
       readyForSmoke: true,
@@ -228,7 +293,86 @@ describe('HomePage', () => {
     expect(screen.getByText('暂无个股记录')).toBeInTheDocument();
   });
 
-  it('loads market review history as a dedicated sidebar collection', async () => {
+  it('opens the run-flow drawer from an active task in TaskPanel', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.getTasks).mockResolvedValue({
+      total: 1,
+      pending: 0,
+      processing: 1,
+      tasks: [
+        {
+          taskId: 'task-1',
+          traceId: 'trace-1',
+          stockCode: '600519',
+          stockName: '贵州茅台',
+          status: 'processing',
+          progress: 35,
+          message: '分析中',
+          reportType: 'detailed',
+          createdAt: '2026-06-08T08:00:00Z',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '查看 贵州茅台 运行流' }));
+
+    await waitFor(() => {
+      expect(analysisApi.getTaskFlow).toHaveBeenCalledWith('task-1');
+    });
+    expect(await screen.findByTestId('run-flow-panel')).toBeInTheDocument();
+    expect(screen.getByText('贵州茅台 运行流')).toBeInTheDocument();
+  });
+
+  it('opens the run-flow drawer from completed report diagnostics', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByText('运行状态'));
+    fireEvent.click(screen.getByRole('button', { name: '查看历史记录 1 运行流' }));
+
+    await waitFor(() => {
+      expect(historyApi.getRecordFlow).toHaveBeenCalledWith(1);
+    });
+    expect(await screen.findByTestId('run-flow-panel')).toBeInTheDocument();
+    expect(screen.getByText('贵州茅台 历史运行流')).toBeInTheDocument();
+  });
+
+  it('shows market review history in the stock bar', async () => {
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 1,
+      items: [{
+        id: 11,
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+        reportType: 'detailed',
+        sentimentScore: 72,
+        operationAdvice: '观察',
+        analysisCount: 2,
+        lastAnalysisTime: '2026-03-19T08:00:00Z',
+      }],
+    });
     vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
       if (params.reportType === 'market_review') {
         return Promise.resolve({
@@ -253,7 +397,11 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('大盘复盘历史')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
+    const newerStockButton = await screen.findByRole('button', { name: /AAPL/ });
+    const marketButton = await screen.findByRole('button', { name: /MARKET/ });
+    expect(newerStockButton.compareDocumentPosition(marketButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText('大盘复盘历史')).not.toBeInTheDocument();
     expect(historyApi.getList).toHaveBeenCalledWith({
       stockCode: 'MARKET',
       reportType: 'market_review',
@@ -264,6 +412,49 @@ describe('HomePage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /MARKET/ }));
 
     expect(await screen.findByText('大盘复盘摘要')).toBeInTheDocument();
+  });
+
+  it('removes the MARKET stock bar item after deleting market review history', async () => {
+    let isMarketReviewDeleted = false;
+    vi.mocked(historyApi.getStockBarList).mockResolvedValue({
+      total: 0,
+      items: [],
+    });
+    vi.mocked(historyApi.getList).mockImplementation((params: { reportType?: string } = {}) => {
+      if (params.reportType === 'market_review') {
+        return Promise.resolve({
+          total: isMarketReviewDeleted ? 0 : 1,
+          page: 1,
+          limit: 10,
+          items: isMarketReviewDeleted ? [] : [marketReviewHistoryItem],
+        });
+      }
+      return Promise.resolve({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+    });
+    vi.mocked(historyApi.deleteByCode).mockImplementation(async () => {
+      isMarketReviewDeleted = true;
+      return { deleted: 1 };
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('button', { name: /MARKET/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 大盘复盘 历史记录' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /MARKET/ })).not.toBeInTheDocument();
+    });
+    expect(historyApi.deleteByCode).toHaveBeenCalledWith('MARKET');
   });
 
   it('surfaces duplicate task warnings from dashboard submission', async () => {
@@ -326,6 +517,57 @@ describe('HomePage', () => {
     expect(await screen.findByText('大盘复盘已完成')).toBeInTheDocument();
     expect(await screen.findByText('市场复盘报告示例文本')).toBeInTheDocument();
     expect(analysisApi.getStatus).toHaveBeenCalledWith('task-1');
+  });
+
+  it('keeps report language unset when only the UI language is English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-1',
+      status: 'pending',
+    });
+    vi.mocked(analysisApi.triggerMarketReview).mockResolvedValue({
+      status: 'accepted',
+      sendNotification: true,
+      message: 'Market review task submitted',
+      taskId: 'market-task-1',
+    });
+    vi.mocked(analysisApi.getStatus).mockResolvedValue({
+      taskId: 'market-task-1',
+      status: 'completed',
+      marketReviewReport: 'Market review report',
+      marketReviewPayload: {
+        kind: 'market_review',
+        language: 'en',
+        title: 'Market review',
+        sections: [],
+      },
+    });
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    fireEvent.change(await screen.findByPlaceholderText('Enter a stock code or name, e.g. 600519, Kweichow Moutai, AAPL'), {
+      target: { value: 'AAPL' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Market review' }));
+
+    await waitFor(() => {
+      expect(analysisApi.analyzeAsync).toHaveBeenCalled();
+      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({ sendNotification: true });
+    });
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0]).not.toHaveProperty('reportLanguage');
   });
 
   it('uses the payload language for live market review controls', async () => {
@@ -756,6 +998,7 @@ describe('HomePage', () => {
       originalQuery: '600519',
       forceRefresh: true,
     }));
+    expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0]).not.toHaveProperty('reportLanguage');
   });
 
   it('passes the selected strategy when submitting stock analysis', async () => {
@@ -877,7 +1120,8 @@ describe('HomePage', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '重新分析' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '追问 AI' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '历史趋势' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新复盘' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '历史趋势' })).toBeInTheDocument();
     expect(historyApi.getMarkdown).toHaveBeenCalledWith(marketReviewHistoryReport.meta.id);
 
     expect(analysisApi.analyzeAsync).not.toHaveBeenCalled();

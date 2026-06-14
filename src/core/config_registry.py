@@ -2993,6 +2993,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "DAILY_MARKET_CONTEXT_ENABLED": {
+        "title": "Daily Market Context Enabled",
+        "description": "Inject daily market context into stock-analysis prompts and apply conservative decision guardrails.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 47,
+        "help_key": "settings.system.market_review",
+        "examples": [
+            "DAILY_MARKET_CONTEXT_ENABLED=true",
+            "DAILY_MARKET_CONTEXT_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "MARKET_REVIEW_REGION": {
         "title": "Market Review Region",
         "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), or both (all markets).",
@@ -3005,7 +3031,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "default_value": "cn",
         "options": ["cn", "hk", "us", "both"],
         "validation": {"enum": ["cn", "hk", "us", "both"]},
-        "display_order": 47,
+        "display_order": 48,
         "help_key": "settings.system.market_review",
         "examples": [
             "MARKET_REVIEW_REGION=cn",
@@ -3034,7 +3060,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {"label": "Red Up / Green Down", "value": "red_up"},
         ],
         "validation": {"enum": ["green_up", "red_up"]},
-        "display_order": 48,
+        "display_order": 49,
         "help_key": "settings.system.market_review",
         "examples": [
             "MARKET_REVIEW_COLOR_SCHEME=green_up",

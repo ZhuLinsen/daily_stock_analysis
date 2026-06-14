@@ -54,8 +54,10 @@ from src.report_language import (
     localize_confidence_level,
     normalize_report_language,
 )
+from src.schemas.decision_action import build_action_fields
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
 
 logger = logging.getLogger(__name__)
@@ -1505,6 +1507,8 @@ class AnalysisResult:
     decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
     report_language: str = "zh"  # 报告输出语言：zh/en
+    action: Optional[str] = None  # 建议动作 taxonomy：buy/add/hold/reduce/sell/watch/avoid/alert
+    action_label: Optional[str] = None  # 本地化建议动作标签
 
     # ========== 决策仪表盘 (新增) ==========
     dashboard: Optional[Dict[str, Any]] = None  # 完整的决策仪表盘数据
@@ -1568,6 +1572,8 @@ class AnalysisResult:
             'decision_type': self.decision_type,
             'confidence_level': self.confidence_level,
             'report_language': self.report_language,
+            'action': self.action,
+            'action_label': self.action_label,
             'dashboard': self.dashboard,  # 决策仪表盘数据
             'trend_analysis': self.trend_analysis,
             'short_term_outlook': self.short_term_outlook,
@@ -1648,6 +1654,30 @@ class AnalysisResult:
             "low": "⭐",
         }
         return star_map.get(str(self.confidence_level or "").strip().lower(), "⭐⭐")
+
+
+def populate_decision_action_fields(
+    result: AnalysisResult,
+    *,
+    explicit_action: Any = None,
+    report_type: Any = None,
+    use_existing_action: bool = True,
+) -> AnalysisResult:
+    """Populate optional decision action fields without changing legacy advice."""
+
+    action_source = explicit_action
+    if action_source is None and use_existing_action:
+        action_source = getattr(result, "action", None)
+
+    fields = build_action_fields(
+        operation_advice=getattr(result, "operation_advice", None),
+        explicit_action=action_source,
+        report_type=report_type,
+        report_language=getattr(result, "report_language", "zh"),
+    )
+    result.action = fields["action"]
+    result.action_label = fields["action_label"]
+    return result
 
 
 class GeminiAnalyzer:
@@ -2946,6 +2976,12 @@ class GeminiAnalyzer:
             context.get("market_phase_context"),
             report_language=report_language,
         )
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            context.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            prompt += daily_market_context_section
         if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
             prompt += analysis_context_pack_summary
         prompt += f"""
@@ -3565,7 +3601,11 @@ class GeminiAnalyzer:
                     op = data.get('operation_advice', 'Hold' if report_language == "en" else '持有')
                     decision_type = infer_decision_type_from_advice(op, default='hold')
                 
-                return AnalysisResult(
+                explicit_action = data.get("action")
+                if explicit_action is None and isinstance(dashboard, dict):
+                    explicit_action = dashboard.get("action")
+
+                result = AnalysisResult(
                     code=code,
                     name=name,
                     # 核心指标
@@ -3607,6 +3647,7 @@ class GeminiAnalyzer:
                     data_sources=data.get('data_sources', 'Technical data' if report_language == "en" else '技术面数据'),
                     success=True,
                 )
+                return populate_decision_action_fields(result, explicit_action=explicit_action)
             else:
                 # 没有找到 JSON，标记为失败
                 logger.warning(f"无法从响应中提取 JSON，标记为解析失败")
@@ -3704,7 +3745,7 @@ class GeminiAnalyzer:
         # 截取前500字符作为摘要
         summary = response_text[:500] if response_text else ('No analysis result' if report_language == "en" else '无分析结果')
         
-        return AnalysisResult(
+        result = AnalysisResult(
             code=code,
             name=name,
             sentiment_score=sentiment_score,
@@ -3720,6 +3761,7 @@ class GeminiAnalyzer:
             error_message='LLM response is not valid JSON; analysis result will not be persisted',
             report_language=report_language,
         )
+        return populate_decision_action_fields(result)
     
     def batch_analyze(
         self, 

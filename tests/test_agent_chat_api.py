@@ -2,7 +2,8 @@
 """Agent chat history API regressions."""
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -60,3 +61,71 @@ def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path
     assert "SECRET_REASONING" not in response.text
     assert "SECRET_TOOL_RESULT" not in response.text
     assert "tool_calls" not in response.text
+
+
+def test_agent_chat_forwards_stock_context_to_executor(tmp_path: Path) -> None:
+    executor = MagicMock()
+    executor.chat.return_value = SimpleNamespace(
+        success=True,
+        content="ok",
+        error=None,
+    )
+    config = SimpleNamespace(is_agent_available=lambda: True)
+
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False):
+        with patch("api.v1.endpoints.agent.get_config", return_value=config):
+            with patch("api.v1.endpoints.agent._build_executor", return_value=executor):
+                client = TestClient(create_app(static_dir=tmp_path / "static"))
+                response = client.post(
+                    "/api/v1/agent/chat",
+                    json={
+                        "message": "如果不考虑 TTM 呢",
+                        "session_id": "s1",
+                        "context": {
+                            "stock_code": "600519",
+                            "stock_name": "匿名标的",
+                        },
+                    },
+                )
+
+    assert response.status_code == 200
+    kwargs = executor.chat.call_args.kwargs
+    assert kwargs["message"] == "如果不考虑 TTM 呢"
+    assert kwargs["session_id"] == "s1"
+    assert kwargs["context"]["stock_code"] == "600519"
+    assert kwargs["context"]["stock_name"] == "匿名标的"
+
+
+def test_agent_chat_stream_forwards_stock_context_to_executor(tmp_path: Path) -> None:
+    executor = MagicMock()
+    executor.chat.return_value = SimpleNamespace(
+        success=True,
+        content="ok",
+        error=None,
+        total_steps=1,
+    )
+    config = SimpleNamespace(is_agent_available=lambda: True)
+
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False):
+        with patch("api.v1.endpoints.agent.get_config", return_value=config):
+            with patch("api.v1.endpoints.agent._build_executor", return_value=executor):
+                client = TestClient(create_app(static_dir=tmp_path / "static"))
+                response = client.post(
+                    "/api/v1/agent/chat/stream",
+                    json={
+                        "message": "如果不考虑 TTM 呢",
+                        "session_id": "s1",
+                        "context": {
+                            "stock_code": "600519",
+                            "stock_name": "匿名标的",
+                        },
+                    },
+                )
+
+    assert response.status_code == 200
+    assert '"type": "done"' in response.text
+    kwargs = executor.chat.call_args.kwargs
+    assert kwargs["message"] == "如果不考虑 TTM 呢"
+    assert kwargs["session_id"] == "s1"
+    assert kwargs["context"]["stock_code"] == "600519"
+    assert kwargs["context"]["stock_name"] == "匿名标的"

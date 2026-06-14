@@ -120,6 +120,11 @@ export const portfolioApi = {
     return toCamelCase<PortfolioAccountItem>(response.data);
   },
 
+  async deleteAccount(accountId: number): Promise<PortfolioDeleteResponse> {
+    const response = await apiClient.delete<Record<string, unknown>>(`/api/v1/portfolio/accounts/${accountId}`);
+    return toCamelCase<PortfolioDeleteResponse>(response.data);
+  },
+
   async getSnapshot(query: SnapshotQuery = {}): Promise<PortfolioSnapshotResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/snapshot', {
       params: buildSnapshotParams(query),

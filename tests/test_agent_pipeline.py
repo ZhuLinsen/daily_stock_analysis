@@ -712,6 +712,115 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.operation_advice, "观望")
         self.assertIn("Max steps exceeded", result.error_message)
 
+    def test_convert_agent_dashboard_preserves_explicit_action(self):
+        """Explicit Agent action is display taxonomy; decision_type remains the legacy bridge."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 52,
+                "trend_prediction": "震荡",
+                "operation_advice": "持有观察",
+                "decision_type": "hold",
+                "action": "watch",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action"
+        )
+        raw_result = result.to_dict()
+
+        self.assertEqual(result.operation_advice, "持有观察")
+        self.assertEqual(result.decision_type, "hold")
+        self.assertEqual(result.action, "watch")
+        self.assertEqual(result.action_label, "观望")
+        self.assertEqual(raw_result["action"], "watch")
+        self.assertEqual(raw_result["action_label"], "观望")
+
+    def test_final_action_refresh_preserves_explicit_action_when_advice_is_unchanged(self):
+        """Pre-save refresh must not overwrite an explicit Agent action without a final advice rewrite."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 52,
+                "trend_prediction": "震荡",
+                "operation_advice": "持有观察",
+                "decision_type": "hold",
+                "action": "watch",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action-preserve"
+        )
+        previous_operation_advice = result.operation_advice
+
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=previous_operation_advice,
+        )
+        raw_result = result.to_dict()
+
+        self.assertEqual(result.operation_advice, "持有观察")
+        self.assertEqual(result.action, "watch")
+        self.assertEqual(result.action_label, "观望")
+        self.assertEqual(raw_result["action"], "watch")
+        self.assertEqual(raw_result["action_label"], "观望")
+
+    def test_final_action_refresh_ignores_stale_pre_guardrail_action(self):
+        """Post-processing can rewrite advice; refreshed action must follow the final advice."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 68,
+                "trend_prediction": "震荡",
+                "operation_advice": "买入",
+                "decision_type": "buy",
+                "action": "buy",
+                "analysis_summary": "等待确认",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-action-refresh"
+        )
+        previous_operation_advice = result.operation_advice
+        result.operation_advice = "持有观察"
+        result.decision_type = "hold"
+
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=previous_operation_advice,
+        )
+
+        self.assertEqual(result.action, "hold")
+        self.assertEqual(result.action_label, "持有")
+
     def test_convert_invalid_dashboard_preserves_local_trend_result(self):
         """Invalid Agent dashboard should not erase already-computed trend data."""
         pipeline = self._make_pipeline()

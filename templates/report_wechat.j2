@@ -1,15 +1,14 @@
 ## 🎯 {{ report_date }} {{ labels.dashboard_title }}
 
 > {{ results|length }} {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+{% if market_status_line %}
+{{ market_status_line }}
+{% endif %}
 
 {% if summary_only %}
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
-{% set phase_excerpt = phase_pack_excerpt(e.result) %}
-{% if phase_excerpt %}
-{{ phase_excerpt }}
-{% endif %}
 {% endfor %}
 {% else %}
 {% for e in enriched %}
@@ -20,10 +19,6 @@
 {% set intel = dashboard.get('intelligence') or {} %}
 
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
-{% set phase_excerpt = phase_pack_excerpt(result) %}
-{% if phase_excerpt %}
-{{ phase_excerpt }}
-{% endif %}
 
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
 {% if one_sentence %}
