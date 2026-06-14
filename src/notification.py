@@ -19,7 +19,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# 定義北京時間（UTC+8）
+BEIJING_TZ = timezone(timedelta(hours=8))
+TAIPEI_TZ = BEIJING_TZ  # 兩者時間相同
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
@@ -791,7 +795,7 @@ class NotificationService(
             Markdown 格式的日报内容
         """
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
@@ -800,7 +804,7 @@ class NotificationService(
             f"# 📅 {report_date} {labels['report_title']}",
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
-            f"{labels['generated_at_label']}：{datetime.now().strftime('%H:%M:%S')}",
+            f"{labels['generated_at_label']}：{datetime.now(BEIJING_TZ).strftime('%H:%M:%S')}",
         ]
         self._append_market_status_line(report_lines, results, report_language)
         report_lines.extend(["---", ""])
@@ -980,7 +984,7 @@ class NotificationService(
         # 底部信息（去除免责声明）
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}：{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         
         return "\n".join(report_lines)
@@ -1059,7 +1063,7 @@ class NotificationService(
                 return out
 
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
 
         # 按评分排序（高分在前）
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
@@ -1328,7 +1332,7 @@ class NotificationService(
         # 底部（去除免责声明）
         report_lines.extend([
             "",
-            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+            f"*{labels['generated_at_label']}：{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         models = self._collect_models_used(results)
         if models:
@@ -1356,14 +1360,14 @@ class NotificationService(
             out = render(
                 platform='wechat',
                 results=results,
-                report_date=datetime.now().strftime('%Y-%m-%d'),
+                report_date=datetime.now(BEIJING_TZ).strftime('%Y-%m-%d'),
                 summary_only=self._report_summary_only,
                 extra_context={"report_language": report_language},
             )
             if out:
                 return out
 
-        report_date = datetime.now().strftime('%Y-%m-%d')
+        report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
         
         # 按评分排序
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
@@ -1492,7 +1496,7 @@ class NotificationService(
                 lines.append("")
         
         # 底部
-        lines.append(f"*{labels['report_time_label']}: {datetime.now().strftime('%H:%M')}*")
+        lines.append(f"*{labels['report_time_label']}: {datetime.now(BEIJING_TZ).strftime('%H:%M')}*")
         models = self._collect_models_used(results)
         if models:
             lines.append(f"*{labels['analysis_model_label']}: {', '.join(models)}*")
@@ -1511,7 +1515,7 @@ class NotificationService(
         Returns:
             精简版 Markdown 内容
         """
-        report_date = datetime.now().strftime('%Y-%m-%d')
+        report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
 
@@ -1592,7 +1596,7 @@ class NotificationService(
             Brief markdown content.
         """
         if report_date is None:
-            report_date = datetime.now().strftime('%Y-%m-%d')
+            report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
         config = get_config()
@@ -1632,7 +1636,7 @@ class NotificationService(
                 f"{labels['score_label']} {r.sentiment_score} | {one}"
             )
         lines.append("")
-        lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        lines.append(f"*{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')}*")
         models = self._collect_models_used(results)
         if models:
             lines.append(f"*{labels['analysis_model_label']}: {', '.join(models)}*")
@@ -1650,7 +1654,7 @@ class NotificationService(
         Returns:
             Markdown 格式的单股报告
         """
-        report_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+        report_date = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
         signal_text, signal_emoji, _ = self._get_signal_level(result)
@@ -1765,16 +1769,16 @@ class NotificationService(
 
     # Display name mapping for realtime data sources
     _SOURCE_DISPLAY_NAMES = {
-        "tencent": {"zh": "腾讯财经", "en": "Tencent Finance"},
-        "akshare_em": {"zh": "东方财富", "en": "Eastmoney"},
-        "akshare_sina": {"zh": "新浪财经", "en": "Sina Finance"},
-        "akshare_qq": {"zh": "腾讯财经", "en": "Tencent Finance"},
-        "efinance": {"zh": "东方财富(efinance)", "en": "Eastmoney (efinance)"},
+        "tencent": {"zh": "腾讯财经", "zh-tw": "騰訊財經", "en": "Tencent Finance"},
+        "akshare_em": {"zh": "东方财富", "zh-tw": "東方財富", "en": "Eastmoney"},
+        "akshare_sina": {"zh": "新浪财经", "zh-tw": "新浪財經", "en": "Sina Finance"},
+        "akshare_qq": {"zh": "腾讯财经", "zh-tw": "騰訊財經", "en": "Tencent Finance"},
+        "efinance": {"zh": "东方财富(efinance)", "zh-tw": "東方財富(efinance)", "en": "Eastmoney (efinance)"},
         "tushare": {"zh": "Tushare Pro", "en": "Tushare Pro"},
-        "sina": {"zh": "新浪财经", "en": "Sina Finance"},
+        "sina": {"zh": "新浪财经", "zh-tw": "新浪財經", "en": "Sina Finance"},
         "stooq": {"zh": "Stooq", "en": "Stooq"},
-        "longbridge": {"zh": "长桥", "en": "Longbridge"},
-        "fallback": {"zh": "降级兜底", "en": "Fallback"},
+        "longbridge": {"zh": "长桥", "zh-tw": "長橋", "en": "Longbridge"},
+        "fallback": {"zh": "降级兜底", "zh-tw": "降級兜底", "en": "Fallback"},
     }
 
     def _get_source_display_name(self, source: Any, language: Optional[str]) -> str:
@@ -2415,7 +2419,7 @@ class NotificationService(
         from pathlib import Path
         
         if filename is None:
-            date_str = datetime.now().strftime('%Y%m%d')
+            date_str = datetime.now(BEIJING_TZ).strftime('%Y%m%d')
             filename = f"report_{date_str}.md"
         
         # 确保 reports 目录存在（使用项目根目录下的 reports）

@@ -6,15 +6,19 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-SUPPORTED_REPORT_LANGUAGES = ("zh", "en")
+SUPPORTED_REPORT_LANGUAGES = ("zh", "zh-tw", "en")
 
 _REPORT_LANGUAGE_ALIASES = {
     "zh-cn": "zh",
     "zh_cn": "zh",
     "zh-hans": "zh",
     "zh_hans": "zh",
-    "zh-tw": "zh",
-    "zh_tw": "zh",
+    "zh-tw": "zh-tw",
+    "zh_tw": "zh-tw",
+    "zh-hant": "zh-tw",
+    "zh_hant": "zh-tw",
+    "tw": "zh-tw",
+    "traditional": "zh-tw",
     "cn": "zh",
     "chinese": "zh",
     "english": "en",
@@ -52,13 +56,13 @@ _OPERATION_ADVICE_CANONICAL_MAP = {
 }
 
 _OPERATION_ADVICE_TRANSLATIONS = {
-    "strong_buy": {"zh": "强烈买入", "en": "Strong Buy"},
-    "buy": {"zh": "买入", "en": "Buy"},
-    "hold": {"zh": "持有", "en": "Hold"},
-    "watch": {"zh": "观望", "en": "Watch"},
-    "reduce": {"zh": "减仓", "en": "Reduce"},
-    "sell": {"zh": "卖出", "en": "Sell"},
-    "strong_sell": {"zh": "强烈卖出", "en": "Strong Sell"},
+    "strong_buy": {"zh": "强烈买入", "zh-tw": "強烈買入", "en": "Strong Buy"},
+    "buy": {"zh": "买入", "zh-tw": "買入", "en": "Buy"},
+    "hold": {"zh": "持有", "zh-tw": "持有", "en": "Hold"},
+    "watch": {"zh": "观望", "zh-tw": "觀望", "en": "Watch"},
+    "reduce": {"zh": "减仓", "zh-tw": "減倉", "en": "Reduce"},
+    "sell": {"zh": "卖出", "zh-tw": "賣出", "en": "Sell"},
+    "strong_sell": {"zh": "强烈卖出", "zh-tw": "強烈賣出", "en": "Strong Sell"},
 }
 
 _TREND_PREDICTION_CANONICAL_MAP = {
@@ -88,11 +92,11 @@ _TREND_PREDICTION_CANONICAL_MAP = {
 }
 
 _TREND_PREDICTION_TRANSLATIONS = {
-    "strong_bullish": {"zh": "强烈看多", "en": "Strong Bullish"},
-    "bullish": {"zh": "看多", "en": "Bullish"},
-    "sideways": {"zh": "震荡", "en": "Sideways"},
-    "bearish": {"zh": "看空", "en": "Bearish"},
-    "strong_bearish": {"zh": "强烈看空", "en": "Strong Bearish"},
+    "strong_bullish": {"zh": "强烈看多", "zh-tw": "強烈看多", "en": "Strong Bullish"},
+    "bullish": {"zh": "看多", "zh-tw": "看多", "en": "Bullish"},
+    "sideways": {"zh": "震荡", "zh-tw": "震盪", "en": "Sideways"},
+    "bearish": {"zh": "看空", "zh-tw": "看空", "en": "Bearish"},
+    "strong_bearish": {"zh": "强烈看空", "zh-tw": "強烈看空", "en": "Strong Bearish"},
 }
 
 _CONFIDENCE_LEVEL_CANONICAL_MAP = {
@@ -106,9 +110,9 @@ _CONFIDENCE_LEVEL_CANONICAL_MAP = {
 }
 
 _CONFIDENCE_LEVEL_TRANSLATIONS = {
-    "high": {"zh": "高", "en": "High"},
-    "medium": {"zh": "中", "en": "Medium"},
-    "low": {"zh": "低", "en": "Low"},
+    "high": {"zh": "高", "zh-tw": "高", "en": "High"},
+    "medium": {"zh": "中", "zh-tw": "中", "en": "Medium"},
+    "low": {"zh": "低", "zh-tw": "低", "en": "Low"},
 }
 
 _CHIP_HEALTH_CANONICAL_MAP = {
@@ -121,9 +125,9 @@ _CHIP_HEALTH_CANONICAL_MAP = {
 }
 
 _CHIP_HEALTH_TRANSLATIONS = {
-    "healthy": {"zh": "健康", "en": "Healthy"},
-    "average": {"zh": "一般", "en": "Average"},
-    "caution": {"zh": "警惕", "en": "Caution"},
+    "healthy": {"zh": "健康", "zh-tw": "健康", "en": "Healthy"},
+    "average": {"zh": "一般", "zh-tw": "一般", "en": "Average"},
+    "caution": {"zh": "警惕", "zh-tw": "警惕", "en": "Caution"},
 }
 
 _BIAS_STATUS_CANONICAL_MAP = {
@@ -138,28 +142,32 @@ _BIAS_STATUS_CANONICAL_MAP = {
 }
 
 _BIAS_STATUS_TRANSLATIONS = {
-    "safe": {"zh": "安全", "en": "Safe"},
-    "caution": {"zh": "警戒", "en": "Caution"},
-    "danger": {"zh": "危险", "en": "Danger"},
+    "safe": {"zh": "安全", "zh-tw": "安全", "en": "Safe"},
+    "caution": {"zh": "警戒", "zh-tw": "警戒", "en": "Caution"},
+    "danger": {"zh": "危险", "zh-tw": "危險", "en": "Danger"},
 }
 
 _PLACEHOLDER_BY_LANGUAGE = {
     "zh": "待补充",
+    "zh-tw": "待補充",
     "en": "TBD",
 }
 
 _UNKNOWN_BY_LANGUAGE = {
     "zh": "未知",
+    "zh-tw": "未知",
     "en": "Unknown",
 }
 
 _NO_DATA_BY_LANGUAGE = {
     "zh": "数据缺失",
+    "zh-tw": "數據缺失",
     "en": "Data unavailable",
 }
 
 _CHIP_UNAVAILABLE_BY_LANGUAGE = {
     "zh": "筹码分布未启用或数据源暂不可用，未纳入筹码判断。",
+    "zh-tw": "籌碼分佈未啟用或數據源暫不可用，未納入籌碼判斷。",
     "en": "Chip distribution is disabled or temporarily unavailable; chip signals were not used.",
 }
 
@@ -196,6 +204,7 @@ _CHIP_UNAVAILABLE_REASON_KEYS = (
 
 _GENERIC_STOCK_NAME_BY_LANGUAGE = {
     "zh": "待确认股票",
+    "zh-tw": "待確認股票",
     "en": "Unnamed Stock",
 }
 
@@ -415,6 +424,114 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "board_change_pct_label": "Change %",
         "leading_board_label": "Leading",
         "lagging_board_label": "Lagging",
+    },
+    "zh-tw": {
+        "dashboard_title": "決策儀表板",
+        "brief_title": "決策簡報",
+        "analyzed_prefix": "共分析",
+        "stock_unit": "隻股票",
+        "stock_unit_compact": "隻",
+        "buy_label": "買入",
+        "watch_label": "觀望",
+        "sell_label": "賣出",
+        "summary_heading": "分析結果摘要",
+        "info_heading": "重要資訊速覽",
+        "sentiment_summary_label": "輿情情緒",
+        "earnings_outlook_label": "業績預期",
+        "risk_alerts_label": "風險警報",
+        "positive_catalysts_label": "利好催化",
+        "latest_news_label": "最新動態",
+        "core_conclusion_heading": "核心結論",
+        "one_sentence_label": "一句話決策",
+        "time_sensitivity_label": "時效性",
+        "default_time_sensitivity": "本週內",
+        "position_status_label": "持倉情況",
+        "action_advice_label": "操作建議",
+        "no_position_label": "空倉者",
+        "has_position_label": "持倉者",
+        "continue_holding": "繼續持有",
+        "market_snapshot_heading": "當日行情",
+        "close_label": "收盤",
+        "prev_close_label": "昨收",
+        "open_label": "開盤",
+        "high_label": "最高",
+        "low_label": "最低",
+        "change_pct_label": "漲跌幅",
+        "change_amount_label": "漲跌額",
+        "amplitude_label": "振幅",
+        "volume_label": "成交量",
+        "amount_label": "成交額",
+        "current_price_label": "當前價",
+        "volume_ratio_label": "量比",
+        "turnover_rate_label": "換手率",
+        "source_label": "行情來源",
+        "data_perspective_heading": "數據透視",
+        "ma_alignment_label": "均線排列",
+        "bullish_alignment_label": "多頭排列",
+        "yes_label": "是",
+        "no_label": "否",
+        "trend_strength_label": "趨勢強度",
+        "price_metrics_label": "價格指標",
+        "ma5_label": "MA5",
+        "ma10_label": "MA10",
+        "ma20_label": "MA20",
+        "bias_ma5_label": "乖離率 (MA5)",
+        "support_level_label": "支撐位",
+        "resistance_level_label": "壓力位",
+        "chip_label": "籌碼",
+        "battle_plan_heading": "作戰計劃",
+        "ideal_buy_label": "理想買入點",
+        "secondary_buy_label": "次優買入點",
+        "stop_loss_label": "止損位",
+        "take_profit_label": "目標位",
+        "suggested_position_label": "倉位建議",
+        "entry_plan_label": "建倉策略",
+        "risk_control_label": "風控策略",
+        "checklist_heading": "檢查清單",
+        "failed_checks_heading": "檢查未通過項",
+        "history_compare_heading": "歷史信號對比",
+        "time_label": "時間",
+        "score_label": "評分",
+        "advice_label": "建議",
+        "trend_label": "趨勢",
+        "generated_at_label": "報告生成時間",
+        "report_time_label": "生成時間",
+        "no_results": "無分析結果",
+        "report_title": "股票分析報告",
+        "avg_score_label": "均分",
+        "action_points_heading": "操作點位",
+        "position_advice_heading": "持倉建議",
+        "analysis_model_label": "分析模型",
+        "not_investment_advice": "AI 生成，僅供參考，不構成投資建議",
+        "details_report_hint": "詳細報告見",
+        "phase_decision_heading": "盤中決策護欄",
+        "action_window_label": "行動窗口",
+        "immediate_action_label": "當前動作",
+        "watch_conditions_label": "觀察條件",
+        "next_check_time_label": "下次檢查",
+        "confidence_reason_label": "置信度理由",
+        "data_limitations_label": "數據限制",
+        "financial_summary_heading": "財務摘要",
+        "report_date_label": "報告期",
+        "revenue_label": "營業收入",
+        "net_profit_label": "歸母淨利潤",
+        "operating_cash_flow_label": "經營現金流",
+        "roe_label": "ROE",
+        "revenue_yoy_label": "營收同比",
+        "net_profit_yoy_label": "淨利同比",
+        "gross_margin_label": "毛利率",
+        "shareholder_return_heading": "股東回報",
+        "ttm_cash_dividend_label": "近12月每股現金分紅(稅前)",
+        "ttm_event_count_label": "近12月分紅次數",
+        "ttm_dividend_yield_label": "TTM 股息率",
+        "latest_ex_dividend_label": "最近除息日",
+        "related_boards_heading": "關聯板塊",
+        "board_name_label": "板塊",
+        "board_type_label": "類型",
+        "board_status_label": "板塊表現",
+        "board_change_pct_label": "板塊漲跌幅",
+        "leading_board_label": "領漲",
+        "lagging_board_label": "領跌",
     },
 }
 

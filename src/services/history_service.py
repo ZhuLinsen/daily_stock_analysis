@@ -12,7 +12,10 @@ Responsibilities:
 from __future__ import annotations
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+BEIJING_TZ = timezone(timedelta(hours=8))
+TAIPEI_TZ = BEIJING_TZ  # 兩者時間相同
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
@@ -852,8 +855,8 @@ class HistoryService:
         Returns:
             Markdown formatted report string
         """
-        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else datetime.now().strftime("%Y-%m-%d")
-        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now().strftime("%H:%M:%S")
+        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now(BEIJING_TZ).strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
         analysis_date_label = "Analysis Date" if report_language == "en" else "分析日期"

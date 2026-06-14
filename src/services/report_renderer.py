@@ -89,7 +89,10 @@ def render(
     Returns:
         Rendered string, or None on error (caller should fallback).
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta, timezone
+
+    BEIJING_TZ = timezone(timedelta(hours=8))
+    TAIPEI_TZ = BEIJING_TZ  # 兩者時間相同
 
     try:
         from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -98,7 +101,7 @@ def render(
         return None
 
     if report_date is None:
-        report_date = datetime.now().strftime("%Y-%m-%d")
+        report_date = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
     templates_dir = _resolve_templates_dir()
     template_name = f"report_{platform}.j2"
@@ -144,7 +147,7 @@ def render(
                 models_used.append(model)
         models_used = list(dict.fromkeys(models_used))
 
-    report_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_timestamp = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     def failed_checks(checklist: List[str]) -> List[str]:
         return [c for c in (checklist or []) if c.startswith("❌") or c.startswith("⚠️")]
