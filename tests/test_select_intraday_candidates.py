@@ -20,7 +20,7 @@ def _market_frame(size=20):
             "代码": [f"600{i:03d}" for i in range(size)],
             "名称": [f"测试股份{i}" for i in range(size)],
             "最新价": [10 + i for i in range(size)],
-            "涨跌幅": [1 + (i % 5) for i in range(size)],
+            "涨跌幅": [float(1 + (i % 5)) for i in range(size)],
             "成交额": [100_000_000 + i * 20_000_000 for i in range(size)],
             "换手率": [1 + (i % 8) for i in range(size)],
             "量比": [1 + (i % 4) * 0.5 for i in range(size)],
