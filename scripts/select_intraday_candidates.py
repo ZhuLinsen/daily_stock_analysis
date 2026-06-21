@@ -7,10 +7,11 @@ import argparse
 import json
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,12 +34,12 @@ class Candidate:
 
 
 COLUMN_ALIASES = {
-    "code": ("代码", "股票代码", "code"),
+    "code": ("代码", "股票代码", "code", "symbol"),
     "name": ("名称", "股票名称", "name"),
-    "price": ("最新价", "现价", "price"),
-    "pct_change": ("涨跌幅", "change_percent", "pct_change"),
+    "price": ("最新价", "现价", "price", "trade"),
+    "pct_change": ("涨跌幅", "change_percent", "pct_change", "changepercent"),
     "amount": ("成交额", "amount"),
-    "turnover": ("换手率", "turnover"),
+    "turnover": ("换手率", "turnover", "turnover_rate", "turnoverratio"),
     "volume_ratio": ("量比", "volume_ratio"),
     "speed": ("涨速", "speed"),
 }
@@ -48,8 +49,9 @@ def _column(frame: pd.DataFrame, key: str) -> pd.Series:
     for alias in COLUMN_ALIASES[key]:
         if alias in frame.columns:
             return frame[alias]
-    if key == "speed":
-        return pd.Series(0.0, index=frame.index)
+    if key in {"speed", "turnover", "volume_ratio"}:
+        neutral = 0.0 if key == "speed" else 1.0
+        return pd.Series(neutral, index=frame.index)
     raise ValueError(f"行情数据缺少必要字段: {key}")
 
 
@@ -148,10 +150,70 @@ def is_trading_day(now: datetime | None = None) -> bool:
         return now.weekday() < 5
 
 
-def fetch_market_snapshot() -> pd.DataFrame:
-    import akshare as ak
+def _market_sources() -> Sequence[tuple[str, Callable[[], pd.DataFrame]]]:
+    """Build full-market sources lazily so one broken package does not block fallbacks."""
 
-    return ak.stock_zh_a_spot_em()
+    sources: list[tuple[str, Callable[[], pd.DataFrame]]] = []
+    try:
+        import akshare as ak
+
+        sources.append(("akshare_eastmoney", ak.stock_zh_a_spot_em))
+    except Exception as exc:
+        print(f"[行情源] AkShare 东财不可用: {exc}", file=sys.stderr)
+
+    try:
+        import efinance as ef
+
+        sources.append(("efinance", ef.stock.get_realtime_quotes))
+    except Exception as exc:
+        print(f"[行情源] efinance 不可用: {exc}", file=sys.stderr)
+
+    try:
+        import akshare as ak
+
+        sources.append(("akshare_sina", ak.stock_zh_a_spot))
+    except Exception as exc:
+        print(f"[行情源] AkShare 新浪不可用: {exc}", file=sys.stderr)
+    return sources
+
+
+def fetch_market_snapshot(
+    sources: Sequence[tuple[str, Callable[[], pd.DataFrame]]] | None = None,
+    attempts: int = 2,
+) -> pd.DataFrame:
+    """Fetch a non-empty full-market snapshot with retries and source failover."""
+
+    errors: list[str] = []
+    configured_sources = sources if sources is not None else _market_sources()
+    if not configured_sources:
+        raise RuntimeError("没有可用的全市场行情源")
+
+    for source_name, loader in configured_sources:
+        for attempt in range(1, max(attempts, 1) + 1):
+            try:
+                print(
+                    f"[行情源] 尝试 {source_name} ({attempt}/{max(attempts, 1)})",
+                    file=sys.stderr,
+                )
+                frame = loader()
+                if frame is None or frame.empty:
+                    raise RuntimeError("返回空数据")
+                # Validate the minimum fields before accepting this source.
+                for required in ("code", "name", "price", "pct_change", "amount"):
+                    _column(frame, required)
+                print(
+                    f"[行情源] {source_name} 成功，返回 {len(frame)} 条",
+                    file=sys.stderr,
+                )
+                return frame
+            except Exception as exc:
+                error = f"{source_name} 第 {attempt} 次失败: {exc}"
+                errors.append(error)
+                print(f"[行情源] {error}", file=sys.stderr)
+                if attempt < max(attempts, 1):
+                    time.sleep(min(2 ** (attempt - 1), 3))
+
+    raise RuntimeError("所有行情源均失败：" + "；".join(errors))
 
 
 def write_reports(candidates: Iterable[Candidate], json_path: Path, md_path: Path) -> None:
