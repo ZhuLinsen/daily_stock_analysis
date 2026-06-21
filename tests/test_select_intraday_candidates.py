@@ -58,3 +58,41 @@ def test_raises_when_not_enough_liquid_candidates():
 
     with pytest.raises(RuntimeError, match="不足 10 支"):
         MODULE.select_candidates(frame, count=10)
+
+
+def test_market_snapshot_falls_back_after_primary_failure():
+    calls = []
+
+    def broken_source():
+        calls.append("primary")
+        raise ConnectionError("remote disconnected")
+
+    def backup_source():
+        calls.append("backup")
+        return _market_frame()
+
+    result = MODULE.fetch_market_snapshot(
+        [("primary", broken_source), ("backup", backup_source)],
+        attempts=1,
+    )
+
+    assert len(result) == 20
+    assert calls == ["primary", "backup"]
+
+
+def test_sina_style_columns_use_neutral_missing_metrics():
+    frame = _market_frame().rename(
+        columns={
+            "代码": "symbol",
+            "名称": "name",
+            "最新价": "trade",
+            "涨跌幅": "changepercent",
+            "成交额": "amount",
+            "换手率": "turnoverratio",
+        }
+    ).drop(columns=["量比", "涨速"])
+
+    selected = MODULE.select_candidates(frame, count=10)
+
+    assert len(selected) == 10
+    assert all(item.volume_ratio == 1.0 for item in selected)
