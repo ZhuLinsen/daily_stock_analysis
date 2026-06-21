@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每个工作日北京时间 10:00 (UTC 02:00)
   schedule:
-    - cron: '40 1 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 2 * * 1-5'
   
   # 手动触发
   workflow_dispatch:
@@ -35,9 +35,6 @@ jobs:
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
     
     steps:
-      - name: 随机延迟（避免固定时间访问）
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
       - name: 检出代码
         uses: actions/checkout@v5
       
@@ -260,6 +257,10 @@ jobs:
           # 自选股配置
           # ==========================================
           STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
+          AUTO_SELECT_COUNT: ${{ vars.AUTO_SELECT_COUNT || '10' }}
+          AUTO_SELECT_MIN_AMOUNT: ${{ vars.AUTO_SELECT_MIN_AMOUNT || '100000000' }}
+          AUTO_SELECT_MIN_PRICE: ${{ vars.AUTO_SELECT_MIN_PRICE || '2' }}
+          AUTO_SELECT_MAX_PRICE: ${{ vars.AUTO_SELECT_MAX_PRICE || '200' }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           
           # ==========================================
@@ -358,13 +359,34 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
+          if [ "$MODE" != "market-only" ]; then
+            # 盘中全市场筛选候选股。非交易日正常退出，不触发分析和推送。
+            echo "🔎 正在从 A 股全市场筛选 ${AUTO_SELECT_COUNT} 支盘中候选股..."
+            SELECTED_STOCKS="$(python scripts/select_intraday_candidates.py \
+              --count "$AUTO_SELECT_COUNT" \
+              --json reports/intraday_candidates.json \
+              --markdown reports/intraday_candidates.md \
+              $FORCE_RUN_ARG)"
+            if [ "$SELECTED_STOCKS" = "SKIP_NON_TRADING_DAY" ]; then
+              echo "📅 今日不是 A 股交易日，跳过选股、分析和推送。"
+              exit 0
+            fi
+            if [ -z "$SELECTED_STOCKS" ]; then
+              echo "❌ 未能筛选出候选股票。"
+              exit 1
+            fi
+            export STOCK_LIST="$SELECTED_STOCKS"
+            echo "✅ 今日候选股: $STOCK_LIST"
+            cat reports/intraday_candidates.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
+            python main.py --stocks "$STOCK_LIST" --no-market-review $FORCE_RUN_ARG
           else
-            python main.py $FORCE_RUN_ARG
+            python main.py --stocks "$STOCK_LIST" $FORCE_RUN_ARG
           fi
       
       - name: 上传分析报告
