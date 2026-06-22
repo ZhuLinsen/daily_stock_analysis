@@ -698,6 +698,40 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["LOG_LEVEL"], "")
 
+    def test_import_desktop_env_preserves_exported_braced_webhook_template(self) -> None:
+        template = '{"content":${content_json}}'
+
+        save_payload = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=False,
+        )
+        self.assertTrue(save_payload["success"])
+        backup_content = self.service.export_desktop_env()["content"]
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+            backup_content,
+        )
+
+        clear_payload = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": ""}],
+            reload_now=False,
+        )
+        self.assertTrue(clear_payload["success"])
+
+        restore_payload = self.service.import_desktop_env(
+            config_version=self.manager.get_config_version(),
+            content=backup_content,
+            reload_now=False,
+        )
+
+        self.assertTrue(restore_payload["success"])
+        self.assertEqual(
+            self.manager.read_config_map()["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            template,
+        )
+
     def test_import_desktop_env_rejects_empty_or_comment_only_content(self) -> None:
         with self.assertRaises(ConfigImportError):
             self.service.import_desktop_env(
@@ -2612,6 +2646,58 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         self.assertEqual(Config.get_instance().stock_list, ["300750", "TSLA"])
+
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_escapes_custom_webhook_template_and_runtime_reads_literals(
+        self,
+        _mock_reload_runtime_singletons,
+    ) -> None:
+        template = '{"title":$title_json,"content":$content_json}'
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(Config.get_instance().custom_webhook_body_template, template)
+
+        items = {
+            item["key"]: item
+            for item in self.service.get_config(include_schema=True)["items"]
+        }
+        self.assertEqual(items["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
+
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_escapes_braced_custom_webhook_template_and_runtime_reads_literals(
+        self,
+        _mock_reload_runtime_singletons,
+    ) -> None:
+        template = '{"content":${content_json}}'
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(Config.get_instance().custom_webhook_body_template, template)
+
+        items = {
+            item["key"]: item
+            for item in self.service.get_config(include_schema=True)["items"]
+        }
+        self.assertEqual(items["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
 
     def test_update_raises_conflict_for_stale_version(self) -> None:
         with self.assertRaises(ConfigConflictError):

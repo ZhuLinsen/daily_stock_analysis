@@ -28,6 +28,23 @@ _MAIN_IMPORT_ENV_OVERRIDES = {
 }
 
 
+def _api_app_stub_modules():
+    """sys.modules entries so ``start_api_server`` can ``from api.app import app``
+    without importing the real (heavy) app tree in these isolated unit tests.
+
+    ``start_api_server`` imports the ASGI app object in the calling thread so the
+    import stays out of the uvicorn startup probe window; these control-flow tests
+    stub it the same way they already stub uvicorn.
+    """
+    import types
+
+    api_pkg = types.ModuleType("api")
+    api_app_mod = types.ModuleType("api.app")
+    api_app_mod.app = SimpleNamespace()
+    api_pkg.app = api_app_mod
+    return {"api": api_pkg, "api.app": api_app_mod}
+
+
 class _DummyConfig(SimpleNamespace):
     def validate(self):
         return []
@@ -174,7 +191,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
                 pass
 
         with patch("socket.socket", return_value=_UnusedSocket()), \
-             patch.dict("sys.modules", {"uvicorn": _FakeUvicornModule()}):
+             patch.dict(
+                 "sys.modules",
+                 {"uvicorn": _FakeUvicornModule(), **_api_app_stub_modules()},
+             ):
 
             with self.assertRaises(RuntimeError) as caught:
                 main.start_api_server("127.0.0.1", 8000, config)
@@ -212,7 +232,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
                 pass
 
         with patch("socket.socket", return_value=_UnusedSocket()), \
-             patch.dict("sys.modules", {"uvicorn": SimpleNamespace(Config=_CompatConfig, Server=_CompatServer)}):
+             patch.dict(
+                 "sys.modules",
+                 {
+                     "uvicorn": SimpleNamespace(Config=_CompatConfig, Server=_CompatServer),
+                     **_api_app_stub_modules(),
+                 },
+             ):
             main.start_api_server("127.0.0.1", 8000, config)
 
         self.assertIsNotNone(_CompatServer.instance)

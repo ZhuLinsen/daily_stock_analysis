@@ -860,6 +860,27 @@ _LLM_USAGE_INTEGER_TELEMETRY_COLUMNS = {
     if column_type == "INTEGER"
 }
 _LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS = {"tokenizer_name", "tokenizer_version"}
+_LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR = "prompt_cache_telemetry_disabled"
+_LLM_PROMPT_CACHE_TELEMETRY_COLUMNS = {
+    "provider_usage_json",
+    "provider_usage_schema_name",
+    "provider_usage_schema_version",
+    "provider_usage_observed_at",
+    "normalized_cache_read_tokens",
+    "normalized_cache_write_tokens",
+    "normalized_cache_miss_tokens",
+    "normalized_uncached_input_tokens",
+    "normalized_cache_eligible_input_tokens",
+    "normalized_cache_hit_ratio",
+    "normalized_cache_write_ratio",
+    "cache_capability",
+    "cache_eligibility",
+    "cache_observation",
+    "estimated_prefix_tokens",
+    "provider_reported_cached_tokens",
+    "provider_min_cache_tokens",
+    "eligibility_confidence",
+}
 
 
 class AlertRuleRecord(Base):
@@ -3213,7 +3234,11 @@ def persist_llm_usage(
 ) -> None:
     """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
     try:
-        usage = usage or {}
+        if usage is None:
+            usage = {}
+        prompt_cache_telemetry_disabled = bool(
+            getattr(usage, _LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR, False)
+        )
         prompt_tokens = _coerce_llm_usage_non_negative_int(usage.get("prompt_tokens")) or 0
         completion_tokens = _coerce_llm_usage_non_negative_int(usage.get("completion_tokens")) or 0
         total_tokens = _coerce_llm_usage_non_negative_int(usage.get("total_tokens")) or 0
@@ -3221,6 +3246,9 @@ def persist_llm_usage(
             column: usage.get(column)
             for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL
         }
+        if prompt_cache_telemetry_disabled:
+            for column in _LLM_PROMPT_CACHE_TELEMETRY_COLUMNS:
+                telemetry[column] = None
         for column in _LLM_USAGE_INTEGER_TELEMETRY_COLUMNS:
             telemetry[column] = _coerce_llm_usage_non_negative_int(telemetry.get(column))
         telemetry["normalized_prompt_tokens"] = (
@@ -3249,11 +3277,12 @@ def persist_llm_usage(
                 "normalized_total_tokens",
             )
         )
-        telemetry["cache_capability"] = usage.get("cache_capability") or "unknown"
-        telemetry["cache_eligibility"] = usage.get("cache_eligibility") or "unknown"
-        telemetry["cache_observation"] = usage.get("cache_observation") or (
-            "no_usage" if not has_usage_payload else "unknown"
-        )
+        if not prompt_cache_telemetry_disabled:
+            telemetry["cache_capability"] = usage.get("cache_capability") or "unknown"
+            telemetry["cache_eligibility"] = usage.get("cache_eligibility") or "unknown"
+            telemetry["cache_observation"] = usage.get("cache_observation") or (
+                "no_usage" if not has_usage_payload else "unknown"
+            )
         db = DatabaseManager.get_instance()
         db.record_llm_usage(
             call_type=call_type,

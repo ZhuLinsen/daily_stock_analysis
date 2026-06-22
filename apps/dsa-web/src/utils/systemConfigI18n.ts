@@ -76,6 +76,9 @@ const fieldTitleMap: Record<string, string> = {
   LITELLM_CONFIG: '高级模型路由配置',
   LLM_CHANNELS: 'LLM 渠道列表',
   LLM_TEMPERATURE: '采样温度',
+  LLM_PROMPT_CACHE_TELEMETRY_ENABLED: 'Prompt Cache 遥测',
+  LLM_PROMPT_CACHE_HINTS_ENABLED: 'Prompt Cache Hints',
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: 'Prompt Cache 诊断级别',
   LLM_USAGE_HMAC_SECRET: 'LLM 用量 HMAC 密钥',
   LLM_USAGE_HMAC_KEY_VERSION: 'LLM 用量 HMAC 版本',
   AIHUBMIX_KEY: 'AIHubmix Key',
@@ -227,6 +230,9 @@ const fieldDescriptionMap: Record<string, string> = {
   LITELLM_CONFIG: '高级模型路由 YAML 配置文件路径（高级用法）。仅在 YAML 可解析且产出 model_list 时优先于渠道与旧配置，否则会回退。',
   LLM_CHANNELS: '渠道名称列表（逗号分隔）。推荐使用上方渠道编辑器管理。',
   LLM_TEMPERATURE: '控制模型输出随机性，0 为确定性输出，2 为最大随机性，推荐 0.7。',
+  LLM_PROMPT_CACHE_TELEMETRY_ENABLED: '记录 provider 返回的 prompt cache usage 与归一化诊断；不控制 provider implicit cache。',
+  LLM_PROMPT_CACHE_HINTS_ENABLED: '允许向已验证 provider/route 主动发送 prompt_cache_key、cache_control 或 user_id 等 cache hint；未知网关默认不发送。',
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: '控制 prompt cache capability 与 hint 决策诊断：off、basic 或 debug；debug 也不得包含 raw prompt 或密钥。',
   LLM_USAGE_HMAC_SECRET: '用于 LLM 用量遥测 message HMAC 的部署级密钥。留空时使用本地自动生成的密钥文件。',
   LLM_USAGE_HMAC_KEY_VERSION: 'LLM 用量遥测 HMAC 密钥版本标签；轮换密钥时同步更新，避免跨版本 hash 被误比较。',
   AIHUBMIX_KEY: 'AIHubmix 一站式密钥，自动指向 aihubmix.com/v1。',
@@ -388,6 +394,11 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
     error: '错误',
     critical: '严重',
   },
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: {
+    off: '关闭',
+    basic: '基础',
+    debug: '调试',
+  },
   MARKET_REVIEW_REGION: {
     cn: 'A 股',
     hk: '港股',
@@ -452,6 +463,11 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
     warning: 'Warning',
     error: 'Error',
     critical: 'Critical',
+  },
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: {
+    off: 'Off',
+    basic: 'Basic',
+    debug: 'Debug',
   },
   MARKET_REVIEW_REGION: {
     cn: 'A-shares',

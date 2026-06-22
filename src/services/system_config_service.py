@@ -1671,14 +1671,14 @@ class SystemConfigService:
 
     @staticmethod
     def _parse_imported_env_content(content: str) -> List[Dict[str, str]]:
-        """Parse raw `.env` text into update items using current dotenv semantics."""
+        """Parse raw `.env` text into update items without expanding app templates."""
         normalized_content = content.replace("\ufeff", "")
         if not normalized_content.strip():
             raise ConfigImportError("未识别到有效 .env 配置")
 
         from dotenv import dotenv_values
 
-        parsed = dotenv_values(stream=io.StringIO(normalized_content))
+        parsed = dotenv_values(stream=io.StringIO(normalized_content), interpolate=False)
         updates: List[Dict[str, str]] = []
         for key, value in parsed.items():
             if key is None:

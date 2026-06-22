@@ -436,6 +436,120 @@ class TestAnalyzerGenerateText:
         assert "temperature" not in strict_router.completion.call_args_list[1].kwargs
         assert flex_router.completion.call_args.kwargs["temperature"] == 0.2
 
+    def test_prompt_cache_hints_disabled_does_not_change_analyzer_request_shape(self):
+        from src.analyzer import GeminiAnalyzer
+
+        cfg = SimpleNamespace(
+            litellm_model="openai/gpt-4o",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.7,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=["sk-openai-test"],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+            llm_prompt_cache_telemetry_enabled=True,
+            llm_prompt_cache_hints_enabled=False,
+            llm_prompt_cache_diagnostics_level="off",
+        )
+        analyzer = GeminiAnalyzer(config=cfg)
+        captured = {}
+
+        def _fake_recovery(call, **kwargs):
+            captured["call_kwargs"] = kwargs["call_kwargs"]
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                usage={"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+            )
+
+        with patch("src.analyzer.call_litellm_with_param_recovery", side_effect=_fake_recovery):
+            text, _, _ = analyzer._call_litellm("dynamic prompt", {"max_tokens": 128, "temperature": 0.7})
+
+        assert text == "ok"
+        call_kwargs = captured["call_kwargs"]
+        assert "prompt_cache_key" not in call_kwargs
+        assert call_kwargs["messages"] == [
+            {"role": "system", "content": analyzer.TEXT_SYSTEM_PROMPT},
+            {"role": "user", "content": "dynamic prompt"},
+        ]
+
+    def test_prompt_cache_telemetry_disabled_filters_cache_fields_from_analyzer_usage(self):
+        from src.analyzer import GeminiAnalyzer
+
+        cfg = SimpleNamespace(
+            litellm_model="openai/gpt-4o",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.7,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=["sk-openai-test"],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+            llm_prompt_cache_telemetry_enabled=False,
+            llm_prompt_cache_hints_enabled=False,
+            llm_prompt_cache_diagnostics_level="off",
+        )
+        analyzer = GeminiAnalyzer(config=cfg)
+
+        def _fake_recovery(call, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                usage={
+                    "prompt_tokens": 1200,
+                    "completion_tokens": 1,
+                    "total_tokens": 1201,
+                    "prompt_tokens_details": {"cached_tokens": 1000},
+                },
+            )
+
+        with patch("src.analyzer.call_litellm_with_param_recovery", side_effect=_fake_recovery):
+            _, _, usage = analyzer._call_litellm("dynamic prompt", {"max_tokens": 128, "temperature": 0.7})
+
+        assert usage["prompt_tokens"] == 1200
+        assert usage["completion_tokens"] == 1
+        assert usage["total_tokens"] == 1201
+        assert "provider_usage_json" not in usage
+        assert "normalized_cache_read_tokens" not in usage
+        assert "cache_capability" not in usage
+        assert usage["messages_hmac"]
+
+    def test_prompt_cache_telemetry_disabled_marks_no_usage_response_for_storage(self):
+        from src.analyzer import GeminiAnalyzer
+
+        cfg = SimpleNamespace(
+            litellm_model="openai/gpt-4o",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=0.7,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=["sk-openai-test"],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+            llm_prompt_cache_telemetry_enabled=False,
+            llm_prompt_cache_hints_enabled=False,
+            llm_prompt_cache_diagnostics_level="off",
+        )
+        analyzer = GeminiAnalyzer(config=cfg)
+
+        def _fake_recovery(call, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                usage=None,
+            )
+
+        with patch("src.analyzer.call_litellm_with_param_recovery", side_effect=_fake_recovery):
+            text, _, usage = analyzer._call_litellm("dynamic prompt", {"max_tokens": 128, "temperature": 0.7})
+
+        assert text == "ok"
+        assert getattr(usage, "prompt_cache_telemetry_disabled", False)
+        assert "cache_capability" not in usage
+        assert "cache_eligibility" not in usage
+        assert "cache_observation" not in usage
+        assert usage["messages_hmac"]
+
     def test_call_litellm_stream_falls_back_to_non_stream_before_first_chunk(self):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(

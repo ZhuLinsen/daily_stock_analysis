@@ -863,6 +863,11 @@ Available placeholders: `$content_json`, `$content`, `$title_json`, `$title`.
 Raw `$content` / `$title` are not JSON-escaped, so quotes or newlines can make
 the template invalid and trigger fallback.
 
+In Docker Compose deployments, saving this value from Web Settings writes these
+app placeholders as `$$content_json` / `$$title_json` and restores the single
+`$` form at runtime, preventing Compose from expanding them to empty values. If
+you edit the Docker `.env` manually, use the same `$$content_json` style.
+
 Bark stays on the custom webhook baseline; no `BARK_*` settings are required.
 Set the Bark endpoint in `CUSTOM_WEBHOOK_URLS`. When using Bark with a global
 template, include the Bark body explicitly:
