@@ -58,6 +58,7 @@ _ALLOWED_RAW_USAGE_SCALAR_KEYS = {
     "cached_tokens",
     "cached_content_token_count",
     "cache_read_tokens",
+    "cache_write_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
     "prompt_cache_hit_tokens",
@@ -117,6 +118,7 @@ _PROVIDER_USAGE_JSON_SIGNAL_KEYS = (
     "cached_tokens",
     "cached_content_token_count",
     "cache_read_tokens",
+    "cache_write_tokens",
     "cache_read_input_tokens",
     "cache_creation_input_tokens",
     "prompt_cache_hit_tokens",
@@ -359,7 +361,7 @@ def normalize_litellm_usage(
             cache_field_observed = True
             capability = "supported"
         provider_min_cache_tokens = 1024
-    elif provider_name in {"glm", _OPENAI_COMPATIBLE_PROVIDER}:
+    elif provider_name in {"glm", "qwen", "dashscope", _OPENAI_COMPATIBLE_PROVIDER}:
         cached = _nested_int(usage, ("prompt_tokens_details", "cached_tokens"))
         if cached is not None:
             cache_read = cached
@@ -391,10 +393,18 @@ def normalize_litellm_usage(
             cache_read = cached
             cache_field_observed = True
             capability = "supported"
-    elif provider_name == "stepfun":
+    elif provider_name in {"kimi", "moonshot", "minimax", "stepfun"}:
         cached = _first_int(usage, "cached_tokens")
         if cached is not None:
             cache_read = cached
+            cache_field_observed = True
+            capability = "supported"
+    elif provider_name == "openrouter":
+        read_tokens = _first_int(usage, "cache_read_tokens")
+        write_tokens = _first_int(usage, "cache_write_tokens")
+        if read_tokens is not None or write_tokens is not None:
+            cache_read = read_tokens or 0
+            cache_write = write_tokens or 0
             cache_field_observed = True
             capability = "supported"
 
@@ -558,6 +568,35 @@ def build_message_hmacs(
     base["messages_hmac"] = _hmac_json(secret, normalized_messages)
     base["system_message_hmac"] = _role_hmac(secret, normalized_messages, "system")
     base["user_message_hmac"] = _role_hmac(secret, normalized_messages, "user")
+    base["hmac_key_version"] = key_version
+    return base
+
+
+def build_domain_hmac(
+    value: Any,
+    *,
+    domain: str,
+    hash_scope: str = DEFAULT_HASH_SCOPE,
+) -> Dict[str, Any]:
+    """Return a domain-separated HMAC without exposing the raw input value."""
+    normalized_domain = (domain or "").strip() or DEFAULT_HMAC_DOMAIN
+    base: Dict[str, Any] = {
+        "hmac": None,
+        "hmac_key_version": None,
+        "hmac_domain": normalized_domain,
+        "hash_scope": hash_scope,
+    }
+    secret = _load_usage_hmac_secret()
+    if secret is None:
+        return base
+    key_version = os.getenv("LLM_USAGE_HMAC_KEY_VERSION", DEFAULT_HMAC_KEY_VERSION).strip() or DEFAULT_HMAC_KEY_VERSION
+    base["hmac"] = _hmac_json(
+        secret,
+        {
+            "domain": normalized_domain,
+            "value": value,
+        },
+    )
     base["hmac_key_version"] = key_version
     return base
 
@@ -895,6 +934,14 @@ def _has_deepseek_hit_miss_shape(usage: Mapping[str, Any]) -> bool:
 def _infer_provider(model: str, provider: Optional[str]) -> str:
     normalized_model = (model or "").strip().lower()
     normalized_provider = (provider or "").strip().lower()
+    try:
+        from src.llm.provider_cache import infer_provider_family
+
+        inferred = infer_provider_family(model=normalized_model, provider=normalized_provider)
+        if inferred:
+            return inferred
+    except Exception:
+        pass
     route_text = f"{normalized_provider} {normalized_model}"
 
     if normalized_model.startswith("openai/~") or "openrouter" in route_text:

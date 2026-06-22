@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
+from src.core.config_manager import unescape_compose_sensitive_env_value
 from src.report_language import (
     is_supported_report_language_value,
     normalize_report_language,
@@ -67,6 +68,7 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+PROMPT_CACHE_DIAGNOSTICS_LEVELS = {"off", "basic", "debug"}
 # Fallback defaults used when ANSPIRE_API_KEYS is reused as legacy OpenAI-compatible source.
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
@@ -96,6 +98,18 @@ def _has_gotify_base_url(value: Optional[str]) -> bool:
         return False
     path_segments = [segment for segment in parsed.path.split("/") if segment]
     return not (path_segments and path_segments[-1].lower() == "message")
+
+
+def parse_prompt_cache_diagnostics_level(value: Optional[str]) -> str:
+    """Parse prompt-cache diagnostics level with a conservative fallback."""
+    normalized = (value or "off").strip().lower()
+    if normalized in PROMPT_CACHE_DIAGNOSTICS_LEVELS:
+        return normalized
+    logger.warning(
+        "Invalid LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=%r; falling back to off",
+        value,
+    )
+    return "off"
 
 
 AGENT_MAX_STEPS_DEFAULT = 10
@@ -604,7 +618,26 @@ def setup_env(override: bool = False):
         env_path = Path(env_file)
     else:
         env_path = Path(__file__).parent.parent / '.env'
+    compose_sensitive_keys = ("CUSTOM_WEBHOOK_BODY_TEMPLATE",)
+    preexisting_compose_sensitive_keys = {
+        key for key in compose_sensitive_keys if key in os.environ
+    }
     load_dotenv(dotenv_path=env_path, override=override)
+    try:
+        raw_env_values = dotenv_values(env_path, interpolate=False)
+    except Exception as exc:  # pragma: no cover - defensive branch
+        logger.warning("Failed to read raw .env values from %s: %s", env_path, exc)
+        return
+
+    key = "CUSTOM_WEBHOOK_BODY_TEMPLATE"
+    if key in raw_env_values and (
+        override or key not in preexisting_compose_sensitive_keys
+    ):
+        raw_value = raw_env_values.get(key)
+        os.environ[key] = unescape_compose_sensitive_env_value(
+            key,
+            "" if raw_value is None else str(raw_value),
+        )
 
 
 @dataclass
@@ -648,6 +681,11 @@ class Config:
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
+
+    # Provider prompt-cache controls. These do not control provider implicit cache.
+    llm_prompt_cache_telemetry_enabled: bool = True
+    llm_prompt_cache_hints_enabled: bool = False
+    llm_prompt_cache_diagnostics_level: str = "off"
 
     # --- Multi-channel LLM config (new) ---
     # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
@@ -1464,6 +1502,17 @@ class Config:
             llm_channels=llm_channels,
             llm_channel_names=llm_channel_names,
             llm_model_list=llm_model_list,
+            llm_prompt_cache_telemetry_enabled=parse_env_bool(
+                os.getenv("LLM_PROMPT_CACHE_TELEMETRY_ENABLED"),
+                default=True,
+            ),
+            llm_prompt_cache_hints_enabled=parse_env_bool(
+                os.getenv("LLM_PROMPT_CACHE_HINTS_ENABLED"),
+                default=False,
+            ),
+            llm_prompt_cache_diagnostics_level=parse_prompt_cache_diagnostics_level(
+                os.getenv("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+            ),
             gemini_api_keys=gemini_api_keys,
             anthropic_api_keys=anthropic_api_keys,
             openai_api_keys=openai_api_keys,
@@ -1618,7 +1667,10 @@ class Config:
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
-            custom_webhook_body_template=os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE'),
+            custom_webhook_body_template=unescape_compose_sensitive_env_value(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE',
+                os.getenv('CUSTOM_WEBHOOK_BODY_TEMPLATE') or '',
+            ) or None,
             webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=(
@@ -2169,7 +2221,7 @@ class Config:
         value = env_values.get(key)
         if value is None:
             return None
-        return str(value)
+        return unescape_compose_sensitive_env_value(key, str(value))
 
     @classmethod
     def _resolve_env_value(

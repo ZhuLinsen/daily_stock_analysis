@@ -38,6 +38,7 @@ from src.llm.usage import (
     should_persist_usage_telemetry,
     _reset_usage_hmac_secret_cache_for_tests,
 )
+from src.llm.provider_cache import filter_prompt_cache_telemetry
 from src.storage import (
     DatabaseManager,
     LLMUsage,
@@ -439,6 +440,51 @@ class TestLLMUsageNormalizer(unittest.TestCase):
         self.assertEqual(usage["cache_capability"], "supported")
         self.assertEqual(usage["cache_observation"], "full_hit")
         self.assertIsNone(usage["provider_min_cache_tokens"])
+
+    def test_qwen_wrapped_openai_model_uses_openai_compatible_cache_shape(self):
+        usage = normalize_litellm_usage(
+            {
+                "prompt_tokens": 1500,
+                "completion_tokens": 200,
+                "total_tokens": 1700,
+                "prompt_tokens_details": {"cached_tokens": 1200},
+            },
+            model="openai/qwen-max",
+        )
+
+        self.assertEqual(usage["normalized_cache_read_tokens"], 1200)
+        self.assertEqual(usage["cache_capability"], "supported")
+        self.assertEqual(usage["cache_observation"], "partial_hit")
+
+    def test_kimi_wrapped_openai_model_uses_top_level_cached_tokens(self):
+        usage = normalize_litellm_usage(
+            {
+                "prompt_tokens": 1500,
+                "completion_tokens": 200,
+                "total_tokens": 1700,
+                "cached_tokens": 300,
+            },
+            model="openai/kimi-k2",
+        )
+
+        self.assertEqual(usage["normalized_cache_read_tokens"], 300)
+        self.assertEqual(usage["cache_capability"], "supported")
+
+    def test_openrouter_cache_read_write_tokens(self):
+        usage = normalize_litellm_usage(
+            {
+                "prompt_tokens": 1500,
+                "completion_tokens": 200,
+                "total_tokens": 1700,
+                "cache_read_tokens": 300,
+                "cache_write_tokens": 100,
+            },
+            model="openai/~anthropic/claude-sonnet",
+        )
+
+        self.assertEqual(usage["normalized_cache_read_tokens"], 300)
+        self.assertEqual(usage["normalized_cache_write_tokens"], 100)
+        self.assertEqual(usage["cache_capability"], "supported")
 
     def test_anthropic_official_cache_breakdown_sums_total_input(self):
         usage = normalize_litellm_usage(
@@ -1606,6 +1652,61 @@ class TestPersistUsageHelper(unittest.TestCase):
             self.assertEqual(len(row.messages_hmac), 64)
             self.assertNotIn("system prompt", row.provider_usage_json)
             self.assertNotIn("user prompt", row.provider_usage_json)
+
+    def test_prompt_cache_telemetry_disabled_does_not_synthesize_cache_columns(self):
+        usage = normalize_litellm_usage(
+            {
+                "prompt_tokens": 2000,
+                "completion_tokens": 100,
+                "total_tokens": 2100,
+                "prompt_tokens_details": {"cached_tokens": 500},
+            },
+            model="openai/gpt-4o",
+        )
+        filtered = filter_prompt_cache_telemetry(
+            usage,
+            SimpleNamespace(llm_prompt_cache_telemetry_enabled=False),
+        )
+
+        persist_llm_usage(
+            filtered,
+            "openai/gpt-4o",
+            call_type="analysis",
+            stock_code="000001",
+        )
+
+        with self.db.session_scope() as session:
+            row = session.query(LLMUsage).one()
+            self.assertEqual(row.prompt_tokens, 2000)
+            self.assertEqual(row.normalized_prompt_tokens, 2000)
+            self.assertIsNone(row.provider_usage_json)
+            self.assertIsNone(row.normalized_cache_read_tokens)
+            self.assertIsNone(row.cache_capability)
+            self.assertIsNone(row.cache_eligibility)
+            self.assertIsNone(row.cache_observation)
+
+    def test_prompt_cache_telemetry_disabled_no_usage_does_not_synthesize_cache_columns(self):
+        filtered = filter_prompt_cache_telemetry(
+            {},
+            SimpleNamespace(llm_prompt_cache_telemetry_enabled=False),
+        )
+
+        persist_llm_usage(
+            filtered,
+            "openai/gpt-4o",
+            call_type="analysis",
+            stock_code="000001",
+        )
+
+        with self.db.session_scope() as session:
+            row = session.query(LLMUsage).one()
+            self.assertEqual(row.prompt_tokens, 0)
+            self.assertEqual(row.normalized_prompt_tokens, 0)
+            self.assertIsNone(row.provider_usage_json)
+            self.assertIsNone(row.normalized_cache_read_tokens)
+            self.assertIsNone(row.cache_capability)
+            self.assertIsNone(row.cache_eligibility)
+            self.assertIsNone(row.cache_observation)
 
     def test_persist_usage_does_not_store_unmodeled_prompt_payload_fields(self):
         usage = normalize_litellm_usage(

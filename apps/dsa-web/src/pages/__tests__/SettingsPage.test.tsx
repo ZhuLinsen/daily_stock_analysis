@@ -809,6 +809,72 @@ describe('SettingsPage', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps prompt cache settings collapsed and expandable at the bottom of AI model settings', () => {
+    const aiField = (key: string, displayOrder: number, value = '') => ({
+      key,
+      value,
+      rawValueExists: Boolean(value),
+      isMasked: false,
+      schema: {
+        key,
+        category: 'ai_model',
+        dataType: 'string',
+        uiControl: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? 'select' : 'text',
+        isSensitive: false,
+        isRequired: false,
+        isEditable: true,
+        options: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? ['off', 'basic', 'debug'] : [],
+        validation: {},
+        displayOrder,
+      },
+    });
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        ai_model: [
+          aiField('LITELLM_CONFIG', 10, './litellm.yaml'),
+          aiField('LLM_PROMPT_CACHE_TELEMETRY_ENABLED', 20, 'true'),
+          aiField('LLM_PROMPT_CACHE_HINTS_ENABLED', 21, 'false'),
+          aiField('LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 22, 'off'),
+        ],
+      },
+    }));
+
+    const { container } = render(<SettingsPage />);
+
+    const promptCacheSummary = screen.getByText('Provider Prompt Cache 高级设置').closest('summary');
+    const promptCacheDetails = promptCacheSummary?.closest('details');
+    const telemetryField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED');
+    const hintsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED');
+    const diagnosticsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL');
+
+    expect(promptCacheSummary).toBeInTheDocument();
+    expect(promptCacheDetails).toBeInTheDocument();
+    expect(promptCacheDetails).not.toHaveAttribute('open');
+    expect(promptCacheDetails).toContainElement(telemetryField);
+    expect(promptCacheDetails).toContainElement(hintsField);
+    expect(promptCacheDetails).toContainElement(diagnosticsField);
+    expect(telemetryField).not.toBeVisible();
+    expect(hintsField).not.toBeVisible();
+    expect(diagnosticsField).not.toBeVisible();
+
+    fireEvent.click(promptCacheSummary as HTMLElement);
+
+    expect(promptCacheDetails).toHaveAttribute('open');
+    expect(telemetryField).toBeVisible();
+    expect(hintsField).toBeVisible();
+    expect(diagnosticsField).toBeVisible();
+
+    expect(Array.from(container.querySelectorAll('[data-testid^="settings-field-"]')).map((node) => node.getAttribute('data-testid'))).toEqual([
+      'settings-field-LITELLM_CONFIG',
+      'settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
+    ]);
+  });
+
   it('notifies alphasift status update and skips install after generic save when ALPHASIFT_ENABLED is set false', async () => {
     save.mockResolvedValue({ success: true });
     getChangedItems.mockReturnValue([{ key: 'ALPHASIFT_ENABLED', value: 'false' }]);

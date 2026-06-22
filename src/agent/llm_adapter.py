@@ -34,6 +34,12 @@ from src.agent.provider_trace import (
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params, resolve_litellm_wire_model
 from src.llm.usage import attach_message_hmacs, extract_usage_payload, normalize_litellm_usage
+from src.llm.provider_cache import (
+    build_provider_cache_route_context,
+    filter_prompt_cache_telemetry,
+    normalize_prompt_cache_diagnostics_level,
+    resolve_provider_cache_caps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +619,24 @@ class LLMToolAdapter:
             self._get_temperature() if temperature is None else temperature,
             model_list=recovery_model_list,
         )
+        diagnostics_level = normalize_prompt_cache_diagnostics_level(
+            getattr(self._config, "llm_prompt_cache_diagnostics_level", "off")
+        )
+        if diagnostics_level != "off":
+            route_context = build_provider_cache_route_context(
+                model=model,
+                call_kwargs=call_kwargs,
+                model_list=recovery_model_list,
+                call_type="agent",
+            )
+            caps = resolve_provider_cache_caps(route_context)
+            logger.debug(
+                "[PromptCache] agent diagnostics provider=%s api_surface=%s verification=%s activation=%s",
+                caps.provider,
+                caps.api_surface,
+                caps.verification_status,
+                caps.cache_activation,
+            )
         register_fallback_model_pricing(
             resolve_fallback_litellm_wire_models(model, self._config.llm_model_list)
         )
@@ -794,6 +818,7 @@ class LLMToolAdapter:
                 provider=provider_name,
             )
             usage = attach_message_hmacs(usage, messages)
+            usage = filter_prompt_cache_telemetry(usage, getattr(self, "_config", None))
         else:
             usage = {}
         return LLMResponse(
