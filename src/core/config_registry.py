@@ -844,12 +844,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "FIRECRAWL_API_KEYS=fc-xxxx",
             "FIRECRAWL_API_KEYS=fc-key-1,fc-key-2",
         ],
-        "docs": [
-            {
-                "label": "完整指南：搜索服务配置",
-                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
-            },
-        ],
         "warning_codes": ["secret_value", "comma_separated_keys"],
     },
     "TAVILY_API_KEYS": {
@@ -978,20 +972,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 53,
-    },
-    "FIRECRAWL_KEYLESS_ENABLED": {
-        "title": "Firecrawl Keyless Fallback",
-        "description": "Opt-in: when no FIRECRAWL_API_KEYS is set, use Firecrawl Keyless (no key, 1000 free credits/month) as a lowest-priority, best-effort fallback. IP-reputation gated — datacenter/CI IPs are refused, so configure an API key for servers/cron. Default: false.",
-        "category": "data_source",
-        "data_type": "boolean",
-        "ui_control": "switch",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "false",
-        "options": [],
-        "validation": {},
-        "display_order": 26,
     },
     "ENABLE_REALTIME_QUOTE": {
         "title": "Enable Realtime Quote",
@@ -4418,15 +4398,6 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         ],
         "docs": _DOC_FULL_GUIDE_SEARCH,
         "warning_codes": ["public_instance_stability"],
-    },
-    "FIRECRAWL_KEYLESS_ENABLED": {
-        "help_key": "settings.data_source.search_api_keys",
-        "examples": [
-            "FIRECRAWL_KEYLESS_ENABLED=true",
-            "FIRECRAWL_KEYLESS_ENABLED=false",
-        ],
-        "docs": _DOC_FULL_GUIDE_SEARCH,
-        "warning_codes": [],
     },
     "BIAS_THRESHOLD": {
         "help_key": "settings.data_source.BIAS_THRESHOLD",

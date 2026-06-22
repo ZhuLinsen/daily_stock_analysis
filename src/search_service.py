@@ -4702,7 +4702,10 @@ def get_search_service() -> SearchService:
                 
                 _search_service = SearchService(
                     firecrawl_keys=config.firecrawl_api_keys,
-                    firecrawl_keyless_enabled=config.firecrawl_keyless_enabled,
+                    # Firecrawl API key is optional: with no key, fall back to keyless
+                    # (1000 free credits/month). Keyless is IP-reputation gated, so it
+                    # works for local/dev but may be refused on datacenter/CI IPs.
+                    firecrawl_keyless_enabled=not config.firecrawl_api_keys,
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
                     anspire_keys=config.anspire_api_keys,

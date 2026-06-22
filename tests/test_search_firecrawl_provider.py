@@ -22,6 +22,7 @@ from src.search_service import FirecrawlSearchProvider, SearchService
 
 class _FakeFirecrawlClient:
     """Fake for the top-level keyed `firecrawl.Firecrawl` client."""
+
     response_payload = {"web": []}
     init_api_keys = []
     search_calls = []
@@ -42,6 +43,7 @@ class _FakeFirecrawlClient:
 
 class _FakeFirecrawlV2Client:
     """Fake for the keyless `firecrawl.v2.FirecrawlClient` (constructed with NO key)."""
+
     response_payload = {"web": []}
     init_count = 0
     init_kwargs = []
@@ -171,9 +173,7 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
         provider = FirecrawlSearchProvider(["dummy_key"])
         long_text = "x" * 5000
 
-        with self._patch_firecrawl(
-            {"web": [{"title": "A", "url": "https://a.com", "summary": long_text}]}
-        ):
+        with self._patch_firecrawl({"web": [{"title": "A", "url": "https://a.com", "summary": long_text}]}):
             resp = provider.search("anything", max_results=1)
 
         self.assertEqual(len(resp.results[0].snippet), FirecrawlSearchProvider._CONTENT_CHAR_LIMIT)
@@ -226,9 +226,7 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
     def test_keyless_search_uses_v2_client_without_key(self) -> None:
         provider = FirecrawlSearchProvider(keyless=True)
 
-        with self._patch_firecrawl(
-            {"news": [{"title": "Keyless hit", "url": "https://ex.com/x", "summary": "body"}]}
-        ):
+        with self._patch_firecrawl({"news": [{"title": "Keyless hit", "url": "https://ex.com/x", "summary": "body"}]}):
             resp = provider.search("BABA news", max_results=2, days=3, topic="news")
 
         # v2 keyless client used; top-level keyed Firecrawl never constructed
@@ -243,9 +241,7 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
     def test_keyed_search_does_not_construct_v2_keyless_client(self) -> None:
         provider = FirecrawlSearchProvider(["fc-key"])
 
-        with self._patch_firecrawl(
-            {"web": [{"title": "Keyed", "url": "https://ex.com/y", "summary": "body"}]}
-        ):
+        with self._patch_firecrawl({"web": [{"title": "Keyed", "url": "https://ex.com/y", "summary": "body"}]}):
             resp = provider.search("BABA price", max_results=2)
 
         self.assertTrue(resp.success)
