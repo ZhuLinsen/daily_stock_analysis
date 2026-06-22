@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronDown, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useAuth, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
@@ -81,6 +81,16 @@ type DesktopUpdateNotice = {
   actionLabel?: string;
   actionKind?: 'release' | 'install';
 };
+
+const PROMPT_CACHE_ADVANCED_SETTING_KEYS = new Set([
+  'LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
+  'LLM_PROMPT_CACHE_HINTS_ENABLED',
+  'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
+]);
+
+function isPromptCacheAdvancedSetting(item: { key: string }) {
+  return PROMPT_CACHE_ADVANCED_SETTING_KEYS.has(item.key);
+}
 
 function trimDesktopRuntimeString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
@@ -760,6 +770,13 @@ const SettingsPage: React.FC = () => {
       : activeCategory === 'agent'
         ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
+  const promptCacheAdvancedItems = activeCategory === 'ai_model'
+    ? activeItems.filter(isPromptCacheAdvancedSetting)
+    : [];
+  const visibleActiveItems = activeCategory === 'ai_model'
+    ? activeItems.filter((item) => !isPromptCacheAdvancedSetting(item))
+    : activeItems;
+  const hasActiveConfigItems = visibleActiveItems.length > 0 || promptCacheAdvancedItems.length > 0;
   const isEnvBackupAllowed = isDesktopRuntime || authEnabled;
   const envBackupActionDisabled = isLoading || isSaving || isExportingEnv || isImportingEnv || !isEnvBackupAllowed;
 
@@ -976,12 +993,12 @@ const SettingsPage: React.FC = () => {
       ? <>Check and provide the desktop log <code>desktop.log</code>, plus the release version, Windows version, and trigger path.</>
       : <>请查看并提供桌面端日志 <code>desktop.log</code>，同时补充 release 版本、Windows 版本和触发入口。</>
     : t('settings.diagnosticHintWeb');
-  const activeConfigPanel = activeItems.length ? (
+  const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
       title={t('settings.activePanelTitle')}
       description={getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage) || t('settings.activePanelDescription')}
     >
-      {activeItems.map((item) => (
+      {visibleActiveItems.map((item) => (
         <SettingsField
           key={item.key}
           item={item}
@@ -991,6 +1008,33 @@ const SettingsPage: React.FC = () => {
           issues={issueByKey[item.key] || []}
         />
       ))}
+      {promptCacheAdvancedItems.length ? (
+        <details className="group/prompt-cache rounded-[1.15rem] border border-[var(--settings-border)] bg-[var(--settings-surface)] p-4 shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
+          <summary className="flex cursor-pointer list-none items-start justify-between gap-3 [&::-webkit-details-marker]:hidden">
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm font-semibold text-foreground">
+                {t('settings.promptCacheAdvancedTitle')}
+              </p>
+              <p className="text-xs leading-5 text-muted-text">
+                {t('settings.promptCacheAdvancedDescription')}
+              </p>
+            </div>
+            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-text transition-transform group-open/prompt-cache:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="mt-4 space-y-4">
+            {promptCacheAdvancedItems.map((item) => (
+              <SettingsField
+                key={item.key}
+                item={item}
+                value={item.value}
+                disabled={isSaving}
+                onChange={setDraftValue}
+                issues={issueByKey[item.key] || []}
+              />
+            ))}
+          </div>
+        </details>
+      ) : null}
     </SettingsSectionCard>
   ) : (
     <EmptyState
@@ -1337,7 +1381,7 @@ const SettingsPage: React.FC = () => {
                 />
               </SettingsPanelErrorBoundary>
             ) : null}
-            {shouldGuardActiveConfigPanel && activeItems.length ? (
+            {shouldGuardActiveConfigPanel && hasActiveConfigItems ? (
               <SettingsPanelErrorBoundary
                 title={activeConfigPanelErrorTitle}
                 resetKey={`${activeCategory}:${configVersion}`}

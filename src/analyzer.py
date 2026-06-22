@@ -47,6 +47,11 @@ from src.llm.usage import (
     extract_usage_payload,
     normalize_litellm_usage,
 )
+from src.llm.provider_cache import (
+    apply_prompt_cache_hints,
+    build_provider_cache_route_context,
+    filter_prompt_cache_telemetry,
+)
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.report_language import (
@@ -2377,11 +2382,12 @@ class GeminiAnalyzer:
     ) -> Dict[str, Any]:
         """Normalize usage objects from LiteLLM responses/chunks."""
         if not usage_obj:
-            return attach_message_hmacs({}, messages) if messages is not None else {}
+            usage = attach_message_hmacs({}, messages) if messages is not None else {}
+            return filter_prompt_cache_telemetry(usage, self._get_runtime_config())
         usage = normalize_litellm_usage(usage_obj, model=model, provider=provider)
         if messages is not None:
             usage = attach_message_hmacs(usage, messages)
-        return usage
+        return filter_prompt_cache_telemetry(usage, self._get_runtime_config())
 
     @staticmethod
     def _get_response_field(obj: Any, key: str) -> Any:
@@ -2597,16 +2603,22 @@ class GeminiAnalyzer:
                     messages: List[Dict[str, Any]],
                 ) -> Dict[str, Any]:
                     if audit_context is None:
-                        return attach_message_hmacs(usage, messages)
+                        return filter_prompt_cache_telemetry(
+                            attach_message_hmacs(usage, messages),
+                            config,
+                        )
                     effective_audit_context = dict(audit_context)
                     effective_audit_context["provider"] = usage_provider
                     effective_audit_context["transport"] = (
                         effective_audit_context.get("transport") or "litellm"
                     )
-                    return attach_legacy_message_stability_audit(
-                        usage,
-                        messages,
-                        effective_audit_context,
+                    return filter_prompt_cache_telemetry(
+                        attach_legacy_message_stability_audit(
+                            usage,
+                            messages,
+                            effective_audit_context,
+                        ),
+                        config,
                     )
 
                 model_short = model.split("/")[-1] if "/" in model else model
@@ -2642,6 +2654,17 @@ class GeminiAnalyzer:
                     requested_temperature,
                     model_list=recovery_model_list,
                 )
+                route_context = build_provider_cache_route_context(
+                    model=model,
+                    provider=usage_provider,
+                    call_kwargs=call_kwargs,
+                    model_list=recovery_model_list,
+                    call_type="analysis",
+                )
+                hint_result = apply_prompt_cache_hints(call_kwargs, route_context, config)
+                call_kwargs = hint_result.call_kwargs
+                if hint_result.diagnostics:
+                    logger.debug("[PromptCache] %s", hint_result.diagnostics)
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}

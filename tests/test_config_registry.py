@@ -192,6 +192,39 @@ class TestScheduleTimesFieldRegistered(unittest.TestCase):
         self.assertIsNone(pattern.fullmatch("25:70"))
 
 
+class TestLLMPromptCacheFieldsRegistered(unittest.TestCase):
+    def test_prompt_cache_telemetry_default_enabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+    def test_prompt_cache_hints_default_disabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "false")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+    def test_prompt_cache_diagnostics_is_select(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "off")
+        self.assertEqual(
+            [option["value"] for option in field["options"]],
+            ["off", "basic", "debug"],
+        )
+        self.assertEqual(field["validation"], {"enum": ["off", "basic", "debug"]})
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 

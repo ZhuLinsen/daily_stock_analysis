@@ -196,6 +196,42 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertIn("STOCK_LIST=600519,300750", env_content)
         self.assertIn("GEMINI_API_KEY=new-secret-value", env_content)
 
+    def test_put_config_escapes_custom_webhook_template_placeholders(self) -> None:
+        template = '{"title":$title_json,"content":$content_json}'
+        current = system_config.get_system_config(
+            include_schema=False,
+            service=self.service,
+        ).model_dump()
+
+        payload = system_config.update_system_config(
+            request=UpdateSystemConfigRequest(
+                config_version=current["config_version"],
+                mask_token="******",
+                reload_now=False,
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_BODY_TEMPLATE",
+                        "value": template,
+                    },
+                ],
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertEqual(payload["applied_count"], 1)
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        item_map = {
+            item["key"]: item
+            for item in system_config.get_system_config(
+                include_schema=True,
+                service=self.service,
+            ).model_dump(by_alias=True)["items"]
+        }
+        self.assertEqual(item_map["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
+
     def test_put_config_returns_conflict_when_version_is_stale(self) -> None:
         with self.assertRaises(HTTPException) as context:
             system_config.update_system_config(
