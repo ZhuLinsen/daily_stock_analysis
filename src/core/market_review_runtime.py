@@ -86,6 +86,8 @@ def build_market_review_runtime(
     has_search_capability = getattr(config, "has_search_capability_enabled", None)
     if callable(has_search_capability) and has_search_capability():
         search_service = SearchService(
+            firecrawl_keys=getattr(config, "firecrawl_api_keys", None),
+            firecrawl_keyless_enabled=not getattr(config, "firecrawl_api_keys", None),
             bocha_keys=getattr(config, "bocha_api_keys", None),
             tavily_keys=getattr(config, "tavily_api_keys", None),
             anspire_keys=getattr(config, "anspire_api_keys", None),

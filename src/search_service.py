@@ -563,20 +563,40 @@ class FirecrawlSearchProvider(BaseSearchProvider):
 
             results: List[SearchResult] = []
             for item in items:
-                url = self._field(item, "url") or ""
-                # 优先用整页摘要，其次正文 markdown，最后回退到搜索描述
+                # 当启用 scrape_options 时，SDK 把每条结果封装成 Document，
+                # url/title/date 落在 item.metadata 下（DocumentMetadata），而非顶层；
+                # 未抓取的 SearchResultWeb/News 则在顶层。故顶层优先、metadata 兜底。
+                meta = self._field(item, "metadata")
+                url = (
+                    self._field(item, "url")
+                    or (self._field(meta, "url", "source_url", "sourceURL", "og_url") if meta else None)
+                    or ""
+                )
+                # 优先用整页摘要，其次正文 markdown / 描述 / 新闻 snippet，最后回退 metadata 描述
                 content = (
                     self._field(item, "summary")
                     or self._field(item, "markdown")
                     or self._field(item, "description")
+                    or self._field(item, "snippet")
+                    or (self._field(meta, "description") if meta else None)
                     or ""
                 )
+                title = (
+                    self._field(item, "title")
+                    or (self._field(meta, "title", "og_title") if meta else None)
+                    or ""
+                )
+                published_date = self._field(item, "published_date", "publishedDate", "date") or (
+                    self._field(meta, "published_time", "publishedTime", "dc_date", "modified_time")
+                    if meta
+                    else None
+                )
                 results.append(SearchResult(
-                    title=self._field(item, "title") or "",
+                    title=title,
                     snippet=str(content)[:self._CONTENT_CHAR_LIMIT],
                     url=url,
                     source=self._extract_domain(url),
-                    published_date=self._field(item, "published_date", "publishedDate", "date"),
+                    published_date=published_date,
                 ))
 
             return SearchResponse(
@@ -593,7 +613,9 @@ class FirecrawlSearchProvider(BaseSearchProvider):
                 error_msg = f"API 配额已用尽: {error_msg}"
             elif 'ip address looks suspicious' in lowered or 'websitenotsupported' in lowered:
                 # Keyless 模式下常见：当前出口 IP 不被信任。配置 API Key 即可解除限制。
+                # 这是预期内的兜底失败（随后自动降级），用 debug 级别记录避免诊断噪音。
                 error_msg = f"Keyless 模式当前 IP 不受信任（请配置 FIRECRAWL_API_KEYS）: {error_msg}"
+                logger.debug("[Firecrawl] keyless IP 受限，自动降级: %s", error_msg)
             return SearchResponse(
                 query=query,
                 results=[],
@@ -2591,12 +2613,13 @@ class SearchService:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
 
-        # 8. Firecrawl Keyless 兜底（仅当未配置 Firecrawl Key 时启用）
-        # 无需 Key、每月 1000 免费额度，但受 IP 信誉限制（数据中心/CI 会 403），
-        # 故置于最低优先级，作为本地/开发环境的零配置兜底，失败时自动转下一个引擎。
-        if not firecrawl_keys and firecrawl_keyless_enabled:
+        # 8. Firecrawl Keyless 零配置兜底：仅当上面没有注册任何其他搜索源时启用。
+        # 无需 Key、每月 1000 免费额度，但受 IP 信誉限制（数据中心/CI/VPN 会 403）。
+        # 仅作为"否则就完全没有搜索能力"的最后兜底——已配置任意其他引擎（含 SearXNG 公共实例）
+        # 的用户不会因此多出一条可能 403 的冗余调用路径。配置任意搜索源即可让它自动消失。
+        if firecrawl_keyless_enabled and not firecrawl_keys and not self._providers:
             self._providers.append(FirecrawlSearchProvider(keyless=True))
-            logger.info("已启用 Firecrawl Keyless 兜底（无需 Key，受 IP 信誉限制）")
+            logger.info("未配置任何搜索源 → 启用 Firecrawl Keyless 零配置兜底（无需 Key，受 IP 信誉限制）")
 
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")

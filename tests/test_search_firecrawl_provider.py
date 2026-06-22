@@ -132,6 +132,35 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
         self.assertEqual(resp.results[0].source, "example.com")
         self.assertEqual(resp.results[0].published_date, "2026-03-20T09:30:00Z")
 
+    def test_scraped_document_reads_url_title_date_from_metadata(self) -> None:
+        # With scrape_options set, the SDK returns Document objects whose url/title/date
+        # live under .metadata (not top-level). Mapping must fall back to metadata.
+        provider = FirecrawlSearchProvider(["dummy_key"])
+
+        with self._patch_firecrawl(
+            {
+                "news": [
+                    {
+                        "summary": "Full article body from inline scrape",
+                        "metadata": {
+                            "title": "Meta Title",
+                            "sourceURL": "https://news.example.com/article",
+                            "published_time": "2026-03-20T09:30:00Z",
+                        },
+                    }
+                ]
+            }
+        ):
+            resp = provider.search("BABA latest news", max_results=2, days=3, topic="news")
+
+        self.assertTrue(resp.success)
+        r = resp.results[0]
+        self.assertEqual(r.title, "Meta Title")
+        self.assertEqual(r.url, "https://news.example.com/article")
+        self.assertEqual(r.source, "news.example.com")
+        self.assertEqual(r.published_date, "2026-03-20T09:30:00Z")
+        self.assertEqual(r.snippet, "Full article body from inline scrape")
+
     def test_non_news_search_does_not_set_news_source(self) -> None:
         provider = FirecrawlSearchProvider(["dummy_key"])
 
@@ -266,7 +295,22 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
         self.assertFalse(resp.success)
         self.assertIn("Keyless 模式当前 IP 不受信任", resp.error_message)
 
-    def test_service_registers_keyless_fallback_at_low_priority(self) -> None:
+    def test_keyless_registers_only_when_no_other_search_source(self) -> None:
+        # Zero-config bootstrap: no keys at all + SearXNG off → keyless is the sole provider.
+        with self._patch_firecrawl({"web": []}):
+            service = SearchService(
+                firecrawl_keys=[],
+                firecrawl_keyless_enabled=True,
+                searxng_public_instances_enabled=False,
+            )
+        fc = [p for p in service._providers if isinstance(p, FirecrawlSearchProvider)]
+        self.assertEqual(len(fc), 1)
+        self.assertTrue(fc[0]._keyless)
+        self.assertEqual(len(service._providers), 1)  # nothing else available
+
+    def test_keyless_skipped_when_another_provider_configured(self) -> None:
+        # If the user has ANY other search source, keyless must NOT add a redundant
+        # (possibly IP-403) path — addresses the owner's operational concern.
         with self._patch_firecrawl({"web": []}):
             service = SearchService(
                 firecrawl_keys=[],
@@ -274,14 +318,7 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
                 tavily_keys=["tvly-x"],
                 searxng_public_instances_enabled=False,
             )
-        fc = [p for p in service._providers if isinstance(p, FirecrawlSearchProvider)]
-        self.assertEqual(len(fc), 1)
-        self.assertTrue(fc[0]._keyless)
-        # keyless Firecrawl is lowest priority (after the configured Tavily provider)
-        self.assertGreater(
-            service._providers.index(fc[0]),
-            service._providers.index(next(p for p in service._providers if p.name == "Tavily")),
-        )
+        self.assertFalse(any(isinstance(p, FirecrawlSearchProvider) for p in service._providers))
 
     def test_service_keyless_disabled_registers_nothing(self) -> None:
         with self._patch_firecrawl({"web": []}):
