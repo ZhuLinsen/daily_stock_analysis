@@ -441,15 +441,25 @@ class FirecrawlSearchProvider(BaseSearchProvider):
     - 搜索结果内置整页内容抓取（summary/markdown），无需 newspaper3k 二次抓正文
     - 服务端处理 JS 渲染与反爬，新闻正文召回率高于本地抓取兜底
     - 支持 news 来源与时间窗口（tbs）过滤，便于新闻时效控制
+    - 支持 Keyless 模式：未配置 API Key 时仍可调用（每月 1000 免费额度），
+      但受 IP 信誉限制——数据中心/CI/VPN 等 IP 会被拒绝（HTTP 403），仅适合
+      本地/开发环境的零配置兜底；服务器/定时任务请配置 API Key。
 
     文档：https://docs.firecrawl.dev/features/search
+    Keyless 说明：https://www.firecrawl.dev/blog/firecrawl-keyless-launch
     """
 
     # 单条结果正文上限，对齐 SerpAPI 抓取上限，控制 token / credit 成本
     _CONTENT_CHAR_LIMIT = 1500
 
-    def __init__(self, api_keys: List[str]):
-        super().__init__(api_keys, "Firecrawl")
+    def __init__(self, api_keys: Optional[List[str]] = None, *, keyless: bool = False):
+        super().__init__(api_keys or [], "Firecrawl")
+        self._keyless = keyless
+
+    @property
+    def is_available(self) -> bool:
+        """有可用 API Key，或启用了 Keyless 模式时即视为可用。"""
+        return bool(self._api_keys) or self._keyless
 
     @staticmethod
     def _days_to_tbs(days: int) -> Optional[str]:
@@ -497,17 +507,32 @@ class FirecrawlSearchProvider(BaseSearchProvider):
         # 兜底：部分 SDK 版本直接返回 data/results 列表
         return self._bucket(response, "data") or self._bucket(response, "results")
 
+    @staticmethod
+    def _build_client(api_key: Optional[str]) -> Any:
+        """构建 Firecrawl 客户端。
+
+        - 有 Key：用顶层 ``Firecrawl(api_key=...)``（v2 search，附带 v1 兼容客户端）。
+        - 无 Key（Keyless）：直接用 v2 ``FirecrawlClient()``——顶层 ``Firecrawl`` 会
+          强制实例化需要 Key 的 v1 客户端而报错，故 Keyless 必须绕过它直接走 v2，
+          v2 HttpClient 在无 Key 时不会附带 Authorization 头。
+        """
+        if api_key:
+            from firecrawl import Firecrawl
+            return Firecrawl(api_key=api_key)
+        from firecrawl.v2 import FirecrawlClient
+        return FirecrawlClient()
+
     def _do_search(
         self,
         query: str,
-        api_key: str,
+        api_key: Optional[str],
         max_results: int,
         days: int = 7,
         topic: Optional[str] = None,
     ) -> SearchResponse:
         """执行 Firecrawl 搜索（默认内联 summary 正文）。"""
         try:
-            from firecrawl import Firecrawl
+            client = self._build_client(api_key)
         except ImportError:
             return SearchResponse(
                 query=query,
@@ -518,8 +543,6 @@ class FirecrawlSearchProvider(BaseSearchProvider):
             )
 
         try:
-            client = Firecrawl(api_key=api_key)
-
             search_kwargs: Dict[str, Any] = {
                 "query": query,
                 "limit": max_results,
@@ -565,8 +588,12 @@ class FirecrawlSearchProvider(BaseSearchProvider):
 
         except Exception as e:
             error_msg = str(e)
-            if 'rate limit' in error_msg.lower() or 'quota' in error_msg.lower() or '402' in error_msg:
+            lowered = error_msg.lower()
+            if 'rate limit' in lowered or 'quota' in lowered or '402' in error_msg:
                 error_msg = f"API 配额已用尽: {error_msg}"
+            elif 'ip address looks suspicious' in lowered or 'websitenotsupported' in lowered:
+                # Keyless 模式下常见：当前出口 IP 不被信任。配置 API Key 即可解除限制。
+                error_msg = f"Keyless 模式当前 IP 不受信任（请配置 FIRECRAWL_API_KEYS）: {error_msg}"
             return SearchResponse(
                 query=query,
                 results=[],
@@ -582,15 +609,55 @@ class FirecrawlSearchProvider(BaseSearchProvider):
         days: int = 7,
         topic: Optional[str] = None,
     ) -> SearchResponse:
-        """执行 Firecrawl 搜索，可按调用方选择是否启用新闻 topic。"""
-        if topic is None:
-            return super().search(query, max_results=max_results, days=days)
-        return self._execute_search(
-            query,
-            max_results=max_results,
-            days=days,
-            topic=topic,
-        )
+        """执行 Firecrawl 搜索，可按调用方选择是否启用新闻 topic。
+
+        兼容 Keyless 模式：未配置 Key 时 api_key 为 None，仍可继续调用 v2 客户端。
+        """
+        api_key = self._get_next_key()  # Keyless 或未配置时为 None
+        if not api_key and not self._keyless:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=f"{self._name} 未配置 API Key",
+            )
+
+        search_kwargs: Dict[str, Any] = {}
+        if topic is not None:
+            search_kwargs["topic"] = topic
+
+        start_time = time.time()
+        try:
+            response = self._do_search(query, api_key, max_results, days=days, **search_kwargs)
+            response.search_time = time.time() - start_time
+
+            if response.success:
+                if api_key:
+                    self._record_success(api_key)
+                mode = "keyed" if api_key else "keyless"
+                logger.info(
+                    f"[{self._name}] 搜索 '{query}' 成功（{mode}），返回 {len(response.results)} 条结果，"
+                    f"耗时 {response.search_time:.2f}s"
+                )
+            elif api_key:
+                self._record_error(api_key)
+
+            return response
+
+        except Exception as e:
+            if api_key:
+                self._record_error(api_key)
+            elapsed = time.time() - start_time
+            logger.error(f"[{self._name}] 搜索 '{query}' 失败: {e}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=str(e),
+                search_time=elapsed,
+            )
 
     @staticmethod
     def _extract_domain(url: str) -> str:
@@ -2428,6 +2495,7 @@ class SearchService:
     def __init__(
         self,
         firecrawl_keys: Optional[List[str]] = None,
+        firecrawl_keyless_enabled: bool = False,
         bocha_keys: Optional[List[str]] = None,
         tavily_keys: Optional[List[str]] = None,
         anspire_keys: Optional[List[str]] = None,
@@ -2444,6 +2512,8 @@ class SearchService:
 
         Args:
             firecrawl_keys: Firecrawl Search API Key 列表（默认优先，内联正文抓取）
+            firecrawl_keyless_enabled: 未配置 Firecrawl Key 时是否启用 Keyless 兜底
+                （无需 Key，受 IP 信誉限制，仅适合本地/开发；默认关闭，需显式开启，低优先级）
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
             anspire_keys: Anspire Search API Key 列表
@@ -2474,7 +2544,7 @@ class SearchService:
         )
 
         # 初始化搜索引擎（按优先级排序）
-        # 0. Firecrawl 优先（搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
+        # 0. Firecrawl 优先（配置 Key 时；搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
         if firecrawl_keys:
             self._providers.append(FirecrawlSearchProvider(firecrawl_keys))
             logger.info(f"已配置 Firecrawl 搜索，共 {len(firecrawl_keys)} 个 API Key")
@@ -2520,7 +2590,14 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 8. Firecrawl Keyless 兜底（仅当未配置 Firecrawl Key 时启用）
+        # 无需 Key、每月 1000 免费额度，但受 IP 信誉限制（数据中心/CI 会 403），
+        # 故置于最低优先级，作为本地/开发环境的零配置兜底，失败时自动转下一个引擎。
+        if not firecrawl_keys and firecrawl_keyless_enabled:
+            self._providers.append(FirecrawlSearchProvider(keyless=True))
+            logger.info("已启用 Firecrawl Keyless 兜底（无需 Key，受 IP 信誉限制）")
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 
@@ -4625,6 +4702,7 @@ def get_search_service() -> SearchService:
                 
                 _search_service = SearchService(
                     firecrawl_keys=config.firecrawl_api_keys,
+                    firecrawl_keyless_enabled=config.firecrawl_keyless_enabled,
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
                     anspire_keys=config.anspire_api_keys,

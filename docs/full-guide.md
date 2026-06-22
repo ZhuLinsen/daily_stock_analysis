@@ -336,6 +336,7 @@ daily_stock_analysis/
 | 变量名 | 说明 | 必填 |
 |--------|------|:----:|
 | `FIRECRAWL_API_KEYS` | Firecrawl 搜索 API Key（最高优先级，搜索结果内置整页正文抓取） | 推荐 |
+| `FIRECRAWL_KEYLESS_ENABLED` | 未配置上面的 Key 时，是否启用 Firecrawl Keyless 无 Key 兜底（每月 1000 免费额度）。⚠️ 受 IP 信誉限制，数据中心/CI/VPN 会被拒绝（403），仅适合本地/开发；默认关闭，最低优先级 | 可选 |
 | `ANSPIRE_API_KEYS` | Anspire Open API Key（可用于搜索与大模型网关共享场景的配置示例；是否可用取决于账号权限与网关可见性，可有效增强 A 股分析效果） | 推荐 |
 | `SERPAPI_API_KEYS` | SerpAPI 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |
