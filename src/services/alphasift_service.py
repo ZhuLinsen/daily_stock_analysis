@@ -314,6 +314,7 @@ def _hotspot_route_has_external_event(route: Any) -> bool:
 
 def _has_configured_hotspot_news_source(config: Config) -> bool:
     fields = (
+        "firecrawl_api_keys",
         "bocha_api_keys",
         "tavily_api_keys",
         "anspire_api_keys",
@@ -333,6 +334,7 @@ def _build_hotspot_event_routes_from_search(topic: str, config: Config) -> List[
         from src.search_service import SearchService
 
         service = SearchService(
+            firecrawl_keys=getattr(config, "firecrawl_api_keys", None),
             bocha_keys=getattr(config, "bocha_api_keys", None),
             tavily_keys=getattr(config, "tavily_api_keys", None),
             anspire_keys=getattr(config, "anspire_api_keys", None),
