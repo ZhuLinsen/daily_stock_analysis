@@ -826,6 +826,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["secret_value", "comma_separated_keys"],
     },
+    "FIRECRAWL_API_KEYS": {
+        "title": "Firecrawl API Keys",
+        "description": "Comma-separated Firecrawl Search API keys. Highest-priority provider; returns search results with inline full-page content.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {"multi_value": True, "delimiter": ","},
+        "display_order": 25,
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "FIRECRAWL_API_KEYS=fc-xxxx",
+            "FIRECRAWL_API_KEYS=fc-key-1,fc-key-2",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：搜索服务配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
+            },
+        ],
+        "warning_codes": ["secret_value", "comma_separated_keys"],
+    },
     "TAVILY_API_KEYS": {
         "title": "Tavily API Keys",
         "description": "Comma-separated Tavily API keys.",
@@ -4330,6 +4356,14 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
         "warning_codes": ["secret_value"],
     },
+    "FIRECRAWL_API_KEYS": {
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "FIRECRAWL_API_KEYS=fc-key-1,fc-key-2",
+        ],
+        "docs": _DOC_FULL_GUIDE_SEARCH,
+        "warning_codes": ["secret_value", "comma_separated_keys"],
+    },
     "SERPAPI_API_KEYS": {
         "help_key": "settings.data_source.search_api_keys",
         "examples": [
@@ -4718,6 +4752,7 @@ def _infer_category(key: str) -> str:
             "PYTDX",
             "BAOSTOCK",
             "YFINANCE",
+            "FIRECRAWL",
             "TAVILY",
             "SERPAPI",
             "BRAVE",

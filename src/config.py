@@ -749,6 +749,7 @@ class Config:
     anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
+    firecrawl_api_keys: List[str] = field(default_factory=list)  # Firecrawl Search API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
@@ -1405,6 +1406,9 @@ class Config:
         minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
         minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
         
+        firecrawl_keys_str = os.getenv('FIRECRAWL_API_KEYS', '')
+        firecrawl_api_keys = [k.strip() for k in firecrawl_keys_str.split(',') if k.strip()]
+
         tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
         tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
         
@@ -1570,6 +1574,7 @@ class Config:
                 or ""
             ),
             vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            firecrawl_api_keys=firecrawl_api_keys,
             anspire_api_keys=anspire_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
@@ -2460,7 +2465,8 @@ class Config:
     def has_search_capability_enabled(self) -> bool:
         """Whether any search provider is configured or SearXNG fallback is enabled."""
         return bool(
-            self.anspire_api_keys
+            self.firecrawl_api_keys
+            or self.anspire_api_keys
             or self.bocha_api_keys
             or self.minimax_api_keys
             or self.tavily_api_keys

@@ -6,7 +6,7 @@ A股自选股智能分析系统 - 搜索服务模块
 
 职责：
 1. 提供统一的新闻搜索接口
-2. 支持 Bocha、Tavily、Brave、SerpAPI、SearXNG 多种搜索引擎
+2. 支持 Firecrawl、Bocha、Tavily、Brave、SerpAPI、SearXNG 多种搜索引擎
 3. 多 Key 负载均衡和故障转移
 4. 搜索结果缓存和格式化
 """
@@ -421,6 +421,177 @@ class TavilySearchProvider(BaseSearchProvider):
                 search_time=elapsed
             )
     
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except Exception:
+            return '未知来源'
+
+
+class FirecrawlSearchProvider(BaseSearchProvider):
+    """
+    Firecrawl 搜索引擎
+
+    特点：
+    - 搜索结果内置整页内容抓取（summary/markdown），无需 newspaper3k 二次抓正文
+    - 服务端处理 JS 渲染与反爬，新闻正文召回率高于本地抓取兜底
+    - 支持 news 来源与时间窗口（tbs）过滤，便于新闻时效控制
+
+    文档：https://docs.firecrawl.dev/features/search
+    """
+
+    # 单条结果正文上限，对齐 SerpAPI 抓取上限，控制 token / credit 成本
+    _CONTENT_CHAR_LIMIT = 1500
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Firecrawl")
+
+    @staticmethod
+    def _days_to_tbs(days: int) -> Optional[str]:
+        """将“最近 N 天”窗口映射为 Firecrawl 的 tbs 时间过滤参数。"""
+        if days is None or days <= 0:
+            return None
+        if days <= 1:
+            return "qdr:d"
+        if days <= 7:
+            return "qdr:w"
+        if days <= 31:
+            return "qdr:m"
+        if days <= 365:
+            return "qdr:y"
+        return None
+
+    @staticmethod
+    def _field(item: Any, *names: str) -> Any:
+        """从结果项中读取字段，兼容 dict 与对象（pydantic/SDK 模型）两种形态。"""
+        for name in names:
+            if isinstance(item, dict):
+                if name in item and item[name] not in (None, ""):
+                    return item[name]
+            else:
+                value = getattr(item, name, None)
+                if value not in (None, ""):
+                    return value
+        return None
+
+    @classmethod
+    def _bucket(cls, response: Any, name: str) -> List[Any]:
+        """读取响应中的某个结果分组（web/news/images/data/results），兼容 dict 与对象。"""
+        value = cls._field(response, name)
+        if isinstance(value, list):
+            return value
+        return []
+
+    def _collect_items(self, response: Any, topic: Optional[str]) -> List[Any]:
+        """按 topic 选择优先的结果分组；新闻优先 news，否则优先 web。"""
+        order = ("news", "web") if topic == "news" else ("web", "news")
+        for bucket in order:
+            items = self._bucket(response, bucket)
+            if items:
+                return items
+        # 兜底：部分 SDK 版本直接返回 data/results 列表
+        return self._bucket(response, "data") or self._bucket(response, "results")
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+        topic: Optional[str] = None,
+    ) -> SearchResponse:
+        """执行 Firecrawl 搜索（默认内联 summary 正文）。"""
+        try:
+            from firecrawl import Firecrawl
+        except ImportError:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="firecrawl-py 未安装，请运行: pip install firecrawl-py",
+            )
+
+        try:
+            client = Firecrawl(api_key=api_key)
+
+            search_kwargs: Dict[str, Any] = {
+                "query": query,
+                "limit": max_results,
+                # 内联抓取整页摘要，让分析 Agent 拿到正文而非短摘要
+                "scrape_options": {"formats": ["summary"]},
+            }
+            if topic == "news":
+                search_kwargs["sources"] = [{"type": "news"}]
+            tbs = self._days_to_tbs(days)
+            if tbs:
+                search_kwargs["tbs"] = tbs
+
+            response = client.search(**search_kwargs)
+
+            items = self._collect_items(response, topic)
+            logger.info(f"[Firecrawl] 搜索完成，query='{query}', 返回 {len(items)} 条结果")
+            logger.debug(f"[Firecrawl] 原始响应: {response}")
+
+            results: List[SearchResult] = []
+            for item in items:
+                url = self._field(item, "url") or ""
+                # 优先用整页摘要，其次正文 markdown，最后回退到搜索描述
+                content = (
+                    self._field(item, "summary")
+                    or self._field(item, "markdown")
+                    or self._field(item, "description")
+                    or ""
+                )
+                results.append(SearchResult(
+                    title=self._field(item, "title") or "",
+                    snippet=str(content)[:self._CONTENT_CHAR_LIMIT],
+                    url=url,
+                    source=self._extract_domain(url),
+                    published_date=self._field(item, "published_date", "publishedDate", "date"),
+                ))
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+
+        except Exception as e:
+            error_msg = str(e)
+            if 'rate limit' in error_msg.lower() or 'quota' in error_msg.lower() or '402' in error_msg:
+                error_msg = f"API 配额已用尽: {error_msg}"
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
+            )
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        topic: Optional[str] = None,
+    ) -> SearchResponse:
+        """执行 Firecrawl 搜索，可按调用方选择是否启用新闻 topic。"""
+        if topic is None:
+            return super().search(query, max_results=max_results, days=days)
+        return self._execute_search(
+            query,
+            max_results=max_results,
+            days=days,
+            topic=topic,
+        )
+
     @staticmethod
     def _extract_domain(url: str) -> str:
         """从 URL 提取域名作为来源"""
@@ -2256,6 +2427,7 @@ class SearchService:
 
     def __init__(
         self,
+        firecrawl_keys: Optional[List[str]] = None,
         bocha_keys: Optional[List[str]] = None,
         tavily_keys: Optional[List[str]] = None,
         anspire_keys: Optional[List[str]] = None,
@@ -2271,6 +2443,7 @@ class SearchService:
         初始化搜索服务
 
         Args:
+            firecrawl_keys: Firecrawl Search API Key 列表（默认优先，内联正文抓取）
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
             anspire_keys: Anspire Search API Key 列表
@@ -2301,7 +2474,12 @@ class SearchService:
         )
 
         # 初始化搜索引擎（按优先级排序）
-        # 1. Bocha 优先（中文搜索优化，AI摘要）
+        # 0. Firecrawl 优先（搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
+        if firecrawl_keys:
+            self._providers.append(FirecrawlSearchProvider(firecrawl_keys))
+            logger.info(f"已配置 Firecrawl 搜索，共 {len(firecrawl_keys)} 个 API Key")
+
+        # 1. Bocha（中文搜索优化，AI摘要）
         if bocha_keys:
             self._providers.append(BochaSearchProvider(bocha_keys))
             logger.info(f"已配置 Bocha 搜索，共 {len(bocha_keys)} 个 API Key")
@@ -3692,7 +3870,7 @@ class SearchService:
                     continue
 
                 search_kwargs: Dict[str, Any] = {}
-                if isinstance(provider, TavilySearchProvider):
+                if isinstance(provider, (TavilySearchProvider, FirecrawlSearchProvider)):
                     search_kwargs["topic"] = "news"
                 elif isinstance(provider, BraveSearchProvider):
                     search_kwargs.update(
@@ -4098,7 +4276,7 @@ class SearchService:
                 request_days,
             )
 
-            if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
+            if isinstance(provider, (TavilySearchProvider, FirecrawlSearchProvider)) and dim.get('tavily_topic'):
                 response = provider.search(
                     dim['query'],
                     max_results=provider_max_results,
@@ -4446,6 +4624,7 @@ def get_search_service() -> SearchService:
                 config = get_config()
                 
                 _search_service = SearchService(
+                    firecrawl_keys=config.firecrawl_api_keys,
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
                     anspire_keys=config.anspire_api_keys,
