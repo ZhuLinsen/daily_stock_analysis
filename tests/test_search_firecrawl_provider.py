@@ -21,7 +21,7 @@ from src.search_service import FirecrawlSearchProvider, SearchService
 
 
 class _FakeFirecrawlClient:
-    """Fake for the top-level keyed `firecrawl.Firecrawl` client."""
+    """Fake for the keyed `firecrawl.Firecrawl` client."""
 
     response_payload = {"web": []}
     init_api_keys = []
@@ -41,57 +41,19 @@ class _FakeFirecrawlClient:
         cls.search_calls = []
 
 
-class _FakeFirecrawlV2Client:
-    """Fake for the keyless `firecrawl.v2.FirecrawlClient` (constructed with NO key)."""
-
-    response_payload = {"web": []}
-    init_count = 0
-    init_kwargs = []
-    search_calls = []
-
-    def __init__(self, *args, **kwargs):
-        type(self).init_count += 1
-        type(self).init_kwargs.append({"args": args, "kwargs": kwargs})
-
-    def search(self, **kwargs):
-        type(self).search_calls.append(kwargs)
-        return type(self).response_payload
-
-    @classmethod
-    def reset(cls) -> None:
-        cls.response_payload = {"web": []}
-        cls.init_count = 0
-        cls.init_kwargs = []
-        cls.search_calls = []
-
-
 def _fake_firecrawl_module() -> ModuleType:
     module = ModuleType("firecrawl")
     module.Firecrawl = _FakeFirecrawlClient
     return module
 
 
-def _fake_firecrawl_v2_module() -> ModuleType:
-    module = ModuleType("firecrawl.v2")
-    module.FirecrawlClient = _FakeFirecrawlV2Client
-    return module
-
-
 class TestFirecrawlSearchProvider(unittest.TestCase):
     """Provider-specific request and mapping behavior."""
 
-    def _patch_firecrawl(self, payload, *, v2_payload=None):
+    def _patch_firecrawl(self, payload):
         _FakeFirecrawlClient.reset()
-        _FakeFirecrawlV2Client.reset()
         _FakeFirecrawlClient.response_payload = payload
-        _FakeFirecrawlV2Client.response_payload = v2_payload if v2_payload is not None else payload
-        return patch.dict(
-            sys.modules,
-            {
-                "firecrawl": _fake_firecrawl_module(),
-                "firecrawl.v2": _fake_firecrawl_v2_module(),
-            },
-        )
+        return patch.dict(sys.modules, {"firecrawl": _fake_firecrawl_module()})
 
     def test_days_to_tbs_mapping(self) -> None:
         self.assertEqual(FirecrawlSearchProvider._days_to_tbs(1), "qdr:d")
@@ -245,103 +207,27 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
         self.assertEqual(resp.results[0].published_date, expected_date)
         self.assertEqual(_FakeFirecrawlClient.search_calls[0]["sources"], [{"type": "news"}])
 
-    # --- Keyless mode ---------------------------------------------------
+    # --- SearchService registration -------------------------------------
 
-    def test_keyless_provider_is_available_without_keys(self) -> None:
-        self.assertFalse(FirecrawlSearchProvider().is_available)
-        self.assertTrue(FirecrawlSearchProvider(keyless=True).is_available)
-        self.assertTrue(FirecrawlSearchProvider(["k"]).is_available)
-
-    def test_keyless_search_uses_v2_client_without_key(self) -> None:
-        provider = FirecrawlSearchProvider(keyless=True)
-
-        with self._patch_firecrawl({"news": [{"title": "Keyless hit", "url": "https://ex.com/x", "summary": "body"}]}):
-            resp = provider.search("BABA news", max_results=2, days=3, topic="news")
-
-        # v2 keyless client used; top-level keyed Firecrawl never constructed
-        self.assertEqual(_FakeFirecrawlV2Client.init_count, 1)
-        self.assertEqual(_FakeFirecrawlV2Client.init_kwargs[0], {"args": (), "kwargs": {}})
-        self.assertEqual(_FakeFirecrawlClient.init_api_keys, [])
-        self.assertTrue(resp.success)
-        self.assertEqual(len(resp.results), 1)
-        self.assertEqual(_FakeFirecrawlV2Client.search_calls[0]["sources"], [{"type": "news"}])
-        self.assertEqual(_FakeFirecrawlV2Client.search_calls[0]["tbs"], "qdr:w")
-
-    def test_keyed_search_does_not_construct_v2_keyless_client(self) -> None:
-        provider = FirecrawlSearchProvider(["fc-key"])
-
-        with self._patch_firecrawl({"web": [{"title": "Keyed", "url": "https://ex.com/y", "summary": "body"}]}):
-            resp = provider.search("BABA price", max_results=2)
-
-        self.assertTrue(resp.success)
-        self.assertEqual(_FakeFirecrawlClient.init_api_keys, ["fc-key"])
-        self.assertEqual(_FakeFirecrawlV2Client.init_count, 0)
-
-    def test_keyless_ip_block_surfaces_friendly_error(self) -> None:
-        provider = FirecrawlSearchProvider(keyless=True)
-
-        class _IPBlockedClient(_FakeFirecrawlV2Client):
-            def search(self, **kwargs):
-                raise RuntimeError(
-                    "Website Not Supported: your IP address looks suspicious, "
-                    "so Firecrawl can't be used without an API key from here."
-                )
-
-        mod = ModuleType("firecrawl.v2")
-        mod.FirecrawlClient = _IPBlockedClient
-        with patch.dict(sys.modules, {"firecrawl.v2": mod}):
-            resp = provider.search("anything", max_results=1)
-
-        self.assertFalse(resp.success)
-        self.assertIn("Keyless 模式当前 IP 不受信任", resp.error_message)
-
-    def test_keyless_registers_only_when_no_other_search_source(self) -> None:
-        # Zero-config bootstrap: no keys at all + SearXNG off → keyless is the sole provider.
-        with self._patch_firecrawl({"web": []}):
-            service = SearchService(
-                firecrawl_keys=[],
-                firecrawl_keyless_enabled=True,
-                searxng_public_instances_enabled=False,
-            )
-        fc = [p for p in service._providers if isinstance(p, FirecrawlSearchProvider)]
-        self.assertEqual(len(fc), 1)
-        self.assertTrue(fc[0]._keyless)
-        self.assertEqual(len(service._providers), 1)  # nothing else available
-
-    def test_keyless_skipped_when_another_provider_configured(self) -> None:
-        # If the user has ANY other search source, keyless must NOT add a redundant
-        # (possibly IP-403) path — addresses the owner's operational concern.
-        with self._patch_firecrawl({"web": []}):
-            service = SearchService(
-                firecrawl_keys=[],
-                firecrawl_keyless_enabled=True,
-                tavily_keys=["tvly-x"],
-                searxng_public_instances_enabled=False,
-            )
-        self.assertFalse(any(isinstance(p, FirecrawlSearchProvider) for p in service._providers))
-
-    def test_service_keyless_disabled_registers_nothing(self) -> None:
-        with self._patch_firecrawl({"web": []}):
-            service = SearchService(
-                firecrawl_keys=[],
-                firecrawl_keyless_enabled=False,
-                tavily_keys=["tvly-x"],
-                searxng_public_instances_enabled=False,
-            )
-        self.assertFalse(any(isinstance(p, FirecrawlSearchProvider) for p in service._providers))
-
-    def test_service_with_key_uses_keyed_not_keyless(self) -> None:
+    def test_service_registers_firecrawl_at_top_priority(self) -> None:
         with self._patch_firecrawl({"web": []}):
             service = SearchService(
                 firecrawl_keys=["fc-key"],
-                firecrawl_keyless_enabled=True,
+                tavily_keys=["tvly-x"],
                 searxng_public_instances_enabled=False,
             )
         fc = [p for p in service._providers if isinstance(p, FirecrawlSearchProvider)]
         self.assertEqual(len(fc), 1)
-        self.assertFalse(fc[0]._keyless)
-        # keyed Firecrawl is top priority
-        self.assertEqual(service._providers.index(fc[0]), 0)
+        self.assertEqual(service._providers.index(fc[0]), 0)  # registered first
+
+    def test_no_firecrawl_provider_without_key(self) -> None:
+        with self._patch_firecrawl({"web": []}):
+            service = SearchService(
+                firecrawl_keys=[],
+                tavily_keys=["tvly-x"],
+                searxng_public_instances_enabled=False,
+            )
+        self.assertFalse(any(isinstance(p, FirecrawlSearchProvider) for p in service._providers))
 
 
 if __name__ == "__main__":

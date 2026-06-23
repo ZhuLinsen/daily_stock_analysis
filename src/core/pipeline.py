@@ -227,7 +227,6 @@ class StockAnalysisPipeline:
         try:
             self.search_service = SearchService(
                 firecrawl_keys=self.config.firecrawl_api_keys,
-                firecrawl_keyless_enabled=not self.config.firecrawl_api_keys,
                 bocha_keys=self.config.bocha_api_keys,
                 tavily_keys=self.config.tavily_api_keys,
                 anspire_keys=self.config.anspire_api_keys,

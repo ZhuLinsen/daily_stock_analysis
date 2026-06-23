@@ -39,7 +39,7 @@ openai>=1.0.0               # OpenAI SDK (transitive dependency of litellm, kept
 PyYAML>=6.0                 # YAML parser for LITELLM_CONFIG support
 
 # Search engines for stock news
-firecrawl-py>=4.0.0         # Firecrawl Search API (search + inline content); v4 SDK exposes firecrawl.v2.FirecrawlClient (keyless) + Document/metadata shape used here
+firecrawl-py>=4.0.0         # Firecrawl Search API (search + inline content); v4 SDK = the Document/metadata response shape this provider parses
 tavily-python>=0.3.0        # Tavily Search API
 google-search-results>=2.4.0  # SerpAPI
 

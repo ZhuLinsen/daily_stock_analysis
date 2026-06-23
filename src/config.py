@@ -749,7 +749,7 @@ class Config:
     anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
-    firecrawl_api_keys: List[str] = field(default_factory=list)  # Firecrawl Search API Keys (optional; runs keyless when empty)
+    firecrawl_api_keys: List[str] = field(default_factory=list)  # Firecrawl Search API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys

@@ -144,7 +144,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Secret Name | Description | Required |
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594,7203.T,005930.KS` | ✅ |
-| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/) Search API: highest-priority provider, returns search results with inline full-page content (summary), handles JS/anti-bot server-side — best news recall and body quality. Optional: only when you have configured no other search source, leaving it empty auto-enables Keyless mode (1000 free credits/month, IP-reputation gated; configuring any search source disables it, failures degrade silently) (comma-separated for multiple keys) | Recommended |
+| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/) Search API: highest-priority provider, returns search results with inline full-page content (summary), handles JS/anti-bot server-side — best news recall and body quality (comma-separated for multiple keys) | Recommended |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) optimized for Chinese content; the same key can also be used for Anspire LLM fallback scenarios (example model: `Doubao-Seed-2.0-lite`) | Recommended |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) search-engine results for realtime financial news | Recommended |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Optional |
