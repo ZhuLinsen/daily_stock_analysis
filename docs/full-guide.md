@@ -152,7 +152,7 @@ daily_stock_analysis/
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS` | ✅ |
-| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/) 搜索 API：最高优先级，搜索结果内置整页正文抓取（summary），服务端处理 JS/反爬，新闻召回与正文质量最佳（多个key用逗号分隔） | 推荐 |
+| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/) 搜索 API：高优先级（注册在 Bocha/Tavily/Brave/SerpAPI/MiniMax/SearXNG 之前，Anspire 配置时排其后），搜索结果内置整页正文抓取（summary），服务端处理 JS/反爬，新闻召回与正文质量最佳（多个key用逗号分隔） | 推荐 |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
@@ -335,7 +335,7 @@ daily_stock_analysis/
 
 | 变量名 | 说明 | 必填 |
 |--------|------|:----:|
-| `FIRECRAWL_API_KEYS` | Firecrawl 搜索 API Key（最高优先级，搜索结果内置整页正文抓取） | 推荐 |
+| `FIRECRAWL_API_KEYS` | Firecrawl 搜索 API Key（高优先级，搜索结果内置整页正文抓取） | 推荐 |
 | `ANSPIRE_API_KEYS` | Anspire Open API Key（可用于搜索与大模型网关共享场景的配置示例；是否可用取决于账号权限与网关可见性，可有效增强 A 股分析效果） | 推荐 |
 | `SERPAPI_API_KEYS` | SerpAPI 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |

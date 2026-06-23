@@ -2489,7 +2489,8 @@ class SearchService:
         )
 
         # 初始化搜索引擎（按优先级排序）
-        # 0. Firecrawl 优先（配置 Key 时；搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
+        # 0. Firecrawl（配置 Key 时；搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
+        #    注意：Anspire 在末尾以 insert(0) 抢占首位，故 Anspire 配置时实际优先级在 Firecrawl 之前。
         if firecrawl_keys:
             self._providers.append(FirecrawlSearchProvider(firecrawl_keys))
             logger.info(f"已配置 Firecrawl 搜索，共 {len(firecrawl_keys)} 个 API Key")

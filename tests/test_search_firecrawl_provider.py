@@ -230,5 +230,62 @@ class TestFirecrawlSearchProvider(unittest.TestCase):
         self.assertFalse(any(isinstance(p, FirecrawlSearchProvider) for p in service._providers))
 
 
+def _firecrawl_sdk_available() -> bool:
+    try:
+        import firecrawl.v2.types  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_firecrawl_sdk_available(), "firecrawl-py not installed")
+class TestFirecrawlRealSdkShape(unittest.TestCase):
+    """Validate the result mapping against the REAL firecrawl-py SDK models.
+
+    The other tests fake the SDK, so they cannot prove the actual response
+    shape. This one builds genuine `firecrawl.v2.types.Document` /
+    `DocumentMetadata` objects (the shape returned when scrape_options is set)
+    and runs them through the provider mapping — no network, no API key.
+    """
+
+    def test_mapping_reads_metadata_from_real_document(self) -> None:
+        from firecrawl.v2.types import Document, DocumentMetadata
+
+        doc = Document(
+            summary="Real article body",
+            metadata=DocumentMetadata(
+                title="Real Title",
+                url="https://news.example.com/real",
+                published_time="2026-03-20T09:30:00Z",
+            ),
+        )
+
+        class _RealShapeResponse:
+            news = [doc]
+            web = []
+
+        class _RealShapeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            def search(self, **k):
+                return _RealShapeResponse()
+
+        mod = ModuleType("firecrawl")
+        mod.Firecrawl = _RealShapeClient
+        provider = FirecrawlSearchProvider(["dummy_key"])
+        with patch.dict(sys.modules, {"firecrawl": mod}):
+            resp = provider.search("q", max_results=2, days=3, topic="news")
+
+        self.assertTrue(resp.success)
+        r = resp.results[0]
+        self.assertEqual(r.title, "Real Title")
+        self.assertEqual(r.url, "https://news.example.com/real")
+        self.assertEqual(r.source, "news.example.com")
+        self.assertEqual(r.published_date, "2026-03-20T09:30:00Z")
+        self.assertEqual(r.snippet, "Real article body")
+
+
 if __name__ == "__main__":
     unittest.main()

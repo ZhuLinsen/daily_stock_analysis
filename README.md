@@ -115,7 +115,7 @@
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
-| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/)：最高优先级搜索源，搜索结果内置整页正文抓取（summary），服务端处理 JS/反爬，新闻召回与正文质量最佳 | **推荐** |
+| `FIRECRAWL_API_KEYS` | [Firecrawl](https://www.firecrawl.dev/)：高优先级搜索源（注册在 Bocha/Tavily 等之前；Anspire 配置时排其后），搜索结果内置整页正文抓取（summary），服务端处理 JS/反爬，新闻召回与正文质量最佳 | **推荐** |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/)：中文内容特别优化，适合 A 股新闻和舆情检索；同一 Key 可复用为 Anspire 大模型 | **推荐** |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)：搜索引擎结果补强，适合实时金融新闻 | **推荐** |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新闻搜索 API | 可选 |
