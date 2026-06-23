@@ -438,11 +438,14 @@ class FirecrawlSearchProvider(BaseSearchProvider):
     Firecrawl 搜索引擎
 
     特点：
-    - 搜索结果内置整页内容抓取（summary/markdown），无需 newspaper3k 二次抓正文
-    - 服务端处理 JS 渲染与反爬，新闻正文召回率高于本地抓取兜底
+    - 搜索结果内置整页“摘要”（scrape_options.formats=["summary"]：Firecrawl 对结果
+      整页内容生成的 LLM 摘要，并非原文 markdown 正文），比搜索短摘要更充实，
+      且省去 newspaper3k 二次抓取
+    - 服务端处理 JS 渲染与反爬，新闻召回质量优于本地 newspaper3k 兜底
     - 支持 news 来源与时间窗口（tbs）过滤，便于新闻时效控制
 
     文档：https://docs.firecrawl.dev/features/search
+    备注：如需原文整页正文，应改用 formats=["markdown"]；当前使用 summary。
     """
 
     # 单条结果正文上限，对齐 SerpAPI 抓取上限，控制 token / credit 成本
@@ -522,7 +525,8 @@ class FirecrawlSearchProvider(BaseSearchProvider):
             search_kwargs: Dict[str, Any] = {
                 "query": query,
                 "limit": max_results,
-                # 内联抓取整页摘要，让分析 Agent 拿到正文而非短摘要
+                # 内联抓取整页“摘要”（Firecrawl 对整页生成的 LLM 摘要，非原文正文），
+                # 比搜索短摘要更充实；如需原文正文改用 formats=["markdown"]。
                 "scrape_options": {"formats": ["summary"]},
             }
             if topic == "news":
@@ -548,7 +552,7 @@ class FirecrawlSearchProvider(BaseSearchProvider):
                     or (self._field(meta, "url", "source_url", "sourceURL", "og_url") if meta else None)
                     or ""
                 )
-                # 优先用整页摘要，其次正文 markdown / 描述 / 新闻 snippet，最后回退 metadata 描述
+                # 优先用整页摘要 summary，其次 markdown / 描述 / 新闻 snippet，最后回退 metadata 描述
                 content = (
                     self._field(item, "summary")
                     or self._field(item, "markdown")
@@ -2458,7 +2462,7 @@ class SearchService:
         初始化搜索服务
 
         Args:
-            firecrawl_keys: Firecrawl Search API Key 列表（默认优先，内联正文抓取）
+            firecrawl_keys: Firecrawl Search API Key 列表（高优先级，内联整页摘要 summary）
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
             anspire_keys: Anspire Search API Key 列表
@@ -2489,7 +2493,7 @@ class SearchService:
         )
 
         # 初始化搜索引擎（按优先级排序）
-        # 0. Firecrawl（配置 Key 时；搜索结果内联整页正文抓取，新闻召回与正文质量最佳）
+        # 0. Firecrawl（配置 Key 时；搜索结果内联整页摘要 summary，新闻召回质量好）
         #    注意：Anspire 在末尾以 insert(0) 抢占首位，故 Anspire 配置时实际优先级在 Firecrawl 之前。
         if firecrawl_keys:
             self._providers.append(FirecrawlSearchProvider(firecrawl_keys))

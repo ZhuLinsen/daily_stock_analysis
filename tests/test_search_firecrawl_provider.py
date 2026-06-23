@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Tests for the Firecrawl search provider: request shaping (news source + tbs
-recency window), inline-content extraction, and SearchService integration.
+recency window), inline per-page summary extraction, and SearchService integration.
 """
 
+import inspect
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -285,6 +286,29 @@ class TestFirecrawlRealSdkShape(unittest.TestCase):
         self.assertEqual(r.source, "news.example.com")
         self.assertEqual(r.published_date, "2026-03-20T09:30:00Z")
         self.assertEqual(r.snippet, "Real article body")
+
+    def test_real_sdk_constructor_and_search_signature(self) -> None:
+        """No-network compatibility check against the installed firecrawl-py.
+
+        Proves the call site is executable with the real SDK in the declared
+        dependency window: the keyed constructor `Firecrawl(api_key=...)` builds
+        (construction makes no network call) and the real `search` signature
+        accepts exactly the kwargs the provider sends. This complements the
+        Document-shape test by covering the constructor/signature layer the
+        faked-client tests cannot.
+        """
+        from firecrawl import Firecrawl
+
+        client = Firecrawl(api_key="fc-not-a-real-key")  # construct only; no API call
+        sig = inspect.signature(client.search)
+        # The exact kwargs FirecrawlSearchProvider._do_search sends:
+        sig.bind(
+            query="q",
+            limit=5,
+            sources=[{"type": "news"}],
+            scrape_options={"formats": ["summary"]},
+            tbs="qdr:w",
+        )  # raises TypeError if the installed SDK's signature is incompatible
 
 
 if __name__ == "__main__":

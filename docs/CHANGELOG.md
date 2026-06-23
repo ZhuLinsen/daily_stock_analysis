@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
-- [新功能] 新增 Firecrawl 新闻搜索源（`FIRECRAWL_API_KEYS`，高优先级），搜索结果内置整页正文（scrape_options summary），接入 pipeline / market review runtime / get_search_service / AlphaSift 四处入口；正确读取 scrape 后 Document 的 metadata（url/title/date）。
+- [新功能] 新增 Firecrawl 新闻搜索源（`FIRECRAWL_API_KEYS`，高优先级），每条结果内置整页摘要（scrape_options summary，对整页生成的 LLM 摘要而非原文正文），接入 pipeline / market review runtime / get_search_service / AlphaSift 四处入口（含 GitHub Actions workflow env）；正确读取 scrape 后 Document 的 metadata（url/title/date）。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
