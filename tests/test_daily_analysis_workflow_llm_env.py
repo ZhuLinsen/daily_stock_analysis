@@ -94,6 +94,28 @@ def test_daily_analysis_keeps_channel_secrets_in_secrets_context() -> None:
             assert f"secrets.{key}" in env[key]
 
 
+def test_daily_analysis_maps_usage_hmac_config_safely() -> None:
+    env = _load_daily_analysis_env()
+
+    assert env["LLM_USAGE_HMAC_SECRET"] == "${{ secrets.LLM_USAGE_HMAC_SECRET }}"
+    assert "vars.LLM_USAGE_HMAC_SECRET" not in env["LLM_USAGE_HMAC_SECRET"]
+    assert "vars.LLM_USAGE_HMAC_KEY_VERSION" in env["LLM_USAGE_HMAC_KEY_VERSION"]
+    assert "secrets.LLM_USAGE_HMAC_KEY_VERSION" in env["LLM_USAGE_HMAC_KEY_VERSION"]
+
+
+def test_daily_analysis_maps_prompt_cache_config() -> None:
+    env = _load_daily_analysis_env()
+
+    for key in (
+        "LLM_PROMPT_CACHE_TELEMETRY_ENABLED",
+        "LLM_PROMPT_CACHE_HINTS_ENABLED",
+        "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL",
+    ):
+        assert key in env
+        assert f"vars.{key}" in env[key]
+        assert f"secrets.{key}" in env[key]
+
+
 def test_env_example_includes_provider_template_channel_examples() -> None:
     templates = _extract_provider_templates()
     env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")

@@ -6,6 +6,8 @@ import type {
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
   ImportSystemConfigRequest,
+  SchedulerRunNowResponse,
+  SchedulerStatusResponse,
   SetupStatusResponse,
   SystemConfigConflictResponse,
   SystemConfigResponse,
@@ -152,6 +154,16 @@ export const systemConfigApi = {
   async getSetupStatus(): Promise<SetupStatusResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
     return toCamelCase<SetupStatusResponse>(response.data);
+  },
+
+  async getSchedulerStatus(): Promise<SchedulerStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/scheduler/status');
+    return toCamelCase<SchedulerStatusResponse>(response.data);
+  },
+
+  async runSchedulerNow(): Promise<SchedulerRunNowResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/system/scheduler/run-now');
+    return toCamelCase<SchedulerRunNowResponse>(response.data);
   },
 
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {

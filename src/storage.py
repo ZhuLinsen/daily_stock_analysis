@@ -35,6 +35,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
+    text,
     select,
     and_,
     or_,
@@ -42,6 +43,9 @@ from sqlalchemy import (
     desc,
     event,
     func,
+    inspect,
+    MetaData,
+    Table,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
@@ -58,6 +62,7 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -207,6 +212,65 @@ class NewsIntel(Base):
 
     def __repr__(self) -> str:
         return f"<NewsIntel(code={self.code}, title={self.title[:20]}...)>"
+
+
+class IntelligenceSource(Base):
+    """可配置资讯源。"""
+
+    __tablename__ = 'intelligence_sources'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True, index=True)
+    source_type = Column(String(32), nullable=False, default='rss', index=True)
+    url = Column(String(1000), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    scope_type = Column(String(32), nullable=False, default='market', index=True)
+    scope_value = Column(String(64), index=True)
+    market = Column(String(32), nullable=False, default='cn', index=True)
+    description = Column(Text)
+    last_status = Column(String(32))
+    last_error = Column(Text)
+    last_fetched_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_intel_source_scope', 'scope_type', 'scope_value', 'market'),
+    )
+
+
+class IntelligenceItem(Base):
+    """沉淀后的资讯 / 情报条目。"""
+
+    __tablename__ = 'intelligence_items'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, ForeignKey('intelligence_sources.id', ondelete='SET NULL'), nullable=True, index=True)
+    source_name = Column(String(100), index=True)
+    source_type = Column(String(32), nullable=False, default='rss', index=True)
+    title = Column(String(300), nullable=False)
+    summary = Column(Text)
+    url = Column(String(1000), nullable=False, index=True)
+    source = Column(String(100))
+    published_at = Column(DateTime, index=True)
+    fetched_at = Column(DateTime, default=datetime.now, index=True)
+    scope_type = Column(String(32), nullable=False, default='market', index=True)
+    scope_value = Column(String(64), nullable=False, default=INTELLIGENCE_ITEM_NULL_SCOPE_VALUE, index=True)
+    market = Column(String(32), nullable=False, default='cn', index=True)
+    raw_payload = Column(Text)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'source_id',
+            'url',
+            'scope_type',
+            'scope_value',
+            'market',
+            name='uix_intel_item_source_scope_url',
+        ),
+        Index('ix_intel_item_scope_time', 'scope_type', 'scope_value', 'market', 'published_at'),
+        Index('ix_intel_item_fetch_time', 'fetched_at'),
+    )
 
 
 class FundamentalSnapshot(Base):
@@ -683,10 +747,140 @@ class LLMUsage(Base):
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
     stock_code = Column(String(16), nullable=True)
+    provider = Column(String(64), nullable=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
+
+    # Sanitized provider usage snapshot; raw prompts, messages, headers, and
+    # tokenizer free-text fields are intentionally not persisted here.
+    provider_usage_json = Column(Text, nullable=True)
+    provider_usage_schema_name = Column(String(64), nullable=True)
+    provider_usage_schema_version = Column(String(32), nullable=True)
+    provider_usage_observed_at = Column(String(32), nullable=True)
+
+    # Normalized telemetry values are derived from provider usage and may stay
+    # NULL when the provider payload is absent or explicitly invalid.
+    normalized_prompt_tokens = Column(Integer, nullable=True)
+    normalized_completion_tokens = Column(Integer, nullable=True)
+    normalized_total_tokens = Column(Integer, nullable=True)
+    normalized_cache_read_tokens = Column(Integer, nullable=True)
+    normalized_cache_write_tokens = Column(Integer, nullable=True)
+    normalized_cache_miss_tokens = Column(Integer, nullable=True)
+    normalized_uncached_input_tokens = Column(Integer, nullable=True)
+    normalized_cache_eligible_input_tokens = Column(Integer, nullable=True)
+    normalized_cache_hit_ratio = Column(Float, nullable=True)
+    normalized_cache_write_ratio = Column(Float, nullable=True)
+    cache_capability = Column(String(32), nullable=True)
+    cache_eligibility = Column(String(32), nullable=True)
+    cache_observation = Column(String(32), nullable=True)
+    estimated_prefix_tokens = Column(Integer, nullable=True)
+    provider_reported_prompt_tokens = Column(Integer, nullable=True)
+    provider_reported_cached_tokens = Column(Integer, nullable=True)
+    provider_min_cache_tokens = Column(Integer, nullable=True)
+    eligibility_confidence = Column(String(32), nullable=True)
+
+    # Kept nullable for schema compatibility; new writes do not store provider
+    # or proxy tokenizer free-text values.
+    tokenizer_name = Column(String(128), nullable=True)
+    tokenizer_version = Column(String(64), nullable=True)
+
+    # HMAC fingerprints let deployments compare message shapes without storing
+    # raw prompt/message content.
+    messages_hmac = Column(String(64), nullable=True)
+    system_message_hmac = Column(String(64), nullable=True)
+    user_message_hmac = Column(String(64), nullable=True)
+    hmac_key_version = Column(String(64), nullable=True)
+    hmac_domain = Column(String(32), nullable=True)
+    hash_scope = Column(String(32), nullable=True)
+
+    # P0.5a internal legacy message stability audit. These diagnostics are
+    # stored locally only and are not returned by public usage APIs.
+    language = Column(String(16), nullable=True)
+    market_group = Column(String(16), nullable=True)
+    analysis_mode = Column(String(64), nullable=True)
+    legacy_prompt_mode = Column(String(32), nullable=True)
+    skill_config_hmac = Column(String(64), nullable=True)
+    transport = Column(String(64), nullable=True)
+    message_count = Column(Integer, nullable=True)
+    estimated_total_prompt_tokens = Column(Integer, nullable=True)
+    approx_common_prefix_chars = Column(Integer, nullable=True)
+    approx_common_prefix_tokens = Column(Integer, nullable=True)
+    known_dynamic_marker_positions = Column(Text, nullable=True)
     called_at = Column(DateTime, default=datetime.now, index=True)
+
+
+_LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
+    "provider_usage_json": "TEXT",
+    "provider": "VARCHAR(64)",
+    "provider_usage_schema_name": "VARCHAR(64)",
+    "provider_usage_schema_version": "VARCHAR(32)",
+    "provider_usage_observed_at": "VARCHAR(32)",
+    "normalized_prompt_tokens": "INTEGER",
+    "normalized_completion_tokens": "INTEGER",
+    "normalized_total_tokens": "INTEGER",
+    "normalized_cache_read_tokens": "INTEGER",
+    "normalized_cache_write_tokens": "INTEGER",
+    "normalized_cache_miss_tokens": "INTEGER",
+    "normalized_uncached_input_tokens": "INTEGER",
+    "normalized_cache_eligible_input_tokens": "INTEGER",
+    "normalized_cache_hit_ratio": "FLOAT",
+    "normalized_cache_write_ratio": "FLOAT",
+    "cache_capability": "VARCHAR(32)",
+    "cache_eligibility": "VARCHAR(32)",
+    "cache_observation": "VARCHAR(32)",
+    "estimated_prefix_tokens": "INTEGER",
+    "provider_reported_prompt_tokens": "INTEGER",
+    "provider_reported_cached_tokens": "INTEGER",
+    "provider_min_cache_tokens": "INTEGER",
+    "eligibility_confidence": "VARCHAR(32)",
+    "tokenizer_name": "VARCHAR(128)",
+    "tokenizer_version": "VARCHAR(64)",
+    "messages_hmac": "VARCHAR(64)",
+    "system_message_hmac": "VARCHAR(64)",
+    "user_message_hmac": "VARCHAR(64)",
+    "hmac_key_version": "VARCHAR(64)",
+    "hmac_domain": "VARCHAR(32)",
+    "hash_scope": "VARCHAR(32)",
+    "language": "VARCHAR(16)",
+    "market_group": "VARCHAR(16)",
+    "analysis_mode": "VARCHAR(64)",
+    "legacy_prompt_mode": "VARCHAR(32)",
+    "skill_config_hmac": "VARCHAR(64)",
+    "transport": "VARCHAR(64)",
+    "message_count": "INTEGER",
+    "estimated_total_prompt_tokens": "INTEGER",
+    "approx_common_prefix_chars": "INTEGER",
+    "approx_common_prefix_tokens": "INTEGER",
+    "known_dynamic_marker_positions": "TEXT",
+}
+_LLM_USAGE_INTEGER_TELEMETRY_COLUMNS = {
+    column
+    for column, column_type in _LLM_USAGE_TELEMETRY_COLUMN_SQL.items()
+    if column_type == "INTEGER"
+}
+_LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS = {"tokenizer_name", "tokenizer_version"}
+_LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR = "prompt_cache_telemetry_disabled"
+_LLM_PROMPT_CACHE_TELEMETRY_COLUMNS = {
+    "provider_usage_json",
+    "provider_usage_schema_name",
+    "provider_usage_schema_version",
+    "provider_usage_observed_at",
+    "normalized_cache_read_tokens",
+    "normalized_cache_write_tokens",
+    "normalized_cache_miss_tokens",
+    "normalized_uncached_input_tokens",
+    "normalized_cache_eligible_input_tokens",
+    "normalized_cache_hit_ratio",
+    "normalized_cache_write_ratio",
+    "cache_capability",
+    "cache_eligibility",
+    "cache_observation",
+    "estimated_prefix_tokens",
+    "provider_reported_cached_tokens",
+    "provider_min_cache_tokens",
+    "eligibility_confidence",
+}
 
 
 class AlertRuleRecord(Base):
@@ -850,6 +1044,62 @@ class DecisionSignalRecord(Base):
     )
 
 
+class DecisionSignalOutcomeRecord(Base):
+    """Signal-level forward outcome for Issue #1390 P5."""
+
+    __tablename__ = 'decision_signal_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, nullable=False, index=True)
+    horizon = Column(String(16), nullable=False, index=True)
+    engine_version = Column(String(32), nullable=False, index=True)
+    eval_status = Column(String(24), nullable=False, default='unable', index=True)
+    outcome = Column(String(16), index=True)
+    direction_expected = Column(String(16), index=True)
+    direction_correct = Column(Boolean)
+    unable_reason = Column(String(64), index=True)
+    anchor_date = Column(Date, index=True)
+    eval_window_days = Column(Integer)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    max_high = Column(Float)
+    min_low = Column(Float)
+    stock_return_pct = Column(Float)
+
+    action = Column(String(16), index=True)
+    market = Column(String(8), index=True)
+    market_phase = Column(String(24), index=True)
+    source_type = Column(String(32), index=True)
+    source_agent = Column(String(64), index=True)
+    plan_quality = Column(String(16), index=True)
+    data_quality_level = Column(String(24), index=True)
+    holding_state = Column(String(16), nullable=False, default='unknown', index=True)
+
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('signal_id', 'horizon', 'engine_version', name='uix_decision_signal_outcome_key'),
+        Index('ix_decision_signal_outcome_stats_action', 'engine_version', 'action', 'horizon'),
+        Index('ix_decision_signal_outcome_stats_market', 'engine_version', 'market', 'horizon'),
+    )
+
+
+class DecisionSignalFeedbackRecord(Base):
+    """Latest user feedback for a decision signal."""
+
+    __tablename__ = 'decision_signal_feedback'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, nullable=False, unique=True, index=True)
+    feedback_value = Column(String(16), nullable=False, index=True)
+    reason_code = Column(String(64), index=True)
+    note = Column(Text)
+    source = Column(String(16), nullable=False, default='api', index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+
 class _DatabaseManagerMeta(type):
     """Serialize DatabaseManager construction across __new__ and __init__."""
 
@@ -930,7 +1180,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            self._ensure_llm_usage_telemetry_columns()
+            self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
+            self._ensure_intelligence_items_unique_index()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -974,6 +1227,185 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_intelligence_items_unique_index(self) -> None:
+        if not self._is_sqlite_engine:
+            return
+
+        if not inspect(self._engine).has_table("intelligence_items"):
+            return
+
+        try:
+            unique_indexes = self._list_sqlite_unique_indexes("intelligence_items")
+        except Exception as exc:
+            logger.warning(
+                "[Intelligence items] failed to inspect unique indexes; "
+                "skip migration/repair: %s",
+                exc,
+            )
+            return
+
+        target_columns = ("source_id", "url", "scope_type", "scope_value", "market")
+        has_target_index = any(tuple(cols) == target_columns for cols in unique_indexes)
+        has_legacy_url_unique = any(tuple(cols) == ("url",) for cols in unique_indexes)
+
+        if has_target_index:
+            return
+        if unique_indexes and not has_legacy_url_unique:
+            # Table has other unique index shapes; avoid aggressive changes and add
+            # the expected scoped uniqueness directly.
+            self._ensure_intelligence_items_scoped_unique_index_once()
+            return
+
+        self._rebuild_intelligence_items_table()
+
+    def _rebuild_intelligence_items_table(self) -> None:
+        temporary_table = f"intelligence_items_recreate_tmp_{int(time.time() * 1_000_000_000)}"
+        columns = [column.name for column in IntelligenceItem.__table__.columns]
+        select_clause = ", ".join(f'"{column}"' for column in columns)
+        scoped_index_columns = ", ".join(["source_id", "url", "scope_type", "scope_value", "market"])
+        scoped_index_name = "uix_intel_item_scope"
+
+        tmp_metadata = MetaData()
+        tmp_table = Table(
+            temporary_table,
+            tmp_metadata,
+            *(column.copy() for column in IntelligenceItem.__table__.columns),
+        )
+        logger.info("Rebuilding intelligence_items table to align composite uniqueness constraints.")
+        with self._engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{temporary_table}"'))
+            tmp_table.create(connection)
+            connection.execute(
+                text(
+                    f"INSERT INTO \"{temporary_table}\" ({select_clause}) "
+                    f"SELECT {select_clause} FROM intelligence_items"
+                )
+            )
+            connection.execute(text('DROP TABLE "intelligence_items"'))
+            connection.execute(
+                text(f'ALTER TABLE "{temporary_table}" RENAME TO intelligence_items')
+            )
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {scoped_index_name} ON "
+                    f"intelligence_items ({scoped_index_columns})"
+                )
+            )
+
+    def _ensure_intelligence_items_scoped_unique_index_once(self) -> None:
+        target_index_name = "uix_intel_item_scope"
+        with self._engine.begin() as connection:
+            rows = connection.execute(
+                text("PRAGMA index_list(intelligence_items)")
+            ).fetchall()
+            for row in rows:
+                if row[1] == target_index_name:
+                    return
+            index_columns = ", ".join(["source_id", "url", "scope_type", "scope_value", "market"])
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {target_index_name} ON "
+                    f"intelligence_items ({index_columns})"
+                )
+            )
+
+    def _list_sqlite_unique_indexes(self, table_name: str):
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(f"PRAGMA index_list({table_name})")
+            ).fetchall()
+            unique_indexes = []
+            for row in rows:
+                # row: (seq, name, unique, origin, partial)
+                if int(row[2]) != 1:
+                    continue
+                index_name = row[1]
+                index_columns = []
+                for index_info in connection.execute(
+                    text(f"PRAGMA index_xinfo({index_name})")
+                ).fetchall():
+                    # index_xinfo: (seqno, cid, name, desc, coll, key, ... )
+                    column_name = index_info[2]
+                    if column_name is None:
+                        continue
+                    index_columns.append(column_name)
+                unique_indexes.append(index_columns)
+            return unique_indexes
+
+    def _ensure_llm_usage_telemetry_columns(self) -> None:
+        """Add nullable P0a usage telemetry columns to existing SQLite DBs."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(LLMUsage.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[LLM usage] failed to inspect telemetry columns; "
+                "skipping best-effort SQLite telemetry column backfill: %s",
+                exc,
+            )
+            return
+
+        max_retries = self._sqlite_write_retry_max
+        for column, column_type in _LLM_USAGE_TELEMETRY_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {LLMUsage.__tablename__} "
+                            f"ADD COLUMN {column} {column_type}"
+                        )
+                    existing.add(column)
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_duplicate_column_error(exc, column):
+                        existing.add(column)
+                        break
+                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
+                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "[LLM usage] SQLite telemetry column backfill locked, "
+                            "retrying: %s (%s/%s, %.2fs)",
+                            column,
+                            attempt + 1,
+                            max_retries,
+                            delay,
+                        )
+                        if delay > 0:
+                            time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_intelligence_item_scope_values(self) -> None:
+        """Backfill nullable intelligence item scopes so SQLite unique keys work."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(IntelligenceItem.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning("资讯池 scope_value 回填检查失败，已跳过: %s", exc)
+            return
+        if "scope_value" not in existing:
+            return
+        try:
+            with self._engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"UPDATE {IntelligenceItem.__tablename__} "
+                    "SET scope_value = ? "
+                    "WHERE scope_value IS NULL OR scope_value = ''",
+                    (INTELLIGENCE_ITEM_NULL_SCOPE_VALUE,),
+                )
+        except Exception as exc:
+            logger.warning("资讯池 scope_value 回填失败，已跳过: %s", exc)
 
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':
@@ -1085,6 +1517,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "database table is locked",
             )
         )
+
+    @staticmethod
+    def _is_sqlite_duplicate_column_error(exc: OperationalError, column: str) -> bool:
+        err_text = str(getattr(exc, "orig", exc)).lower()
+        return "duplicate column name" in err_text and column.lower() in err_text
 
     @staticmethod
     def _normalize_daily_date(value: Any) -> Any:
@@ -1763,14 +2200,30 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             if not existing_ids:
                 return 0
 
-            session.execute(
-                delete(DecisionSignalRecord).where(
-                    and_(
-                        DecisionSignalRecord.source_type == "analysis",
-                        DecisionSignalRecord.source_report_id.in_(existing_ids),
+            linked_signal_ids = sorted(
+                session.execute(
+                    select(DecisionSignalRecord.id).where(
+                        and_(
+                            DecisionSignalRecord.source_type == "analysis",
+                            DecisionSignalRecord.source_report_id.in_(existing_ids),
+                        )
+                    )
+                ).scalars().all()
+            )
+            if linked_signal_ids:
+                session.execute(
+                    delete(DecisionSignalOutcomeRecord).where(
+                        DecisionSignalOutcomeRecord.signal_id.in_(linked_signal_ids)
                     )
                 )
-            )
+                session.execute(
+                    delete(DecisionSignalFeedbackRecord).where(
+                        DecisionSignalFeedbackRecord.signal_id.in_(linked_signal_ids)
+                    )
+                )
+                session.execute(
+                    delete(DecisionSignalRecord).where(DecisionSignalRecord.id.in_(linked_signal_ids))
+                )
             session.execute(
                 delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
@@ -2613,16 +3066,20 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         completion_tokens: int,
         total_tokens: int,
         stock_code: Optional[str] = None,
+        **telemetry: Any,
     ) -> None:
         """Append one LLM call record to llm_usage."""
-        row = LLMUsage(
-            call_type=call_type,
-            model=model or "unknown",
-            stock_code=stock_code,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-        )
+        row_values: Dict[str, Any] = {
+            "call_type": call_type,
+            "model": model or "unknown",
+            "stock_code": stock_code,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL:
+            row_values[column] = None if column in _LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS else telemetry.get(column)
+        row = LLMUsage(**row_values)
         with self.session_scope() as session:
             session.add(row)
 
@@ -2634,9 +3091,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """Return aggregated token usage between from_dt and to_dt.
 
         Returns a dict with keys:
-          total_calls, total_tokens,
-          by_call_type: list of {call_type, calls, total_tokens},
-          by_model:     list of {model, calls, total_tokens}
+          total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+          by_call_type: list of {call_type, calls, prompt_tokens,
+            completion_tokens, total_tokens},
+          by_model: list of {model, calls, prompt_tokens, completion_tokens,
+            total_tokens, max_total_tokens}
         """
         with self.session_scope() as session:
             base_filter = and_(
@@ -2648,6 +3107,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             totals = session.execute(
                 select(
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 ).where(base_filter)
             ).one()
@@ -2657,6 +3118,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 select(
                     LLMUsage.call_type,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 )
                 .where(base_filter)
@@ -2669,7 +3132,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 select(
                     LLMUsage.model,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                    func.coalesce(func.max(LLMUsage.total_tokens), 0).label("max_total_tokens"),
                 )
                 .where(base_filter)
                 .group_by(LLMUsage.model)
@@ -2678,16 +3144,80 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         return {
             "total_calls": totals.calls,
+            "total_prompt_tokens": totals.prompt_tokens,
+            "total_completion_tokens": totals.completion_tokens,
             "total_tokens": totals.tokens,
             "by_call_type": [
-                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "call_type": r.call_type,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                }
                 for r in by_type_rows
             ],
             "by_model": [
-                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "model": r.model,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                    "max_total_tokens": r.max_total_tokens,
+                }
                 for r in by_model_rows
             ],
         }
+
+    def get_llm_usage_records(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return recent LLM usage audit rows between from_dt and to_dt.
+
+        Each row contains id, call_type, model, stock_code, prompt_tokens,
+        completion_tokens, total_tokens, and called_at. Results are ordered by
+        newest call first, and limit is clamped to the public API range.
+        """
+        normalized_limit = max(1, min(int(limit or 50), 200))
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(
+                    LLMUsage.id,
+                    LLMUsage.call_type,
+                    LLMUsage.model,
+                    LLMUsage.stock_code,
+                    LLMUsage.prompt_tokens,
+                    LLMUsage.completion_tokens,
+                    LLMUsage.total_tokens,
+                    LLMUsage.called_at,
+                )
+                .where(
+                    and_(
+                        LLMUsage.called_at >= from_dt,
+                        LLMUsage.called_at <= to_dt,
+                    )
+                )
+                .order_by(desc(LLMUsage.called_at), desc(LLMUsage.id))
+                .limit(normalized_limit)
+            ).all()
+
+        return [
+            {
+                "id": r.id,
+                "call_type": r.call_type,
+                "model": r.model,
+                "stock_code": r.stock_code,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "total_tokens": r.total_tokens,
+                "called_at": r.called_at,
+            }
+            for r in rows
+        ]
 
 
 # 便捷函数
@@ -2704,17 +3234,86 @@ def persist_llm_usage(
 ) -> None:
     """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
     try:
+        if usage is None:
+            usage = {}
+        prompt_cache_telemetry_disabled = bool(
+            getattr(usage, _LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR, False)
+        )
+        prompt_tokens = _coerce_llm_usage_non_negative_int(usage.get("prompt_tokens")) or 0
+        completion_tokens = _coerce_llm_usage_non_negative_int(usage.get("completion_tokens")) or 0
+        total_tokens = _coerce_llm_usage_non_negative_int(usage.get("total_tokens")) or 0
+        telemetry = {
+            column: usage.get(column)
+            for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL
+        }
+        if prompt_cache_telemetry_disabled:
+            for column in _LLM_PROMPT_CACHE_TELEMETRY_COLUMNS:
+                telemetry[column] = None
+        for column in _LLM_USAGE_INTEGER_TELEMETRY_COLUMNS:
+            telemetry[column] = _coerce_llm_usage_non_negative_int(telemetry.get(column))
+        telemetry["normalized_prompt_tokens"] = (
+            telemetry.get("normalized_prompt_tokens")
+            if telemetry.get("normalized_prompt_tokens") is not None
+            else prompt_tokens
+        )
+        telemetry["normalized_completion_tokens"] = (
+            telemetry.get("normalized_completion_tokens")
+            if telemetry.get("normalized_completion_tokens") is not None
+            else completion_tokens
+        )
+        telemetry["normalized_total_tokens"] = (
+            telemetry.get("normalized_total_tokens")
+            if telemetry.get("normalized_total_tokens") is not None
+            else total_tokens
+        )
+        has_usage_payload = bool(usage.get("provider_usage_json")) or any(
+            key in usage
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "normalized_prompt_tokens",
+                "normalized_completion_tokens",
+                "normalized_total_tokens",
+            )
+        )
+        if not prompt_cache_telemetry_disabled:
+            telemetry["cache_capability"] = usage.get("cache_capability") or "unknown"
+            telemetry["cache_eligibility"] = usage.get("cache_eligibility") or "unknown"
+            telemetry["cache_observation"] = usage.get("cache_observation") or (
+                "no_usage" if not has_usage_payload else "unknown"
+            )
         db = DatabaseManager.get_instance()
         db.record_llm_usage(
             call_type=call_type,
             model=model,
-            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
-            completion_tokens=usage.get("completion_tokens", 0) or 0,
-            total_tokens=usage.get("total_tokens", 0) or 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
             stock_code=stock_code,
+            **telemetry,
         )
     except Exception as exc:
         logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
+
+
+def _coerce_llm_usage_non_negative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if value < 0 or not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or not text.isdigit():
+            return None
+        return int(text)
+    return None
 
 
 if __name__ == "__main__":

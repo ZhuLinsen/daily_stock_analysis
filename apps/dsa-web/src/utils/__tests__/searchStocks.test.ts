@@ -68,6 +68,42 @@ const mockIndex: StockIndexItem[] = [
     popularity: 98,
   },
   {
+    canonicalCode: "7203.T",
+    displayCode: "7203.T",
+    nameZh: "丰田汽车",
+    pinyinFull: "fengtianqiche",
+    pinyinAbbr: "ftqc",
+    aliases: ["Toyota", "Toyota Motor", "丰田"],
+    market: "JP",
+    assetType: "stock",
+    active: true,
+    popularity: 97,
+  },
+  {
+    canonicalCode: "005930.KS",
+    displayCode: "005930.KS",
+    nameZh: "三星电子",
+    pinyinFull: "sanxingdianzi",
+    pinyinAbbr: "sxdz",
+    aliases: ["Samsung", "Samsung Electronics", "三星"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 97,
+  },
+  {
+    canonicalCode: "035720.KQ",
+    displayCode: "035720.KQ",
+    nameZh: "Kakao",
+    pinyinFull: "Kakao",
+    pinyinAbbr: "Kakao",
+    aliases: ["Kakao", "可可"],
+    market: "KR",
+    assetType: "stock",
+    active: true,
+    popularity: 92,
+  },
+  {
     canonicalCode: "600000.SH",
     displayCode: "600000",
     nameZh: "浦发银行",
@@ -211,6 +247,40 @@ describe('searchStocks', () => {
     expect(results).toHaveLength(1);
     expect(results[0].canonicalCode).toBe('00700.HK');
     expect(results[0].market).toBe('HK');
+  });
+
+  test('日股 Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('7203.T', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('7203.T');
+    expect(results[0].market).toBe('JP');
+  });
+
+  test('日股英文别名匹配', () => {
+    const results = searchStocks('Toyota', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('7203.T');
+    expect(results[0].matchField).toBe('alias');
+  });
+
+  test('韩股 KOSPI Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('005930.KS', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('005930.KS');
+    expect(results[0].market).toBe('KR');
+  });
+
+  test('韩股 KOSDAQ Yahoo 后缀代码匹配', () => {
+    const results = searchStocks('035720.KQ', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('035720.KQ');
+    expect(results[0].market).toBe('KR');
+  });
+
+  test('韩股中文别名匹配', () => {
+    const results = searchStocks('三星', mockIndex);
+    expect(results).toHaveLength(1);
+    expect(results[0].canonicalCode).toBe('005930.KS');
   });
 
   describe('Edge case tests', () => {

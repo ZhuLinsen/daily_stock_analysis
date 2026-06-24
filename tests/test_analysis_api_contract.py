@@ -1477,6 +1477,93 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertIsNotNone(report.meta.market_phase_summary)
         self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
 
+    def test_build_analysis_report_repairs_bare_kr_code_and_phase_summary(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2025-01-02T16:10:00+09:00",
+            "session_date": "2025-01-02",
+            "effective_daily_bar_date": "2025-01-02",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+
+        with patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"):
+            report = _build_analysis_report(
+                report_data={
+                    "meta": {"stock_code": "005930"},
+                    "summary": {},
+                    "strategy": {},
+                    "details": {},
+                },
+                query_id="q-kr-phase",
+                stock_code="005930",
+                stock_name="三星电子",
+                context_snapshot={"market_phase_summary": persisted_phase_summary},
+                fallback_fundamental_payload=None,
+            )
+
+        self.assertEqual(report.meta.stock_code, "005930.KS")
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.market, "kr")
+        self.assertEqual(report.meta.market_phase_summary.phase, "postmarket")
+        self.assertEqual(
+            report.meta.market_phase_summary.market_local_time,
+            "2025-01-02T16:10:00+09:00",
+        )
+        self.assertEqual(report.meta.market_phase_summary.session_date, "2025-01-02")
+        self.assertEqual(
+            report.meta.market_phase_summary.effective_daily_bar_date,
+            "2025-01-02",
+        )
+        self.assertEqual(report.meta.market_phase_summary.trigger_source, "scheduled_job")
+        self.assertEqual(report.meta.market_phase_summary.analysis_intent, "postmarket")
+
+    def test_build_analysis_report_rebuilds_legacy_cn_market_summary_for_kr_code(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        legacy_cn_summary = {
+            **_market_phase_summary(),
+            "market": "cn",
+            "phase": "intraday",
+            "market_local_time": "2026-03-27T10:00:00+08:00",
+            "session_date": "2026-03-27",
+            "effective_daily_bar_date": "2026-03-26",
+            "analysis_intent": "intraday",
+            "trigger_source": "history_snapshot",
+            "warnings": ["legacy_cn_snapshot"],
+        }
+
+        with patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"):
+            report = _build_analysis_report(
+                report_data={
+                    "meta": {"stock_code": "005930"},
+                    "summary": {},
+                    "strategy": {},
+                    "details": {},
+                },
+                query_id="q-kr-legacy-cn",
+                stock_code="005930",
+                stock_name="三星电子",
+                context_snapshot={"market_phase_summary": legacy_cn_summary},
+                fallback_fundamental_payload=None,
+            )
+
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.stock_code, "005930.KS")
+        self.assertEqual(report.meta.market_phase_summary.market, "kr")
+        self.assertTrue(report.meta.market_phase_summary.market_local_time.endswith("+09:00"))
+        self.assertIn("legacy_cn_snapshot", report.meta.market_phase_summary.warnings)
+
     def test_build_analysis_report_merges_partial_top_level_context_with_fallback(self) -> None:
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -2168,6 +2255,45 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             stock_codes=["AAPL.US"],
             stock_name=None,
             original_query="AAPL.US",
+            selection_source="manual",
+            report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_resolves_bare_code_from_stock_index_before_default_market(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"), \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="005930",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="005930",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["005930.KS"],
+            stock_name=None,
+            original_query="005930",
             selection_source="manual",
             report_type="detailed",
             analysis_phase="auto",

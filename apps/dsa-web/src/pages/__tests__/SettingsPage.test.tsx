@@ -6,7 +6,9 @@ import SettingsPage from '../SettingsPage';
 
 const {
   exportEnv,
+  getSchedulerStatus,
   importEnv,
+  runSchedulerNow,
   updateSystemConfig,
   alphasiftEnable,
   alphasiftInstall,
@@ -33,7 +35,9 @@ const {
   webBuildInfoMock,
 } = vi.hoisted(() => ({
   exportEnv: vi.fn(),
+  getSchedulerStatus: vi.fn(),
   importEnv: vi.fn(),
+  runSchedulerNow: vi.fn(),
   updateSystemConfig: vi.fn(),
   alphasiftEnable: vi.fn(),
   alphasiftInstall: vi.fn(),
@@ -76,7 +80,9 @@ vi.mock('../../hooks', () => ({
 vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     exportEnv: (...args: unknown[]) => exportEnv(...args),
+    getSchedulerStatus: (...args: unknown[]) => getSchedulerStatus(...args),
     importEnv: (...args: unknown[]) => importEnv(...args),
+    runSchedulerNow: (...args: unknown[]) => runSchedulerNow(...args),
     update: (...args: unknown[]) => updateSystemConfig(...args),
   },
 }));
@@ -420,6 +426,19 @@ describe('SettingsPage', () => {
       content: 'STOCK_LIST=600519\n',
       configVersion: 'v1',
       updatedAt: '2026-03-21T00:00:00Z',
+    });
+    getSchedulerStatus.mockResolvedValue({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['09:20', '15:10'],
+      nextRunAt: '2026-06-21T09:20:00+08:00',
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    runSchedulerNow.mockResolvedValue({
+      accepted: true,
+      running: true,
     });
     importEnv.mockResolvedValue({
       success: true,
@@ -790,6 +809,72 @@ describe('SettingsPage', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps prompt cache settings collapsed and expandable at the bottom of AI model settings', () => {
+    const aiField = (key: string, displayOrder: number, value = '') => ({
+      key,
+      value,
+      rawValueExists: Boolean(value),
+      isMasked: false,
+      schema: {
+        key,
+        category: 'ai_model',
+        dataType: 'string',
+        uiControl: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? 'select' : 'text',
+        isSensitive: false,
+        isRequired: false,
+        isEditable: true,
+        options: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? ['off', 'basic', 'debug'] : [],
+        validation: {},
+        displayOrder,
+      },
+    });
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        ai_model: [
+          aiField('LITELLM_CONFIG', 10, './litellm.yaml'),
+          aiField('LLM_PROMPT_CACHE_TELEMETRY_ENABLED', 20, 'true'),
+          aiField('LLM_PROMPT_CACHE_HINTS_ENABLED', 21, 'false'),
+          aiField('LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 22, 'off'),
+        ],
+      },
+    }));
+
+    const { container } = render(<SettingsPage />);
+
+    const promptCacheSummary = screen.getByText('Provider Prompt Cache 高级设置').closest('summary');
+    const promptCacheDetails = promptCacheSummary?.closest('details');
+    const telemetryField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED');
+    const hintsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED');
+    const diagnosticsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL');
+
+    expect(promptCacheSummary).toBeInTheDocument();
+    expect(promptCacheDetails).toBeInTheDocument();
+    expect(promptCacheDetails).not.toHaveAttribute('open');
+    expect(promptCacheDetails).toContainElement(telemetryField);
+    expect(promptCacheDetails).toContainElement(hintsField);
+    expect(promptCacheDetails).toContainElement(diagnosticsField);
+    expect(telemetryField).not.toBeVisible();
+    expect(hintsField).not.toBeVisible();
+    expect(diagnosticsField).not.toBeVisible();
+
+    fireEvent.click(promptCacheSummary as HTMLElement);
+
+    expect(promptCacheDetails).toHaveAttribute('open');
+    expect(telemetryField).toBeVisible();
+    expect(hintsField).toBeVisible();
+    expect(diagnosticsField).toBeVisible();
+
+    expect(Array.from(container.querySelectorAll('[data-testid^="settings-field-"]')).map((node) => node.getAttribute('data-testid'))).toEqual([
+      'settings-field-LITELLM_CONFIG',
+      'settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
+    ]);
+  });
+
   it('notifies alphasift status update and skips install after generic save when ALPHASIFT_ENABLED is set false', async () => {
     save.mockResolvedValue({ success: true });
     getChangedItems.mockReturnValue([{ key: 'ALPHASIFT_ENABLED', value: 'false' }]);
@@ -1011,6 +1096,614 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: '开启选股' })).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-ALPHASIFT_ENABLED')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-field-ALPHASIFT_INSTALL_SPEC')).toBeInTheDocument();
+  });
+
+  it('maps schedule settings to the scheduler card instead of generic raw fields', async () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIME',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIME',
+              category: 'system',
+              dataType: 'time',
+              uiControl: 'time',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 10,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '09:20,15:10',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+          {
+            key: 'SCHEDULE_RUN_IMMEDIATELY',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_RUN_IMMEDIATELY',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 12,
+            },
+          },
+          {
+            key: 'LOG_LEVEL',
+            value: 'INFO',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'LOG_LEVEL',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'select',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: ['INFO', 'DEBUG'],
+              validation: {},
+              displayOrder: 50,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('scheduler-settings-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_ENABLED')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_TIME')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_TIMES')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_RUN_IMMEDIATELY')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-field-LOG_LEVEL')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('scheduler-time-input-0'), {
+      target: { value: '10:30' },
+    });
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_TIMES', '10:30,15:10');
+
+    fireEvent.click(screen.getByTestId('scheduler-run-now-button'));
+
+    await waitFor(() => expect(runSchedulerNow).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows an error when run-now is rejected because analysis is already running', async () => {
+    runSchedulerNow.mockRejectedValueOnce(new Error('A scheduled analysis is already running'));
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByTestId('scheduler-run-now-button'));
+
+    await waitFor(() => expect(runSchedulerNow).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/A scheduled analysis is already running/)).toBeInTheDocument();
+  });
+
+  it('does not show a failed run as the last successful scheduler run', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: '2026-06-21T17:00:00+08:00',
+      lastSuccessAt: null,
+      lastError: 'analysis failed',
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('scheduler-last-success')).toHaveTextContent('-');
+    expect(screen.getByTestId('scheduler-last-error')).toHaveTextContent('analysis failed');
+  });
+
+  it('shows active runtime scheduler state even when saved schedule flag is false', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+
+    fireEvent.click(enabledCheckbox);
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_ENABLED', 'false');
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+  });
+
+  it('keeps local scheduler toggle edits when runtime and saved states are initially consistent', async () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+    render(<SettingsPage />);
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+
+    fireEvent.click(enabledCheckbox);
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_ENABLED', 'false');
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+
+    const refreshButton = screen.getByTestId('scheduler-refresh-status-button');
+    fireEvent.click(refreshButton);
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+  });
+
+  it('can reconcile runtime scheduler state when runtime is enabled but saved value is disabled', async () => {
+    save.mockResolvedValue({ success: true });
+    getChangedItems.mockReturnValue([]);
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: false,
+      dirtyCount: 0,
+      getChangedItems: () => [],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const saveButton = screen.getByRole('button', { name: /保存配置/ });
+    expect(saveButton).toBeDisabled();
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+    fireEvent.click(enabledCheckbox);
+
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await waitFor(() => expect(saveButton).toHaveTextContent('保存配置 (1)'));
+
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'false' }]));
+  });
+
+  it('can reconcile runtime scheduler state when runtime is disabled but saved value is enabled', async () => {
+    save.mockResolvedValue({ success: true });
+    getChangedItems.mockReturnValue([]);
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: false,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: false,
+      dirtyCount: 0,
+      getChangedItems: () => [],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const saveButton = screen.getByRole('button', { name: /保存配置/ });
+    expect(saveButton).toBeDisabled();
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).not.toBeChecked();
+    fireEvent.click(enabledCheckbox);
+
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await waitFor(() => expect(saveButton).toHaveTextContent('保存配置 (1)'));
+
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'true' }]));
+  });
+
+  it('refreshes scheduler status after saving scheduler settings', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus
+      .mockResolvedValueOnce({
+        enabled: false,
+        running: false,
+        scheduleTimes: [],
+        nextRunAt: null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        running: false,
+        scheduleTimes: ['09:20', '15:10'],
+        nextRunAt: '2026-06-21T09:20:00+08:00',
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      });
+    save.mockResolvedValue({ success: true });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: true,
+      dirtyCount: 1,
+      getChangedItems: () => [{ key: 'SCHEDULE_ENABLED', value: 'true' }],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '09:20,15:10',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('未启用')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '保存配置 (1)' }));
+
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('已启用')).toBeInTheDocument();
   });
 
   it('refreshes AlphaSift state when the enable flow fails', async () => {
@@ -1308,6 +2001,105 @@ describe('SettingsPage', () => {
 
     await waitFor(() => expect(importEnv).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+  });
+
+  it('refreshes scheduler status after successful env import updates scheduler settings', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    const configState = buildSystemConfigState();
+    getSchedulerStatus
+      .mockResolvedValueOnce({
+        enabled: false,
+        running: false,
+        scheduleTimes: ['18:00'],
+        nextRunAt: null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        running: false,
+        scheduleTimes: ['09:20', '15:10'],
+        nextRunAt: '2026-06-21T09:20:00+08:00',
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      });
+    importEnv.mockResolvedValueOnce({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 2,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['SCHEDULE_ENABLED', 'SCHEDULE_TIMES'],
+      warnings: [],
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    const { container } = render(<SettingsPage />);
+
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('未启用')).toBeInTheDocument();
+
+    vi.clearAllMocks();
+
+    const input = container.querySelector('input[type="file"]');
+    expect(input).not.toBeNull();
+
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(['SCHEDULE_ENABLED=true\nSCHEDULE_TIMES=09:20,15:10\n'], 'desktop-backup.env', { type: 'text/plain' })],
+      },
+    });
+
+    await waitFor(() => expect(importEnv).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('已启用')).toBeInTheDocument();
   });
 
   it('shows an error when env import succeeds but reload fails', async () => {

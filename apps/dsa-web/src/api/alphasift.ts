@@ -153,6 +153,7 @@ export type AlphaSiftHotspotDetail = {
   route: AlphaSiftHotspotRouteItem[];
   timeline?: AlphaSiftHotspotRouteItem[];
   stocks: AlphaSiftHotspotStock[];
+  leaderStocks?: AlphaSiftHotspotStock[];
   stockCount: number;
   sourceErrors?: string[];
   qualityStatus?: 'available' | 'partial' | 'stale' | 'failed' | string;

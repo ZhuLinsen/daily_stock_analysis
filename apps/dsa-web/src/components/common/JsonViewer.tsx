@@ -7,6 +7,46 @@ interface JsonViewerProps {
   className?: string;
 }
 
+const JSON_TOKEN_PATTERN = /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|true|false|null/g;
+
+function getTokenClassName(token: string, remainingLine: string): string {
+  if (token.startsWith('"')) {
+    return /^\s*:/.test(remainingLine) ? 'text-cyan-400' : 'text-emerald-400';
+  }
+  if (token === 'true' || token === 'false' || token === 'null') {
+    return 'text-purple-400';
+  }
+  return 'text-amber-400';
+}
+
+function renderHighlightedLine(line: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const matcher = new RegExp(JSON_TOKEN_PATTERN);
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = matcher.exec(line)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(line.slice(lastIndex, match.index));
+    }
+
+    const token = match[0];
+    const nextIndex = match.index + token.length;
+    parts.push(
+      <span key={`${match.index}-${token}`} className={getTokenClassName(token, line.slice(nextIndex))}>
+        {token}
+      </span>,
+    );
+    lastIndex = nextIndex;
+  }
+
+  if (lastIndex < line.length) {
+    parts.push(line.slice(lastIndex));
+  }
+
+  return parts;
+}
+
 /**
  * JSON 结构化展示组件
  * 支持语法高亮和折叠
@@ -33,36 +73,12 @@ export const JsonViewer: React.FC<JsonViewerProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // 简单的语法高亮
   const highlightJson = (json: string): React.ReactNode => {
     return json.split('\n').map((line, index) => {
-      // 高亮 key
-      let highlighted = line.replace(
-        /"([^"]+)":/g,
-        '<span class="text-cyan-400">"$1"</span>:'
-      );
-      // 高亮字符串值
-      highlighted = highlighted.replace(
-        /: "([^"]*)"/g,
-        ': <span class="text-emerald-400">"$1"</span>'
-      );
-      // 高亮数字
-      highlighted = highlighted.replace(
-        /: (-?\d+\.?\d*)/g,
-        ': <span class="text-amber-400">$1</span>'
-      );
-      // 高亮布尔值和 null
-      highlighted = highlighted.replace(
-        /: (true|false|null)/g,
-        ': <span class="text-purple-400">$1</span>'
-      );
-
       return (
-        <div
-          key={index}
-          className="leading-relaxed"
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-        />
+        <div key={index} className="leading-relaxed">
+          {renderHighlightedLine(line)}
+        </div>
       );
     });
   };

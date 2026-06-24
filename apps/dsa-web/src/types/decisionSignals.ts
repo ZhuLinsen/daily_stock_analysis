@@ -10,7 +10,11 @@ export type DecisionSignalSourceType = 'analysis' | 'agent' | 'alert' | 'market_
 export type DecisionSignalStatus = 'active' | 'expired' | 'invalidated' | 'closed' | 'archived';
 export type DecisionSignalPlanQuality = 'complete' | 'partial' | 'minimal' | 'unknown';
 export type DecisionSignalHorizon = 'intraday' | '1d' | '3d' | '5d' | '10d' | 'swing' | 'long';
-export type DecisionSignalMarket = 'cn' | 'hk' | 'us';
+export type DecisionSignalMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+export type DecisionSignalOutcomeEvalStatus = 'completed' | 'unable';
+export type DecisionSignalOutcomeValue = 'hit' | 'miss' | 'neutral';
+export type DecisionSignalFeedbackValue = 'useful' | 'not_useful';
+export type DecisionSignalFeedbackSource = 'web' | 'api';
 
 export interface DecisionSignalItem {
   id: number;
@@ -122,4 +126,124 @@ export interface DecisionSignalListResponse {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface DecisionSignalOutcomeItem {
+  id: number;
+  signalId: number;
+  horizon: DecisionSignalHorizon;
+  engineVersion: string;
+  evalStatus: DecisionSignalOutcomeEvalStatus;
+  outcome?: DecisionSignalOutcomeValue | null;
+  directionExpected?: string | null;
+  directionCorrect?: boolean | null;
+  unableReason?: string | null;
+  anchorDate?: string | null;
+  evalWindowDays?: number | null;
+  startPrice?: number | null;
+  endClose?: number | null;
+  maxHigh?: number | null;
+  minLow?: number | null;
+  stockReturnPct?: number | null;
+  action?: DecisionAction | null;
+  market?: DecisionSignalMarket | null;
+  marketPhase?: MarketPhaseValue | null;
+  sourceType?: DecisionSignalSourceType | null;
+  sourceAgent?: string | null;
+  planQuality?: DecisionSignalPlanQuality | null;
+  dataQualityLevel?: string | null;
+  holdingState: 'holding' | 'empty' | 'unknown';
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface DecisionSignalOutcomeRunRequest {
+  signalId?: number;
+  horizons?: DecisionSignalHorizon[];
+  force?: boolean;
+  market?: DecisionSignalMarket;
+  stockCode?: string;
+  action?: DecisionAction;
+  sourceType?: DecisionSignalSourceType;
+  status?: DecisionSignalStatus;
+  limit?: number;
+}
+
+export interface DecisionSignalOutcomeRunResponse {
+  items: DecisionSignalOutcomeItem[];
+  evaluated: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  engineVersion: string;
+}
+
+export interface DecisionSignalOutcomeListParams {
+  signalId?: number;
+  horizon?: DecisionSignalHorizon;
+  engineVersion?: string;
+  evalStatus?: DecisionSignalOutcomeEvalStatus;
+  outcome?: DecisionSignalOutcomeValue;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface DecisionSignalOutcomeListResponse {
+  items: DecisionSignalOutcomeItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface DecisionSignalOutcomeStatsBucket {
+  dimension: string;
+  value: string;
+  total: number;
+  completed: number;
+  unable: number;
+  hit: number;
+  miss: number;
+  neutral: number;
+  hitRatePct?: number | null;
+  avgStockReturnPct?: number | null;
+  unableReasons: Record<string, number>;
+}
+
+export interface DecisionSignalOutcomeStatsResponse {
+  engineVersion: string;
+  horizons?: DecisionSignalHorizon[] | null;
+  statuses: DecisionSignalStatus[];
+  total: number;
+  completed: number;
+  unable: number;
+  hit: number;
+  miss: number;
+  neutral: number;
+  hitRatePct?: number | null;
+  avgStockReturnPct?: number | null;
+  unableReasons: Record<string, number>;
+  breakdowns: Record<string, DecisionSignalOutcomeStatsBucket[]>;
+}
+
+export interface DecisionSignalOutcomeStatsParams {
+  horizons?: DecisionSignalHorizon[];
+  engineVersion?: string;
+  statuses?: DecisionSignalStatus[];
+}
+
+export interface DecisionSignalFeedbackItem {
+  signalId: number;
+  feedbackValue?: DecisionSignalFeedbackValue | null;
+  reasonCode?: string | null;
+  note?: string | null;
+  source?: DecisionSignalFeedbackSource | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface DecisionSignalFeedbackRequest {
+  feedbackValue: DecisionSignalFeedbackValue;
+  reasonCode?: string | null;
+  note?: string | null;
+  source?: DecisionSignalFeedbackSource;
 }

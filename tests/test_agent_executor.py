@@ -40,6 +40,7 @@ from src.agent.stock_scope import StockScope, resolve_stock_scope
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
 from src.config import Config
+from src.llm.usage import normalize_litellm_usage
 from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
     PipelineAnalysisArtifacts,
@@ -339,6 +340,104 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.stock_scope.mode, "maintain")
         self.assertEqual(result.effective_context["stock_code"], "600519")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519"})
+
+    def test_run_agent_loop_does_not_persist_agent_usage_without_provider_usage(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            usage={},
+            provider="openai",
+            model="openai/gpt-test",
+        )
+
+        with patch("src.agent.runner._persist_usage") as persist_usage:
+            result = run_agent_loop(
+                messages=[{"role": "user", "content": "Analyze"}],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=1,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_tokens, 0)
+        persist_usage.assert_not_called()
+
+    def test_run_agent_loop_does_not_persist_metadata_only_provider_usage(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            usage=normalize_litellm_usage(
+                {"estimated_prefix_tokens": 123},
+                model="openai/gpt-4o",
+            ),
+            provider="openai",
+            model="openai/gpt-test",
+        )
+
+        with patch("src.agent.runner._persist_usage") as persist_usage:
+            result = run_agent_loop(
+                messages=[{"role": "user", "content": "Analyze"}],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=1,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_tokens, 0)
+        persist_usage.assert_not_called()
+
+    def test_run_agent_loop_persists_invalid_provider_usage_diagnostics(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        usage = normalize_litellm_usage({"prompt_tokens": -1}, model="openai/gpt-4o")
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            usage=usage,
+            provider="openai",
+            model="openai/gpt-test",
+        )
+
+        with patch("src.agent.runner._persist_usage") as persist_usage:
+            result = run_agent_loop(
+                messages=[{"role": "user", "content": "Analyze"}],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=1,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_tokens, 0)
+        self.assertEqual(usage["cache_observation"], "invalid_provider_usage")
+        persist_usage.assert_called_once_with(usage, "openai/gpt-test", call_type="agent")
+
+    def test_run_agent_loop_persists_agent_usage_with_provider_usage(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        usage = {"total_tokens": 5}
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="Done.",
+            tool_calls=[],
+            usage=usage,
+            provider="openai",
+            model="openai/gpt-test",
+        )
+
+        with patch("src.agent.runner._persist_usage") as persist_usage:
+            result = run_agent_loop(
+                messages=[{"role": "user", "content": "Analyze"}],
+                tool_registry=registry,
+                llm_adapter=adapter,
+                max_steps=1,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.total_tokens, 5)
+        persist_usage.assert_called_once_with(usage, "openai/gpt-test", call_type="agent")
 
     def test_run_agent_loop_blocks_conflicting_stock_scoped_tool_and_keeps_tool_result(self):
         executed_calls = []

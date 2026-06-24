@@ -10,6 +10,23 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from src.core.market_review_runtime import build_market_review_runtime, has_configured_llm_runtime
+from src.llm.generation_backend import GenerationError, GenerationErrorCode
+
+
+class _FakeAnalyzer:
+    def __init__(self, *, backend_error=None, available: bool = True) -> None:
+        self.backend_error = backend_error
+        self.available = available
+        self.backend_error_calls = 0
+        self.available_calls = 0
+
+    def get_generation_backend_config_error(self):
+        self.backend_error_calls += 1
+        return self.backend_error
+
+    def is_available(self) -> bool:
+        self.available_calls += 1
+        return self.available
 
 
 class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
@@ -106,6 +123,53 @@ class TestMarketReviewRuntimeCompatibility(unittest.TestCase):
         self.assertIs(runtime_notifier, notifier)
         self.assertIs(runtime_analyzer, analyzer)
         self.assertIsNone(runtime_search)
+
+    def test_build_market_review_runtime_preserves_backend_config_error_analyzer(self) -> None:
+        config = self._base_config()
+        config.openai_api_key = "openai-key"
+        backend_error = GenerationError(
+            error_code=GenerationErrorCode.BACKEND_NOT_CONFIGURED,
+            stage="generation",
+            retryable=False,
+            fallbackable=False,
+            backend="codex",
+            details={
+                "field": "GENERATION_BACKEND",
+                "requested_backend": "codex",
+            },
+        )
+        notifier = MagicMock()
+        analyzer = _FakeAnalyzer(backend_error=backend_error, available=False)
+
+        with patch("src.analyzer.GeminiAnalyzer", return_value=analyzer), \
+             patch("src.notification.NotificationService", return_value=notifier), \
+             patch("src.search_service.SearchService") as search_cls:
+            runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
+
+        self.assertIs(runtime_notifier, notifier)
+        self.assertIs(runtime_analyzer, analyzer)
+        self.assertIsNone(runtime_search)
+        self.assertEqual(analyzer.backend_error_calls, 1)
+        self.assertEqual(analyzer.available_calls, 0)
+        search_cls.assert_not_called()
+
+    def test_build_market_review_runtime_drops_unavailable_analyzer_without_backend_error(self) -> None:
+        config = self._base_config()
+        config.openai_api_key = "openai-key"
+        notifier = MagicMock()
+        analyzer = _FakeAnalyzer(backend_error=None, available=False)
+
+        with patch("src.analyzer.GeminiAnalyzer", return_value=analyzer), \
+             patch("src.notification.NotificationService", return_value=notifier), \
+             patch("src.search_service.SearchService") as search_cls:
+            runtime_notifier, runtime_analyzer, runtime_search = build_market_review_runtime(config)
+
+        self.assertIs(runtime_notifier, notifier)
+        self.assertIsNone(runtime_analyzer)
+        self.assertIsNone(runtime_search)
+        self.assertEqual(analyzer.backend_error_calls, 1)
+        self.assertEqual(analyzer.available_calls, 1)
+        search_cls.assert_not_called()
 
     def test_has_configured_llm_runtime_returns_false_without_any_model_source(self) -> None:
         config = self._base_config()

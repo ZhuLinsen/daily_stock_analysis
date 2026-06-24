@@ -185,6 +185,36 @@ class TestValidateStructuredStockList:
 # ---------------------------------------------------------------------------
 
 class TestValidateStructuredLLM:
+    def test_unknown_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_backend="codex")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "仅支持 litellm" in error.message
+        assert "codex" in error.message
+
+    def test_unknown_generation_fallback_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_fallback_backend="claude_code")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_FALLBACK_BACKEND")
+        assert error.severity == "error"
+        assert "仅支持 litellm" in error.message
+        assert "claude_code" in error.message
+
+    def test_unknown_agent_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(agent_generation_backend="hermes")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "AGENT_GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "仅支持 auto 或 litellm" in error.message
+        assert "hermes" in error.message
+
     def test_no_llm_is_error(self):
         """Empty llm_model_list must produce an error regardless of legacy keys."""
         cfg = _make_config(llm_model_list=[])

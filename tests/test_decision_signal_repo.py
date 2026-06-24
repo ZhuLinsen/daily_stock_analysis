@@ -157,6 +157,142 @@ def test_create_if_absent_deduplicates_report_and_trace_keys(isolated_db) -> Non
     assert no_key_row2.id != no_key_row1.id
 
 
+def test_create_if_absent_relaxed_merge_only_fills_missing_default_dimensions(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+
+    original = repo.create_if_absent(
+        _fields(
+            source_report_id=2401,
+            trace_id="trace-relaxed-original",
+            horizon=None,
+            market_phase=None,
+            reason="original reason",
+        )
+    )
+    merged = repo.create_if_absent(
+        _fields(
+            source_report_id=2401,
+            trace_id="trace-relaxed-new",
+            horizon="3d",
+            market_phase="intraday",
+            reason="new reason",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+
+    assert original.created is True
+    assert merged.created is False
+    assert merged.refreshed is True
+    assert merged.duplicate is False
+    assert merged.row.id == original.row.id
+    assert merged.row.horizon == "3d"
+    assert merged.row.market_phase == "intraday"
+    assert merged.row.reason == "original reason"
+
+    duplicate = repo.create_if_absent(
+        _fields(
+            source_report_id=2401,
+            trace_id="trace-relaxed-duplicate",
+            horizon="3d",
+            market_phase="intraday",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+    assert duplicate.created is False
+    assert duplicate.refreshed is False
+    assert duplicate.duplicate is True
+    assert duplicate.row.id == original.row.id
+
+    explicit_horizon = repo.create_if_absent(
+        _fields(
+            source_report_id=2402,
+            trace_id="trace-explicit-horizon-original",
+            horizon=None,
+            market_phase=None,
+        )
+    )
+    explicit_horizon_new = repo.create_if_absent(
+        _fields(
+            source_report_id=2402,
+            trace_id="trace-explicit-horizon-new",
+            horizon="swing",
+            market_phase="intraday",
+        ),
+        allow_relaxed_horizon_fill=False,
+    )
+    assert explicit_horizon.created is True
+    assert explicit_horizon_new.created is True
+    assert explicit_horizon_new.row.id != explicit_horizon.row.id
+
+    different_phase = repo.create_if_absent(
+        _fields(
+            source_report_id=2403,
+            trace_id="trace-different-phase-original",
+            horizon=None,
+            market_phase="postmarket",
+        )
+    )
+    different_phase_new = repo.create_if_absent(
+        _fields(
+            source_report_id=2403,
+            trace_id="trace-different-phase-new",
+            horizon="3d",
+            market_phase="intraday",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+    assert different_phase.created is True
+    assert different_phase_new.created is True
+    assert different_phase_new.row.id != different_phase.row.id
+
+
+def test_create_if_absent_relaxed_merge_skips_terminal_candidates(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+    closed = repo.create(
+        _fields(
+            source_report_id=2404,
+            trace_id="trace-relaxed-closed",
+            horizon=None,
+            market_phase=None,
+            status="closed",
+            reason="closed reason",
+        )
+    )
+    active = repo.create(
+        _fields(
+            source_report_id=2404,
+            trace_id="trace-relaxed-active",
+            horizon=None,
+            market_phase=None,
+            reason="active reason",
+        )
+    )
+
+    merged = repo.create_if_absent(
+        _fields(
+            source_report_id=2404,
+            trace_id="trace-relaxed-new-active",
+            horizon="3d",
+            market_phase="intraday",
+            reason="new reason",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+
+    assert merged.created is False
+    assert merged.refreshed is True
+    assert merged.row.id == active.id
+    assert merged.row.horizon == "3d"
+    assert merged.row.market_phase == "intraday"
+    assert merged.row.reason == "active reason"
+
+    closed_after = repo.get(closed.id)
+    assert closed_after is not None
+    assert closed_after.status == "closed"
+    assert closed_after.horizon is None
+    assert closed_after.market_phase is None
+
+
 def test_list_latest_status_update_and_lazy_expire(isolated_db) -> None:
     repo = DecisionSignalRepository(isolated_db)
     old_row = repo.create(_fields(source_report_id=2001, trace_id="trace-2001", action="watch"))

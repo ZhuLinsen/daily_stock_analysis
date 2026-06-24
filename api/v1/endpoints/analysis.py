@@ -55,6 +55,7 @@ from api.v1.schemas.history import (
 )
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from data_provider.base import canonical_stock_code, normalize_stock_code
+from src.data.stock_index_loader import resolve_index_stock_code
 from src.config import Config
 from src.core.market_review_lock import (
     MarketReviewExecutionLock as _MarketReviewExecutionLock,
@@ -69,11 +70,14 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
-from src.market_phase_summary import extract_market_phase_summary, render_market_phase_summary
+from src.market_phase_summary import (
+    extract_market_phase_summary,
+    rebuild_market_phase_summary_for_stock_code,
+)
+from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
-from src.services.stock_code_utils import is_code_like
 from src.services.task_queue import (
     get_task_queue,
     DuplicateTaskError,
@@ -199,7 +203,7 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
         return ""
 
     if is_code_like(text):
-        return canonical_stock_code(text)
+        return resolve_index_stock_code_for_analysis(text)
 
     if _is_obviously_invalid_analysis_input(text):
         raise _invalid_analysis_input_error()
@@ -818,6 +822,20 @@ def _extract_report_created_at(payload: Dict[str, Any]) -> Optional[str]:
     return _datetime_to_iso(meta.get("created_at"))
 
 
+def _display_stock_code_from_index(stock_code: Any) -> str:
+    code = str(stock_code or "").strip()
+    if not code:
+        return code
+    return resolve_index_stock_code(code) or code
+
+
+def _display_market_phase_summary(stock_code: Any, context_snapshot: Any) -> Any:
+    return rebuild_market_phase_summary_for_stock_code(
+        _display_stock_code_from_index(stock_code),
+        context_snapshot,
+    )
+
+
 def _prepare_report_for_task_enrichment(
     report_data: Dict[str, Any],
     created_at: Optional[str],
@@ -866,6 +884,9 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
         payload["trace_id"] = _get_task_trace_id(task) or task.task_id
     if not payload.get("stock_code"):
         payload["stock_code"] = task.stock_code
+    display_stock_code = _display_stock_code_from_index(payload.get("stock_code"))
+    if display_stock_code:
+        payload["stock_code"] = display_stock_code
 
     if not payload.get("stock_name") and getattr(task, "stock_name", None):
         payload["stock_name"] = task.stock_name
@@ -911,6 +932,14 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
                 )
 
     if not report_enriched and isinstance(report_data, dict):
+        meta = report_data.get("meta")
+        if isinstance(meta, dict) and display_stock_code:
+            raw_meta_code = meta.get("stock_code") or getattr(task, "stock_code", None)
+            meta["stock_code"] = display_stock_code
+            meta["market_phase_summary"] = _display_market_phase_summary(
+                raw_meta_code,
+                {"market_phase_summary": meta.get("market_phase_summary")},
+            )
         payload["report"] = _ensure_report_action_fields(report_data)
 
     return AnalysisResultResponse.model_validate(payload)
@@ -1030,12 +1059,13 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 (raw_result or {}).get("report_language") if isinstance(raw_result, dict) else None
             )
             stock_name = get_localized_stock_name(record.name, record.code, report_language)
+            display_stock_code = _display_stock_code_from_index(record.code)
 
             # Extract current_price / change_pct from context_snapshot
             skills = None
             context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
             analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
-            market_phase_summary = extract_market_phase_summary(context_snapshot)
+            market_phase_summary = _display_market_phase_summary(record.code, context_snapshot)
             api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
             if context_snapshot and isinstance(context_snapshot, dict):
                 raw_skills = context_snapshot.get("skills")
@@ -1083,7 +1113,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 meta=ReportMeta(
                     id=record.id,
                     query_id=task_id,
-                    stock_code=record.code,
+                    stock_code=display_stock_code,
                     stock_name=stock_name,
                     report_type=getattr(record, 'report_type', None),
                     report_language=report_language,
@@ -1117,7 +1147,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 result=AnalysisResultResponse(
                     query_id=task_id,
                     trace_id=task_id,
-                    stock_code=record.code,
+                    stock_code=display_stock_code,
                     stock_name=stock_name,
                     report=report_dict,
                     diagnostic_summary=build_run_diagnostic_summary(
@@ -1125,7 +1155,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                         raw_result=raw_result,
                         report_saved=True,
                         query_id=task_id,
-                        stock_code=record.code,
+                        stock_code=display_stock_code,
                     ),
                     created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
                 ),
@@ -1215,9 +1245,10 @@ def _build_analysis_report(
         or (context_snapshot or {}).get("report_language")
         or getattr(Config.get_instance(), "report_language", "zh")
     )
+    display_stock_code = _display_stock_code_from_index(meta_data.get("stock_code", stock_code))
     localized_stock_name = get_localized_stock_name(
         meta_data.get("stock_name", stock_name),
-        meta_data.get("stock_code", stock_code),
+        display_stock_code,
         report_language,
     )
     realtime_fields = extract_realtime_detail_fields(context_snapshot)
@@ -1227,15 +1258,19 @@ def _build_analysis_report(
     change_pct = meta_data.get("change_pct")
     if change_pct is None:
         change_pct = realtime_fields.get("change_pct")
-    market_phase_summary = extract_market_phase_summary(context_snapshot)
+    raw_stock_code = meta_data.get("stock_code", stock_code)
+    market_phase_summary = _display_market_phase_summary(raw_stock_code, context_snapshot)
     if market_phase_summary is None:
         meta_phase_summary = meta_data.get("market_phase_summary")
         if meta_phase_summary is not None:
-            market_phase_summary = render_market_phase_summary(meta_phase_summary)
+            market_phase_summary = _display_market_phase_summary(
+                raw_stock_code,
+                {"market_phase_summary": meta_phase_summary},
+            )
 
     meta = ReportMeta(
         query_id=meta_data.get("query_id", query_id),
-        stock_code=meta_data.get("stock_code", stock_code),
+        stock_code=display_stock_code,
         stock_name=localized_stock_name,
         report_type=meta_data.get("report_type", "detailed"),
         report_language=report_language,

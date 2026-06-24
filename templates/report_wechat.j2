@@ -9,6 +9,10 @@
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% set signal_excerpt = decision_signal_excerpt(e.result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
+{% endif %}
 {% endfor %}
 {% else %}
 {% for e in enriched %}
@@ -23,6 +27,10 @@
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
 {% if one_sentence %}
 📌 **{{ one_sentence[:80] }}**
+{% endif %}
+{% set signal_excerpt = decision_signal_excerpt(result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
 {% endif %}
 
 {% if intel.get('earnings_outlook') %}

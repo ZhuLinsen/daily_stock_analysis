@@ -205,6 +205,7 @@ describe('alphasiftApi', () => {
         summary: '玻璃基板盘中发酵',
         route: [{ title: '盘中发酵', description: '出现大笔买入' }],
         stocks: [{ code: '920438', name: '戈碧迦', role: '异动核心' }],
+        leader_stocks: [{ code: '920438', name: '戈碧迦', role: '异动核心' }],
         stock_count: 1,
       },
     });
@@ -218,6 +219,7 @@ describe('alphasiftApi', () => {
     expect(result.topic).toBe('玻璃基板');
     expect(result.stockCount).toBe(1);
     expect(result.stocks[0].name).toBe('戈碧迦');
+    expect(result.leaderStocks?.[0].name).toBe('戈碧迦');
   });
 
   it('uses a long timeout for LLM-backed screening', async () => {

@@ -163,7 +163,7 @@ def _load_alphasift_hotspot_detail_cache(
     if stale and not allow_stale:
         return None
 
-    cached = dict(payload)
+    cached = _ensure_hotspot_detail_compat_fields(dict(payload))
     cached.update({
         "enabled": True,
         "provider": provider or cached.get("provider") or "akshare",
@@ -181,7 +181,7 @@ def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload:
     cache_path = _alphasift_hotspot_detail_cache_path(provider=provider, topic=topic)
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cleaned = _remove_non_finite_json_values(dict(payload))
+        cleaned = _remove_non_finite_json_values(_ensure_hotspot_detail_compat_fields(dict(payload)))
         cached_at = _utc_now_iso()
         cache_path.write_text(
             json.dumps(
@@ -199,6 +199,36 @@ def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload:
         )
     except Exception as exc:
         logger.warning("Failed to write AlphaSift hotspot detail cache for %s: %s", topic, exc)
+
+
+def _ensure_hotspot_detail_compat_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep old and new AlphaSift hotspot detail consumers on the same shape."""
+    stocks = payload.get("stocks")
+    leader_stocks = payload.get("leader_stocks")
+    if not isinstance(stocks, list):
+        stocks = []
+    if not isinstance(leader_stocks, list) or not leader_stocks:
+        nested_leader_stocks = _extract_nested_hotspot_leader_stocks(payload)
+        leader_stocks = nested_leader_stocks or (leader_stocks if isinstance(leader_stocks, list) else [])
+    if not stocks and leader_stocks:
+        stocks = leader_stocks
+    if not leader_stocks and stocks:
+        leader_stocks = stocks
+    payload["stocks"] = stocks
+    payload["leader_stocks"] = leader_stocks
+    payload["stock_count"] = len(stocks)
+    return payload
+
+
+def _extract_nested_hotspot_leader_stocks(payload: Dict[str, Any]) -> List[Any]:
+    for key in ("summary_detail", "summary"):
+        summary = payload.get(key)
+        if not isinstance(summary, dict):
+            continue
+        leader_stocks = summary.get("leader_stocks")
+        if isinstance(leader_stocks, list) and leader_stocks:
+            return leader_stocks
+    return []
 
 
 def _load_alphasift_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[str, Any]]:
@@ -1028,6 +1058,7 @@ class AlphaSiftService:
             if search_routes:
                 route = normalized.get("route")
                 normalized["route"] = search_routes + (route if isinstance(route, list) else [])
+        normalized = _ensure_hotspot_detail_compat_fields(normalized)
         normalized["enabled"] = True
         normalized["provider"] = provider_name
         cleaned = _remove_non_finite_json_values(normalized)
@@ -1105,7 +1136,9 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
     summary_value = raw.get("summary")
     summary: Dict[str, Any] = summary_value if isinstance(summary_value, dict) else {}
     stocks_value = raw.get("stocks")
+    leader_stocks_value = raw.get("leader_stocks")
     stocks: List[Any] = stocks_value if isinstance(stocks_value, list) else []
+    leader_stocks: List[Any] = leader_stocks_value if isinstance(leader_stocks_value, list) else []
     timeline_value = raw.get("timeline")
     timeline: List[Any] = timeline_value if isinstance(timeline_value, list) else []
     route_value = raw.get("route")
@@ -1122,7 +1155,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         if isinstance(summary_text_value, str)
         else _build_alphasift_hotspot_summary_text(summary, topic=topic, canonical_topic=canonical_topic)
     )
-    return {
+    return _ensure_hotspot_detail_compat_fields({
         "enabled": True,
         "provider": provider,
         "topic": topic,
@@ -1134,7 +1167,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         "route": route,
         "timeline": timeline,
         "stocks": stocks,
-        "stock_count": len(stocks),
+        "leader_stocks": leader_stocks,
         "source_errors": source_errors,
         "quality_status": quality_status,
         "missing_fields": missing_fields,
@@ -1142,7 +1175,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         "stale": bool(summary.get("stale") or raw.get("stale") or False),
         "stale_age_hours": summary.get("stale_age_hours") or raw.get("stale_age_hours"),
         "resolver_candidates": _list_dict_values(summary.get("resolver_candidates") or raw.get("resolver_candidates")),
-    }
+    })
 
 
 def _list_text_values(value: Any) -> List[str]:
@@ -2190,16 +2223,17 @@ class DsaEastMoneyHotspotProvider:
                     "change_pct": None,
                     "hot_stock_score": 60.0,
                 })
-        return {
+        return _ensure_hotspot_detail_compat_fields({
             "topic": topic,
             "name": self._display_hotspot_name(topic),
             "canonical_topic": topic,
             "summary": self._build_hotspot_summary(topic, summary),
             "route": route,
             "stocks": stocks[:30],
+            "leader_stocks": stocks[:30],
             "stock_count": len(stocks),
             "source_errors": [],
-        }
+        })
 
     def _fetch_board_changes(self) -> Any:
         import pandas as pd

@@ -41,6 +41,7 @@ def _build_optional_module_stubs() -> dict[str, ModuleType]:
 sys.modules.update(_build_optional_module_stubs())
 import src.core.market_review as market_review_module
 from src.config import Config
+from src.llm.generation_backend import GenerationError, GenerationErrorCode
 from src.services.run_diagnostics import activate_run_diagnostic_context, reset_run_diagnostic_context
 from src.storage import AnalysisHistory, DatabaseManager
 
@@ -164,6 +165,40 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(notifier.save_report_to_file.call_args.args[0].startswith("# 🎯 Market Review\n\n"))
         self.assertEqual(result.market_review_payload["language"], "en")
         self.assertEqual(result.report, "English market review body")
+
+    def test_run_market_review_reraises_generation_backend_config_error(self) -> None:
+        notifier = self._make_notifier()
+        backend_error = GenerationError(
+            error_code=GenerationErrorCode.BACKEND_NOT_CONFIGURED,
+            stage="generation",
+            retryable=False,
+            fallbackable=False,
+            backend="codex",
+            details={
+                "field": "GENERATION_BACKEND",
+                "requested_backend": "codex",
+            },
+        )
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.side_effect = backend_error
+
+        with patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ):
+            with self.assertRaises(GenerationError) as exc_info:
+                run_market_review(
+                    notifier,
+                    config=SimpleNamespace(report_language="zh", market_review_region="cn"),
+                    send_notification=False,
+                    save_report_file=False,
+                    persist_history=False,
+                )
+
+        self.assertIs(exc_info.exception, backend_error)
+        notifier.save_report_to_file.assert_not_called()
+        notifier.send.assert_not_called()
 
     def test_run_market_review_merges_both_regions_with_english_wrappers(self) -> None:
         notifier = self._make_notifier()

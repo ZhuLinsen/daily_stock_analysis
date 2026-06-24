@@ -442,6 +442,54 @@ describe('ChatPage', () => {
     });
   });
 
+  it('collapses the mobile skill picker by default and keeps selected skills when sending', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const mobileToggle = await screen.findByRole('button', { name: '展开策略选择' });
+    const skillPanel = screen.getByTestId('chat-skill-picker-panel');
+    expect(mobileToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(skillPanel).toHaveClass('hidden');
+
+    fireEvent.click(mobileToggle);
+
+    expect(screen.getByRole('button', { name: '收起策略选择' })).toHaveAttribute('aria-expanded', 'true');
+    expect(skillPanel).not.toHaveClass('hidden');
+    expect(skillPanel).toHaveClass('flex');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '均线金叉' }));
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '分析 600519',
+          skills: ['bull_trend', 'ma_golden_cross'],
+        }),
+        expect.objectContaining({
+          skillName: '趋势分析、均线金叉',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('button', { name: '展开策略选择' })).toHaveAttribute('aria-expanded', 'false');
+    expect(skillPanel).toHaveClass('hidden');
+  });
+
   it('omits skills when all concrete skills are cleared', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>

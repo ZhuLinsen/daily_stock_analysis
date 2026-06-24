@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from data_provider.base import is_bse_code
+from data_provider.base import canonical_stock_code, is_bse_code
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
@@ -27,7 +27,12 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".SS": (6,),
     ".BJ": (6,),
     ".HK": (1, 2, 3, 4, 5),
+    ".T": (4, 5),
+    ".KS": (6,),
+    ".KQ": (6,),
 }
+
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ"}
 
 
 def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
@@ -90,6 +95,8 @@ def normalize_code(raw: str) -> Optional[str]:
         return None
     if text.isdigit() and len(text) in (5, 6):
         return text
+    if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
+        return text if _strip_exchange_suffix(text) is not None else None
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return text
     stripped_suffix = _strip_exchange_suffix(text)
@@ -100,3 +107,28 @@ def normalize_code(raw: str) -> Optional[str]:
     if stripped is not None:
         return stripped
     return None
+
+
+def resolve_index_stock_code_for_analysis(raw: str) -> str:
+    """Resolve bare JP/KR candidates via stock index and keep suffix forms.
+
+    For code-like inputs:
+    - Existing index-backed entries (e.g. ``005930`` -> ``005930.KS``) are
+      preferred.
+    - Non-matching code-like inputs keep the canonicalized input.
+
+    Non-code-like values are still canonicalized only, letting callers keep
+    their own validation policy (e.g. API name resolution path).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    if is_code_like(text):
+        from src.data.stock_index_loader import resolve_index_stock_code
+
+        resolved = resolve_index_stock_code(text)
+        if resolved:
+            return canonical_stock_code(resolved)
+
+    return canonical_stock_code(text)

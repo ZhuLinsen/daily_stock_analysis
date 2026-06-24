@@ -23,6 +23,7 @@ A股自选股智能分析系统 - 主调度程序
 """
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -64,10 +65,10 @@ import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
 
-from data_provider.base import canonical_stock_code
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
 logger = logging.getLogger(__name__)
@@ -638,8 +639,10 @@ def _save_reused_market_review_report(
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
-    stock_codes: Optional[List[str]] = None
-):
+    stock_codes: Optional[List[str]] = None,
+    *,
+    raise_errors: bool = False,
+) -> bool:
     """
     执行完整的分析流程（个股 + 大盘复盘）
 
@@ -666,7 +669,7 @@ def run_full_analysis(
             logger.info(
                 "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
             )
-            return
+            return True
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
             logger.info("今日休市股票已跳过: %s", skipped)
@@ -964,8 +967,41 @@ def run_full_analysis(
         except Exception as e:
             logger.warning(f"自动回测失败（已忽略）: {e}")
 
+        return True
+
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
+        if raise_errors:
+            raise
+        return False
+
+
+def run_scheduled_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None,
+) -> bool:
+    """Run scheduled analysis with failures propagated to the scheduler."""
+    return run_full_analysis(config, args, stock_codes, raise_errors=True)
+
+
+def _run_analysis_with_runtime_scheduler_lock(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None,
+) -> None:
+    from src.services.runtime_scheduler import run_with_global_analysis_lock
+
+    # Keep startup/triggered analysis in sync with API runtime scheduler and
+    # run-now entrypoint. Blocking is expected here because startup paths should
+    # wait for an in-flight job before returning a response.
+    run_with_global_analysis_lock(
+        task_runner=run_full_analysis,
+        config=config,
+        args=args,
+        stock_codes=stock_codes,
+        blocking=True,
+    )
 
 
 def start_api_server(host: str, port: int, config: Config) -> None:
@@ -989,19 +1025,78 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     finally:
         probe.close()
 
-    def run_server():
-        level_name = (config.log_level or "INFO").lower()
-        uvicorn.run(
-            "api.app:app",
-            host=host,
-            port=port,
-            log_level=level_name,
-            log_config=None,
+    level_name = (config.log_level or "INFO").lower()
+    use_config_signal_handlers = True
+    uvicorn_kwargs = {
+        "host": host,
+        "port": port,
+        "log_level": level_name,
+        "log_config": None,
+    }
+    # Import the ASGI app object in the calling thread instead of handing uvicorn
+    # the "api.app:app" import string. With the string, uvicorn imports the app
+    # lazily inside the server thread, and that import (litellm + the full app
+    # tree, ~10s+ on constrained hosts) runs inside the startup probe window
+    # below, tripping the 3.0s timeout and causing a restart loop on slower
+    # machines. Importing first keeps the heavy work out of the probe window;
+    # genuine import failures still surface immediately to the caller.
+    from api.app import app as fastapi_app
+
+    try:
+        uvicorn_config = uvicorn.Config(
+            fastapi_app,
+            install_signal_handlers=False,
+            **uvicorn_kwargs,
         )
+    except TypeError:
+        # Older uvicorn versions do not accept install_signal_handlers in
+        # Config; fall back and only disable signal handling via Server attribute
+        # when it's a boolean flag.
+        use_config_signal_handlers = False
+        uvicorn_config = uvicorn.Config(
+            fastapi_app,
+            **uvicorn_kwargs,
+        )
+    uvicorn_server = uvicorn.Server(config=uvicorn_config)
+    if not use_config_signal_handlers:
+        install_signal_handlers = getattr(uvicorn_server, "install_signal_handlers", None)
+        if isinstance(install_signal_handlers, bool):
+            uvicorn_server.install_signal_handlers = False
+
+    startup_error: list[BaseException] = []
+
+    def run_server():
+        try:
+            uvicorn_server.run()
+        except Exception as exc:  # noqa: BLE001 - surface startup issues to caller promptly
+            startup_error.append(exc)
 
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
-    logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+
+    timeout_seconds = 3.0
+    wait_deadline = time.time() + timeout_seconds
+    while time.time() < wait_deadline:
+        if startup_error:
+            raise RuntimeError(
+                f"FastAPI server failed to start: {host}:{port}; {startup_error[0]}"
+            )
+        if uvicorn_server.started:
+            logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+            return
+        if not thread.is_alive():
+            break
+        time.sleep(0.05)
+
+    if startup_error:
+        raise RuntimeError(f"FastAPI server failed to start: {host}:{port}; {startup_error[0]}")
+    if uvicorn_server.started:
+        logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
+        return
+    if not thread.is_alive():
+        raise RuntimeError(f"FastAPI 服务器启动后立即退出: {host}:{port}")
+
+    raise RuntimeError(f"FastAPI 服务在 {timeout_seconds:.1f}s 内未完成启动: {host}:{port}")
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -1086,6 +1181,36 @@ def _build_schedule_time_provider(default_schedule_time: str):
     return _provider
 
 
+def _build_schedule_times_provider(default_schedule_time: str):
+    """Read the latest SCHEDULE_TIMES with SCHEDULE_TIME fallback."""
+    from src.core.config_manager import ConfigManager
+    from src.scheduler import normalize_schedule_times
+
+    _SYSTEM_DEFAULT_SCHEDULE_TIME = "18:00"
+    manager = ConfigManager()
+
+    def _provider():
+        if "SCHEDULE_TIMES" in _INITIAL_PROCESS_ENV:
+            return normalize_schedule_times(
+                os.getenv("SCHEDULE_TIMES", ""),
+                fallback_time=os.getenv("SCHEDULE_TIME", default_schedule_time),
+            )
+        if "SCHEDULE_TIME" in _INITIAL_PROCESS_ENV:
+            return normalize_schedule_times(
+                os.getenv("SCHEDULE_TIMES", ""),
+                fallback_time=os.getenv("SCHEDULE_TIME", default_schedule_time),
+            )
+
+        config_map = manager.read_config_map()
+        schedule_time = (config_map.get("SCHEDULE_TIME", "") or "").strip() or _SYSTEM_DEFAULT_SCHEDULE_TIME
+        return normalize_schedule_times(
+            config_map.get("SCHEDULE_TIMES", ""),
+            fallback_time=schedule_time,
+        )
+
+    return _provider
+
+
 def main() -> int:
     """
     主入口函数
@@ -1144,7 +1269,11 @@ def main() -> int:
     # 解析股票列表（统一为大写 Issue #355）
     stock_codes = None
     if args.stocks:
-        stock_codes = [canonical_stock_code(c) for c in args.stocks.split(',') if (c or "").strip()]
+        stock_codes = [
+            resolve_index_stock_code_for_analysis(c)
+            for c in args.stocks.split(',')
+            if (c or "").strip()
+        ]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
@@ -1170,6 +1299,47 @@ def main() -> int:
 
     bot_clients_started = False
     if start_serve:
+        from src.services.runtime_scheduler import (
+            CLI_SCHEDULER_OWNER_ENV,
+            RUNTIME_SCHEDULER_ARGS_ENV,
+            RUNTIME_SCHEDULER_FORCE_ENABLED_ENV,
+            RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
+            RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
+        )
+
+        # The API runtime scheduler owns schedules once the Web/API service starts.
+        # This keeps Web settings, status, and run-now actions attached to the real
+        # scheduler instead of a separate CLI loop.
+        os.environ.pop(CLI_SCHEDULER_OWNER_ENV, None)
+        if args.serve_only:
+            os.environ[RUNTIME_SCHEDULER_SUPPRESS_START_ENV] = "true"
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+        runtime_schedule_requested = not args.serve_only and (
+            args.schedule or config.schedule_enabled
+        )
+        if not args.serve_only and args.schedule:
+            os.environ[RUNTIME_SCHEDULER_FORCE_ENABLED_ENV] = "true"
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
+        if runtime_schedule_requested:
+            runtime_run_immediately = config.schedule_run_immediately
+            if getattr(args, 'no_run_immediately', False):
+                runtime_run_immediately = False
+            os.environ[RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV] = (
+                "true" if runtime_run_immediately else "false"
+            )
+        else:
+            os.environ.pop(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV, None)
+        os.environ[RUNTIME_SCHEDULER_ARGS_ENV] = json.dumps({
+            "no_notify": bool(getattr(args, "no_notify", False)),
+            "no_market_review": bool(getattr(args, "no_market_review", False)),
+            "dry_run": bool(getattr(args, "dry_run", False)),
+            "force_run": bool(getattr(args, "force_run", False)),
+            "single_notify": bool(getattr(args, "single_notify", False)),
+            "no_context_snapshot": bool(getattr(args, "no_context_snapshot", False)),
+            "workers": getattr(args, "workers", None),
+        })
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
@@ -1253,6 +1423,18 @@ def main() -> int:
 
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
+            if start_serve:
+                logger.info("模式: Web/API runtime scheduler")
+                logger.info(f"Web 服务运行中: http://{args.host}:{args.port}")
+                logger.info("Web/API runtime scheduler 已接管定时任务，保存设置会作用于当前进程")
+                logger.info("按 Ctrl+C 退出...")
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    logger.info("\n用户中断，程序退出")
+                return 0
+
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
 
@@ -1268,6 +1450,7 @@ def main() -> int:
             from src.scheduler import run_with_schedule
             scheduled_stock_codes = _resolve_scheduled_stock_codes(stock_codes)
             schedule_time_provider = _build_schedule_time_provider(config.schedule_time)
+            schedule_times_provider = _build_schedule_times_provider(config.schedule_time)
 
             def scheduled_task():
                 runtime_config = _reload_runtime_config()
@@ -1293,18 +1476,22 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately,
-                background_tasks=background_tasks,
-                schedule_time_provider=schedule_time_provider,
-            )
+            schedule_kwargs = {
+                "task": scheduled_task,
+                "schedule_time": config.schedule_time,
+                "run_immediately": should_run_immediately,
+                "background_tasks": background_tasks,
+                "schedule_time_provider": schedule_time_provider,
+            }
+            if hasattr(config, "schedule_times"):
+                schedule_kwargs["schedule_times"] = config.schedule_times
+                schedule_kwargs["schedule_times_provider"] = schedule_times_provider
+            run_with_schedule(**schedule_kwargs)
             return 0
 
         # 模式3: 正常单次运行
         if config.run_immediately:
-            run_full_analysis(config, args, stock_codes)
+            _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

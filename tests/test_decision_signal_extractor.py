@@ -77,7 +77,12 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     result.market_phase_summary = {"phase": "postmarket"}
     result.analysis_context_pack_overview = {"data_quality": {"overall_score": 55, "level": "fair"}}
     context_snapshot = {
-        "market_phase_summary": {"phase": "intraday"},
+        "market_phase_summary": {
+            "phase": "intraday",
+            "session_date": "2026-06-15",
+            "minutes_to_open": None,
+            "minutes_to_close": 120,
+        },
         "analysis_context_pack_overview": {
             "data_quality": {"overall_score": 91, "level": "good"},
         },
@@ -86,6 +91,7 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     payload = build_decision_signal_payload_from_report(
         result,
         context_snapshot=context_snapshot,
+        portfolio_context={"quantity": "200"},
         source_report_id=88,
         trace_id="trace-88",
         query_source="api",
@@ -113,6 +119,12 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     assert payload["risk_summary"] == ["跌破支撑需止损", "估值偏高"]
     assert payload["catalyst_summary"] == ["业绩超预期"]
     assert payload["metadata"]["report_confidence_level"] == "高"
+    assert payload["metadata"]["market_phase_summary"] == {
+        "phase": "intraday",
+        "session_date": "2026-06-15",
+        "minutes_to_close": 120,
+    }
+    assert payload["metadata"]["holding_state"] == "holding"
 
 
 def test_build_payload_uses_result_fallbacks_and_optional_catalysts() -> None:
@@ -145,6 +157,27 @@ def test_build_payload_uses_result_fallbacks_and_optional_catalysts() -> None:
     assert "catalyst_summary" not in payload
     assert payload["trigger_source"] == "system"
     assert payload["confidence"] == 0.4
+    assert payload["metadata"]["holding_state"] == "unknown"
+
+
+def test_build_payload_records_empty_holding_state_from_explicit_portfolio_context() -> None:
+    payload = build_decision_signal_payload_from_report(
+        _result(),
+        portfolio_context={"quantity": 0},
+        trace_id="trace-empty-holding",
+        query_source="api",
+        report_type="simple",
+    )
+
+    assert payload is not None
+    assert payload["metadata"]["holding_state"] == "empty"
+
+
+def test_runtime_decision_signal_summary_is_not_serialized_by_analysis_result_to_dict() -> None:
+    result = _result()
+    setattr(result, "decision_signal_summary", {"action": "sell", "reason": "risk"})
+
+    assert "decision_signal_summary" not in result.to_dict()
 
 
 def test_build_payload_maps_secondary_only_entry_to_entry_high() -> None:
@@ -239,6 +272,7 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     first = extract_and_persist_from_analysis_result(
         result,
         context_snapshot={"market_phase_summary": {"phase": "intraday"}},
+        portfolio_context={"quantity": 10},
         source_report_id=901,
         trace_id="trace-901",
         query_source="api",
@@ -248,6 +282,7 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     second = extract_and_persist_from_analysis_result(
         result,
         context_snapshot={"market_phase_summary": {"phase": "intraday"}},
+        portfolio_context={"quantity": 10},
         source_report_id=901,
         trace_id="trace-901",
         query_source="api",
@@ -261,11 +296,14 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     assert second["created"] is False
     assert first["item"]["reason"] == "趋势确认 token=[REDACTED]"
     assert first["item"]["plan_quality"] == "complete"
+    assert first["item"]["horizon"] == "intraday"
+    assert first["item"]["expires_at"] is not None
 
     listed = service.list_signals(source_report_id=901)
     assert listed["total"] == 1
     persisted = listed["items"][0]
     assert persisted["source_report_id"] == 901
+    assert persisted["metadata"]["holding_state"] == "holding"
     assert persisted["reason"] == "趋势确认 token=[REDACTED]"
     assert persisted["entry_low"] == 1690.0
     assert persisted["entry_high"] == 1700.0
@@ -289,6 +327,8 @@ def test_extract_and_persist_missing_price_plan_does_not_fabricate_fields(isolat
     assert created is not None
     item = created["item"]
     assert item["plan_quality"] == "minimal"
+    assert item["horizon"] == "3d"
+    assert item["expires_at"] is not None
     assert item["entry_low"] is None
     assert item["entry_high"] is None
     assert item["stop_loss"] is None

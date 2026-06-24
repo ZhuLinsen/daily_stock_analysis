@@ -5,6 +5,7 @@ Generate Stock Index from CSV File
 
 Input:
   - Tushare format: data/stock_list_{a,hk,us}.csv
+  - Seed format: scripts/stock_index_seeds/stock_list_{jp,kr}.csv
   - AkShare format: logs/stock_basic_*.csv
 
 Output: apps/dsa-web/public/stocks.index.json
@@ -84,7 +85,7 @@ def load_csv_data(csv_path: Path) -> List[Dict[str, Any]]:
 
 def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
     """
-    从 Tushare CSV 文件加载三个市场的股票数据
+    从 Tushare CSV 文件加载多市场股票数据
 
     Args:
         data_dir: 数据目录路径
@@ -93,10 +94,22 @@ def load_tushare_data(data_dir: Path) -> List[Dict[str, Any]]:
         合并后的股票列表
     """
     all_stocks = []
+    seed_dir = Path(__file__).parent / 'stock_index_seeds'
+    default_data_dir = Path(__file__).parent.parent / 'data'
+    use_seed_fallback = data_dir.resolve() == default_data_dir.resolve()
+
+    def _csv_path(file_name: str) -> Path:
+        data_path = data_dir / file_name
+        if data_path.exists() or not use_seed_fallback:
+            return data_path
+        return seed_dir / file_name
+
     market_files = {
         'CN': data_dir / 'stock_list_a.csv',
         'HK': data_dir / 'stock_list_hk.csv',
         'US': data_dir / 'stock_list_us.csv',
+        'JP': _csv_path('stock_list_jp.csv'),
+        'KR': _csv_path('stock_list_kr.csv'),
     }
 
     for market_name, csv_file in market_files.items():
@@ -290,6 +303,7 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     - A股：000001.SZ → 000001
     - 港股：00700.HK → 00700
     - 美股：AAPL → AAPL
+    - 日股/韩股：7203.T / 005930.KS → 保留后缀，避免与其他市场裸代码冲突
 
     Args:
         ts_code: TS代码
@@ -301,8 +315,8 @@ def extract_symbol_from_ts_code(ts_code: str, market: str) -> Optional[str]:
     if not ts_code:
         return None
 
-    if market == 'US':
-        # 美股无后缀，直接返回
+    if market in {'US', 'JP', 'KR'}:
+        # 美股常见 class/share 后缀、日韩 Yahoo 后缀都是代码身份的一部分。
         return ts_code
 
     if '.' in ts_code:
@@ -316,7 +330,7 @@ def get_stock_name(row: Dict[str, str], market: str) -> Optional[str]:
     """
     获取股票名称
 
-    - A股/港股：使用 name 字段
+    - A股/港股/日股/韩股：使用 name 字段
     - 美股：使用 enname 字段（英文名称）
 
     Args:
@@ -335,6 +349,20 @@ def get_stock_name(row: Dict[str, str], market: str) -> Optional[str]:
         name = row.get('name', '').strip()
         name = normalize_stock_name_for_index(name, market)
         return name if name else None
+
+
+def parse_aliases(row: Dict[str, str]) -> List[str]:
+    """Parse optional seed aliases from a CSV row."""
+    raw_aliases = (row.get('aliases') or row.get('alias') or '').strip()
+    if not raw_aliases:
+        return []
+
+    aliases: List[str] = []
+    for alias in re.split(r'[|;,，、]+', raw_aliases):
+        normalized = unicodedata.normalize('NFKC', alias).strip()
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+    return aliases
 
 
 def parse_stock_row(row: Dict[str, str], preferred_market: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -387,6 +415,7 @@ def parse_stock_row(row: Dict[str, str], preferred_market: Optional[str] = None)
         'symbol': display_code,
         'name': name,
         'market': market,
+        'aliases': parse_aliases(row),
     }
 
 
@@ -395,10 +424,10 @@ def determine_market(ts_code: str) -> str:
     Determine market based on code
 
     Args:
-        ts_code: Trading code (e.g., 000001.SZ, AAPL, BRK.B, GOOG.A)
+        ts_code: Trading code (e.g., 000001.SZ, AAPL, BRK.B, 7203.T, 005930.KS)
 
     Returns:
-        Market code (CN, HK, US, BSE)
+        Market code (CN, HK, US, BSE, JP, KR)
     """
     if '.' in ts_code:
         # 有后缀的情况
@@ -410,6 +439,10 @@ def determine_market(ts_code: str) -> str:
             return 'HK'
         elif suffix == 'BJ':
             return 'BSE'
+        elif suffix == 'T':
+            return 'JP'
+        elif suffix in ['KS', 'KQ']:
+            return 'KR'
         # 有后缀但不是中国市场后缀，检查是否为美股
         # 美股可能有点号后缀（如 BRK.B, GOOG.A, AAPL.U）
         prefix = ts_code.split('.')[0]
@@ -536,6 +569,9 @@ def build_stock_index(stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         # Generate aliases.
         aliases = generate_aliases(name, market)
+        for alias in stock.get('aliases', []):
+            if alias != name and alias not in aliases:
+                aliases.append(alias)
 
         index.append({
             "canonicalCode": ts_code,    # Example: 000001.SZ, AAPL

@@ -59,6 +59,16 @@ def _make_renderer_config(show_llm_model: bool = True) -> MagicMock:
     return config
 
 
+def _with_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
+    result.decision_signal_summary = {
+        "action": "sell",
+        "action_label": "卖出",
+        "horizon": "1d",
+        "reason": "技术面走弱",
+    }
+    return result
+
+
 class TestReportRenderer(unittest.TestCase):
     """Report renderer tests."""
 
@@ -79,6 +89,17 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("核心结论", out)
         self.assertIn("作战计划", out)
         self.assertNotIn("盘中决策护栏", out)
+
+    def test_render_markdown_includes_decision_signal_excerpt(self) -> None:
+        """Markdown summary and full templates include DecisionSignal excerpts."""
+        for summary_only in (True, False):
+            r = _with_decision_signal_summary(_make_result())
+            out = render("markdown", [r], summary_only=summary_only)
+            self.assertIsNotNone(out)
+            self.assertIn("AI 决策信号", out)
+            self.assertIn("动作: 卖出", out)
+            self.assertIn("周期: 1d", out)
+            self.assertIn("理由: 技术面走弱", out)
 
     def test_render_markdown_phase_decision_section(self) -> None:
         """Markdown renders phase_decision when present."""
@@ -136,6 +157,17 @@ class TestReportRenderer(unittest.TestCase):
         out = render("wechat", [r])
         self.assertIsNotNone(out)
         self.assertIn("贵州茅台", out)
+
+    def test_render_wechat_includes_decision_signal_excerpt(self) -> None:
+        """Wechat summary and full templates include DecisionSignal excerpts."""
+        for summary_only in (True, False):
+            r = _with_decision_signal_summary(_make_result())
+            out = render("wechat", [r], summary_only=summary_only)
+            self.assertIsNotNone(out)
+            self.assertIn("AI 决策信号", out)
+            self.assertIn("动作: 卖出", out)
+            self.assertIn("周期: 1d", out)
+            self.assertIn("理由: 技术面走弱", out)
 
     def test_render_brief(self) -> None:
         """Brief platform renders 3-5 sentence summary."""

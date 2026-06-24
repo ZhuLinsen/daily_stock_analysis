@@ -160,6 +160,37 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_envs_do_not_change_channel_routing(
+        self, _mock_parse_yaml, _mock_setup_env
+    ) -> None:
+        env = {
+            "GENERATION_BACKEND": "litellm",
+            "GENERATION_FALLBACK_BACKEND": "litellm",
+            "AGENT_GENERATION_BACKEND": "auto",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            "LITELLM_MODEL": "openai/gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "litellm")
+        self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_generation_backend, "auto")
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["models"], ["openai/gpt-4o-mini"])
+        self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-4o-mini")
+        self.assertEqual(
+            config.llm_model_list[0]["litellm_params"]["api_base"],
+            "https://api.example.com/v1",
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_alias_prefixed_models_are_canonicalized_once(self, _mock_parse_yaml, _mock_setup_env) -> None:
         env = {
             "LLM_CHANNELS": "vertex",

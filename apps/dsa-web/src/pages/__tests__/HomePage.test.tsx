@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
@@ -482,6 +482,128 @@ describe('HomePage', () => {
       expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
     });
     expect(screen.getByText(/股票 600519 正在分析中/).closest('[role="alert"]')).toBeInTheDocument();
+  });
+
+  it('dismisses the duplicate task banner when its close button is clicked', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');
+
+    act(() => {
+      useStockPoolStore.setState({ duplicateError: '股票 600519 正在分析中，请等待完成' });
+    });
+
+    expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+
+    expect(screen.queryByText(/股票 600519 正在分析中/)).not.toBeInTheDocument();
+  });
+
+  it('auto-dismisses the duplicate task banner after 5 seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(historyApi.getList).mockResolvedValue({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+
+      render(
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      act(() => {
+        useStockPoolStore.setState({ duplicateError: '股票 600519 正在分析中，请等待完成' });
+      });
+
+      expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4999);
+      });
+      expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(screen.queryByText(/股票 600519 正在分析中/)).not.toBeInTheDocument();
+    } finally {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('restarts the auto-dismiss countdown when a duplicate task is triggered again', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(historyApi.getList).mockResolvedValue({
+        total: 0,
+        page: 1,
+        limit: 20,
+        items: [],
+      });
+
+      render(
+        <MemoryRouter>
+          <HomePage />
+        </MemoryRouter>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      act(() => {
+        useStockPoolStore.setState({ duplicateError: '股票 600519 正在分析中，请等待完成' });
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
+
+      // Trigger the duplicate prompt again (the store clears then re-sets the message).
+      act(() => {
+        useStockPoolStore.setState({ duplicateError: null });
+      });
+      act(() => {
+        useStockPoolStore.setState({ duplicateError: '股票 600519 正在分析中，请等待完成' });
+      });
+
+      // 4s after the restart: still within the fresh 5s window because the countdown reset.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();
+
+      // Crossing the fresh 5s threshold finally closes the banner.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.queryByText(/股票 600519 正在分析中/)).not.toBeInTheDocument();
+    } finally {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    }
   });
 
   it('submits market review from the home toolbar', async () => {

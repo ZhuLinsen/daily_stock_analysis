@@ -36,13 +36,15 @@ except ImportError:
     )
 
 # Market -> exchange code (exchange-calendars)
-MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS"}
+MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX"}
 
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
     "cn": "Asia/Shanghai",
     "hk": "Asia/Hong_Kong",
     "us": "America/New_York",
+    "jp": "Asia/Tokyo",
+    "kr": "Asia/Seoul",
 }
 
 # P0 market phase baseline (Issue #1386). This is an intentionally small
@@ -111,7 +113,7 @@ def get_market_for_stock(code: str) -> Optional[str]:
     Infer market region for a stock code.
 
     Returns:
-        'cn' | 'hk' | 'us' | None (None = unrecognized, fail-open: treat as open)
+        'cn' | 'hk' | 'us' | 'jp' | 'kr' | None (None = unrecognized, fail-open: treat as open)
     """
     if not code or not isinstance(code, str):
         return None
@@ -123,6 +125,14 @@ def get_market_for_stock(code: str) -> Optional[str]:
         return "us"
     if is_hk_stock_code(code):
         return "hk"
+    if code.endswith(".T"):
+        base = code[:-2]
+        if base.isdigit() and len(base) in (4, 5):
+            return "jp"
+    if code.endswith((".KS", ".KQ")):
+        base = code.rsplit(".", 1)[0]
+        if base.isdigit() and len(base) == 6:
+            return "kr"
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"

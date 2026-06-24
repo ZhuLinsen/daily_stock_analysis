@@ -44,6 +44,22 @@ function inferPasswordIconType(key: string): 'password' | 'key' {
   return key.toUpperCase().includes('PASSWORD') ? 'password' : 'key';
 }
 
+function resolveDisplayValue(item: SystemConfigItem, value: string): string {
+  const schema = item.schema;
+
+  if (
+    schema?.uiControl === 'select'
+    && !value
+    && item.rawValueExists === false
+    && schema.defaultValue !== undefined
+    && schema.defaultValue !== null
+  ) {
+    return schema.defaultValue;
+  }
+
+  return value;
+}
+
 interface SettingsFieldProps {
   item: SystemConfigItem;
   value: string;
@@ -216,6 +232,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   const hasError = issues.some((issue) => issue.severity === 'error');
   const [isPasswordEditable, setIsPasswordEditable] = useState(false);
   const controlId = `setting-${item.key}`;
+  const displayValue = resolveDisplayValue(item, value);
 
   return (
     <div
@@ -256,7 +273,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
       <div>
         {renderFieldControl(
           item,
-          value,
+          displayValue,
           disabled,
           (nextValue) => onChange(item.key, nextValue),
           isPasswordEditable,

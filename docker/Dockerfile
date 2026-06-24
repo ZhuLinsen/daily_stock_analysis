@@ -64,6 +64,14 @@ RUN mkdir -p /app/data /app/logs /app/reports && \
     chown -R dsa:dsa /app && \
     chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# efinance 将搜索缓存（search-cache.json）写入自身安装包内的 data 目录，
+# 该目录默认归 root 所有；容器以非 root 用户 dsa 运行时写入会 PermissionError，
+# 导致 efinance 数据源每次抓取 A 股数据都失败并降级。预置目录属主给 dsa 修复此问题。
+# 动态解析路径，避免写死 Python 版本目录。
+RUN EF_DATA_DIR="$(python -c 'import efinance, pathlib; print(pathlib.Path(efinance.__file__).parent / "data")')" && \
+    mkdir -p "$EF_DATA_DIR" && \
+    chown -R dsa:dsa "$EF_DATA_DIR"
+
 # 设置环境变量默认值
 ENV PYTHONUNBUFFERED=1
 ENV LOG_DIR=/app/logs

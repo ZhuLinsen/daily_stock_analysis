@@ -172,6 +172,18 @@ def test_validate_stock_index_payload_accepts_bse_market() -> None:
     assert service.validate_stock_index_payload(payload) is payload
 
 
+def test_validate_stock_index_payload_accepts_jp_and_kr_markets() -> None:
+    payload = _stock_index_payload()
+    payload[0][0] = "7203.T"
+    payload[0][1] = "7203.T"
+    payload[0][6] = "JP"
+    payload[1][0] = "000660.KS"
+    payload[1][1] = "000660.KS"
+    payload[1][6] = "KR"
+
+    assert service.validate_stock_index_payload(payload) is payload
+
+
 @pytest.mark.parametrize("popularity", [None, "100", True, float("nan"), float("inf")])
 def test_validate_stock_index_payload_rejects_invalid_popularity(popularity: object) -> None:
     payload = _stock_index_payload()

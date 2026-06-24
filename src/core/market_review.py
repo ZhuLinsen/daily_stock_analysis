@@ -22,6 +22,7 @@ from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.analyzer import AnalysisResult, GeminiAnalyzer
+from src.llm.generation_backend import GenerationError
 from src.services.run_diagnostics import (
     current_diagnostic_snapshot,
     record_history_run,
@@ -371,6 +372,15 @@ def run_market_review(
                 )
             return review_report
         
+    except GenerationError:
+        logger.exception(
+            "[MarketReview] component=market_review action=failed "
+            "reason=generation_backend_config trigger_source=%s query_id=%s region=%s",
+            trigger_source,
+            history_query_id,
+            persist_region,
+        )
+        raise
     except Exception:
         logger.exception(
             "[MarketReview] component=market_review action=failed "

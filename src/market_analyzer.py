@@ -15,6 +15,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from inspect import getattr_static
 from typing import Optional, Dict, Any, List
 
 import pandas as pd
@@ -24,8 +25,14 @@ from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
+from src.llm.backend_registry import (
+    resolve_generation_backend_id,
+    resolve_generation_fallback_backend_id,
+)
+from src.llm.generation_backend import GenerationError
 from src.schemas.market_light import MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
+from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -536,6 +543,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             大盘复盘报告文本
         """
+        backend_error = self._get_analyzer_generation_backend_config_error()
+        if backend_error is not None:
+            logger.error(
+                "[大盘] %s action=generate_review status=failed error_type=%s error=%s",
+                self._log_context(),
+                type(backend_error).__name__,
+                backend_error,
+            )
+            record_llm_run(
+                success=False,
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+                error_type=type(backend_error).__name__,
+                error_message=backend_error,
+            )
+            raise backend_error
+
         if not self.analyzer or not self.analyzer.is_available():
             logger.warning(
                 "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
@@ -592,6 +617,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             self._log_context(),
         )
         return self._generate_template_review(overview, news)
+
+    def _get_analyzer_generation_backend_config_error(self) -> Optional[GenerationError]:
+        """Return analyzer backend config errors without relying on dynamic mock attributes."""
+        if self.analyzer is None:
+            try:
+                resolve_generation_backend_id(self.config)
+                resolve_generation_fallback_backend_id(self.config)
+            except GenerationError as exc:
+                return exc
+            return None
+        missing = object()
+        if getattr_static(self.analyzer, "get_generation_backend_config_error", missing) is missing:
+            return None
+        method = getattr(self.analyzer, "get_generation_backend_config_error", None)
+        if not callable(method):
+            return None
+        error = method()
+        return error if isinstance(error, GenerationError) else None
 
     def build_market_review_payload(
         self,
@@ -1454,6 +1497,7 @@ Market conditions can change quickly. The data above is for reference only and d
 
         # 2. 搜索市场新闻
         news = self.search_market_news()
+        news = self._merge_persisted_market_intelligence(news)
 
         # 3. 生成复盘报告
         report = self.generate_market_review(overview, news)
@@ -1473,6 +1517,52 @@ Market conditions can change quickly. The data above is for reference only and d
             market_light_snapshot=snapshot,
             structured_payload=structured_payload,
         )
+
+    def _merge_persisted_market_intelligence(self, news: List) -> List:
+        """Merge local persisted market intelligence and search news with bounded prompt/payload slot preservation."""
+        search_news = list(news or [])
+        merged_local = []
+        seen_urls = {
+            self._get_news_field(item, "url")
+            for item in search_news
+            if self._get_news_field(item, "url")
+        }
+        try:
+            service = IntelligenceService()
+            payload = service.list_items(
+                scope_type="market",
+                market=self.region,
+                published_days=max(1, int(self.config.get_effective_news_window_days() or 1)),
+                page=1,
+                page_size=6,
+            )
+            for item in payload.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "")
+                if url and url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                merged_local.append({
+                    "title": item.get("title") or "未命名资讯",
+                    "snippet": item.get("summary") or "",
+                    "source": item.get("source") or item.get("source_name") or "local-intel",
+                    "published_date": item.get("published_at") or "",
+                    "url": "" if url.startswith("no-url:intel:") else url,
+                })
+        except Exception as exc:
+            logger.debug("[大盘] %s action=load_local_intelligence status=failed error=%s", self._log_context(), exc)
+        merged_news = []
+        merged_local_index = 0
+        merged_search_index = 0
+        while merged_local_index < len(merged_local) or merged_search_index < len(search_news):
+            if merged_local_index < len(merged_local):
+                merged_news.append(merged_local[merged_local_index])
+                merged_local_index += 1
+            if merged_search_index < len(search_news):
+                merged_news.append(search_news[merged_search_index])
+                merged_search_index += 1
+        return merged_news
 
     def run_daily_review(self) -> str:
         """

@@ -18,7 +18,7 @@ from src.config import (
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
-SCHEMA_VERSION = "2026-05-25"
+SCHEMA_VERSION = "2026-06-22"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -116,6 +116,52 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     # ------------------------------------------------------------------
     # AI Model – LiteLLM unified config
     # ------------------------------------------------------------------
+    "GENERATION_BACKEND": {
+        "title": "Analysis Generation Method",
+        "description": "Generation method used by stock analysis, market reviews, and regular text generation.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "litellm",
+        "options": [{"label": "Default model settings", "value": "litellm"}],
+        "validation": {"enum": ["litellm"]},
+        "display_order": 0,
+        "help_key": "settings.ai_model.GENERATION_BACKEND",
+        "examples": ["GENERATION_BACKEND=litellm"],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "GENERATION_FALLBACK_BACKEND": {
+        "title": "Fallback Generation Method (reserved)",
+        "description": "Reserved fallback method for future multi-method generation; keep the default model settings for the current default behavior.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "litellm",
+        "options": [{"label": "Default model settings", "value": "litellm"}],
+        "validation": {"enum": ["litellm"]},
+        "display_order": 0,
+        "help_key": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
+        "examples": ["GENERATION_FALLBACK_BACKEND=litellm"],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
     "LITELLM_MODEL": {
         "title": "Primary Model",
         "description": "Primary model in provider/model format (e.g. gemini/gemini-3.1-pro-preview, deepseek/deepseek-v4-flash, anthropic/claude-sonnet-4-6). If empty, it is auto-inferred from available API keys or channel declarations.",
@@ -317,6 +363,137 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "完整指南：AI 模型配置",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LLM_PROMPT_CACHE_TELEMETRY_ENABLED": {
+        "title": "Prompt Cache Telemetry",
+        "description": "Records provider prompt-cache usage telemetry and normalized cache diagnostics when providers return cache usage fields. This does not enable or disable provider implicit cache.",
+        "category": "ai_model",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 6,
+        "help_key": "settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED",
+        "examples": [
+            "LLM_PROMPT_CACHE_TELEMETRY_ENABLED=true",
+            "LLM_PROMPT_CACHE_TELEMETRY_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LLM_PROMPT_CACHE_HINTS_ENABLED": {
+        "title": "Prompt Cache Hints",
+        "description": "Allows the project to send verified provider-specific prompt-cache hints such as prompt_cache_key or cache_control. Unknown providers and unverified routes remain telemetry-only.",
+        "category": "ai_model",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 7,
+        "help_key": "settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED",
+        "examples": [
+            "LLM_PROMPT_CACHE_HINTS_ENABLED=false",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL": {
+        "title": "Prompt Cache Diagnostics",
+        "description": "Controls non-sensitive prompt-cache capability and hint decision diagnostics. Values: off, basic, debug.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "off",
+        "options": [
+            {"value": "off", "label": "Off"},
+            {"value": "basic", "label": "Basic"},
+            {"value": "debug", "label": "Debug"},
+        ],
+        "validation": {"enum": ["off", "basic", "debug"]},
+        "display_order": 8,
+        "help_key": "settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL",
+        "examples": [
+            "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=off",
+            "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL=basic",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "LLM_USAGE_HMAC_SECRET": {
+        "title": "LLM Usage HMAC Secret",
+        "description": "Optional deployment-scoped secret for LLM usage telemetry prompt/message HMAC. Leave empty to use a local generated secret file. If set, use a high-entropy random value and do not commit it to version control.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 9,
+        "help_key": "settings.ai_model.LLM_USAGE_HMAC_SECRET",
+        "examples": [
+            "LLM_USAGE_HMAC_SECRET=<64-char random hex from openssl rand -hex 32>",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": ["secret_value"],
+    },
+    "LLM_USAGE_HMAC_KEY_VERSION": {
+        "title": "LLM Usage HMAC Key Version",
+        "description": "Version label for the LLM usage telemetry HMAC key. Change it when rotating LLM_USAGE_HMAC_SECRET.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "local-v1",
+        "options": [],
+        "validation": {},
+        "display_order": 10,
+        "help_key": "settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION",
+        "examples": [
+            "LLM_USAGE_HMAC_KEY_VERSION=prod-2026-06",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
             },
         ],
         "warning_codes": [],
@@ -2604,6 +2781,33 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["local_timezone"],
     },
+    "SCHEDULE_TIMES": {
+        "title": "Schedule Times",
+        "description": "Comma-separated daily schedule times in HH:MM format. Falls back to SCHEDULE_TIME when empty.",
+        "category": "system",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [],
+        "validation": {"pattern": r"^\s*(?:(?:[01]\d|2[0-3]):[0-5]\d\s*(?:,\s*(?:[01]\d|2[0-3]):[0-5]\d\s*)*)?$"},
+        "display_order": 11,
+        "help_key": "settings.system.schedule",
+        "examples": [
+            "SCHEDULE_TIMES=09:20,12:30,15:10,18:00",
+            "SCHEDULE_TIME=18:00",
+            "SCHEDULE_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "Full guide: configuration",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#其他配置",
+            },
+        ],
+        "warning_codes": ["local_timezone"],
+    },
     "HTTP_PROXY": {
         "title": "HTTP Proxy",
         "description": "Optional HTTP proxy endpoint.",
@@ -3335,6 +3539,35 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "完整指南：Agent 配置",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_GENERATION_BACKEND": {
+        "title": "Ask-Stock Generation Method",
+        "description": "Generation method used by the ask-stock assistant to generate replies and use tools.",
+        "category": "agent",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "auto",
+        "options": [
+            {"label": "Auto", "value": "auto"},
+            {"label": "Default model tool calling", "value": "litellm"},
+        ],
+        "validation": {"enum": ["auto", "litellm"]},
+        "display_order": 2,
+        "help_key": "settings.agent.AGENT_GENERATION_BACKEND",
+        "examples": [
+            "AGENT_GENERATION_BACKEND=auto",
+            "AGENT_GENERATION_BACKEND=litellm",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
             },
         ],
         "warning_codes": [],

@@ -2,11 +2,21 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   DecisionSignalCreateRequest,
+  DecisionSignalFeedbackItem,
+  DecisionSignalFeedbackRequest,
   DecisionSignalItem,
   DecisionSignalLatestParams,
   DecisionSignalListParams,
   DecisionSignalListResponse,
   DecisionSignalMutationResponse,
+  DecisionSignalOutcomeItem,
+  DecisionSignalOutcomeListParams,
+  DecisionSignalOutcomeListResponse,
+  DecisionSignalOutcomeRunRequest,
+  DecisionSignalOutcomeRunResponse,
+  DecisionSignalOutcomeStatsBucket,
+  DecisionSignalOutcomeStatsParams,
+  DecisionSignalOutcomeStatsResponse,
   DecisionSignalStatusUpdateRequest,
 } from '../types/decisionSignals';
 
@@ -14,6 +24,18 @@ function omitUndefined(input: Record<string, unknown>): Record<string, unknown> 
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   );
+}
+
+function serializeRepeatedQueryParams(params: Record<string, unknown>): string {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+      if (item === undefined || item === null || item === '') continue;
+      searchParams.append(key, String(item));
+    }
+  }
+  return searchParams.toString();
 }
 
 function toDecisionSignalItem(data: Record<string, unknown>): DecisionSignalItem {
@@ -37,6 +59,53 @@ function toDecisionSignalListResponse(data: Record<string, unknown>): DecisionSi
   }
   response.items = data.items.map((item) => toDecisionSignalItem(item as Record<string, unknown>));
   return response;
+}
+
+function toDecisionSignalOutcomeItem(data: Record<string, unknown>): DecisionSignalOutcomeItem {
+  return toCamelCase<DecisionSignalOutcomeItem>(data);
+}
+
+function toDecisionSignalOutcomeListResponse(data: Record<string, unknown>): DecisionSignalOutcomeListResponse {
+  const response = toCamelCase<DecisionSignalOutcomeListResponse>(data);
+  if (!Array.isArray(data.items)) {
+    throw new Error('DecisionSignal outcome list response items must be an array');
+  }
+  response.items = data.items.map((item) => toDecisionSignalOutcomeItem(item as Record<string, unknown>));
+  return response;
+}
+
+function toDecisionSignalOutcomeRunResponse(data: Record<string, unknown>): DecisionSignalOutcomeRunResponse {
+  const response = toCamelCase<DecisionSignalOutcomeRunResponse>(data);
+  if (!Array.isArray(data.items)) {
+    throw new Error('DecisionSignal outcome run response items must be an array');
+  }
+  response.items = data.items.map((item) => toDecisionSignalOutcomeItem(item as Record<string, unknown>));
+  return response;
+}
+
+function toDecisionSignalStatsBucket(data: Record<string, unknown>): DecisionSignalOutcomeStatsBucket {
+  const bucket = toCamelCase<DecisionSignalOutcomeStatsBucket>(data);
+  bucket.unableReasons = (data.unable_reasons as Record<string, number> | undefined) ?? {};
+  return bucket;
+}
+
+function toDecisionSignalOutcomeStatsResponse(data: Record<string, unknown>): DecisionSignalOutcomeStatsResponse {
+  const response = toCamelCase<DecisionSignalOutcomeStatsResponse>(data);
+  response.unableReasons = (data.unable_reasons as Record<string, number> | undefined) ?? {};
+  const rawBreakdowns = data.breakdowns as Record<string, unknown[]> | undefined;
+  response.breakdowns = {};
+  if (rawBreakdowns && typeof rawBreakdowns === 'object') {
+    for (const [dimension, buckets] of Object.entries(rawBreakdowns)) {
+      response.breakdowns[dimension] = Array.isArray(buckets)
+        ? buckets.map((bucket) => toDecisionSignalStatsBucket(bucket as Record<string, unknown>))
+        : [];
+    }
+  }
+  return response;
+}
+
+function toDecisionSignalFeedbackItem(data: Record<string, unknown>): DecisionSignalFeedbackItem {
+  return toCamelCase<DecisionSignalFeedbackItem>(data);
 }
 
 function toSnakeCreatePayload(payload: DecisionSignalCreateRequest): Record<string, unknown> {
@@ -74,6 +143,20 @@ function toSnakeCreatePayload(payload: DecisionSignalCreateRequest): Record<stri
   });
 }
 
+function toSnakeOutcomeRunPayload(payload: DecisionSignalOutcomeRunRequest): Record<string, unknown> {
+  return omitUndefined({
+    signal_id: payload.signalId,
+    horizons: payload.horizons,
+    force: payload.force,
+    market: payload.market,
+    stock_code: payload.stockCode,
+    action: payload.action,
+    source_type: payload.sourceType,
+    status: payload.status,
+    limit: payload.limit,
+  });
+}
+
 function toListParams(params: DecisionSignalListParams = {}): Record<string, string | number | boolean> {
   return omitUndefined({
     market: params.market,
@@ -96,6 +179,26 @@ function toListParams(params: DecisionSignalListParams = {}): Record<string, str
   }) as Record<string, string | number | boolean>;
 }
 
+function toOutcomeListParams(params: DecisionSignalOutcomeListParams = {}): Record<string, string | number> {
+  return omitUndefined({
+    signal_id: params.signalId,
+    horizon: params.horizon,
+    engine_version: params.engineVersion,
+    eval_status: params.evalStatus,
+    outcome: params.outcome,
+    page: params.page,
+    page_size: params.pageSize,
+  }) as Record<string, string | number>;
+}
+
+function toOutcomeStatsParams(params: DecisionSignalOutcomeStatsParams = {}): Record<string, string | string[]> {
+  return omitUndefined({
+    horizons: params.horizons,
+    engine_version: params.engineVersion,
+    statuses: params.statuses,
+  }) as Record<string, string | string[]>;
+}
+
 function toLatestParams(params: DecisionSignalLatestParams = {}): Record<string, string | number> {
   return omitUndefined({
     market: params.market,
@@ -107,6 +210,15 @@ function toSnakeStatusPayload(payload: DecisionSignalStatusUpdateRequest): Recor
   return omitUndefined({
     status: payload.status,
     metadata: payload.metadata,
+  });
+}
+
+function toSnakeFeedbackPayload(payload: DecisionSignalFeedbackRequest): Record<string, unknown> {
+  return omitUndefined({
+    feedback_value: payload.feedbackValue,
+    reason_code: payload.reasonCode,
+    note: payload.note,
+    source: payload.source,
   });
 }
 
@@ -160,5 +272,57 @@ export const decisionSignalsApi = {
       toSnakeStatusPayload(payload),
     );
     return toDecisionSignalItem(response.data);
+  },
+
+  async runOutcomes(payload: DecisionSignalOutcomeRunRequest): Promise<DecisionSignalOutcomeRunResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/decision-signals/outcomes/run',
+      toSnakeOutcomeRunPayload(payload),
+    );
+    return toDecisionSignalOutcomeRunResponse(response.data);
+  },
+
+  async listOutcomes(params: DecisionSignalOutcomeListParams = {}): Promise<DecisionSignalOutcomeListResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/decision-signals/outcomes', {
+      params: toOutcomeListParams(params),
+    });
+    return toDecisionSignalOutcomeListResponse(response.data);
+  },
+
+  async getOutcomeStats(
+    params: DecisionSignalOutcomeStatsParams = {},
+  ): Promise<DecisionSignalOutcomeStatsResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/decision-signals/outcomes/stats', {
+      params: toOutcomeStatsParams(params),
+      paramsSerializer: {
+        serialize: serializeRepeatedQueryParams,
+      },
+    });
+    return toDecisionSignalOutcomeStatsResponse(response.data);
+  },
+
+  async getSignalOutcomes(signalId: number): Promise<DecisionSignalOutcomeListResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/decision-signals/${signalId}/outcomes`,
+    );
+    return toDecisionSignalOutcomeListResponse(response.data);
+  },
+
+  async getFeedback(signalId: number): Promise<DecisionSignalFeedbackItem> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/decision-signals/${signalId}/feedback`,
+    );
+    return toDecisionSignalFeedbackItem(response.data);
+  },
+
+  async putFeedback(
+    signalId: number,
+    payload: DecisionSignalFeedbackRequest,
+  ): Promise<DecisionSignalFeedbackItem> {
+    const response = await apiClient.put<Record<string, unknown>>(
+      `/api/v1/decision-signals/${signalId}/feedback`,
+      toSnakeFeedbackPayload(payload),
+    );
+    return toDecisionSignalFeedbackItem(response.data);
   },
 };

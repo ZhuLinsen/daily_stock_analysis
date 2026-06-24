@@ -33,6 +33,7 @@ def build_decision_signal_payload_from_report(
     result: AnalysisResult,
     *,
     context_snapshot: Dict[str, Any] | None = None,
+    portfolio_context: Dict[str, Any] | None = None,
     source_report_id: int | None = None,
     trace_id: str,
     query_source: str,
@@ -66,6 +67,17 @@ def build_decision_signal_payload_from_report(
         sniper_points.get("secondary_buy"),
     )
 
+    metadata = {
+        "report_type": report_type,
+        "decision_type": getattr(result, "decision_type", None),
+        "report_confidence_level": getattr(result, "confidence_level", None),
+        "report_language": getattr(result, "report_language", None),
+    }
+    market_phase_summary = _extract_market_phase_summary(context_snapshot, result)
+    if market_phase_summary:
+        metadata["market_phase_summary"] = market_phase_summary
+    metadata["holding_state"] = _extract_holding_state(portfolio_context)
+
     payload: Dict[str, Any] = {
         "stock_code": raw_code,
         "stock_name": getattr(result, "name", None),
@@ -93,12 +105,7 @@ def build_decision_signal_payload_from_report(
         "watch_conditions": _watch_conditions(dashboard),
         "evidence": _evidence(result, sniper_points),
         "data_quality_summary": _extract_data_quality(context_snapshot, result),
-        "metadata": {
-            "report_type": report_type,
-            "decision_type": getattr(result, "decision_type", None),
-            "report_confidence_level": getattr(result, "confidence_level", None),
-            "report_language": getattr(result, "report_language", None),
-        },
+        "metadata": metadata,
         "report_language": getattr(result, "report_language", None),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
@@ -108,6 +115,7 @@ def extract_and_persist_from_analysis_result(
     result: AnalysisResult,
     *,
     context_snapshot: Dict[str, Any] | None = None,
+    portfolio_context: Dict[str, Any] | None = None,
     source_report_id: int | None = None,
     trace_id: str,
     query_source: str,
@@ -120,6 +128,7 @@ def extract_and_persist_from_analysis_result(
         payload = build_decision_signal_payload_from_report(
             result,
             context_snapshot=context_snapshot,
+            portfolio_context=portfolio_context,
             source_report_id=source_report_id,
             trace_id=trace_id,
             query_source=query_source,
@@ -183,6 +192,22 @@ def _extract_market_phase(context_snapshot: Optional[Mapping[str, Any]], result:
     return str(result_phase) if result_phase else None
 
 
+def _extract_market_phase_summary(
+    context_snapshot: Optional[Mapping[str, Any]],
+    result: AnalysisResult,
+) -> Optional[Dict[str, Any]]:
+    raw_summary = _as_mapping(_as_mapping(context_snapshot).get("market_phase_summary"))
+    if not raw_summary:
+        raw_summary = _as_mapping(getattr(result, "market_phase_summary", None))
+    allowed_fields = ("phase", "session_date", "minutes_to_open", "minutes_to_close")
+    summary = {
+        field_name: raw_summary.get(field_name)
+        for field_name in allowed_fields
+        if raw_summary.get(field_name) not in (None, "")
+    }
+    return summary or None
+
+
 def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result: AnalysisResult) -> Optional[Any]:
     snapshot_quality = _as_mapping(
         _as_mapping(context_snapshot).get("analysis_context_pack_overview")
@@ -190,6 +215,20 @@ def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result:
     if snapshot_quality:
         return snapshot_quality
     return _as_mapping(getattr(result, "analysis_context_pack_overview", None)).get("data_quality")
+
+
+def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> str:
+    context = _as_mapping(portfolio_context)
+    quantity = context.get("quantity")
+    if quantity in (None, ""):
+        return "unknown"
+    try:
+        numeric_quantity = float(quantity)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not math.isfinite(numeric_quantity):
+        return "unknown"
+    return "holding" if abs(numeric_quantity) > 0 else "empty"
 
 
 def _risk_summary(result: AnalysisResult, dashboard: Mapping[str, Any]) -> Optional[Any]:

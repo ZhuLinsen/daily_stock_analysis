@@ -10,6 +10,7 @@
  *   HK00700     → HK00700    00700       → HK00700
  *   00700.HK    → HK00700
  *   hk1810      → HK01810    1810.HK     → HK01810
+ *   7203.T      → 7203.T     005930.KS   → 005930.KS
  *   AAPL        → AAPL       TSLA        → TSLA
  */
 export function normalizeStockCode(stockCode: string): string {
@@ -66,6 +67,14 @@ export function normalizeStockCode(stockCode: string): string {
     const dotIndex = code.lastIndexOf('.');
     const base = code.slice(0, dotIndex);
     const suffix = code.slice(dotIndex + 1).toUpperCase();
+
+    // JP/KR Yahoo suffix-only codes are canonical as uppercase suffix forms.
+    if (suffix === 'T' && /^\d{4,5}$/.test(base)) {
+      return `${base}.${suffix}`;
+    }
+    if ((suffix === 'KS' || suffix === 'KQ') && /^\d{6}$/.test(base)) {
+      return `${base}.${suffix}`;
+    }
 
     // 00700.HK → HK00700
     if (suffix === 'HK' && /^\d{1,5}$/.test(base)) {

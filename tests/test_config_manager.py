@@ -86,6 +86,131 @@ class ConfigManagerTestCase(unittest.TestCase):
 
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), "STOCK_LIST=000001\n")
 
+    def test_custom_webhook_template_placeholders_are_escaped_for_compose(self) -> None:
+        template = '{"title":$title_json,"content":$content_json,"raw":$content,"name":"$OTHER"}'
+
+        self.manager.apply_updates(
+            updates=[("CUSTOM_WEBHOOK_BODY_TEMPLATE", template)],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        env_content = self.env_path.read_text(encoding="utf-8")
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json,'
+            '"raw":$$content,"name":"$OTHER"}',
+            env_content,
+        )
+        self.assertEqual(
+            self.manager.read_config_map()["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            template,
+        )
+
+    def test_custom_webhook_template_braced_placeholders_are_escaped_for_compose(self) -> None:
+        template = '{"title":${title_json},"content":${content_json},"name":"${OTHER}"}'
+
+        self.manager.apply_updates(
+            updates=[("CUSTOM_WEBHOOK_BODY_TEMPLATE", template)],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        env_content = self.env_path.read_text(encoding="utf-8")
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$${title_json},'
+            '"content":$${content_json},"name":"${OTHER}"}',
+            env_content,
+        )
+        self.assertEqual(
+            self.manager.read_config_map()["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            template,
+        )
+
+    def test_custom_webhook_template_canonicalizes_unescaped_existing_value(self) -> None:
+        self.env_path.write_text(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$content_json}\n',
+            encoding="utf-8",
+        )
+
+        self.manager.apply_updates(
+            updates=[("CUSTOM_WEBHOOK_BODY_TEMPLATE", '{"content":$content_json}')],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        self.assertEqual(
+            self.env_path.read_text(encoding="utf-8"),
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$$content_json}\n',
+        )
+
+    def test_custom_webhook_template_does_not_double_escape_existing_value(self) -> None:
+        self.env_path.write_text(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$$content_json}\n',
+            encoding="utf-8",
+        )
+
+        self.manager.apply_updates(
+            updates=[("CUSTOM_WEBHOOK_BODY_TEMPLATE", '{"content":$content_json}')],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        self.assertEqual(
+            self.env_path.read_text(encoding="utf-8"),
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$$content_json}\n',
+        )
+        self.assertEqual(
+            self.manager.read_config_map()["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            '{"content":$content_json}',
+        )
+
+    def test_custom_webhook_template_plain_json_is_not_changed(self) -> None:
+        template = '{"content":"plain json string"}'
+
+        self.manager.apply_updates(
+            updates=[("CUSTOM_WEBHOOK_BODY_TEMPLATE", template)],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        self.assertEqual(
+            self.env_path.read_text(encoding="utf-8"),
+            f"CUSTOM_WEBHOOK_BODY_TEMPLATE={template}\n",
+        )
+
+    def test_non_template_settings_keep_dotenv_interpolation_semantics(self) -> None:
+        self.env_path.write_text(
+            "\n".join(
+                [
+                    "API_PORT=8000",
+                    "WEBUI_PORT=${API_PORT}",
+                    'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        config_map = self.manager.read_config_map()
+
+        self.assertEqual(config_map["API_PORT"], "8000")
+        self.assertEqual(config_map["WEBUI_PORT"], "8000")
+        self.assertEqual(
+            config_map["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            '{"content":${content_json}}',
+        )
+
+        self.manager.apply_updates(
+            updates=[("WEBUI_PORT", config_map["WEBUI_PORT"])],
+            sensitive_keys=set(),
+            mask_token="******",
+        )
+
+        self.assertIn(
+            "WEBUI_PORT=${API_PORT}\n",
+            self.env_path.read_text(encoding="utf-8"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
