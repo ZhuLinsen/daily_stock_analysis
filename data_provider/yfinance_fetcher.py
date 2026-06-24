@@ -90,6 +90,19 @@ class YfinanceFetcher(BaseFetcher):
             return base.isdigit() and len(base) == 6
         return False
 
+    @staticmethod
+    def _is_tw_suffix_stock(stock_code: str) -> bool:
+        """Return True for supported Taiwan suffix-only Yahoo symbols (TWSE `.TW` / TPEx `.TWO`).
+
+        Taiwan base codes are 4-6 digits (common stocks 4, ETFs/others up to 6,
+        e.g. 00878 / 006208), wider than the JP `.T` range.
+        """
+        code = (stock_code or "").strip().upper()
+        if code.endswith((".TW", ".TWO")):
+            base = code.rsplit(".", 1)[0]
+            return base.isdigit() and 4 <= len(base) <= 6
+        return False
+
     def _convert_stock_code(self, stock_code: str) -> str:
         """
         转换股票代码为 Yahoo Finance 格式
@@ -127,9 +140,9 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股代码: {code}")
             return code
 
-        # 日股/韩股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
-        if self._is_jp_kr_suffix_stock(code):
-            logger.debug(f"识别为日韩 Yahoo suffix 代码: {code}")
+        # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
+        if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
+            logger.debug(f"识别为日韩台 Yahoo suffix 代码: {code}")
             return code
 
         # 港股：hk前缀 -> .HK后缀
@@ -350,6 +363,8 @@ class YfinanceFetcher(BaseFetcher):
             return self._get_jp_main_indices(yf)
         if region == "kr":
             return self._get_kr_main_indices(yf)
+        if region == "tw":
+            return self._get_tw_main_indices(yf)
 
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
         yf_mapping = {
@@ -484,6 +499,29 @@ class YfinanceFetcher(BaseFetcher):
                 return results
         except Exception as e:
             logger.error(f"[Yfinance] 获取韩国指数行情失败: {e}")
+        return None
+
+    def _get_tw_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取台湾主要指数行情（加权指数 ^TWII、柜买指数 ^TWOII），复用 _fetch_yf_ticker_data。"""
+        tw_indices = {
+            'TWII': ('^TWII', '台湾加权指数'),
+            'TWOII': ('^TWOII', '台湾柜买指数'),
+        }
+        results = []
+        try:
+            for code, (yf_symbol, name) in tw_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取台湾指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取台湾指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个台湾指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
         return None
 
     def _is_us_stock(self, stock_code: str) -> bool:
@@ -754,8 +792,12 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股股票或 JP/KR suffix-only 股票
-        if not (self._is_us_stock(stock_code) or self._is_jp_kr_suffix_stock(stock_code)):
+        # 仅处理美股股票或 JP/KR/TW suffix-only 股票
+        if not (
+            self._is_us_stock(stock_code)
+            or self._is_jp_kr_suffix_stock(stock_code)
+            or self._is_tw_suffix_stock(stock_code)
+        ):
             logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩 suffix 代码，跳过")
             return None
 

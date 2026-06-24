@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
 - [改进] 将 Docker Compose 默认内存建议从 512M 提升到 1G，并补充低配部署说明。
 - [改进] 每日分析 workflow 兼容误将 `STOCK_LIST` 配到同名 Environment variables 的场景，同时保留 Repository variables 作为推荐配置入口。
+- [新功能] #1772 新增台湾（台股）suffix-only 个股分析 MVP（**市场识别与数据路由层**）：手输 `.TW`（TWSE 上市）/ `.TWO`（TPEx 上柜）代码可走 YFinance 日线与近实时行情，补充市场识别、交易日历（XTAI / Asia/Taipei）、Prompt 语义与能力边界文档；加权指数 `^TWII`、柜买指数 `^TWOII`。台股股票索引/种子、Web 自动补全、API 市场枚举与 Portfolio/DecisionSignal 服务层放行作为后续 PR。
+- [文档] #1772 明确本次为台股 suffix 仅路由兼容改造，对齐 #1718 日韩模式；不涉及 provider/model/base URL/运行时配置变更；DecisionSignal 抽取对 `tw` 优雅跳过；回退方式为 revert 本次改动或移除 tw 入口恢复既有行为。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
