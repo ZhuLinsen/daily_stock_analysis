@@ -55,6 +55,22 @@ from src.formatters import format_feishu_markdown, chunk_content_by_max_bytes
 from src.config import get_config
 
 
+def _resolve_lark_domain(config) -> str:
+    """Resolve ``feishu_domain`` to an lark-oapi endpoint domain constant.
+
+    Mirrors src/notification_sender/feishu_sender.py so Stream (long-connection)
+    mode and the notification sender route to the same endpoint:
+    ``feishu`` -> open.feishu.cn, ``lark`` -> open.larksuite.com.
+    Without this, Lark (international) users hit "Incorrect domain name" because
+    the lark-oapi SDK defaults to the Feishu (China) domain. See issue #937.
+    """
+    raw_domain = (getattr(config, "feishu_domain", None) or "feishu").strip().lower()
+    if raw_domain not in ("feishu", "lark"):
+        logger.warning("无效的 FEISHU_DOMAIN=%s，回退为 feishu", raw_domain)
+        raw_domain = "feishu"
+    return lark.FEISHU_DOMAIN if raw_domain == "feishu" else lark.LARK_DOMAIN
+
+
 class FeishuReplyClient:
     """
     飞书消息回复客户端
@@ -71,14 +87,18 @@ class FeishuReplyClient:
         if not FEISHU_SDK_AVAILABLE:
             raise ImportError("lark-oapi SDK 未安装")
 
+        config = get_config()
+        # 与通知发送模式对齐：按 FEISHU_DOMAIN 选择 feishu.cn / larksuite.com
+        domain = _resolve_lark_domain(config)
+
         self._client = lark.Client.builder() \
             .app_id(app_id) \
             .app_secret(app_secret) \
+            .domain(domain) \
             .log_level(lark.LogLevel.WARNING) \
             .build()
 
         # 获取配置的最大字节数
-        config = get_config()
         self._max_bytes = getattr(config, 'feishu_max_bytes', 20000)
 
     def _send_interactive_card(self, content: str, message_id: Optional[str] = None,
@@ -551,11 +571,12 @@ class FeishuStreamClient:
                 "请运行: pip install lark-oapi"
             )
 
-        from src.config import get_config
         config = get_config()
 
         self._app_id = app_id or getattr(config, 'feishu_app_id', None)
         self._app_secret = app_secret or getattr(config, 'feishu_app_secret', None)
+        # 与通知发送模式对齐：Lark 国际版用户需设 FEISHU_DOMAIN=lark
+        self._domain = _resolve_lark_domain(config)
 
         if not self._app_id or not self._app_secret:
             raise ValueError(
@@ -625,6 +646,7 @@ class FeishuStreamClient:
             app_id=self._app_id,
             app_secret=self._app_secret,
             event_handler=event_handler,
+            domain=self._domain,
             log_level=lark.LogLevel.WARNING,
             auto_reconnect=True
         )

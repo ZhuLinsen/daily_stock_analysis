@@ -42,6 +42,8 @@ FEISHU_APP_SECRET=xxx
 FEISHU_CHAT_ID=oc_xxx
 # 私聊时设置 open_id；群聊默认 chat_id
 FEISHU_RECEIVE_ID_TYPE=chat_id
+# 国际版 Lark 用户设为 lark（默认 feishu 走国内域名，App Bot 与 Stream Bot 均生效）
+FEISHU_DOMAIN=feishu
 # 事件订阅 / Stream Bot 时才开启
 FEISHU_STREAM_ENABLED=true
 ```
@@ -53,6 +55,7 @@ FEISHU_STREAM_ENABLED=true
 - `FEISHU_STREAM_ENABLED` 只代表事件订阅 / Stream Bot，不参与主动通知是否配置完成的判断
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
 - App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
+- 国际版 Lark（非国内飞书）用户须设置 `FEISHU_DOMAIN=lark`，否则 App Bot 与 Stream Bot 会因 SDK 默认走国内域名而报 “Incorrect domain name”
 
 ## Webhook 推送的正确配置步骤
 

@@ -22,7 +22,7 @@ tickflow>=0.1.0            # TickFlow official SDK (Issue #632, market review en
 git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8#egg=alphasift
 
 # Feishu
-lark-oapi>=1.0.0             # Feishu API
+lark-oapi>=1.3.4            # Feishu/Lark API; Stream(ws) long-conn needs lark_oapi.ws + ws.Client(domain=), verified >=1.3.4 (1.0.x lacks ws module)
 
 # Data processing
 pandas>=2.0.0               # Data analysis
