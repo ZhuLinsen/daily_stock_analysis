@@ -218,6 +218,13 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     redacted = re.sub(r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s]+", r"\1<redacted>", redacted)
     redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^\n\r]+", r"\1<redacted>", redacted)
     redacted = re.sub(r"(?i)(session[_-]?secret\s*[:=]\s*)[^\s]+", r"\1<redacted>", redacted)
+    # Catch env-var assignments whose name contains a sensitive keyword, regardless of value length.
+    # Must run before the 32-char generic fallback so short values are also covered.
+    redacted = re.sub(
+        r"(?i)\b([A-Z_]*(?:key|secret|token|password|credential|api_key|webhook)[A-Z_0-9]*)\s*=\s*(\S+)",
+        lambda m: f"{m.group(1)}=<redacted>",
+        redacted,
+    )
     redacted = re.sub(r"\b(sk-[A-Za-z0-9_-]{12,})\b", "<redacted-api-key>", redacted)
     redacted = re.sub(r"\b(AIza[A-Za-z0-9_-]{16,})\b", "<redacted-api-key>", redacted)
     redacted = re.sub(r"\b(gh[pousr]_[A-Za-z0-9_]{16,})\b", "<redacted-token>", redacted)
