@@ -1,30 +1,94 @@
-# 忽略 Python 缓存
+# ===================================
+# Python 相关
+# ===================================
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.egg
 
-# 忽略虚拟环境
+# 虚拟环境
 venv/
 .venv/
 env/
-.env.local
+ENV/
 
-# 忽略 IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# 忽略数据文件（可选，如果想持久化就注释掉）
-# data/
-# logs/
-# reports/
-
-# 忽略测试文件
+# 测试和缓存
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
 test_*.py
 *_test.py
+tests/
 
-# 忽略文档
+# ===================================
+# 前端相关（非常重要！）
+# ===================================
+node_modules/
+apps/dsa-web/dist/
+apps/dsa-web/.vite/
+static/
+
+# ===================================
+# 环境变量和密钥
+# ===================================
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ===================================
+# 数据和日志（运行时生成）
+# ===================================
+data/
+logs/
+reports/
+*.db
+*.sqlite
+*.sqlite3
+
+# ===================================
+# IDE 和编辑器
+# ===================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ===================================
+# Git 和 CI/CD
+# ===================================
+.git/
+.github/
+.gitignore
+.dockerignore
+
+# ===================================
+# 系统文件
+# ===================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===================================
+# 文档（可选，保留 README）
+# ===================================
 *.md
 !README.md
+!QUICKSTART_CN.md
