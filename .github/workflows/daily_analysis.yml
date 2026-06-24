@@ -10,7 +10,7 @@ on:
     inputs:
       mode:
         description: '运行模式'
-        required: tre
+        required: true
         default: 'market-only'
         type: choice
         options:
