@@ -96,12 +96,47 @@ class _FakeInstrumentsResource:
         return {"symbol": symbol, "name": "InstrumentName"}
 
 
+class _FakeDepthResource:
+    def __init__(self, data=None, error=None):
+        self.data = data or {"bid1": 10.0, "ask1": 10.1}
+        self.error = error
+        self.get_calls = []
+        self.batch_calls = []
+
+    def get(self, symbol):
+        self.get_calls.append(symbol)
+        if self.error:
+            raise self.error
+        return self.data
+
+    def batch(self, symbols):
+        self.batch_calls.append(list(symbols))
+        if self.error:
+            raise self.error
+        return {symbol: self.data for symbol in symbols}
+
+
+class _FakeFinancialsResource:
+    def __init__(self, data=None, error=None):
+        self.data = data if data is not None else pd.DataFrame([{"revenue": 1.0}])
+        self.error = error
+        self.calls = []
+
+    def income(self, symbol, **kwargs):
+        self.calls.append({"endpoint": "income", "symbol": symbol, **kwargs})
+        if self.error:
+            raise self.error
+        return self.data
+
+
 class _FakeClient:
     def __init__(self, symbols_data=None, universe_data=None, daily_data=None, batch_data=None, batch_error=None):
         self.quotes = _FakeQuotesResource(symbols_data, universe_data)
         self.klines = _FakeKlinesResource(daily_data=daily_data, batch_data=batch_data, batch_error=batch_error)
         self.universes = _FakeUniverseResource(universe_data)
         self.instruments = _FakeInstrumentsResource()
+        self.depth = _FakeDepthResource()
+        self.financials = _FakeFinancialsResource()
         self.closed = False
 
     def close(self):
@@ -290,6 +325,27 @@ class TestTickFlowFetcher(unittest.TestCase):
             self.assertIsNone(fetcher.get_market_stats())
 
         self.assertEqual(len(fetcher._client.quotes.calls), 2)
+
+    def test_advanced_helpers_fail_open_and_cache_permission_failures(self):
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient()
+        fetcher._client.depth = _FakeDepthResource(error=_PermissionLikeError("depth permission denied"))
+
+        self.assertIsNone(fetcher.get_market_depth("600519"))
+        self.assertIsNone(fetcher.get_market_depth("600519"))
+        self.assertEqual(fetcher._client.depth.get_calls, ["600519.SH"])
+
+    def test_advanced_helpers_return_data_when_available(self):
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient()
+        fetcher._client.klines.intraday_data = pd.DataFrame([{"close": 10.0}])
+        fetcher._client.klines.ex_factors_data = pd.DataFrame([{"factor": 1.0}])
+        fetcher._client.financials = _FakeFinancialsResource(pd.DataFrame([{"revenue": 100.0}]))
+
+        self.assertEqual(len(fetcher.get_intraday_klines("600519")), 1)
+        self.assertEqual(len(fetcher.get_ex_factors("600519")), 1)
+        self.assertEqual(fetcher._client.klines.ex_factors_calls[0]["symbols"], ["600519.SH"])
+        self.assertEqual(len(fetcher.get_financial_data("600519", endpoint="income")), 1)
 
 
 if __name__ == "__main__":

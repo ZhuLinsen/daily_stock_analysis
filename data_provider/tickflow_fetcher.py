@@ -110,6 +110,12 @@ class TickFlowFetcher(BaseFetcher):
         self._capability_supported: Dict[str, Optional[bool]] = {
             "batch_daily": None,
             "universe_quotes": None,
+            "minute_kline": None,
+            "intraday_batch": None,
+            "depth": None,
+            "depth_batch": None,
+            "ex_factors": None,
+            "financials": None,
         }
         self._capability_checked_at: Dict[str, float] = {}
 
@@ -980,3 +986,170 @@ class TickFlowFetcher(BaseFetcher):
             return None
 
         return stats
+
+    def get_intraday_klines(
+        self,
+        stock_code: str,
+        *,
+        period: str = "1m",
+        count: Optional[int] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Fetch minute/intraday K-lines. Consumers opt in explicitly."""
+        if not self._capability_available("minute_kline"):
+            return pd.DataFrame()
+        symbol = self._to_tickflow_symbol(stock_code)
+        client = self._get_client()
+        if not symbol or client is None:
+            return pd.DataFrame()
+        try:
+            df = client.klines.intraday(
+                symbol,
+                period=period,
+                count=count,
+                start_time=start_time,
+                end_time=end_time,
+                as_dataframe=True,
+            )
+            self._mark_capability("minute_kline", True)
+            return self._coerce_frame(df)
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("minute_kline", False)
+                return pd.DataFrame()
+            logger.warning("[TickFlowFetcher] intraday K-line failed for %s: %s", symbol, exc)
+            return pd.DataFrame()
+
+    def prefetch_intraday_klines(
+        self,
+        stock_codes: Iterable[str],
+        *,
+        period: str = "1m",
+        count: Optional[int] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch intraday K-lines in batch when TickFlow entitlement allows it."""
+        if not self._capability_available("intraday_batch"):
+            return {}
+        client = self._get_client()
+        if client is None:
+            return {}
+        symbols = self._dedupe_symbols(stock_codes)
+        if not symbols:
+            return {}
+        try:
+            result = client.klines.intraday_batch(
+                symbols,
+                period=period,
+                count=count,
+                as_dataframe=True,
+            )
+            self._mark_capability("intraday_batch", True)
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("intraday_batch", False)
+                return {}
+            logger.warning("[TickFlowFetcher] intraday batch failed: %s", exc)
+            return {}
+        return {symbol: self._coerce_frame(df) for symbol, df in self._iter_batch_frames(result)}
+
+    def get_ex_factors(
+        self,
+        stock_code: str,
+        *,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Fetch ex-right/dividend factors if available."""
+        if not self._capability_available("ex_factors"):
+            return pd.DataFrame()
+        symbol = self._to_tickflow_symbol(stock_code)
+        client = self._get_client()
+        if not symbol or client is None:
+            return pd.DataFrame()
+        kwargs: Dict[str, Any] = {}
+        if start_date:
+            kwargs["start_time"] = self._date_to_ms(start_date)
+        if end_date:
+            kwargs["end_time"] = self._date_to_ms(end_date, end_of_day=True)
+        try:
+            df = client.klines.ex_factors([symbol], as_dataframe=True, **kwargs)
+            self._mark_capability("ex_factors", True)
+            return self._coerce_frame(df)
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("ex_factors", False)
+                return pd.DataFrame()
+            logger.warning("[TickFlowFetcher] ex-factors failed for %s: %s", symbol, exc)
+            return pd.DataFrame()
+
+    def get_market_depth(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch five-level market depth if available."""
+        if not self._capability_available("depth"):
+            return None
+        symbol = self._to_tickflow_symbol(stock_code)
+        client = self._get_client()
+        if not symbol or client is None:
+            return None
+        try:
+            data = client.depth.get(symbol)
+            self._mark_capability("depth", True)
+            return data if isinstance(data, dict) else {"data": data}
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("depth", False)
+                return None
+            logger.warning("[TickFlowFetcher] depth failed for %s: %s", symbol, exc)
+            return None
+
+    def prefetch_market_depth(self, stock_codes: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch five-level market depth in batch if available."""
+        if not self._capability_available("depth_batch"):
+            return {}
+        client = self._get_client()
+        if client is None:
+            return {}
+        symbols = self._dedupe_symbols(stock_codes)
+        if not symbols:
+            return {}
+        try:
+            data = client.depth.batch(symbols)
+            self._mark_capability("depth_batch", True)
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("depth_batch", False)
+                return {}
+            logger.warning("[TickFlowFetcher] depth batch failed: %s", exc)
+            return {}
+        if isinstance(data, dict):
+            return {str(symbol).upper(): value for symbol, value in data.items() if isinstance(value, dict)}
+        return {}
+
+    def get_financial_data(
+        self,
+        stock_code: str,
+        *,
+        endpoint: str = "income",
+        **kwargs: Any,
+    ) -> pd.DataFrame:
+        """Fetch TickFlow financial records through a named financials endpoint."""
+        if not self._capability_available("financials"):
+            return pd.DataFrame()
+        symbol = self._to_tickflow_symbol(stock_code)
+        client = self._get_client()
+        if not symbol or client is None:
+            return pd.DataFrame()
+        resource = getattr(client, "financials", None)
+        method = getattr(resource, endpoint, None) if resource is not None else None
+        if method is None:
+            return pd.DataFrame()
+        try:
+            df = method(symbol, as_dataframe=True, **kwargs)
+            self._mark_capability("financials", True)
+            return self._coerce_frame(df)
+        except Exception as exc:
+            if self._is_permission_error(exc):
+                self._mark_capability("financials", False)
+                return pd.DataFrame()
+            logger.warning("[TickFlowFetcher] financials.%s failed for %s: %s", endpoint, symbol, exc)
+            return pd.DataFrame()
