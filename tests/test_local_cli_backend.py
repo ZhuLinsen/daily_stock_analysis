@@ -913,6 +913,34 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
     assert "https://example.com/public/docs?foo=bar" in redacted
 
 
+def test_redact_short_credentials_in_diagnostic_text() -> None:
+    # Issue examples: short values not covered by the 32-char generic fallback
+    assert "xxy12345abcdef" not in redact_diagnostic_text("FEISHU_APP_SECRET=xxy12345abcdef", limit=1000)
+    assert "abc123xyz789short" not in redact_diagnostic_text("CUSTOM_API_KEY=abc123xyz789short", limit=1000)
+
+    # Digit-prefixed env var names (OPENAI_V2_API_KEY, APP2_SECRET, R2_SECRET_ACCESS_KEY)
+    assert "short" not in redact_diagnostic_text("OPENAI_V2_API_KEY=short", limit=1000)
+    assert "short" not in redact_diagnostic_text("APP2_SECRET=short", limit=1000)
+    assert "short" not in redact_diagnostic_text("API2_KEY=short", limit=1000)
+    assert "short" not in redact_diagnostic_text("R2_SECRET_ACCESS_KEY=short", limit=1000)
+
+    # Mixed-case key names
+    assert "myvalue" not in redact_diagnostic_text("My_Api_Key=myvalue", limit=1000)
+
+    # Long values still redacted (32-char fallback intact)
+    assert "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6" not in redact_diagnostic_text(
+        "TUSHARE_TOKEN=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6", limit=1000
+    )
+
+    # Quoted values with spaces (single and double quotes)
+    assert "abc def ghi" not in redact_diagnostic_text("PASSWORD='abc def ghi' next", limit=1000)
+    assert "my secret value" not in redact_diagnostic_text('API_KEY="my secret value" other', limit=1000)
+
+    # Normal log lines not affected
+    result = redact_diagnostic_text("connection established to db.example.com:5432", limit=1000)
+    assert "connection established" in result
+
+
 def test_effective_local_cli_concurrency_uses_minimum() -> None:
     assert effective_local_cli_concurrency(_config()) == 1
     assert effective_local_cli_concurrency(

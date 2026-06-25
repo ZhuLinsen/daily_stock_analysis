@@ -220,8 +220,15 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     redacted = re.sub(r"(?i)(session[_-]?secret\s*[:=]\s*)[^\s]+", r"\1<redacted>", redacted)
     # Catch env-var assignments whose name contains a sensitive keyword, regardless of value length.
     # Must run before the 32-char generic fallback so short values are also covered.
+    # [A-Z0-9_]* allows digits anywhere in the name (e.g. OPENAI_V2_API_KEY, R2_SECRET_ACCESS_KEY).
+    # Quoted forms (single or double) consume the full quoted span so partial leaks are avoided.
     redacted = re.sub(
-        r"(?i)\b([A-Z_]*(?:key|secret|token|password|credential|api_key|webhook)[A-Z_0-9]*)\s*=\s*(\S+)",
+        r"""(?ix)
+        \b
+        ([A-Z0-9_]*(?:key|secret|token|password|credential|api_key|webhook)[A-Z0-9_]*)
+        \s*=\s*
+        (?:'[^']*'|\"[^\"]*\"|\S+)   # quoted (single/double) or bare token
+        """,
         lambda m: f"{m.group(1)}=<redacted>",
         redacted,
     )

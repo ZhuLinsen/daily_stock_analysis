@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 每日分析 workflow 兼容误将 `STOCK_LIST` 配到同名 Environment variables 的场景，同时保留 Repository variables 作为推荐配置入口。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [修复] #1784 修复 `redact_diagnostic_text()` 对短凭证（<32 字符）未脱敏的问题：新增按变量名关键词匹配的赋值形式脱敏规则，覆盖 `FEISHU_APP_SECRET`、`CUSTOM_API_KEY`、`OPENAI_V2_API_KEY`、`R2_SECRET_ACCESS_KEY` 等含数字段的合法变量名；变量名字符集扩展为 `[A-Z0-9_]`，修复前版本 `[A-Z_]` 不匹配含数字前缀的问题。
 
 - [修复] 修复日股/韩股历史列表重建市场阶段摘要时将 non_trading 等结果阶段误传为 analysis_phase 导致列表查询失败的问题。
 - [新功能] 支持 SCHEDULE_TIMES 多时间定时推送，并让 Web/API/Desktop 长运行进程保存调度配置后热启停或重建 runtime scheduler。
