@@ -1634,8 +1634,8 @@ class TestPipelineRouting(unittest.TestCase):
 class TestAnalyzeWithAgentStockName(unittest.TestCase):
     """Test stock-name handling in _analyze_with_agent."""
 
-    def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
-        """Should use resolved stock name from dashboard for search and DB persistence."""
+    def test_analyze_with_agent_prefetches_news_for_context_pack_and_persists_resolved_name(self):
+        """Agent news should enter the LLM input pack and still persist with resolved stock name."""
         with patch('src.core.pipeline.get_config') as mock_config, \
              patch('src.core.pipeline.get_db'), \
              patch('src.core.pipeline.DataFetcherManager'), \
@@ -1685,12 +1685,21 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_build_executor.return_value = mock_executor
             mock_agent_run.return_value = agent_result
 
-            news_response = MagicMock()
-            news_response.success = True
-            news_response.results = [{"title": "test"}]
-            news_response.query = "test query"
+            news_response = SimpleNamespace(
+                success=True,
+                results=[
+                    SimpleNamespace(
+                        title="科创芯片ETF 调仓公告",
+                        snippet="半导体主题 ETF 发布最新调仓信息",
+                        published_date="2026-06-25",
+                    )
+                ],
+                query="test query",
+                provider="UnitTestSearch",
+            )
             pipeline.search_service.is_available = True
             pipeline.search_service.search_stock_news.return_value = news_response
+            pipeline.search_service.format_intel_report.return_value = "formatted latest news"
 
             result = pipeline._analyze_with_agent(
                 code="588200",
@@ -1705,12 +1714,21 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertEqual(result.name, "科创芯片ETF")
             pipeline.search_service.search_stock_news.assert_called_once_with(
                 stock_code="588200",
-                stock_name="科创芯片ETF",
+                stock_name="股票588200",
                 max_results=5
             )
+            agent_context = mock_executor.run.call_args.kwargs["context"]
+            self.assertIn("formatted latest news", agent_context["news_context"])
+            self.assertEqual(agent_context["news_result_count"], 1)
             pipeline.db.save_news_intel.assert_called_once()
             saved_kwargs = pipeline.db.save_news_intel.call_args.kwargs
             self.assertEqual(saved_kwargs["name"], "科创芯片ETF")
+            history_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
+            self.assertIn("formatted latest news", history_kwargs["news_content"])
+            overview = history_kwargs["context_snapshot"]["analysis_context_pack_overview"]
+            news_block = next(block for block in overview["blocks"] if block["key"] == "news")
+            self.assertEqual(news_block["status"], "available")
+            self.assertEqual(overview["metadata"]["news_result_count"], 1)
 
     def test_analyze_with_agent_keeps_dashboard_top_level_fields_after_stability(self):
         """Decision stability downgrade in agent flow should sync dashboard and top-level decision fields."""

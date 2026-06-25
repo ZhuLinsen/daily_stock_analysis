@@ -1210,6 +1210,25 @@ class StockAnalysisPipeline:
                 )
                 logger.info(f"[{code}] Agent mode: local intelligence evidence injected into news_context")
 
+            prefetched_news_response = None
+            agent_news_context, agent_news_count, prefetched_news_response = self._fetch_agent_news_context(
+                code=code,
+                stock_name=stock_name,
+            )
+            if agent_news_context:
+                existing = initial_context.get("news_context")
+                initial_context["news_context"] = (
+                    f"{existing}\n\n{agent_news_context}"
+                    if existing
+                    else agent_news_context
+                )
+                initial_context["news_result_count"] = agent_news_count
+                logger.info(
+                    "[%s] Agent mode: news context prefetched for AnalysisContextPack (%s items)",
+                    code,
+                    agent_news_count,
+                )
+
             # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)
 
@@ -1347,26 +1366,44 @@ class StockAnalysisPipeline:
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
-            # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
-            # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
-            if self.search_service is not None and self.search_service.is_available:
+            # 保存新闻情报到数据库。优先复用 Agent 前置检索结果，避免二次 API 调用；
+            # 如果前置检索失败，则保留旧的后置保存兜底路径。
+            news_response_to_save = prefetched_news_response
+            if (
+                news_response_to_save is None
+                and self.search_service is not None
+                and self.search_service.is_available
+            ):
                 try:
-                    news_response = self.search_service.search_stock_news(
+                    news_response_to_save = self.search_service.search_stock_news(
                         stock_code=code,
                         stock_name=resolved_stock_name,
                         max_results=5
                     )
-                    if news_response.success and news_response.results:
-                        query_context = self._build_query_context(query_id=query_id)
-                        self.db.save_news_intel(
-                            code=code,
-                            name=resolved_stock_name,
-                            dimension="latest_news",
-                            query=news_response.query,
-                            response=news_response,
-                            query_context=query_context
-                        )
-                        logger.info(f"[{code}] Agent 模式: 新闻情报已保存 {len(news_response.results)} 条")
+                except Exception as e:
+                    logger.warning(f"[{code}] Agent 模式补充检索新闻情报失败: {e}")
+                    news_response_to_save = None
+
+            if (
+                news_response_to_save is not None
+                and getattr(news_response_to_save, "success", False)
+                and getattr(news_response_to_save, "results", None)
+            ):
+                try:
+                    query_context = self._build_query_context(query_id=query_id)
+                    self.db.save_news_intel(
+                        code=code,
+                        name=resolved_stock_name,
+                        dimension="latest_news",
+                        query=getattr(news_response_to_save, "query", None),
+                        response=news_response_to_save,
+                        query_context=query_context
+                    )
+                    logger.info(
+                        "[%s] Agent 模式: 新闻情报已保存 %s 条",
+                        code,
+                        len(getattr(news_response_to_save, "results", []) or []),
+                    )
                 except Exception as e:
                     logger.warning(f"[{code}] Agent 模式保存新闻情报失败: {e}")
 
@@ -1379,6 +1416,7 @@ class StockAnalysisPipeline:
                             "stock_name": resolved_stock_name,
                         },
                         news_content=initial_context.get("news_context"),
+                        news_result_count=initial_context.get("news_result_count"),
                         realtime_quote=realtime_quote,
                         chip_data=chip_data,
                         analysis_context_pack_overview=analysis_context_pack_overview,
@@ -1390,7 +1428,7 @@ class StockAnalysisPipeline:
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
-                        news_content=None,
+                        news_content=initial_context.get("news_context"),
                         context_snapshot=agent_context_snapshot,
                         save_snapshot=self.save_context_snapshot,
                     )
@@ -2448,6 +2486,58 @@ class StockAnalysisPipeline:
             logger.debug("读取本地资讯证据失败（fail-open）: %s", exc)
             return None
 
+    def _fetch_agent_news_context(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        max_results: int = 5,
+    ) -> Tuple[Optional[str], Optional[int], Optional[Any]]:
+        """Fetch stock news before Agent execution so it enters the LLM input pack."""
+        if self.search_service is None or not getattr(self.search_service, "is_available", False):
+            return None, None, None
+
+        try:
+            response = self.search_service.search_stock_news(
+                stock_code=code,
+                stock_name=stock_name,
+                max_results=max_results,
+            )
+        except Exception as exc:
+            logger.warning("[%s] Agent mode news prefetch failed: %s", code, exc)
+            return None, None, None
+
+        results = getattr(response, "results", None) or []
+        if not getattr(response, "success", False) or not results:
+            return None, 0, response
+
+        try:
+            context = self.search_service.format_intel_report(
+                {"latest_news": response},
+                stock_name,
+            )
+        except Exception:
+            context = None
+
+        if not isinstance(context, str) or not context.strip():
+            lines = [f"【{stock_name} 情报搜索结果】", "\n📰 最新消息:"]
+            for idx, item in enumerate(results[:max_results], 1):
+                if isinstance(item, dict):
+                    title = str(item.get("title") or "未命名资讯").strip()
+                    snippet = str(item.get("snippet") or "").strip()
+                    published_date = item.get("published_date")
+                else:
+                    title = str(getattr(item, "title", None) or "未命名资讯").strip()
+                    snippet = str(getattr(item, "snippet", None) or "").strip()
+                    published_date = getattr(item, "published_date", None)
+                date_text = f" [{published_date}]" if published_date else ""
+                lines.append(f"  {idx}. {title}{date_text}")
+                if snippet:
+                    lines.append(f"     {snippet[:150]}...")
+            context = "\n".join(lines)
+
+        return context, len(results), response
+
     def _build_legacy_analysis_artifacts(
         self,
         *,
@@ -2528,7 +2618,11 @@ class StockAnalysisPipeline:
             chip_data=initial_context.get("chip_distribution"),
             fundamental_context=fundamental_context,
             news_context=initial_context.get("news_context"),
-            news_result_count=None,
+            news_result_count=(
+                initial_context.get("news_result_count")
+                if isinstance(initial_context.get("news_result_count"), int)
+                else None
+            ),
             metadata={
                 "query_id": query_id,
                 "trigger_source": self.query_source,
