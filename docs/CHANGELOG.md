@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] Web 设置页新增首次启动配置检查卡，串联基础配置状态、自选股入口、模型配置入口和一次简短试跑。
 - [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。

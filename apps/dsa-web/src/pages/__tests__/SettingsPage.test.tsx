@@ -5,8 +5,10 @@ import { resolveWebBuildInfo } from '../../utils/constants';
 import SettingsPage from '../SettingsPage';
 
 const {
+  analyzeAsync,
   exportEnv,
   getSchedulerStatus,
+  getSetupStatus,
   importEnv,
   runSchedulerNow,
   updateSystemConfig,
@@ -34,8 +36,10 @@ const {
   useSystemConfigMock,
   webBuildInfoMock,
 } = vi.hoisted(() => ({
+  analyzeAsync: vi.fn(),
   exportEnv: vi.fn(),
   getSchedulerStatus: vi.fn(),
+  getSetupStatus: vi.fn(),
   importEnv: vi.fn(),
   runSchedulerNow: vi.fn(),
   updateSystemConfig: vi.fn(),
@@ -81,9 +85,16 @@ vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     exportEnv: (...args: unknown[]) => exportEnv(...args),
     getSchedulerStatus: (...args: unknown[]) => getSchedulerStatus(...args),
+    getSetupStatus: (...args: unknown[]) => getSetupStatus(...args),
     importEnv: (...args: unknown[]) => importEnv(...args),
     runSchedulerNow: (...args: unknown[]) => runSchedulerNow(...args),
     update: (...args: unknown[]) => updateSystemConfig(...args),
+  },
+}));
+
+vi.mock('../../api/analysis', () => ({
+  analysisApi: {
+    analyzeAsync: (...args: unknown[]) => analyzeAsync(...args),
   },
 }));
 
@@ -436,6 +447,46 @@ describe('SettingsPage', () => {
       lastSuccessAt: null,
       lastError: null,
     });
+    getSetupStatus.mockResolvedValue({
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '已配置自选股。',
+          nextStep: null,
+        },
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'configured',
+          message: '已配置模型渠道。',
+          nextStep: null,
+        },
+        {
+          key: 'notification',
+          title: '通知',
+          category: 'notification',
+          required: false,
+          status: 'optional',
+          message: '通知可选。',
+          nextStep: null,
+        },
+      ],
+    });
+    analyzeAsync.mockResolvedValue({
+      taskId: 'task-setup-smoke',
+      status: 'pending',
+      message: 'accepted',
+    });
     runSchedulerNow.mockResolvedValue({
       accepted: true,
       running: true,
@@ -495,6 +546,72 @@ describe('SettingsPage', () => {
     expect(screen.getByText('认证与登录保护')).toBeInTheDocument();
     expect(screen.getByText('修改密码')).toBeInTheDocument();
     expect(load).toHaveBeenCalled();
+  });
+
+  it('renders first-run setup checks and routes setup actions', async () => {
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
+    expect(screen.getByText('自选股')).toBeInTheDocument();
+    expect(screen.getAllByText('已配置')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '维护自选股' }));
+    fireEvent.click(screen.getByRole('button', { name: '配置通知' }));
+
+    expect(setActiveCategory).toHaveBeenNthCalledWith(1, 'ai_model');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(2, 'base');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
+  });
+
+  it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
+    render(<SettingsPage />);
+
+    await screen.findByText('基础配置已满足最小可用分析');
+    fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
+
+    await waitFor(() => expect(analyzeAsync).toHaveBeenCalledWith({
+      stockCode: 'SH600000',
+      reportType: 'brief',
+      asyncMode: true,
+      notify: false,
+      originalQuery: 'SH600000',
+      selectionSource: 'manual',
+    }));
+    expect(await screen.findByText(/task-setup-smoke/)).toBeInTheDocument();
+  });
+
+  it('shows missing setup items and lets the user reopen the setup check', async () => {
+    getSetupStatus.mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '还没有配置模型渠道。',
+          nextStep: '请先配置模型渠道。',
+        },
+      ],
+    });
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('还有基础配置需要处理')).toBeInTheDocument();
+    expect(screen.getByText('还缺少 1 项：模型渠道')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '暂时隐藏' }));
+    expect(screen.getByText('首次启动配置检查已隐藏')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开检查' }));
+    expect(screen.getByText('首次启动配置检查')).toBeInTheDocument();
   });
 
   it('renders web build info in system settings', async () => {
