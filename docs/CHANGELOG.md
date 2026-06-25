@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
+- [修复] 修复 Markdown 表格转换为 key-value 行或飞书格式时，若包含空单元格会导致列对齐错位的问题。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 

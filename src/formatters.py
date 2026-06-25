@@ -458,8 +458,12 @@ def _is_markdown_table_separator(row: str) -> bool:
 
 
 def _parse_markdown_table_row(row: str) -> List[str]:
-    cells = [c.strip() for c in row.strip().strip('|').split('|')]
-    return [c for c in cells if c]
+    cells = [c.strip() for c in row.split('|')]
+    if cells and not cells[0]:
+        cells.pop(0)
+    if cells and not cells[-1]:
+        cells.pop()
+    return cells
 
 
 def _strip_inline_markdown(text: str) -> str:
@@ -772,8 +776,12 @@ def format_feishu_markdown(content: str) -> str:
 
         def _parse_row(row: str) -> List[str]:
             """解析表格行，提取单元格"""
-            cells = [c.strip() for c in row.strip().strip('|').split('|')]
-            return [c for c in cells if c]
+            cells = [c.strip() for c in row.split('|')]
+            if cells and not cells[0]:
+                cells.pop(0)
+            if cells and not cells[-1]:
+                cells.pop()
+            return cells
 
         rows = []
         for raw in buffer:

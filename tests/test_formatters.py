@@ -443,3 +443,12 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
                 self.assertIn("[详情](https://example.com/raw)", fenced)
                 self.assertIn("600519：强势", result)
                 self.assertNotIn("@@DSA_FENCED_CODE_BLOCK_", result)
+
+    def test_markdown_tables_to_key_value_rows_with_empty_cells(self):
+        text = (
+            "| Header1 | Header2 | Header3 |\n"
+            "|---------|---------|---------|\n"
+            "| Value1  |         | Value3  |"
+        )
+        result = markdown_tables_to_key_value_rows(text)
+        self.assertEqual(result, "• Header1：Value1 | Header2： | Header3：Value3")
