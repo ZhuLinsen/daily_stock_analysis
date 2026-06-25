@@ -627,6 +627,7 @@ class DataFetcherManager:
         "TencentFetcher": {"cn"},
         "AkshareFetcher": {"cn", "hk"},
         "TushareFetcher": {"cn", "hk"},
+        "TickFlowFetcher": {"cn"},
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
         "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
@@ -873,6 +874,10 @@ class DataFetcherManager:
                 self._tickflow_api_key = None
                 return None
 
+            configured_fetcher = self._get_fetcher_by_name("TickFlowFetcher")
+            if configured_fetcher is not None:
+                return configured_fetcher
+
             if current_fetcher is not None and current_key == api_key:
                 return current_fetcher
 
@@ -885,7 +890,12 @@ class DataFetcherManager:
             try:
                 from .tickflow_fetcher import TickFlowFetcher
 
-                fetcher = TickFlowFetcher(api_key=api_key)
+                fetcher = TickFlowFetcher(
+                    api_key=api_key,
+                    kline_adjust=getattr(config, "tickflow_kline_adjust", "none"),
+                    batch_daily_enabled=getattr(config, "tickflow_batch_daily_enabled", True),
+                    batch_size=getattr(config, "tickflow_batch_size", 100),
+                )
                 self._tickflow_fetcher = fetcher
                 self._tickflow_api_key = api_key
                 return fetcher
@@ -1151,6 +1161,7 @@ class DataFetcherManager:
         from .tencent_fetcher import TencentFetcher
         from .akshare_fetcher import AkshareFetcher
         from .tushare_fetcher import TushareFetcher
+        from .tickflow_fetcher import TickFlowFetcher
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
@@ -1170,6 +1181,19 @@ class DataFetcherManager:
             optional_fetchers.append(TushareFetcher())  # 会根据 Token 配置自动调整优先级
         else:
             logger.debug("[数据源初始化] 跳过未配置的 TushareFetcher")
+
+        tickflow_api_key = (getattr(config, "tickflow_api_key", None) or "").strip()
+        if tickflow_api_key:
+            optional_fetchers.append(
+                TickFlowFetcher(
+                    api_key=tickflow_api_key,
+                    kline_adjust=getattr(config, "tickflow_kline_adjust", "none"),
+                    batch_daily_enabled=getattr(config, "tickflow_batch_daily_enabled", True),
+                    batch_size=getattr(config, "tickflow_batch_size", 100),
+                )
+            )
+        else:
+            logger.debug("[data source init] skip TickFlowFetcher because TICKFLOW_API_KEY is not configured")
 
         if LongbridgeFetcher.has_configured_credentials(config):
             optional_fetchers.append(LongbridgeFetcher())  # 长桥（美股/港股兜底，懒加载）
@@ -1479,13 +1503,14 @@ class DataFetcherManager:
         批量预取实时行情数据（在分析开始前调用）
         
         策略：
-        1. 检查优先级中是否包含全量拉取数据源（efinance/akshare_em）
+        1. 检查优先级中是否包含适合预取的数据源（efinance/akshare_em/tushare/tickflow）
         2. 如果不包含，跳过预取（新浪/腾讯是单股票查询，无需预取）
-        3. 如果自选股数量 >= 5 且使用全量数据源，则预取填充缓存
+        3. 如果自选股数量 >= 5 且使用可预取数据源，则预取填充缓存
         
         这样做的好处：
         - 使用新浪/腾讯时：每只股票独立查询，无全量拉取问题
-        - 使用 efinance/东财时：预取一次，后续缓存命中
+        - 使用 efinance/东财/Tushare 时：预取一次，后续缓存命中
+        - 使用 TickFlow 时：按当前自选股批量预取，避免逐股重复请求
         
         Args:
             stock_codes: 待分析的股票代码列表
@@ -1510,25 +1535,25 @@ class DataFetcherManager:
             logger.debug("[预取] component=realtime_prefetch action=skip reason=realtime_quote_disabled")
             return 0
         
-        # 检查优先级中是否包含全量拉取数据源
-        # 注意：新增全量接口（如 tushare_realtime）时需同步更新此列表
-        # 全量接口特征：一次 API 调用拉取全市场 5000+ 股票数据
+        # 检查优先级中是否包含适合批量预取的数据源
+        # efinance/akshare_em/tushare 通过一次调用填充全市场缓存；
+        # tickflow 通过 symbols 批量接口预取当前自选股缓存。
         priority = config.realtime_source_priority.lower()
-        bulk_sources = ['efinance', 'akshare_em', 'tushare']  # 全量接口列表
+        prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickflow']
         
-        # 如果优先级中前两个都不是全量数据源，跳过预取
+        # 如果优先级中前两个都不是可预取数据源，跳过预取
         # 因为新浪/腾讯是单股票查询，不需要预取
         priority_list = [s.strip() for s in priority.split(',')]
-        first_bulk_source_index = None
+        first_prefetch_source_index = None
         for i, source in enumerate(priority_list):
-            if source in bulk_sources:
-                first_bulk_source_index = i
+            if source in prefetch_sources:
+                first_prefetch_source_index = i
                 break
         
-        # 如果没有全量数据源，或者全量数据源排在第 3 位之后，跳过预取
-        if first_bulk_source_index is None or first_bulk_source_index >= 2:
+        # 如果没有可预取数据源，或者它排在第 3 位之后，跳过预取
+        if first_prefetch_source_index is None or first_prefetch_source_index >= 2:
             logger.info(
-                "[预取] component=realtime_prefetch action=skip reason=no_early_bulk_source priority=%s",
+                "[预取] component=realtime_prefetch action=skip reason=no_early_prefetch_source priority=%s",
                 priority,
             )
             return 0
@@ -1537,22 +1562,42 @@ class DataFetcherManager:
         if len(stock_codes) < 5:
             logger.info(
                 "[预取] component=realtime_prefetch action=skip reason=small_batch "
-                "stock_count=%d threshold=5 bulk_source=%s",
+                "stock_count=%d threshold=5 prefetch_source=%s",
                 len(stock_codes),
-                priority_list[first_bulk_source_index],
+                priority_list[first_prefetch_source_index],
             )
             return 0
         
-        bulk_source = priority_list[first_bulk_source_index]
+        prefetch_source = priority_list[first_prefetch_source_index]
         logger.info(
-            "[预取] component=realtime_prefetch action=start stock_count=%d bulk_source=%s first_code=%s",
+            "[预取] component=realtime_prefetch action=start stock_count=%d prefetch_source=%s first_code=%s",
             len(stock_codes),
-            bulk_source,
+            prefetch_source,
             stock_codes[0],
         )
         
-        # 尝试通过 efinance 或 akshare 预取
-        # 只需要调用一次 get_realtime_quote，缓存机制会自动拉取全市场数据
+        # TickFlow 使用 symbols 批量接口；其他可预取源通过首次查询触发自身缓存。
+        if prefetch_source == "tickflow":
+            fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="realtime_quote")
+            if fetcher is None or not hasattr(fetcher, "prefetch_realtime_quotes"):
+                logger.info(
+                    "[prefetch] component=realtime_prefetch action=skip reason=tickflow_unavailable"
+                )
+                return 0
+            try:
+                return int(
+                    self._call_fetcher_method(
+                        fetcher,
+                        "prefetch_realtime_quotes",
+                        stock_codes,
+                        batch_size=getattr(config, "tickflow_batch_size", 100),
+                    )
+                    or 0
+                )
+            except Exception as exc:
+                logger.warning("[TickFlowFetcher] realtime prefetch failed: %s", exc)
+                return 0
+
         try:
             # 用第一只股票触发全量拉取
             first_code = stock_codes[0]
@@ -1561,28 +1606,48 @@ class DataFetcherManager:
             if quote:
                 logger.info(
                     "[预取] component=realtime_prefetch action=complete status=success "
-                    "stock_count=%d bulk_source=%s",
+                    "stock_count=%d prefetch_source=%s",
                     len(stock_codes),
-                    bulk_source,
+                    prefetch_source,
                 )
                 return len(stock_codes)
             else:
                 logger.warning(
                     "[预取] component=realtime_prefetch action=complete status=failed "
-                    "stock_count=%d bulk_source=%s fallback=per_stock",
+                    "stock_count=%d prefetch_source=%s fallback=per_stock",
                     len(stock_codes),
-                    bulk_source,
+                    prefetch_source,
                 )
                 return 0
                 
         except Exception as e:
             logger.error(
                 "[预取] component=realtime_prefetch action=complete status=error "
-                "stock_count=%d bulk_source=%s error=%s",
+                "stock_count=%d prefetch_source=%s error=%s",
                 len(stock_codes),
-                bulk_source,
+                prefetch_source,
                 e,
             )
+            return 0
+
+    def prefetch_daily_klines(self, stock_codes: List[str], days: int = 30) -> int:
+        """Batch-prefetch TickFlow daily K-lines without changing per-stock callers."""
+        fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="daily_data")
+        if fetcher is None or not hasattr(fetcher, "prefetch_daily_klines"):
+            return 0
+
+        try:
+            return int(
+                self._call_fetcher_method(
+                    fetcher,
+                    "prefetch_daily_klines",
+                    stock_codes,
+                    days=days,
+                )
+                or 0
+            )
+        except Exception as exc:
+            logger.warning("[TickFlowFetcher] daily K-line prefetch failed: %s", exc)
             return 0
 
     @staticmethod
@@ -1820,6 +1885,16 @@ class DataFetcherManager:
                 
                 elif source == "tushare":
                     fetcher = self._get_fetcher_by_name("TushareFetcher", capability="realtime_quote")
+                    if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
+                        record_provider_run_started(
+                            data_type="realtime_quote",
+                            provider=fetcher.name,
+                            operation="get_realtime_quote",
+                        )
+                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', raw_stock_code or stock_code)
+
+                elif source == "tickflow":
+                    fetcher = self._get_fetcher_by_name("TickFlowFetcher", capability="realtime_quote")
                     if fetcher is not None and hasattr(fetcher, 'get_realtime_quote'):
                         record_provider_run_started(
                             data_type="realtime_quote",
@@ -2399,6 +2474,8 @@ class DataFetcherManager:
                     logger.warning(f"[TickFlowFetcher] 获取指数行情失败: {e}")
 
         for fetcher in self._fetchers:
+            if region == "cn" and fetcher.name == "TickFlowFetcher":
+                continue
             try:
                 data = fetcher.get_main_indices(region=region)
                 if data:
@@ -2443,6 +2520,8 @@ class DataFetcherManager:
                 )
 
         for fetcher in self._fetchers:
+            if fetcher.name == "TickFlowFetcher":
+                continue
             started_at = time.monotonic()
             try:
                 data = fetcher.get_market_stats()
