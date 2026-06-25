@@ -308,6 +308,23 @@ const FirstRunSetupCard: React.FC<FirstRunSetupCardProps> = ({
   const requiredMissing = status?.checks.filter((check) => check.required && check.status === 'needs_action') || [];
   const isComplete = Boolean(status?.isComplete);
   const canRunSmoke = Boolean(status?.readyForSmoke && firstStockCode);
+  const summaryTitle = !status
+    ? error
+      ? t('settings.setupGuideUnknownTitle')
+      : t('settings.setupGuideCheckingTitle')
+    : isComplete
+      ? t('settings.setupGuideCompleteTitle')
+      : t('settings.setupGuideIncompleteTitle');
+  const summaryMessage = !status
+    ? error
+      ? t('settings.setupGuideUnknownSummary')
+      : t('settings.setupGuideCheckingSummary')
+    : requiredMissing.length
+      ? t('settings.setupGuideMissingSummary', {
+        count: requiredMissing.length,
+        labels: requiredMissing.slice(0, 3).map((check) => check.title).join(listSeparator),
+      })
+      : t('settings.setupGuideReadySummary');
 
   if (isHidden) {
     return (
@@ -334,15 +351,10 @@ const FirstRunSetupCard: React.FC<FirstRunSetupCardProps> = ({
         <div className="flex flex-col gap-3 rounded-2xl border settings-border bg-background/35 px-4 py-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">
-              {isComplete ? t('settings.setupGuideCompleteTitle') : t('settings.setupGuideIncompleteTitle')}
+              {summaryTitle}
             </p>
             <p className="mt-1 text-xs leading-6 text-muted-text">
-              {requiredMissing.length
-                ? t('settings.setupGuideMissingSummary', {
-                  count: requiredMissing.length,
-                  labels: requiredMissing.slice(0, 3).map((check) => check.title).join(listSeparator),
-                })
-                : t('settings.setupGuideReadySummary')}
+              {summaryMessage}
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">

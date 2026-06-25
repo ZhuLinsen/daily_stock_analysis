@@ -565,6 +565,30 @@ describe('SettingsPage', () => {
     expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
   });
 
+  it('keeps first-run setup summary neutral while setup status is loading', async () => {
+    getSetupStatus.mockImplementation(() => new Promise(() => undefined));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('正在检查首次启动配置')).toBeInTheDocument();
+    expect(screen.getByText('正在读取配置状态，完成后会显示缺失项和试跑入口。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps first-run setup summary neutral when setup status fails', async () => {
+    getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('暂无法判断配置状态')).toBeInTheDocument();
+    expect(screen.getByText('配置状态读取失败。可先检查或修改设置项，稍后刷新检查结果。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
   it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
     render(<SettingsPage />);
 
