@@ -307,6 +307,14 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "board_change_pct_label": "板块涨跌幅",
         "leading_board_label": "领涨",
         "lagging_board_label": "领跌",
+        "signal_attribution_heading": "信号归因分析",
+        "attribution_weights_label": "贡献度权重",
+        "technical_indicators_label": "技术指标",
+        "news_sentiment_label": "新闻情绪",
+        "fundamentals_label": "基本面",
+        "market_conditions_label": "市场条件",
+        "strongest_bullish_label": "最强看涨信号",
+        "strongest_bearish_label": "最强看跌信号",
     },
     "en": {
         "dashboard_title": "Decision Dashboard",
@@ -415,6 +423,14 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "board_change_pct_label": "Change %",
         "leading_board_label": "Leading",
         "lagging_board_label": "Lagging",
+        "signal_attribution_heading": "Signal Attribution",
+        "attribution_weights_label": "Attribution Weights",
+        "technical_indicators_label": "Technical Indicators",
+        "news_sentiment_label": "News Sentiment",
+        "fundamentals_label": "Fundamentals",
+        "market_conditions_label": "Market Conditions",
+        "strongest_bullish_label": "Strongest Bullish Signal",
+        "strongest_bearish_label": "Strongest Bearish Signal",
     },
 }
 
@@ -457,7 +473,7 @@ def _strip_decision_negation_connectors(text: str) -> str:
         changed = False
         for connector in _DECISION_INTENT_NEGATION_CONNECTORS:
             if suffix.startswith(connector):
-                suffix = suffix[len(connector):].strip()
+                suffix = suffix[len(connector) :].strip()
                 changed = True
                 break
     return suffix
@@ -477,7 +493,9 @@ def is_supported_report_language_value(value: Optional[str]) -> bool:
     candidate = (value or "").strip().lower().replace(" ", "_")
     if not candidate:
         return False
-    return candidate in SUPPORTED_REPORT_LANGUAGES or candidate in _REPORT_LANGUAGE_ALIASES
+    return (
+        candidate in SUPPORTED_REPORT_LANGUAGES or candidate in _REPORT_LANGUAGE_ALIASES
+    )
 
 
 def get_report_labels(language: Optional[str]) -> Dict[str, str]:
@@ -523,7 +541,9 @@ def _iter_lookup_candidates(value: Any) -> list[str]:
     return candidates
 
 
-def _canonicalize_lookup_value(value: Any, canonical_map: Dict[str, str]) -> Optional[str]:
+def _canonicalize_lookup_value(
+    value: Any, canonical_map: Dict[str, str]
+) -> Optional[str]:
     for candidate in _iter_lookup_candidates(value):
         canonical = canonical_map.get(_normalize_lookup_key(candidate))
         if canonical:
@@ -537,7 +557,11 @@ def _first_non_negated_position(text: str, token: str) -> Optional[int]:
 
     normalized_text = text.lower().strip()
     if any(ch in normalized_text for ch in "abcdefghijklmnopqrstuvwxyz"):
-        matches = list(re.finditer(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", normalized_text))
+        matches = list(
+            re.finditer(
+                rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", normalized_text
+            )
+        )
     else:
         matches = list(re.finditer(re.escape(token), normalized_text))
 
@@ -553,7 +577,7 @@ def _first_non_negated_position(text: str, token: str) -> Optional[int]:
             neg_idx = lookback.rfind(neg)
             if neg_idx < 0:
                 continue
-            suffix = lookback[neg_idx + len(neg):]
+            suffix = lookback[neg_idx + len(neg) :]
             if not suffix:
                 negated = True
                 break
@@ -563,7 +587,10 @@ def _first_non_negated_position(text: str, token: str) -> Optional[int]:
             if not normalized_suffix:
                 negated = True
                 break
-            if any(ch in normalized_suffix for ch in _DECISION_INTENT_NEGATION_SCOPE_BREAK_CHARS):
+            if any(
+                ch in normalized_suffix
+                for ch in _DECISION_INTENT_NEGATION_SCOPE_BREAK_CHARS
+            ):
                 continue
             if len(normalized_suffix) > 6 and token not in normalized_suffix:
                 continue
@@ -686,7 +713,9 @@ def is_chip_structure_unavailable(chip_data: Any) -> bool:
         if str(raw or "").strip():
             return True
     if any(key in chip_data for key in _CHIP_METRIC_KEYS):
-        return all(is_chip_placeholder_value(chip_data.get(key)) for key in _CHIP_METRIC_KEYS)
+        return all(
+            is_chip_placeholder_value(chip_data.get(key)) for key in _CHIP_METRIC_KEYS
+        )
     return all(is_chip_placeholder_value(value) for value in chip_data.values())
 
 
@@ -760,22 +789,44 @@ def infer_decision_type_from_advice(value: Any, default: str = "hold") -> str:
     return default
 
 
-def get_signal_level(advice: Any, score: Any, language: Optional[str]) -> tuple[str, str, str]:
+def get_signal_level(
+    advice: Any, score: Any, language: Optional[str]
+) -> tuple[str, str, str]:
     """Return localized signal text, emoji, and stable color tag."""
     normalized_language = normalize_report_language(language)
     canonical = _canonicalize_lookup_value(advice, _OPERATION_ADVICE_CANONICAL_MAP)
     if canonical == "strong_buy":
-        return (_OPERATION_ADVICE_TRANSLATIONS["strong_buy"][normalized_language], "💚", "strong_buy")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["strong_buy"][normalized_language],
+            "💚",
+            "strong_buy",
+        )
     if canonical == "buy":
         return (_OPERATION_ADVICE_TRANSLATIONS["buy"][normalized_language], "🟢", "buy")
     if canonical == "hold":
-        return (_OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language], "🟡", "hold")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language],
+            "🟡",
+            "hold",
+        )
     if canonical == "watch":
-        return (_OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language], "⚪", "watch")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language],
+            "⚪",
+            "watch",
+        )
     if canonical == "reduce":
-        return (_OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language], "🟠", "reduce")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language],
+            "🟠",
+            "reduce",
+        )
     if canonical in {"sell", "strong_sell"}:
-        return (_OPERATION_ADVICE_TRANSLATIONS["sell"][normalized_language], "🔴", "sell")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["sell"][normalized_language],
+            "🔴",
+            "sell",
+        )
 
     try:
         numeric_score = int(float(score))
@@ -783,15 +834,31 @@ def get_signal_level(advice: Any, score: Any, language: Optional[str]) -> tuple[
         numeric_score = 50
 
     if numeric_score >= 80:
-        return (_OPERATION_ADVICE_TRANSLATIONS["strong_buy"][normalized_language], "💚", "strong_buy")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["strong_buy"][normalized_language],
+            "💚",
+            "strong_buy",
+        )
     if numeric_score >= 65:
         return (_OPERATION_ADVICE_TRANSLATIONS["buy"][normalized_language], "🟢", "buy")
     if numeric_score >= 55:
-        return (_OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language], "🟡", "hold")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language],
+            "🟡",
+            "hold",
+        )
     if numeric_score >= 45:
-        return (_OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language], "⚪", "watch")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language],
+            "⚪",
+            "watch",
+        )
     if numeric_score >= 35:
-        return (_OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language], "🟠", "reduce")
+        return (
+            _OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language],
+            "🟠",
+            "reduce",
+        )
     return (_OPERATION_ADVICE_TRANSLATIONS["sell"][normalized_language], "🔴", "sell")
 
 

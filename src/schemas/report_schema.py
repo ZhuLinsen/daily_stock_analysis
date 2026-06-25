@@ -11,7 +11,7 @@ Uses Optional for lenient parsing; business-layer integrity checks are separate.
 
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PositionAdvice(BaseModel):
@@ -125,6 +125,62 @@ class PhaseDecision(BaseModel):
     data_limitations: List[str] = Field(default_factory=list)
 
 
+class SignalAttribution(BaseModel):
+    """Signal attribution analysis - explains what factors contributed most to the recommendation."""
+
+    technical_indicators: Optional[float] = Field(
+        None, ge=0, le=100, description="技术指标贡献度 (%), e.g. MACD, RSI, MA"
+    )
+    news_sentiment: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="新闻情绪贡献度 (%), e.g. recent news, social media sentiment",
+    )
+    fundamentals: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="基本面贡献度 (%), e.g. earnings, valuation, growth",
+    )
+    market_conditions: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="市场条件贡献度 (%), e.g. sector trend, index movement",
+    )
+    strongest_bullish_signal: Optional[str] = Field(
+        None,
+        description="最强看涨信号, e.g. 'MACD golden cross with increasing volume'",
+    )
+    strongest_bearish_signal: Optional[str] = Field(
+        None,
+        description="最强看跌信号, e.g. 'Overbought RSI at 78 with negative divergence'",
+    )
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def validate_weights_sum(self) -> "SignalAttribution":
+        """Validate that weights sum to approximately 100% (allow ±5% tolerance)."""
+        weights = [
+            self.technical_indicators or 0,
+            self.news_sentiment or 0,
+            self.fundamentals or 0,
+            self.market_conditions or 0,
+        ]
+        total = sum(weights)
+        if total > 0 and abs(total - 100) > 5:
+            # Log warning but don't raise error (lenient parsing)
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Signal attribution weights sum to {total:.1f}%, expected ~100%"
+            )
+        return self
+
+
 class Dashboard(BaseModel):
     """Dashboard block."""
 
@@ -133,6 +189,9 @@ class Dashboard(BaseModel):
     intelligence: Optional[Intelligence] = None
     battle_plan: Optional[BattlePlan] = None
     phase_decision: Optional[PhaseDecision] = None
+    signal_attribution: Optional[SignalAttribution] = (
+        None  # NEW: Signal attribution analysis
+    )
 
 
 class AnalysisReportSchema(BaseModel):
