@@ -1297,6 +1297,38 @@ class NotificationService(
                             report_lines.append(f"- {item}")
                         report_lines.append("")
 
+                # ========== 信号归因分析 ==========
+                signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+                if signal_attr:
+                    report_lines.extend([
+                        f"### 🎯 {labels['signal_attribution_heading']}",
+                        "",
+                    ])
+                    # 归因权重
+                    report_lines.append(f"**{labels['attribution_weights_label']}**:")
+                    
+                    # Helper to format contribution value
+                    def format_contribution(val):
+                        if val is None:
+                            return "N/A"
+                        try:
+                            return f"{float(val):.0f}"
+                        except (TypeError, ValueError):
+                            return "N/A"
+                    
+                    report_lines.append(f"- 📈 {labels['technical_indicators_label']}: {format_contribution(signal_attr.get('technical_indicators'))}%")
+                    report_lines.append(f"- 📰 {labels['news_sentiment_label']}: {format_contribution(signal_attr.get('news_sentiment'))}%")
+                    report_lines.append(f"- 📊 {labels['fundamentals_label']}: {format_contribution(signal_attr.get('fundamentals'))}%")
+                    report_lines.append(f"- 🌐 {labels['market_conditions_label']}: {format_contribution(signal_attr.get('market_conditions'))}%")
+                    report_lines.append("")
+                    
+                    # 最强信号
+                    if signal_attr.get('strongest_bullish_signal'):
+                        report_lines.append(f"**🐂 {labels['strongest_bullish_signal_label']}**: {signal_attr['strongest_bullish_signal']}")
+                    if signal_attr.get('strongest_bearish_signal'):
+                        report_lines.append(f"**🐻 {labels['strongest_bearish_signal_label']}**: {signal_attr['strongest_bearish_signal']}")
+                    report_lines.append("")
+
                 # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
                 self._append_fundamental_blocks(report_lines, result)
 

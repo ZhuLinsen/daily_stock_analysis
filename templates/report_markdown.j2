@@ -145,6 +145,31 @@
 
 {% endif %}
 
+{% set signal_attr = dashboard.get('signal_attribution') or {} %}
+{% set signal_attr_has_content = signal_attr.get('technical_indicators') is not none %}
+{% set signal_attr_has_content = signal_attr_has_content or signal_attr.get('news_sentiment') is not none %}
+{% set signal_attr_has_content = signal_attr_has_content or signal_attr.get('fundamentals') is not none %}
+{% set signal_attr_has_content = signal_attr_has_content or signal_attr.get('market_conditions') is not none %}
+{% set signal_attr_has_content = signal_attr_has_content or signal_attr.get('strongest_bullish_signal') %}
+{% set signal_attr_has_content = signal_attr_has_content or signal_attr.get('strongest_bearish_signal') %}
+{% if signal_attr_has_content %}
+### 🎯 {{ labels.signal_attribution_heading }}
+
+**{{ labels.attribution_weights_label }}**:
+- 📈 {{ labels.technical_indicators_label }}: {{ signal_attr.get('technical_indicators') if signal_attr.get('technical_indicators') is not none else 'N/A' }}%
+- 📰 {{ labels.news_sentiment_label }}: {{ signal_attr.get('news_sentiment') if signal_attr.get('news_sentiment') is not none else 'N/A' }}%
+- 💼 {{ labels.fundamentals_label }}: {{ signal_attr.get('fundamentals') if signal_attr.get('fundamentals') is not none else 'N/A' }}%
+- 🌐 {{ labels.market_conditions_label }}: {{ signal_attr.get('market_conditions') if signal_attr.get('market_conditions') is not none else 'N/A' }}%
+
+{% if signal_attr.get('strongest_bullish_signal') %}
+**🟢 {{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
+{% endif %}
+{% if signal_attr.get('strongest_bearish_signal') %}
+**🔴 {{ labels.strongest_bearish_signal_label }}**: {{ signal_attr.get('strongest_bearish_signal') }}
+{% endif %}
+
+{% endif %}
+
 {% if battle %}
 ### 🎯 {{ labels.battle_plan_heading }}
 

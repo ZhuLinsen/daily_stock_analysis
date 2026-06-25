@@ -140,7 +140,15 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "next_check_time": "下一次检查点或市场本地时间",
             "confidence_reason": "置信度理由，说明阶段和数据质量限制",
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
-        }}
+        }},
+        "signal_attribution": {
+            "technical_indicators": 技术指标贡献度(0-100，四个贡献度之和必须等于100),
+            "news_sentiment": 新闻舆情贡献度(0-100，四个贡献度之和必须等于100),
+            "fundamentals": 基本面贡献度(0-100，四个贡献度之和必须等于100),
+            "market_conditions": 市场环境贡献度(0-100，四个贡献度之和必须等于100),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
+        }
     }},
     "analysis_summary": "100字综合分析摘要",
     "key_points": "3-5个核心看点，逗号分隔",
@@ -204,6 +212,7 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 必须输出 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
@@ -290,7 +299,15 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "next_check_time": "下一次检查点或市场本地时间",
             "confidence_reason": "置信度理由，说明阶段和数据质量限制",
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
-        }}
+        }},
+        "signal_attribution": {
+            "technical_indicators": 技术指标贡献度(0-100，四个贡献度之和必须等于100),
+            "news_sentiment": 新闻舆情贡献度(0-100，四个贡献度之和必须等于100),
+            "fundamentals": 基本面贡献度(0-100，四个贡献度之和必须等于100),
+            "market_conditions": 市场环境贡献度(0-100，四个贡献度之和必须等于100),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
+        }
     }},
     "analysis_summary": "100字综合分析摘要",
     "key_points": "3-5个核心看点，逗号分隔",
@@ -351,6 +368,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 必须输出 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
