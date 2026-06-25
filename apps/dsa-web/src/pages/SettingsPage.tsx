@@ -798,6 +798,7 @@ const SettingsPage: React.FC = () => {
   const [setupSmokeError, setSetupSmokeError] = useState<ParsedApiError | null>(null);
   const [setupSmokeSuccess, setSetupSmokeSuccess] = useState('');
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
+  const setupStatusRequestIdRef = useRef(0);
   const desktopRuntimeApi = getDesktopRuntimeApi();
   const isDesktopRuntime = Boolean(desktopRuntimeApi);
   const canCheckDesktopUpdate = Boolean(
@@ -840,15 +841,25 @@ const SettingsPage: React.FC = () => {
   const currentChangedItems = getChangedItems();
 
   const refreshSetupStatus = useCallback(async () => {
+    const requestId = setupStatusRequestIdRef.current + 1;
+    setupStatusRequestIdRef.current = requestId;
     setSetupStatusError(null);
     setIsRefreshingSetupStatus(true);
     try {
       const status = await systemConfigApi.getSetupStatus();
+      if (setupStatusRequestIdRef.current !== requestId) {
+        return;
+      }
       setSetupStatus(status);
     } catch (error: unknown) {
+      if (setupStatusRequestIdRef.current !== requestId) {
+        return;
+      }
       setSetupStatusError(getParsedApiError(error));
     } finally {
-      setIsRefreshingSetupStatus(false);
+      if (setupStatusRequestIdRef.current === requestId) {
+        setIsRefreshingSetupStatus(false);
+      }
     }
   }, []);
 

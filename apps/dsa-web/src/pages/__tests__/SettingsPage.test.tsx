@@ -1,7 +1,8 @@
 import type React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
+import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
 
 const {
@@ -421,6 +422,16 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -587,6 +598,94 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
     expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
     expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps the latest first-run setup status when refresh responses resolve out of order', async () => {
+    const staleRefresh = createDeferred<SetupStatusResponse>();
+    const latestRefresh = createDeferred<SetupStatusResponse>();
+    const initialStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'initial-status',
+          title: '初始状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '初始配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+    const staleStatus: SetupStatusResponse = {
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'stale-status',
+          title: '过期状态',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '过期的配置状态。',
+          nextStep: '这条旧响应不应覆盖最新状态。',
+        },
+      ],
+    };
+    const latestStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'latest-status',
+          title: '最新状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '最新配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+
+    getSetupStatus
+      .mockResolvedValueOnce(initialStatus)
+      .mockImplementationOnce(() => staleRefresh.promise)
+      .mockImplementationOnce(() => latestRefresh.promise);
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('初始状态')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新检查' }));
+    fireEvent.click(screen.getByRole('button', { name: 'merge stock list' }));
+
+    await waitFor(() => expect(getSetupStatus).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      latestRefresh.resolve(latestStatus);
+      await latestRefresh.promise;
+    });
+
+    expect(await screen.findByText('最新状态')).toBeInTheDocument();
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+
+    await act(async () => {
+      staleRefresh.resolve(staleStatus);
+      await staleRefresh.promise;
+    });
+
+    await waitFor(() => expect(screen.getByText('最新状态')).toBeInTheDocument());
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
   });
 
   it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
