@@ -936,6 +936,14 @@ def test_redact_short_credentials_in_diagnostic_text() -> None:
     assert "abc def ghi" not in redact_diagnostic_text("PASSWORD='abc def ghi' next", limit=1000)
     assert "my secret value" not in redact_diagnostic_text('API_KEY="my secret value" other', limit=1000)
 
+    # YAML/log colon form (api_key: value, token: value)
+    assert "short123" not in redact_diagnostic_text("api_key: short123", limit=1000)
+    assert "abc123" not in redact_diagnostic_text("token: abc123", limit=1000)
+
+    # JSON form ("api_key": "value", "secret": "value")
+    assert "short123" not in redact_diagnostic_text('"api_key": "short123"', limit=1000)
+    assert "abc" not in redact_diagnostic_text('"secret": "abc"', limit=1000)
+
     # Normal log lines not affected
     result = redact_diagnostic_text("connection established to db.example.com:5432", limit=1000)
     assert "connection established" in result
