@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
+- [改进] 将 Docker Compose 默认内存建议从 512M 提升到 1G，并补充低配部署说明。
+- [改进] 每日分析 workflow 兼容误将 `STOCK_LIST` 配到同名 Environment variables 的场景，同时保留 Repository variables 作为推荐配置入口。
+- [新功能] #1772 新增台湾（台股）suffix-only 个股分析 MVP（**市场识别与数据路由层**）：手输 `.TW`（TWSE 上市）/ `.TWO`（TPEx 上柜）代码可走 YFinance 日线与近实时行情，补充市场识别、交易日历（XTAI / Asia/Taipei）、Prompt 语义与能力边界文档；加权指数 `^TWII`、柜买指数 `^TWOII`。台股股票索引/种子、Web 自动补全、API 市场枚举与 Portfolio/DecisionSignal 服务层放行作为后续 PR。
+- [文档] #1772 明确本次为台股 suffix 仅路由兼容改造，对齐 #1718 日韩模式；不涉及 provider/model/base URL/运行时配置变更；DecisionSignal 抽取对 `tw` 优雅跳过；回退方式为 revert 本次改动或移除 tw 入口恢复既有行为。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
@@ -23,12 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Web/API runtime scheduler 接管 `--serve --schedule` 后保留 `--dry-run`、`--no-notify` 等启动参数语义。
 - [改进] Web 历史报告详情不再内嵌展示 AI 建议卡片，结构化决策信号集中在 AI 建议页查询，并保留按来源报告 ID 筛选或 URL 参数精确定位入口。
 - [改进] 新增 GenerationBackend Phase 1 抽象与 LiteLLM backend 配置，默认保持普通分析、`generate_text()` 和 Agent Chat 的 LiteLLM 行为不变。
+- [新功能] #1743 Phase 2 新增显式 opt-in 的 `codex_cli` 本地 CLI generation backend，固定安全 preset、结构化错误、fallback、stream 降级和 usage unavailable contract。
+- [改进] `GENERATION_BACKEND=codex_cli` 下普通分析与大盘复盘不再因缺少 LiteLLM API Key 被误判不可用，local CLI 失败会暴露结构化错误或按配置回退 LiteLLM。
+- [改进] `codex_cli` preset 改用 `--output-last-message` 文件读取最终响应，stdout/stderr 仅作为诊断预览，避免 Codex CLI session 元数据混入主分析 JSON。
+- [修复] `codex_cli` preset 不再把 Codex CLI 同时打印到 stdout 的最终响应重复计入输出上限，也不在 `stdout_preview` 暴露重复的最终响应内容。
+- [修复] 恢复主分析 JSON 解析的宽松 schema fallback 语义，完整报告 schema 校验失败时继续按 raw JSON 解析，避免有效字段被错误降级为文本 fallback。
+- [改进] 本地 CLI backend 对诊断 stdout/stderr 与最终响应实行执行期总量上限，并为新增 generation backend 数字配置补齐最大值校验。
+- [文档] 补充本地 CLI backend 隐私边界、非离线模型说明、Docker/CI 登录态限制，以及 `codex_cli` experimental/limited 状态。
 - [修复] unsupported `GENERATION_BACKEND` 在 `generate_text()` 与大盘复盘路径中显式报配置错误，避免被当成空响应或模板报告 fallback。
 - [改进] Web 设置页明确 `AGENT_GENERATION_BACKEND=auto` 当前使用 LiteLLM 工具调用路径，避免暗示已有动态 backend 选择。
 - [改进] Web 首页“任务已存在”重复分析提示新增手动关闭按钮与 5 秒后自动消失。
 - [修复] `main.py --serve-only` 在低配主机上因 uvicorn 在 3.0s 启动自检窗口内才惰性 import 应用（litellm + 整个 app 树）导致超时退出、容器反复重启；改为在计时前于调用线程预先 import app 对象再交给 uvicorn，启动自检不再误杀慢启动。
 - [修复] Docker 镜像预置 efinance 缓存目录（efinance/data）属主给非 root 运行用户 dsa，修复 A 股 efinance 数据源因写 search-cache.json 触发 PermissionError 而每次抓取失败降级的问题。
 - [修复] Docker 部署中 Web 设置页保存自定义 Webhook 模板时自动转义 `$content_json` 等应用占位符，并在运行时还原，避免 Compose 重新部署将其展开为空。
+- [修复] 修复 Web 回测运行未传分析日期范围、股票代码未归一化导致后端成功返回但结果为空的问题，并为空候选和行情不足返回诊断信息。
+- [文档] 补充回测请求链路说明：`analysis_date_from/analysis_date_to` 与 `code` 的输入边界、归一化与筛选顺序，以及历史行情不足或候选集为空时回测返回成功响应，在 `message` 与 `diagnostics`（含 `empty_reason`）中提供可诊断信息，并同步更新 `docs/full-guide.md`、`docs/full-guide_EN.md` 示例。
+- [修复] 回测代码匹配新增非法市场后缀/长度兜底：如 `600519.HK`、`600519.SZ`、`SH000001` 不再静默回落到其它有效代码，并在日期筛选重跑时对齐旧回测结果的分析日期，避免历史快照日期命中但结果列表仍为空。
 
 ## [3.23.0] - 2026-06-20
 

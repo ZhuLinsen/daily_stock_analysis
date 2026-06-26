@@ -13,6 +13,10 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, or_, select
 
+from data_provider.base import is_bse_code
+from src.core.backtest_engine import OVERALL_SENTINEL_CODE
+from src.services.stock_code_utils import normalize_code as normalize_backtest_code
+
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,7 @@ class BacktestRepository:
         code: Optional[str],
         min_age_days: int,
         limit: int,
+        offset: int = 0,
         eval_window_days: int,
         engine_version: str,
         force: bool,
@@ -51,7 +56,7 @@ class BacktestRepository:
         with self.db.get_session() as session:
             conditions = [AnalysisHistory.created_at <= cutoff_dt]
             if code:
-                conditions.append(AnalysisHistory.code == code)
+                conditions.extend(self._build_code_conditions(AnalysisHistory.code, code))
             conditions.append(
                 or_(
                     AnalysisHistory.report_type.is_(None),
@@ -70,9 +75,67 @@ class BacktestRepository:
                 )
                 query = query.where(AnalysisHistory.id.not_in(existing_ids))
 
-            query = query.order_by(desc(AnalysisHistory.created_at)).limit(limit)
+            query = query.order_by(desc(AnalysisHistory.created_at)).offset(offset).limit(limit)
             rows = session.execute(query).scalars().all()
             return list(rows)
+
+    def align_existing_result_dates(
+        self,
+        *,
+        code: Optional[str],
+        min_age_days: int,
+        eval_window_days: int,
+        engine_version: str,
+        analysis_date_from: Optional[date],
+        analysis_date_to: Optional[date],
+    ) -> int:
+        """Align legacy result dates to their linked analysis snapshot date.
+
+        Older backtest rows may have stored the trading/start daily date instead
+        of the historical analysis snapshot date. When a date-filtered run skips
+        already-existing rows, those legacy rows would remain invisible to the
+        same date-filtered result query. Updating the stored result date keeps
+        rerun and query semantics aligned without inserting duplicate rows.
+        """
+        cutoff_dt = datetime.now() - timedelta(days=min_age_days)
+
+        with self.db.get_session() as session:
+            conditions = [
+                AnalysisHistory.created_at <= cutoff_dt,
+                BacktestResult.eval_window_days == eval_window_days,
+                BacktestResult.engine_version == engine_version,
+                or_(
+                    AnalysisHistory.report_type.is_(None),
+                    AnalysisHistory.report_type != MARKET_REVIEW_REPORT_TYPE,
+                ),
+            ]
+            if code:
+                conditions.extend(self._build_code_conditions(AnalysisHistory.code, code))
+
+            rows = session.execute(
+                select(BacktestResult, AnalysisHistory)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                .where(and_(*conditions))
+            ).all()
+
+            updated = 0
+            for result, analysis in rows:
+                analysis_date = self.parse_analysis_date_from_snapshot(analysis.context_snapshot)
+                if analysis_date is None and analysis.created_at is not None:
+                    analysis_date = analysis.created_at.date()
+                if analysis_date is None:
+                    continue
+                if analysis_date_from is not None and analysis_date < analysis_date_from:
+                    continue
+                if analysis_date_to is not None and analysis_date > analysis_date_to:
+                    continue
+                if result.analysis_date != analysis_date:
+                    result.analysis_date = analysis_date
+                    updated += 1
+
+            if updated:
+                session.commit()
+            return updated
 
     def save_result(self, result: BacktestResult) -> None:
         with self.db.get_session() as session:
@@ -345,9 +408,10 @@ class BacktestRepository:
         with self.db.get_session() as session:
             conditions = [
                 BacktestSummary.scope == scope,
-                BacktestSummary.code == code,
                 BacktestSummary.engine_version == engine_version,
             ]
+            if code:
+                conditions.extend(self._build_code_conditions(BacktestSummary.code, code))
             if eval_window_days is not None:
                 conditions.append(BacktestSummary.eval_window_days == eval_window_days)
 
@@ -424,7 +488,7 @@ class BacktestRepository:
     ) -> List[object]:
         conditions = []
         if code:
-            conditions.append(BacktestResult.code == code)
+            conditions.extend(BacktestRepository._build_code_conditions(BacktestResult.code, code))
         if eval_window_days is not None:
             conditions.append(BacktestResult.eval_window_days == eval_window_days)
         if engine_version:
@@ -437,3 +501,148 @@ class BacktestRepository:
             cutoff = datetime.now() - timedelta(days=int(days))
             conditions.append(BacktestResult.evaluated_at >= cutoff)
         return conditions
+
+    @staticmethod
+    def _build_code_conditions(column, code: str) -> List[object]:
+        if not code:
+            return []
+
+        raw_code = str(code).strip()
+        if raw_code.lower() == OVERALL_SENTINEL_CODE.lower():
+            raw_code = OVERALL_SENTINEL_CODE
+        else:
+            raw_code = raw_code.upper()
+
+        normalized_code = normalize_backtest_code(raw_code)
+
+        candidates = [raw_code]
+        if normalized_code and normalized_code != raw_code:
+            candidates.append(normalized_code)
+        candidates.extend(BacktestRepository._build_market_code_variants(raw_code, normalized_code))
+
+        if len(candidates) == 1:
+            return [column == candidates[0]]
+
+        unique = list(dict.fromkeys(candidates))
+        return [or_(*[column == candidate for candidate in unique])]
+
+    @staticmethod
+    def _build_hk_market_variants(hk_digits: str) -> List[str]:
+        """Build normalized HK variants for padded/unpadded code shapes."""
+        if not hk_digits.isdigit() or not hk_digits:
+            return []
+
+        padded = hk_digits.zfill(5)
+        unpadded = padded.lstrip("0") or "0"
+
+        variants: List[str] = [
+            f"HK{padded}",
+            f"{padded}.HK",
+            padded,
+            f"HK{unpadded}",
+            f"{unpadded}.HK",
+            f"HK.{padded}",
+        ]
+        if unpadded == padded:
+            variants.pop(3)
+            variants.pop(3)
+
+        # Keep legacy no-leading-zero bare form for 1-3 digit inputs.
+        if len(unpadded) <= 3 and unpadded != padded:
+            variants.append(unpadded)
+            variants.append(f"HK.{unpadded}")
+
+        return variants
+
+    @staticmethod
+    def _build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]:
+        """Return additional market-formatted variants for safe stock-code matching."""
+        variants: List[str] = []
+        if not raw_code:
+            return variants
+
+        raw_code_upper = raw_code.upper()
+        normalized_upper = normalized_code.upper() if normalized_code else ""
+
+        def _add_us_variants(code: str) -> None:
+            if not code:
+                return
+            if code.endswith(".US"):
+                bare = code[:-3]
+                if bare.isalpha() and 1 <= len(bare) <= 5:
+                    variants.append(bare)
+                return
+            if "." not in code and code.isalpha() and 1 <= len(code) <= 5:
+                variants.append(f"{code}.US")
+
+        _add_us_variants(raw_code_upper)
+        if normalized_upper != raw_code_upper:
+            _add_us_variants(normalized_upper)
+
+        def _explicit_exchange() -> Optional[str]:
+            if raw_code_upper.startswith(("SH", "SS")) or raw_code_upper.endswith((".SH", ".SS")):
+                return "SH"
+            if raw_code_upper.startswith("SZ") or raw_code_upper.endswith(".SZ"):
+                return "SZ"
+            if raw_code_upper.startswith("BJ") or raw_code_upper.endswith(".BJ"):
+                return "BJ"
+            return None
+
+        def _exchange_by_code(base: str) -> str:
+            if is_bse_code(base):
+                return "BJ"
+            if base.startswith(("5", "6")):
+                return "SH"
+            return "SZ"
+
+        if normalized_upper.isdigit() and len(normalized_upper) == 6:
+            explicit_exchange = _explicit_exchange()
+            if explicit_exchange is not None and explicit_exchange != _exchange_by_code(normalized_upper):
+                return []
+
+            if raw_code_upper.startswith(("SH", "SS")) or raw_code_upper.endswith(".SH") or raw_code_upper.endswith(".SS"):
+                exchange = "SH"
+            elif raw_code_upper.startswith("SZ") or raw_code_upper.endswith(".SZ"):
+                exchange = "SZ"
+            elif raw_code_upper.startswith("BJ") or raw_code_upper.endswith(".BJ") or is_bse_code(normalized_upper):
+                exchange = "BJ"
+            elif normalized_upper.startswith(("5", "6", "9")):
+                exchange = "SH"
+            else:
+                exchange = "SZ"
+
+            variants.append(f"{exchange}{normalized_upper}")
+            variants.append(f"{normalized_upper}.{exchange}")
+            variants.append(f"{exchange}.{normalized_upper}")
+            if exchange == "SH":
+                variants.append(f"SS{normalized_upper}")
+                variants.append(f"{normalized_upper}.SS")
+                variants.append(f"SS.{normalized_upper}")
+
+        if (
+            normalized_upper.startswith("HK")
+            and len(normalized_upper) > 2
+            and normalized_upper[2:].isdigit()
+            and len(normalized_upper[2:]) <= 5
+        ):
+            variants.extend(BacktestRepository._build_hk_market_variants(normalized_upper[2:]))
+
+        if (
+            raw_code_upper.startswith("HK.")
+            and raw_code_upper[3:].isdigit()
+            and len(raw_code_upper[3:]) <= 5
+        ):
+            variants.extend(BacktestRepository._build_hk_market_variants(raw_code_upper[3:]))
+
+        if (
+            raw_code_upper.endswith(".HK")
+            and raw_code_upper[:-3].isdigit()
+            and 1 <= len(raw_code_upper[:-3]) <= 5
+        ):
+            hk_digits = raw_code_upper.rsplit(".", 1)[0]
+            variants.extend(BacktestRepository._build_hk_market_variants(hk_digits))
+
+        if raw_code_upper.isdigit() and len(raw_code_upper) in (4, 5):
+            variants.extend(BacktestRepository._build_hk_market_variants(raw_code_upper))
+
+        return variants

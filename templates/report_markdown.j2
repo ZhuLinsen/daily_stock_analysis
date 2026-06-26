@@ -10,10 +10,6 @@
 
 {% for e in enriched %}
 {{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
-{% set signal_excerpt = decision_signal_excerpt(e.result) %}
-{% if signal_excerpt %}
-{{ signal_excerpt }}
-{% endif %}
 {% endfor %}
 
 ---
@@ -27,6 +23,11 @@
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
+
+{% set signal_excerpt = decision_signal_excerpt(result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
+{% endif %}
 
 {% if intel %}
 ### 📰 {{ labels.info_heading }}

@@ -20,7 +20,9 @@
 
 优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
 
-Generation backend 配置是更外层的运行时选择契约。Phase 1 只支持 `GENERATION_BACKEND=litellm`、`GENERATION_FALLBACK_BACKEND=litellm` 和 `AGENT_GENERATION_BACKEND=auto|litellm`；这些字段不会改变本页所述的 provider/model/Base URL 三层路由优先级。配置本地 CLI、Hermes 或其他非 `litellm` backend 会得到明确配置错误，不会自动降级到 LiteLLM。
+Generation backend 配置是更外层的运行时选择契约。Phase 2 支持 `GENERATION_BACKEND=litellm|codex_cli`，但 `codex_cli` 是本地 CLI backend，不是 LiteLLM provider；不要配置成 `LITELLM_MODEL=codex_cli/...`。`codex_cli` preset 使用 `codex exec --output-last-message <temp-file> -` 读取最终响应；Codex CLI 仍会把同一最终响应打印到 stdout，DSA 会从 stdout 诊断预览和输出大小统计中剔除这份重复内容。诊断 stdout/stderr 与最终响应一起受 `GENERATION_BACKEND_MAX_OUTPUT_BYTES` 总上限约束，超限时返回结构化 `output_too_large`。官方依据见 [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) 与 [Codex CLI command line options](https://developers.openai.com/codex/cli/reference)；本仓库当前只验证 `codex-cli 0.142.0`，不声明更宽最低版本。`GENERATION_FALLBACK_BACKEND=` 空值会在本地 `.env` 禁用 backend-level fallback，未配置时默认回退到 `litellm`；默认 GitHub Actions workflow 未配置该变量时会显式使用 `litellm`，如需禁用 fallback 可设为 primary backend 走 self no-op。Agent 工具调用仍使用 LiteLLM；Web 设置页只暴露 `AGENT_GENERATION_BACKEND=auto|litellm`，手写 `codex_cli` 不会启用 text-only Agent mode，只会返回明确 unsupported tool-calling 诊断。
+
+本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；DSA 不读取 Codex credential 文件，但子进程可能使用 CLI 自身登录态，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。
 
 ## Web 设置页路径
 

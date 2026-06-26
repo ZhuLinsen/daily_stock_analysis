@@ -49,6 +49,26 @@ function phaseLabel(row: BacktestResultItem, language: UiLanguage): string {
   return (row.marketPhase ? BACKTEST_PHASE_LABELS[language][row.marketPhase] : undefined) || row.marketPhase || '--';
 }
 
+function normalizeBacktestCode(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toUpperCase();
+}
+
+function parseEvalWindowDays(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = parseInt(trimmed, 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
 function labelFromMap(value: string | null | undefined, labels: Record<string, string>): string {
   if (!value) return '--';
   return labels[value] ?? value;
@@ -214,6 +234,9 @@ const RunSummary: React.FC<{ data: BacktestRunResponse; language: UiLanguage }> 
     {data.errors > 0 && (
       <span className="label">{text.errors} <span className="value danger">{data.errors}</span></span>
     )}
+    {data.message && (
+      <span className="label message">{data.message}</span>
+    )}
   </div>
   );
 };
@@ -254,7 +277,7 @@ const BacktestPage: React.FC = () => {
   const [overallPerf, setOverallPerf] = useState<PerformanceMetrics | null>(null);
   const [stockPerf, setStockPerf] = useState<PerformanceMetrics | null>(null);
   const [isLoadingPerf, setIsLoadingPerf] = useState(false);
-  const effectiveWindowDays = evalDays ? parseInt(evalDays, 10) : overallPerf?.evalWindowDays;
+  const effectiveWindowDays = parseEvalWindowDays(evalDays) ?? overallPerf?.evalWindowDays;
   const isNextDayValidation = effectiveWindowDays === 1;
   const showNextDayActualColumns = isNextDayValidation;
 
@@ -350,18 +373,30 @@ const BacktestPage: React.FC = () => {
     setRunResult(null);
     setRunError(null);
     try {
-      const code = codeFilter.trim() || undefined;
-      const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
+      const code = normalizeBacktestCode(codeFilter);
+      const requestedEvalWindowDays = parseEvalWindowDays(evalDays);
+      const dateFrom = analysisDateFrom || undefined;
+      const dateTo = analysisDateTo || undefined;
       const response = await backtestApi.run({
         code,
         force: forceRerun || undefined,
         minAgeDays: forceRerun ? 0 : undefined,
-        evalWindowDays,
+        evalWindowDays: requestedEvalWindowDays,
+        analysisDateFrom: dateFrom,
+        analysisDateTo: dateTo,
       });
       setRunResult(response);
+      const effectiveEvalWindowDays =
+        response.appliedEvalWindowDays
+        ?? requestedEvalWindowDays
+        ?? parseEvalWindowDays(evalDays)
+        ?? overallPerf?.evalWindowDays;
+      if (effectiveEvalWindowDays != null) {
+        setEvalDays(String(effectiveEvalWindowDays));
+      }
       // Refresh data with same eval_window_days
-      fetchResults(1, codeFilter.trim() || undefined, evalWindowDays, analysisDateFrom, analysisDateTo, phaseFilter);
-      fetchPerformance(codeFilter.trim() || undefined, evalWindowDays, analysisDateFrom, analysisDateTo, phaseFilter);
+      fetchResults(1, code, effectiveEvalWindowDays, dateFrom, dateTo, phaseFilter);
+      fetchPerformance(code, effectiveEvalWindowDays, dateFrom, dateTo, phaseFilter);
     } catch (err) {
       setRunError(getParsedApiError(err));
     } finally {
@@ -371,8 +406,8 @@ const BacktestPage: React.FC = () => {
 
   // Filter by code
   const handleFilter = () => {
-    const code = codeFilter.trim() || undefined;
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
+    const code = normalizeBacktestCode(codeFilter);
+    const windowDays = parseEvalWindowDays(evalDays);
     setCurrentPage(1);
     fetchResults(1, code, windowDays, analysisDateFrom, analysisDateTo, phaseFilter);
     fetchPerformance(code, windowDays, analysisDateFrom, analysisDateTo, phaseFilter);
@@ -385,7 +420,7 @@ const BacktestPage: React.FC = () => {
   };
 
   const handleShowNextDay = () => {
-    const code = codeFilter.trim() || undefined;
+    const code = normalizeBacktestCode(codeFilter);
     setEvalDays('1');
     setCurrentPage(1);
     fetchResults(1, code, 1, analysisDateFrom, analysisDateTo, phaseFilter);
@@ -395,8 +430,8 @@ const BacktestPage: React.FC = () => {
   // Pagination
   const totalPages = Math.ceil(totalResults / pageSize);
   const handlePageChange = (page: number) => {
-    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-    fetchResults(page, codeFilter.trim() || undefined, windowDays, analysisDateFrom, analysisDateTo, phaseFilter);
+    const windowDays = parseEvalWindowDays(evalDays);
+    fetchResults(page, normalizeBacktestCode(codeFilter), windowDays, analysisDateFrom, analysisDateTo, phaseFilter);
   };
 
   return (

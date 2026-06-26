@@ -208,6 +208,173 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
         self.assertEqual(result.dashboard["decision_stability"]["applied"], True)
         self.assertEqual(result.dashboard["decision_stability"]["reason"], "回测验证")
 
+    def test_parse_response_repairs_single_json_candidate(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = """```json
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 68,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+}
+```"""
+
+        result = analyzer._parse_response(response, "600519", "股票600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.name, "贵州茅台")
+        self.assertEqual(result.sentiment_score, 68)
+
+    def test_parse_response_accepts_single_generic_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = """```
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 67,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "analysis_summary": "技术面向好"
+}
+```"""
+
+        result = analyzer._parse_response(response, "600519", "股票600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.name, "贵州茅台")
+        self.assertEqual(result.sentiment_score, 67)
+
+    def test_parse_response_repairs_nested_single_json_candidate(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = """```json
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 69,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "dashboard": {"core_conclusion": {"one_sentence": "继续观察",},},
+}
+```"""
+
+        result = analyzer._parse_response(response, "600519", "股票600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 69)
+        self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], "继续观察")
+
+    def test_validate_json_response_accepts_single_generic_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        analyzer._validate_json_response("""```
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 66,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "analysis_summary": "技术面向好"
+}
+```""")
+
+    def test_validate_json_response_accepts_single_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        analyzer._validate_json_response("""```json
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 65,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "analysis_summary": "技术面向好"
+}
+```""")
+
+    def test_validate_json_response_rejects_ambiguous_json_before_repair(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response('{"sentiment_score": 70} {"sentiment_score": 80}')
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_rejects_generic_fence_with_outside_text(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response("""Here is the JSON:
+```
+{"sentiment_score": 70, "trend_prediction": "看多"}
+```""")
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_rejects_multiple_json_fences(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response("""```json
+{"sentiment_score": 70}
+```
+```json
+{"sentiment_score": 80}
+```""")
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_rejects_non_json_language_fence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response("""```text
+{"sentiment_score": 70, "trend_prediction": "看多"}
+```""")
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_rejects_missing_minimal_contract(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response('{"stock_name": "贵州茅台"}')
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "minimal_contract_failed")
+
+    def test_validate_json_response_rejects_parser_unconstructable_sentiment(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response(json.dumps({
+                "stock_name": "贵州茅台",
+                "sentiment_score": "not-a-number",
+                "trend_prediction": "看多",
+                "operation_advice": "持有",
+                "analysis_summary": "测试摘要",
+            }))
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "parser_contract_failed")
+
+    def test_parse_response_falls_back_when_parser_contract_fails(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = json.dumps({
+            "stock_name": "贵州茅台",
+            "sentiment_score": "not-a-number",
+            "trend_prediction": "看多",
+            "operation_advice": "持有",
+            "analysis_summary": "测试摘要",
+        })
+
+        result = analyzer._parse_response(response, "600519", "股票600519")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.sentiment_score, 50)
+        self.assertIn("JSON", result.error_message)
+
     def test_parse_text_response_honors_injected_runtime_report_language(self) -> None:
         """Fallback text parsing should use the analyzer's injected config, not the global singleton."""
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):

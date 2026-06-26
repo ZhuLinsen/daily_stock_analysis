@@ -72,6 +72,30 @@ def _result(**overrides) -> AnalysisResult:
     return result
 
 
+def test_build_payload_skips_tw_market_gracefully() -> None:
+    """A Taiwan (`tw`) stock is recognized by the data layer but is intentionally
+    not yet wired into the DecisionSignal service layer (a deferred follow-up).
+
+    The payload builder must SKIP it (return None) without raising — locking the
+    "no swallowed ValueError + noisy traceback on every tw analysis" behavior the
+    data-layer MVP relies on. A plain action ("buy") is set so the skip is the
+    market guard, not the earlier no-action early-return.
+    """
+    result = _result(code="2330.TW", name="台积电")
+
+    payload = build_decision_signal_payload_from_report(
+        result,
+        context_snapshot=None,
+        portfolio_context=None,
+        source_report_id=None,
+        trace_id="trace-tw",
+        query_source="api",
+        report_type="full",
+    )
+
+    assert payload is None
+
+
 def test_build_payload_maps_report_context_and_price_plan() -> None:
     result = _result()
     result.market_phase_summary = {"phase": "postmarket"}

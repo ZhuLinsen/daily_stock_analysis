@@ -12,6 +12,7 @@ from typing import Any, Optional, Tuple
 
 from src.config import Config
 from src.llm.backend_registry import (
+    CODEX_CLI_BACKEND_ID,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
 )
@@ -22,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 def has_configured_llm_runtime(config: Config) -> bool:
     """Return whether any LLM model configuration is available."""
+    try:
+        if resolve_generation_backend_id(config) == CODEX_CLI_BACKEND_ID:
+            return True
+    except GenerationError:
+        pass
+
     if (getattr(config, "litellm_model", "") or "").strip():
         return True
     if getattr(config, "llm_model_list", None):

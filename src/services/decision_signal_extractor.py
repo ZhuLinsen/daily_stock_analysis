@@ -13,6 +13,7 @@ from src.analyzer import AnalysisResult
 from src.core.trading_calendar import get_market_for_stock
 from src.schemas.decision_action import build_action_fields
 from src.services.decision_signal_service import DecisionSignalService
+from src.services.portfolio_service import VALID_MARKETS
 from src.utils.sniper_points import extract_sniper_points
 
 
@@ -58,6 +59,16 @@ def build_decision_signal_payload_from_report(
     market = get_market_for_stock(normalize_stock_code(raw_code))
     if not market:
         logger.warning("Skip decision signal extraction: unrecognized market stock_code=%s", raw_code)
+        return None
+    if market not in VALID_MARKETS:
+        # A market the data layer recognizes (e.g. tw) but the decision-signal
+        # service layer does not yet support. Skip gracefully instead of letting
+        # create_signal raise a swallowed ValueError + noisy traceback.
+        logger.info(
+            "Skip decision signal extraction: market=%s not yet wired for signals stock_code=%s",
+            market,
+            raw_code,
+        )
         return None
 
     dashboard = _as_mapping(getattr(result, "dashboard", None))

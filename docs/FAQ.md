@@ -88,6 +88,8 @@
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> 兼容说明：每日分析 workflow 也会绑定名为 `STOCK_LIST` 的 Environment，因此误把 `STOCK_LIST` 填到该 Environment variables 中也能被读取；但推荐位置仍是 Repository variables。除非你希望每日任务等待人工审批，否则不要给该 Environment 配置 required reviewers、wait timer 或部署分支限制。
+
 ---
 
 ### Q6: 修改 .env 文件后配置没有生效？

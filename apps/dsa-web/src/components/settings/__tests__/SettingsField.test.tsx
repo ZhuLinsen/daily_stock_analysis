@@ -488,8 +488,10 @@ describe('SettingsField', () => {
     expect(dialog).not.toHaveTextContent('GENERATION_BACKEND');
     expect(dialog).not.toHaveTextContent('配置样例');
     expect(dialog).not.toHaveTextContent('Phase 1');
-    expect(dialog).toHaveTextContent('高级说明');
-    expect(dialog).toHaveTextContent('LiteLLM');
+    expect(dialog).toHaveTextContent('本机已安装并登录 Codex CLI');
+    expect(dialog).toHaveTextContent('默认模型配置会继续使用现有 API Key');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
   });
 
   it('describes agent auto generation without exposing implementation labels as the primary UI copy', () => {
@@ -511,7 +513,7 @@ describe('SettingsField', () => {
             isEditable: true,
             options: [
               { label: 'Auto', value: 'auto' },
-              { label: 'Default model tool calling', value: 'litellm' },
+              { label: 'Default model settings', value: 'litellm' },
             ],
             validation: { enum: ['auto', 'litellm'] },
             displayOrder: 1,
@@ -528,10 +530,11 @@ describe('SettingsField', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看 问股生成方式 配置说明' }));
 
     const dialog = screen.getByRole('dialog', { name: '问股生成方式' });
-    expect(dialog).toHaveTextContent('系统会选择当前可用的模型工具调用方式');
+    expect(dialog).toHaveTextContent('系统会选择当前可用的方式');
     expect(dialog).toHaveTextContent('如果不确定，选择“自动”即可');
-    expect(dialog).toHaveTextContent('高级说明');
-    expect(dialog).toHaveTextContent('LiteLLM');
+    expect(dialog).toHaveTextContent('这项设置只影响问股助手');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
     expect(dialog).not.toHaveTextContent('优先选择当前可用');
   });
 

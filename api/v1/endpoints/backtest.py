@@ -47,6 +47,7 @@ def _validate_analysis_date_range(
     response_model=BacktestRunResponse,
     responses={
         200: {"description": "回测执行完成"},
+        400: {"description": "请求参数错误", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="触发回测",
@@ -57,15 +58,25 @@ def run_backtest(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestRunResponse:
     try:
+        _validate_analysis_date_range(request.analysis_date_from, request.analysis_date_to)
         service = BacktestService(db_manager)
         stats = service.run_backtest(
             code=request.code,
             force=request.force,
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
+            analysis_date_from=request.analysis_date_from,
+            analysis_date_to=request.analysis_date_to,
             limit=request.limit,
         )
         return BacktestRunResponse(**stats)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_params", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error(f"回测执行失败: {exc}", exc_info=True)
         raise HTTPException(

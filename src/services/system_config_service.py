@@ -8,6 +8,7 @@ import logging
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,12 @@ from src.core.config_registry import (
     get_registered_field_keys,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.backend_registry import (
+    AUTO_AGENT_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
+    LITELLM_BACKEND_ID,
+    normalize_backend_id,
+)
 from src.llm.generation_params import apply_litellm_generation_params
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
@@ -2654,6 +2661,30 @@ class SystemConfigService:
         return "", "尚未检测到主模型配置"
 
     def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        if generation_backend == CODEX_CLI_BACKEND_ID:
+            if shutil.which("codex"):
+                return self._setup_check(
+                    "llm_primary",
+                    "LLM 主渠道",
+                    "ai_model",
+                    True,
+                    "configured",
+                    "已启用 Codex CLI 本地生成 Backend（experimental/limited）。",
+                )
+            return self._setup_check(
+                "llm_primary",
+                "LLM 主渠道",
+                "ai_model",
+                True,
+                "needs_action",
+                "已选择 codex_cli，但未找到 codex 可执行文件。",
+                "请先安装并登录 Codex CLI，或将 GENERATION_BACKEND 设回 litellm。",
+            )
+
         model, source = self._resolve_setup_primary_model(effective_map)
         if model:
             source_label = {
@@ -2685,8 +2716,57 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        agent_backend = normalize_backend_id(
+            effective_map.get("AGENT_GENERATION_BACKEND"),
+            default=AUTO_AGENT_BACKEND_ID,
+        )
+        if agent_backend == CODEX_CLI_BACKEND_ID:
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                "Agent 工具调用暂不支持 codex_cli text-only backend。",
+                "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
+            )
+
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
         if not agent_model_raw:
+            if generation_backend == CODEX_CLI_BACKEND_ID:
+                litellm_model, _source = self._resolve_setup_primary_model(effective_map)
+                if litellm_model:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "configured",
+                        "Agent 工具调用将继续使用 LiteLLM 渠道。",
+                    )
+                if agent_backend == LITELLM_BACKEND_ID:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "needs_action",
+                        "AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。",
+                        "如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。",
+                    )
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "needs_action",
+                    "Agent 工具调用需要 LiteLLM 模型配置；codex_cli 主生成方式不会被自动继承。",
+                    "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
+                )
             if primary_check["status"] == "configured":
                 return self._setup_check(
                     "llm_agent",

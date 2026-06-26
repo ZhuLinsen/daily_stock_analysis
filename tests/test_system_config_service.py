@@ -117,6 +117,22 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
         self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
 
+    def test_get_config_preserves_manual_agent_codex_cli_value_without_schema_option(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "AGENT_GENERATION_BACKEND=codex_cli",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+        agent_item = items["AGENT_GENERATION_BACKEND"]
+
+        self.assertEqual(agent_item["value"], "codex_cli")
+        self.assertNotIn(
+            "codex_cli",
+            {option["value"] for option in agent_item["schema"]["options"]},
+        )
+
     def test_get_config_preserves_explicit_empty_switch_value(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519,000001",
@@ -414,6 +430,53 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["llm_agent"]["status"], "inherited")
         self.assertEqual(checks["stock_list"]["status"], "configured")
         self.assertEqual(checks["notification"]["status"], "optional")
+
+    def test_get_setup_status_treats_codex_cli_as_primary_runtime_without_api_keys(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_primary"]["status"], "configured")
+        self.assertIn("Codex CLI", checks["llm_primary"]["message"])
+        self.assertNotIn("llm_primary", status["required_missing_keys"])
+
+    def test_get_setup_status_rejects_agent_codex_cli_tool_backend(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "AGENT_GENERATION_BACKEND=codex_cli",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+        self.assertIn("暂不支持 codex_cli", checks["llm_agent"]["message"])
+
+    def test_get_setup_status_agent_litellm_without_model_reports_missing_model(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "AGENT_GENERATION_BACKEND=litellm",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+        self.assertIn("未检测到可用 LiteLLM 模型配置", checks["llm_agent"]["message"])
+        self.assertNotIn("需要 LiteLLM backend", checks["llm_agent"]["message"])
 
     def test_get_setup_status_accepts_anspire_one_key_llm(self) -> None:
         self._rewrite_env(
@@ -1183,6 +1246,23 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
+
+    def test_validate_reports_generation_backend_numeric_maximum(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "3601"},
+                {"key": "GENERATION_BACKEND_MAX_OUTPUT_BYTES", "value": "33554433"},
+                {"key": "GENERATION_BACKEND_MAX_CONCURRENCY", "value": "17"},
+                {"key": "LOCAL_CLI_BACKEND_MAX_CONCURRENCY", "value": "5"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issues = {issue["key"]: issue for issue in validation["issues"]}
+        self.assertEqual(issues["GENERATION_BACKEND_TIMEOUT_SECONDS"]["expected"], "<=3600")
+        self.assertEqual(issues["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["expected"], "<=33554432")
+        self.assertEqual(issues["GENERATION_BACKEND_MAX_CONCURRENCY"]["expected"], "<=16")
+        self.assertEqual(issues["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["expected"], "<=4")
 
     def test_validate_accepts_report_language_english(self) -> None:
         validation = self.service.validate(items=[{"key": "REPORT_LANGUAGE", "value": "en"}])

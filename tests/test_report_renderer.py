@@ -90,16 +90,22 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("作战计划", out)
         self.assertNotIn("盘中决策护栏", out)
 
-    def test_render_markdown_includes_decision_signal_excerpt(self) -> None:
-        """Markdown summary and full templates include DecisionSignal excerpts."""
-        for summary_only in (True, False):
-            r = _with_decision_signal_summary(_make_result())
-            out = render("markdown", [r], summary_only=summary_only)
-            self.assertIsNotNone(out)
-            self.assertIn("AI 决策信号", out)
-            self.assertIn("动作: 卖出", out)
-            self.assertIn("周期: 1d", out)
-            self.assertIn("理由: 技术面走弱", out)
+    def test_render_markdown_keeps_decision_signal_out_of_summary(self) -> None:
+        """Markdown summary stays compact while full details keep DecisionSignal excerpts."""
+        r = _with_decision_signal_summary(_make_result())
+
+        summary_out = render("markdown", [r], summary_only=True)
+        self.assertIsNotNone(summary_out)
+        self.assertNotIn("AI 决策信号", summary_out)
+
+        full_out = render("markdown", [r], summary_only=False)
+        self.assertIsNotNone(full_out)
+        summary_section, detail_section = full_out.split("---", 1)
+        self.assertNotIn("AI 决策信号", summary_section)
+        self.assertIn("AI 决策信号", detail_section)
+        self.assertIn("动作: 卖出", detail_section)
+        self.assertIn("周期: 1d", detail_section)
+        self.assertIn("理由: 技术面走弱", detail_section)
 
     def test_render_markdown_phase_decision_section(self) -> None:
         """Markdown renders phase_decision when present."""
@@ -158,16 +164,20 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("贵州茅台", out)
 
-    def test_render_wechat_includes_decision_signal_excerpt(self) -> None:
-        """Wechat summary and full templates include DecisionSignal excerpts."""
-        for summary_only in (True, False):
-            r = _with_decision_signal_summary(_make_result())
-            out = render("wechat", [r], summary_only=summary_only)
-            self.assertIsNotNone(out)
-            self.assertIn("AI 决策信号", out)
-            self.assertIn("动作: 卖出", out)
-            self.assertIn("周期: 1d", out)
-            self.assertIn("理由: 技术面走弱", out)
+    def test_render_wechat_keeps_decision_signal_out_of_summary(self) -> None:
+        """Wechat summary-only stays compact while full details keep DecisionSignal excerpts."""
+        r = _with_decision_signal_summary(_make_result())
+
+        summary_out = render("wechat", [r], summary_only=True)
+        self.assertIsNotNone(summary_out)
+        self.assertNotIn("AI 决策信号", summary_out)
+
+        full_out = render("wechat", [r], summary_only=False)
+        self.assertIsNotNone(full_out)
+        self.assertIn("AI 决策信号", full_out)
+        self.assertIn("动作: 卖出", full_out)
+        self.assertIn("周期: 1d", full_out)
+        self.assertIn("理由: 技术面走弱", full_out)
 
     def test_render_brief(self) -> None:
         """Brief platform renders 3-5 sentence summary."""
@@ -176,6 +186,14 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("决策简报", out)
         self.assertIn("贵州茅台", out)
+
+    def test_render_brief_omits_decision_signal_excerpt(self) -> None:
+        r = _with_decision_signal_summary(_make_result())
+
+        out = render("brief", [r])
+
+        self.assertIsNotNone(out)
+        self.assertNotIn("AI 决策信号", out)
 
     def test_render_brief_respects_model_visibility_toggle(self) -> None:
         r = _make_result(model_used="gemini/gemini-2.5-flash")
