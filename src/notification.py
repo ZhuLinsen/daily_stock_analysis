@@ -1793,6 +1793,43 @@ class NotificationService(
             lines.append(f"| {ideal_buy} | {stop_loss} | {take_profit} |")
             lines.append("")
 
+        # ========== 信号归因分析 ==========
+        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        if signal_attr:
+            has_content = any(
+                signal_attr.get(k) is not None
+                for k in ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
+            )
+            if has_content:
+                lines.extend([
+                    f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                    "",
+                ])
+                # 归因权重
+                lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
+                tech = signal_attr.get('technical_indicators')
+                news = signal_attr.get('news_sentiment')
+                fund = signal_attr.get('fundamentals')
+                market = signal_attr.get('market_conditions')
+                if tech is not None:
+                    lines.append(f"- 📈 {labels.get('technical_indicators_label', '技术指标')}: {tech}%")
+                if news is not None:
+                    lines.append(f"- 📰 {labels.get('news_sentiment_label', '新闻舆情')}: {news}%")
+                if fund is not None:
+                    lines.append(f"- 📊 {labels.get('fundamentals_label', '基本面')}: {fund}%")
+                if market is not None:
+                    lines.append(f"- 🌐 {labels.get('market_conditions_label', '市场环境')}: {market}%")
+                lines.append("")
+
+                # 最强信号
+                bullish = signal_attr.get('strongest_bullish_signal')
+                bearish = signal_attr.get('strongest_bearish_signal')
+                if bullish:
+                    lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+                if bearish:
+                    lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+                lines.append("")
+
         # 持仓建议
         pos_advice = core.get('position_advice', {}) if core else {}
         if pos_advice:

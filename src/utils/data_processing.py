@@ -274,18 +274,28 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
     keys = ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
 
     def _parse_contribution(raw: Any) -> Optional[float]:
+        """
+        Parse a single contribution value.
+
+        Returns:
+            - float in [0, 100] if valid
+            - None if unparsable / N/A / empty
+        """
         if raw is None:
             return None
         if isinstance(raw, (int, float)):
             val = float(raw)
-            return max(0.0, val)
+            # Clamp to [0, 100] — values outside this range are invalid
+            return max(0.0, min(100.0, val))
         if isinstance(raw, str):
             text = raw.strip()
             if not text or text in ("N/A", "N/A%"):
                 return None
             text = text.rstrip("%").strip()
             try:
-                return max(0.0, float(text))
+                val = float(text)
+                # Clamp to [0, 100]
+                return max(0.0, min(100.0, val))
             except ValueError:
                 return None
         return None
@@ -306,9 +316,9 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
                 int_values[max_idx] += diff
             for i, k in enumerate(keys):
                 parsed[k] = int_values[i]
-        else:
-            for k in keys:
-                parsed[k] = 25
+        # else: total == 0 → all contributions are 0
+        #   Keep as 0 (truthful "no contribution"), do NOT fake 25/25/25/25
+        #   If LLM returned None for some fields, they stay None (meaning "unable to judge")
 
     for k in keys:
         signal_attr[k] = parsed[k]

@@ -869,7 +869,25 @@ P6 只做文档与配置可见性收口，不新增 pack runtime、不新增 pac
 
 P5 在个股分析报告的 `dashboard.phase_decision` 中追加阶段化决策字段：`phase_context`、`action_window`、`immediate_action`、`watch_conditions`、`next_check_time`、`confidence_reason` 和 `data_limitations`。该字段只作为报告 JSON 的向后兼容扩展进入历史 `raw_result`；不新增 `analysis_phase` API 参数、不改变 Web 阶段入口、不新增配置项，也不影响每日收盘复盘默认行为。
 
-普通分析与 Agent 分析会在保存历史前复用当次 `market_phase_summary` 和 `analysis_context_pack_overview.data_quality` 执行轻量护栏：核心 quote / daily_bars / technical 数据 stale、fallback、missing、fetch_failed、partial 或 estimated 时，不允许高置信结论；盘前、非交易日或未知阶段不得输出高置信盘中买卖；盘中、午间和临近收盘会检查主结论里的盘后复盘口吻，并把明显的“今日收盘后复盘显示”“明日重点关注”类措辞改为阶段安全的观察/等待表述。护栏只补低敏 `phase_context` 和数据限制，不编造观察条件或下一次检查时间；通知摘要、告警、持仓和回测联动留给后续 P6。
+普通分析与 Agent 分析会在保存历史前复用当次 `market_phase_summary` 和 `analysis_context_pack_overview.data_quality` 执行轻量护栏：核心 quote / daily_bars / technical 数据 stale、fallback、missing、fetch_failed、partial 或 estimated 时，不允许高置信结论；盘前、非交易日或未知阶段不得输出高置信盘中买卖；盘中、午间和临近收盘会检查主结论里的盘后复盘口吻，并把明显的"今日收盘后复盘显示""明日重点关注"类措辞改为阶段安全的观察/等待表述。护栏只补低敏 `phase_context` 和数据限制，不编造观察条件或下一次检查时间；通知摘要、告警、持仓和回测联动留给后续 P6。
+
+#### 信号归因分析（Issue #1742）
+
+Issue #1742 在个股分析报告的 `dashboard.signal_attribution` 中新增信号归因分析字段：`technical_indicators`、`news_sentiment`、`fundamentals`、`market_conditions`（四个贡献度，之和为 100）、`strongest_bullish_signal` 和 `strongest_bearish_signal`。该字段解释推荐理由的构成，帮助用户理解 AI 决策的归因权重。
+
+信号归因分析在所有报告渲染路径中同步展示：
+- `generate_dashboard_report()`（默认通知报告）
+- `generate_single_stock_report()`（单股推送报告）
+- `templates/report_markdown.j2`（Jinja2 模板）
+- `HistoryService._generate_single_stock_markdown()`（Web 历史抽屉）
+
+归一化函数在 `_parse_response()` 和 `parse_dashboard_json()` 中显式调用，确保：
+- 字符串百分比转为 int（如 `"35%"` → `35`）
+- 负数转为 0
+- 总和≠100 时归一化为总和=100
+- 值裁剪到 [0, 100] 范围
+
+`signal_attribution` 是 recommended 字段（非必填），缺失不会失败完整性检查，但会记录到 `missing` 列表并触发补全 prompt。`check_content_integrity()` 将其列为 recommended，缺失仅警告。
 
 #### 告警、持仓和历史联动（Issue #1386 P6）
 

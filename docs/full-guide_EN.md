@@ -739,6 +739,24 @@ P5 adds a phase-aware decision block under `dashboard.phase_decision` for indivi
 
 Regular analysis and Agent analysis now apply lightweight guardrails before history is saved, using the current `market_phase_summary` and `analysis_context_pack_overview.data_quality`. If core quote / daily_bars / technical data is stale, fallback, missing, fetch_failed, partial, or estimated, high-confidence conclusions are capped. Pre-market, non-trading, or unknown phases must not emit high-confidence intraday buy/sell actions. Intraday, lunch-break, and near-close outputs are scanned for post-market recap wording such as "after today's close" or "focus tomorrow" in the main conclusion and action fields, and obvious violations are replaced with phase-safe wait/watch wording. The guardrail only fills low-sensitivity `phase_context` and data limitations; it does not invent watch conditions or next-check times. Notification summaries, alerts, holdings, and backtest linkage remain later P6 work.
 
+### Signal Attribution Analysis (Issue #1742)
+
+Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values summing to 100), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+
+Signal attribution analysis is rendered in all report paths:
+- `generate_dashboard_report()` (default notification report)
+- `generate_single_stock_report()` (single-stock push report)
+- `templates/report_markdown.j2` (Jinja2 template)
+- `HistoryService._generate_single_stock_markdown()` (Web history drawer)
+
+Normalization functions are explicitly called in `_parse_response()` and `parse_dashboard_json()` to ensure:
+- String percentages are converted to int (e.g., `"35%"` → `35`)
+- Negative numbers are clamped to 0
+- Values with sum ≠ 100 are normalized to sum = 100
+- Values are clamped to [0, 100]
+
+`signal_attribution` is a recommended field (not required). Missing it does not fail integrity checks, but it is recorded in the `missing` list and triggers a completion prompt. `check_content_integrity()` lists it as recommended; missing only generates a warning.
+
 ### Alerts, Portfolio, and History Linkage (Issue #1386 P6)
 
 P6 reuses the existing `market_phase_summary` and `analysis_context_pack_overview` across alerts, portfolio, history, backtesting, and notifications. It does not introduce a new phase/pack protocol and does not require a database migration. Alert trigger rows keep using the existing text `diagnostics` field; when diagnostics can be represented as JSON, the worker merges `analysis_visibility.market_phase_summary`, `analysis_visibility.analysis_context_pack_overview`, and `analysis_visibility.source` into triggered rows. Legacy plain-text diagnostics remain readable; Alert API derived fields stay empty and `analysis_visibility_source=legacy_text`.
