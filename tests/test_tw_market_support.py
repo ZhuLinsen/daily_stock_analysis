@@ -132,15 +132,21 @@ def test_trading_calendar_registers_tw_exchange_and_timezone() -> None:
     assert MARKET_TIMEZONE["tw"] == "Asia/Taipei"
 
 
-def test_tw_decision_signals_gracefully_skipped_in_data_layer_scope() -> None:
-    """Data-layer MVP scope (per maintainer): tw is a recognized market, but the
-    decision-signal / portfolio / API service layer is a deliberate follow-up.
+def test_tw_is_first_class_on_write_paths() -> None:
+    """TW is a first-class market on the decision-signal / portfolio / intelligence
+    write paths, matching jp/kr.
 
-    The data layer recognizes tw, while the signal service does not yet accept it,
-    so the decision-signal extractor must SKIP tw gracefully (no signal, no noisy
-    ValueError traceback) — guarded in build_decision_signal_payload_from_report.
+    Regression guard: the analysis pipeline auto-extracts a DecisionSignal after
+    history save (pipeline._extract_decision_signal_after_history_save). If `tw`
+    were absent from VALID_MARKETS, _normalize_market("tw") would raise ValueError
+    on that main path and the signal would be silently dropped — making tw the
+    only yfinance-supported market that can be analyzed but never produces a signal.
     """
+    from src.services.decision_signal_service import DecisionSignalService
     from src.services.portfolio_service import VALID_MARKETS
+    from src.services.intelligence_service import _ALLOWED_MARKETS
 
     assert get_market_for_stock("2330.TW") == "tw"  # data layer recognizes tw
-    assert "tw" not in VALID_MARKETS  # signal/service layer intentionally deferred
+    assert DecisionSignalService._normalize_market("tw") == "tw"
+    assert "tw" in VALID_MARKETS
+    assert "tw" in _ALLOWED_MARKETS

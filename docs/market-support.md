@@ -29,7 +29,7 @@
 
 ## 台湾个股 suffix-only MVP（Issue #1772，Refs #1772）
 
-当前阶段支持手动输入台湾股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存和基础报告展示链路。TWSE 上市股票使用 `.TW` 后缀，TPEx 上柜（柜买）股票使用 `.TWO` 后缀，二者折叠为同一 `tw` 市场标签。**本次仅覆盖市场识别（detection）与数据路由层**；台股股票索引/种子、Web 自动补全、前端市场类型、API 市场枚举与 Portfolio/DecisionSignal 服务层均作为后续 PR。对齐 #1718 日韩 MVP 模式。
+当前阶段支持手动输入台湾股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存和基础报告展示链路。TWSE 上市股票使用 `.TW` 后缀，TPEx 上柜（柜买）股票使用 `.TWO` 后缀，二者折叠为同一 `tw` 市场标签。**本次覆盖市场识别（detection）、数据路由层、DecisionSignal/Portfolio/Intelligence 服务层与 API 市场枚举，以及 DecisionSignal/Portfolio 前端市场类型与筛选**；台股股票索引/种子、Web 自动补全与告警（大盘红绿灯）市场放行仍作为后续 PR。对齐 #1718 日韩 MVP 模式。
 
 支持格式：
 
@@ -50,7 +50,7 @@
 
 - 不承诺实时行情；Yahoo Finance 数据可能延迟或字段缺失。
 - 不承诺完整基本面、行业/板块、市场宽度、涨跌家数或台股大盘复盘。
-- 本次未包含台股股票索引/种子、Web 自动补全、前端市场类型、API 市场枚举与 Portfolio/DecisionSignal 服务层放行，均作为后续 PR；数据层已识别 `tw`，DecisionSignal 抽取对 `tw` 优雅跳过（不产出信号、也不报错或刷 traceback）。
+- 台股股票索引/种子、Web 自动补全与告警（大盘红绿灯）市场放行仍作为后续 PR；告警 MarketRegion 与后端 market_light 仍为 cn/hk/us，未含 tw。
 - 不补齐 Portfolio 的 TWD 汇率、成本、市值完整口径（属上述后续 PR 范围）。
 
-回滚方式：移除 `tw` 市场识别、交易日历注册与 YFinance 路由扩展，并删除本文档中的能力声明。
+回滚方式：移除 `tw` 市场识别、交易日历注册、YFinance 路由扩展与服务层/API 市场枚举及前端市场类型放行，并删除本文档中的能力声明。

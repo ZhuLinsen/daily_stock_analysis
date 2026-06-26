@@ -61,9 +61,10 @@ def build_decision_signal_payload_from_report(
         logger.warning("Skip decision signal extraction: unrecognized market stock_code=%s", raw_code)
         return None
     if market not in VALID_MARKETS:
-        # A market the data layer recognizes (e.g. tw) but the decision-signal
-        # service layer does not yet support. Skip gracefully instead of letting
-        # create_signal raise a swallowed ValueError + noisy traceback.
+        # A market the data layer recognizes but the decision-signal service
+        # layer does not accept (e.g. a market added to detection ahead of
+        # VALID_MARKETS). Skip gracefully instead of letting create_signal
+        # raise a swallowed ValueError + noisy traceback.
         logger.info(
             "Skip decision signal extraction: market=%s not yet wired for signals stock_code=%s",
             market,
