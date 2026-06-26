@@ -275,8 +275,13 @@ def check_content_integrity(
     """
     Check mandatory fields for report content integrity.
     Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
+
+    Note:
+    - Required fields: missing → pass=False, added to missing_fields
+    - Recommended fields (e.g., signal_attribution): missing → pass=True, added to missing_fields with "(recommended)" suffix
     """
     missing: List[str] = []
+    warnings: List[str] = []  # For recommended fields
 
     def _is_blank_text(value: Any) -> bool:
         if value is None:
@@ -339,7 +344,20 @@ def check_content_integrity(
             missing.append("dashboard.phase_decision.confidence_reason")
         if not isinstance(phase_decision.get("data_limitations"), list):
             missing.append("dashboard.phase_decision.data_limitations")
-    return len(missing) == 0, missing
+    # 信号归因分析（推荐输出，缺失仅警告）
+    signal_attr = dash.get("signal_attribution") if isinstance(dash, dict) else None
+    if signal_attr is None or not isinstance(signal_attr, dict):
+        missing.append("dashboard.signal_attribution (recommended)")
+    else:
+        # 检查四个贡献度是否都存在且有效
+        for key in ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]:
+            val = signal_attr.get(key)
+            if val is None or (isinstance(val, str) and val.strip() in ("", "N/A", "N/A%")):
+                missing.append(f"dashboard.signal_attribution.{key} (recommended)")
+                break
+    # 计算 passed：required 字段缺失才失败，recommended 字段缺失只警告
+    required_missing = [m for m in missing if "(recommended)" not in m]
+    return len(required_missing) == 0, missing
 
 
 def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:

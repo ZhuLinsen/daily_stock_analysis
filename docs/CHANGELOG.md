@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [新功能] #1742 新增信号归因分析功能（dashboard.signal_attribution），解释推荐理由的构成（技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号）。支持默认通知报告和 Jinja2 模板渲染，包含中英文国际化标签。贡献度之和强制为 100，Schema 层自动验证和归一化异常值。
+- [新功能] #1742 新增信号归因分析功能（dashboard.signal_attribution），解释推荐理由的构成（技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号）。支持默认通知报告和 Jinja2 模板渲染，包含中英文国际化标签。归一化函数在 _parse_response() 和 parse_dashboard_json() 中显式调用，确保贡献度之和强制为 100。
 - [改进] Agent 路径同步：更新 executor.py 和 decision_agent.py 的 prompt，确保 agent/multi-agent 分析时也生成 signal_attribution 字段。
 - [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。

@@ -37,6 +37,12 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "持有观望"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {"stop_loss": "110元"}},
+                "signal_attribution": {
+                    "technical_indicators": 25,
+                    "news_sentiment": 25,
+                    "fundamentals": 25,
+                    "market_conditions": 25,
+                },
             },
         )
         ok, missing = check_content_integrity(result)
@@ -137,6 +143,12 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "建议卖出"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {}},
+                "signal_attribution": {
+                    "technical_indicators": 25,
+                    "news_sentiment": 25,
+                    "fundamentals": 25,
+                    "market_conditions": 25,
+                },
             },
         )
         ok, missing = check_content_integrity(result)
@@ -177,6 +189,12 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "持有"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {"stop_loss": "110"}},
+                "signal_attribution": {
+                    "technical_indicators": 25,
+                    "news_sentiment": 25,
+                    "fundamentals": 25,
+                    "market_conditions": 25,
+                },
             },
         )
 
@@ -469,6 +487,12 @@ class TestApplyPlaceholderFill(unittest.TestCase):
                     "phase_context": "invalid",
                     "watch_conditions": "invalid",
                     "data_limitations": None,
+                },
+                "signal_attribution": {
+                    "technical_indicators": 25,
+                    "news_sentiment": 25,
+                    "fundamentals": 25,
+                    "market_conditions": 25,
                 },
             },
         )
