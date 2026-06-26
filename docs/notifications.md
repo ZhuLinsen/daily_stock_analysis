@@ -49,6 +49,12 @@
 
 关联板块渲染保持报告正文生成阶段处理：当板块表现数据不可用且所有板块类型均缺失时，只输出一行板块名称；有板块类型或板块涨跌榜信号时继续使用表格。
 
+Markdown 表格解析已优化：
+- 表格行中包含空单元格时保留其空字符串位置，避免列对齐错位。
+- 两列排版中若第一列（Key）为空，将自动回退到常规多列名对齐，而不生成无前缀的空冒号格式（如 `：强势`）。
+- 自动跳过且忽略完全空白的表格行（如 `| | |`）。
+
+
 ## GitHub Actions 映射
 
 仓库自带 `.github/workflows/00-daily-analysis.yml` 只显式导入固定变量名。P0/P3/P4/P6 已把 Body 模板、安全项、PushPlus topic、路由、降噪、ntfy 和 Gotify 等通知 key 纳入默认 workflow。下面的表格由 `scripts/generate_notification_actions_env_table.py` 从 workflow `env:` 和通知诊断元数据生成，避免手写对照表和真实 Actions 映射继续漂移。
