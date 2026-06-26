@@ -37,6 +37,39 @@ describe('SettingsField', () => {
     expect(screen.queryByLabelText('Stock List')).not.toBeInTheDocument();
   });
 
+  it('localizes TickFlow field descriptions instead of falling back to backend English schema', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'TICKFLOW_PRIORITY',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('TickFlow 优先级')).toBeInTheDocument();
+    expect(screen.getByText(/控制 TickFlow 在 A 股日线数据源回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
   it('renders sensitive field metadata and validation errors', () => {
     const onChange = vi.fn();
 

@@ -4,6 +4,10 @@ import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '.
 
 const requiredLocalizedKeys = [
   'TICKFLOW_API_KEY',
+  'TICKFLOW_PRIORITY',
+  'TICKFLOW_KLINE_ADJUST',
+  'TICKFLOW_BATCH_DAILY_ENABLED',
+  'TICKFLOW_BATCH_SIZE',
   'STOCK_INDEX_REMOTE_UPDATE_ENABLED',
   'SEARXNG_BASE_URLS',
   'ENABLE_REALTIME_QUOTE',
