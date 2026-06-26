@@ -22,6 +22,7 @@ from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.analyzer import AnalysisResult, GeminiAnalyzer
+from src.llm.generation_backend import GenerationError
 from src.services.run_diagnostics import (
     current_diagnostic_snapshot,
     record_history_run,
@@ -371,6 +372,15 @@ def run_market_review(
                 )
             return review_report
         
+    except GenerationError:
+        logger.exception(
+            "[MarketReview] component=market_review action=failed "
+            "reason=generation_backend_config trigger_source=%s query_id=%s region=%s",
+            trigger_source,
+            history_query_id,
+            persist_region,
+        )
+        raise
     except Exception:
         logger.exception(
             "[MarketReview] component=market_review action=failed "
@@ -546,9 +556,14 @@ def _persist_market_review_history(
         diagnostic_snapshot = current_diagnostic_snapshot()
         if diagnostic_snapshot is not None:
             context_snapshot["diagnostics"] = diagnostic_snapshot
+        context_snapshot["analysis_context_pack_overview"] = _build_market_review_context_overview(
+            region=region,
+            report_language=report_language,
+            diagnostic_snapshot=diagnostic_snapshot,
+        )
 
         db = DatabaseManager.get_instance()
-        saved = db.save_analysis_history(
+        saved_history_id = db.save_analysis_history(
             result=result,
             query_id=history_query_id,
             report_type=MARKET_REVIEW_REPORT_TYPE,
@@ -556,22 +571,26 @@ def _persist_market_review_history(
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        saved_history_id = (
-            saved
-            if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0
+        valid_saved_history_id = (
+            saved_history_id
+            if (
+                isinstance(saved_history_id, int)
+                and not isinstance(saved_history_id, bool)
+                and saved_history_id > 0
+            )
             else None
         )
         record_history_run(
-            report_saved=bool(saved),
-            metadata_saved=bool(saved),
-            analysis_history_id=saved_history_id,
+            report_saved=bool(saved_history_id),
+            metadata_saved=bool(saved_history_id),
+            analysis_history_id=valid_saved_history_id,
         )
         _refresh_market_review_history_diagnostics(query_id=history_query_id)
-        if saved:
+        if saved_history_id:
             logger.info("大盘复盘历史记录已保存: query_id=%s", history_query_id)
         else:
             logger.warning("大盘复盘历史记录保存失败: query_id=%s", history_query_id)
-        return saved
+        return saved_history_id
     except Exception as exc:
         record_history_run(
             report_saved=False,
@@ -580,6 +599,65 @@ def _persist_market_review_history(
         )
         logger.warning("大盘复盘历史记录保存异常，报告文件与推送流程继续: %s", exc, exc_info=True)
         return 0
+
+
+def _build_market_review_context_overview(
+    *,
+    region: str,
+    report_language: str,
+    diagnostic_snapshot: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build a low-sensitivity overview block for market-review run-flow rendering."""
+    warnings: list[str] = []
+    counts = {
+        "available": 1,
+        "missing": 0,
+        "not_supported": 0,
+        "fallback": 0,
+        "stale": 0,
+        "estimated": 0,
+        "partial": 0,
+        "fetch_failed": 0,
+    }
+    metadata: Dict[str, Any] = {
+        "trigger_source": "market_review",
+        "scope": "market_review",
+        "report_type": MARKET_REVIEW_REPORT_TYPE,
+    }
+    if isinstance(diagnostic_snapshot, dict):
+        metadata["trigger_source"] = diagnostic_snapshot.get("trigger_source") or metadata["trigger_source"]
+        metadata["scope"] = diagnostic_snapshot.get("scope") or metadata["scope"]
+
+    label = "Market review" if report_language == "en" else "大盘复盘"
+    return {
+        "pack_version": "market_review/1.0",
+        "created_at": datetime.now().isoformat(),
+        "subject": {
+            "code": MARKET_REVIEW_HISTORY_CODE,
+            "stock_name": label,
+            "market": region,
+        },
+        "blocks": [
+            {
+                "key": MARKET_REVIEW_REPORT_TYPE,
+                "label": label,
+                "status": "available",
+                "source": MARKET_REVIEW_REPORT_TYPE,
+                "warnings": warnings,
+                "missing_reasons": [],
+            }
+        ],
+        "counts": counts,
+        "warnings": warnings,
+        "metadata": metadata,
+        "data_quality": {
+            "level": "good",
+            "overall_score": 100,
+            "available": 1,
+            "total": 1,
+            "missing": 0,
+        },
+    }
 
 
 def _summarize_market_review(review_report: str, report_language: str) -> str:

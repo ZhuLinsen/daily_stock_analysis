@@ -39,7 +39,7 @@ describe('RunFlowEventList', () => {
     expect(screen.getByText('日线降级')).toBeInTheDocument();
     expect(screen.getByText('任务取消')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '降级/重试' }));
+    fireEvent.click(screen.getByRole('button', { name: '降级回退/重试' }));
 
     expect(screen.getByText('日线降级')).toBeInTheDocument();
     expect(screen.queryByText('任务创建')).not.toBeInTheDocument();

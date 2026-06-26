@@ -463,7 +463,7 @@ def test_reuses_same_run_history_when_saved_under_different_wall_clock_date() ->
     run_review.assert_not_called()
 
 
-def test_get_context_passes_current_query_id_to_market_review_when_generating() -> None:
+def test_get_context_uses_isolated_market_context_query_id_when_generating() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = []
     service = DailyMarketContextService(
@@ -503,8 +503,10 @@ def test_get_context_passes_current_query_id_to_market_review_when_generating() 
 
     assert context is not None
     assert context.source == "market_review_runtime"
+    assert context.query_id == "query-1381"
     run_review.assert_called_once()
-    assert run_review.call_args.kwargs["query_id"] == "query-1381"
+    assert run_review.call_args.kwargs["query_id"] == "market_context_query-1381_cn"
+    assert run_review.call_args.kwargs["trigger_source"] == "daily_market_context"
     acquire_lock.assert_called_once()
     release_lock.assert_called_once_with(lock_token)
 

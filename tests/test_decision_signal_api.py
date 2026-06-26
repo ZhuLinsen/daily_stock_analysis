@@ -173,6 +173,7 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
     signal_id = created["item"]["id"]
     assert created["item"]["stock_code"] == "600519"
     assert created["item"]["plan_quality"] == "partial"
+    assert created["item"]["expires_at"] is not None
 
     duplicate_resp = client.post(
         "/api/v1/decision-signals",
@@ -226,13 +227,12 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
     assert clear_metadata_resp.json()["status"] == "archived"
     assert clear_metadata_resp.json()["metadata"] is None
 
-    status_only_resp = client.patch(
+    terminal_reactivate_resp = client.patch(
         f"/api/v1/decision-signals/{signal_id}/status",
         json={"status": "active"},
     )
-    assert status_only_resp.status_code == 200, status_only_resp.text
-    assert status_only_resp.json()["status"] == "active"
-    assert status_only_resp.json()["metadata"] is None
+    assert terminal_reactivate_resp.status_code == 400, terminal_reactivate_resp.text
+    assert terminal_reactivate_resp.json()["error"] == "validation_error"
 
     invalid_status_resp = client.patch(
         f"/api/v1/decision-signals/{signal_id}/status",
@@ -243,6 +243,28 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
 
     missing_resp = client.get("/api/v1/decision-signals/999999")
     assert missing_resp.status_code == 404
+
+
+def test_create_treats_null_lifecycle_fields_as_missing(client_and_db) -> None:
+    client, _db = client_and_db
+
+    response = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=3002,
+            trace_id="trace-null-lifecycle-api",
+            horizon=None,
+            expires_at=None,
+            market_phase="intraday",
+            metadata={"market_phase_summary": {"minutes_to_close": 25}},
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["item"]
+    assert item["status"] == "active"
+    assert item["horizon"] == "intraday"
+    assert item["expires_at"] is not None
 
 
 def test_status_update_sanitizes_metadata_before_response_and_persistence(client_and_db) -> None:
@@ -398,7 +420,6 @@ def test_patch_status_rejects_expired_signal_without_expires_at_extension(client
     assert created_resp.status_code == 200, created_resp.text
     item = created_resp.json()["item"]
     assert item["status"] == "expired"
-    assert item["expires_at"] is None
 
     reactivate_resp = client.patch(
         f"/api/v1/decision-signals/{item['id']}/status",
@@ -481,6 +502,43 @@ def test_create_refreshes_expired_same_source_when_future_expiry_is_supplied(cli
         assert row.status == "active"
         assert row.reason == "fresh reason"
         assert row.trace_id == "trace-refresh-original"
+
+
+def test_create_invalidates_opposing_active_signal_and_latest_filters_it(client_and_db) -> None:
+    client, _db = client_and_db
+    buy_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=31101,
+            trace_id="trace-api-opposing-buy",
+            action="buy",
+        ),
+    )
+    assert buy_resp.status_code == 200, buy_resp.text
+    buy = buy_resp.json()["item"]
+
+    sell_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=31102,
+            trace_id="trace-api-opposing-sell",
+            action="sell",
+        ),
+    )
+    assert sell_resp.status_code == 200, sell_resp.text
+    sell = sell_resp.json()["item"]
+
+    old_resp = client.get(f"/api/v1/decision-signals/{buy['id']}")
+    assert old_resp.status_code == 200, old_resp.text
+    old = old_resp.json()
+    assert old["status"] == "invalidated"
+    assert old["metadata"]["invalidated_by_signal_id"] == sell["id"]
+
+    latest_resp = client.get("/api/v1/decision-signals/latest/600519", params={"limit": 5})
+    assert latest_resp.status_code == 200, latest_resp.text
+    latest = latest_resp.json()
+    assert latest["total"] == 1
+    assert latest["items"][0]["id"] == sell["id"]
 
 
 def test_create_does_not_refresh_expired_same_source_without_future_active_expiry(client_and_db) -> None:

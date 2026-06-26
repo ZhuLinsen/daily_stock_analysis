@@ -14,7 +14,22 @@
 
 分析时使用简洁中文，优先遵循仓库根目录 `AGENTS.md` 和 `.github/PULL_REQUEST_TEMPLATE.md`。
 
-### Step 1: 拉取 PR 基本信息
+### Step 1: 同步最新代码基线
+
+分析 PR 前必须先刷新远端状态，并尽量把本地安全推进到最新基线：
+
+```bash
+git status --short
+git fetch --all --prune
+# 仅当工作区干净且当前分支可 fast-forward 时执行：
+git pull --ff-only
+```
+
+- 只有在工作区干净、当前分支有可 fast-forward 的上游时，才执行并接受 `git pull --ff-only` 的结果。
+- 如存在本地改动、冲突状态、未跟踪风险文件、无上游分支或无法 fast-forward，不要执行 `stash`、`reset`、强制切分支或覆盖本地状态；改用已 fetch 的 `origin/main`、PR head 或 GitHub diff 做分析。
+- 在输出文档的 `Validation Evidence` 中记录同步结果：本地 HEAD、使用的远端基线，以及未更新本地工作树的原因（如有）。
+
+### Step 2: 拉取 PR 基本信息
 
 ```bash
 gh pr view <pr_number> --repo ZhuLinsen/daily_stock_analysis
@@ -29,7 +44,7 @@ gh pr diff <pr_number> --repo ZhuLinsen/daily_stock_analysis
 gh run view <run_id> --log-failed
 ```
 
-### Step 2: 检查标题与描述完整性
+### Step 3: 检查标题与描述完整性
 
 先检查 PR title 是否符合 `AGENTS.md` 的非阻断建议：
 
@@ -59,7 +74,7 @@ gh run view <run_id> --log-failed
 
 若 PR 修改报告格式、报告渲染效果或 Web UI 界面，还要检查 `Visual Evidence` 是否附受影响报告 / 页面截图；涉及前后差异时优先检查前后对比。若无法截图，描述中应说明原因与替代可视证据。
 
-### Step 3: 优先使用 CI / Diff 证据
+### Step 4: 优先使用 CI / Diff 证据
 
 - 先根据 `gh pr checks`、PR diff、现有测试与工作流日志判断问题
 - 仅当 CI 未覆盖改动面、CI 结果不足以定性问题、或需要验证关键回归风险时，再补充本地最小验证
@@ -71,7 +86,7 @@ gh run view <run_id> --log-failed
 - 前端：`cd apps/dsa-web && npm ci && npm run lint && npm run build`
 - 桌面端：先构建 Web，再构建 Electron
 
-### Step 4: 评估正确性与风险
+### Step 5: 评估正确性与风险
 
 重点检查：
 
@@ -80,7 +95,7 @@ gh run view <run_id> --log-failed
 - 是否破坏 fallback、降级路径、通知链路或发布流程
 - 是否存在明显逻辑错误、异常吞没、安全问题、配置语义变化未同步文档
 
-### Step 5: 生成评审文档
+### Step 6: 生成评审文档
 
 保存到 `.claude/reviews/prs/pr-<number>.md`
 
@@ -109,6 +124,7 @@ gh run view <run_id> --log-failed
 
 ## Validation Evidence
 
+- 代码同步基线：
 - CI 结论：
 - 本地补充验证（如有）：
 
@@ -129,6 +145,7 @@ gh run view <run_id> --log-failed
 ## Allowed Auto-Actions (No Confirmation Needed)
 
 - 拉取 PR 元数据、diff、评论和 CI 状态
+- 执行 `git fetch --all --prune`，并在工作区干净且可 fast-forward 时执行 `git pull --ff-only`
 - 阅读相关代码、模板、工作流与文档
 - 在必要时执行最小化本地验证
 - 生成评审文档

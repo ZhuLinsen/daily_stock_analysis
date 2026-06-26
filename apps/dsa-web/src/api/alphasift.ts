@@ -153,6 +153,7 @@ export type AlphaSiftHotspotDetail = {
   route: AlphaSiftHotspotRouteItem[];
   timeline?: AlphaSiftHotspotRouteItem[];
   stocks: AlphaSiftHotspotStock[];
+  leaderStocks?: AlphaSiftHotspotStock[];
   stockCount: number;
   sourceErrors?: string[];
   qualityStatus?: 'available' | 'partial' | 'stale' | 'failed' | string;
@@ -175,6 +176,7 @@ export type AlphaSiftHotspotsResponse = {
   sourceErrors?: string[];
   stale?: boolean;
   staleAgeHours?: number | null;
+  message?: string | null;
   hotspots: AlphaSiftHotspot[];
   hotspotCount: number;
   details?: Record<string, AlphaSiftHotspotDetail>;

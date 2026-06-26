@@ -106,11 +106,16 @@ const labelForDataType = (dataType: string, nodes: RunFlowNode[]): string => {
 
 const groupStatus = (nodes: RunFlowNode[], edges: RunFlowEdge[]): RunFlowStatus => {
   const statuses = nodes.map((node) => node.status);
+  if (statuses.length === 0) return 'unknown';
+  if (statuses.includes('cancel_requested')) return 'cancel_requested';
+  if (statuses.some((status) => status === 'running' || status === 'pending')) return 'running';
+  if (statuses.every((status) => status === 'success')) return 'success';
   const hasSuccess = statuses.includes('success');
-  const hasFallbackSignal = statuses.includes('fallback')
-    || edges.some((edge) => edge.kind === 'fallback' || edge.kind === 'retry');
-  if (hasSuccess && hasFallbackSignal) return 'fallback';
-  if (hasSuccess && statuses.some((status) => ['failed', 'timeout', 'degraded'].includes(status))) return 'degraded';
+  const hasFailedOrTimeout = statuses.some((status) => status === 'failed' || status === 'timeout');
+  const hasFallbackAttempt = statuses.includes('fallback');
+  const hasRecoveryTransition = edges.some((edge) => edge.kind === 'fallback' || edge.kind === 'retry');
+  if (hasSuccess && (hasFailedOrTimeout || hasFallbackAttempt) && hasRecoveryTransition) return 'fallback';
+  if (hasSuccess && statuses.some((status) => ['failed', 'timeout', 'degraded', 'fallback'].includes(status))) return 'degraded';
   return statuses.reduce<RunFlowStatus>((winner, status) => (
     statusRank(status) > statusRank(winner) ? status : winner
   ), 'unknown');
@@ -159,6 +164,7 @@ const buildProviderGroupNode = (
     recordCount: firstDefinedRecordCount([...sortedAttempts].reverse()),
     metadata: {
       topologyGroup: 'provider_attempts',
+      topologyRole: 'provider_group',
       expanded,
       data_type: dataType,
       provider_chain: providerChain,
@@ -236,6 +242,25 @@ export const buildRunFlowTopologyModel = (
     nodeIdMap.set(node.id, options.expandedGroupIds?.has(groupId) ? node.id : groupId);
   });
 
+  const attemptTopologyById = new Map<string, {
+    dataType: string;
+    groupId: string;
+    order: number;
+  }>();
+  attemptsByDataType.forEach((attempts, dataType) => {
+    [...attempts]
+      .sort((left, right) => (
+        (nodeTime(left) ?? Number.MAX_SAFE_INTEGER) - (nodeTime(right) ?? Number.MAX_SAFE_INTEGER)
+      ))
+      .forEach((node, index) => {
+        attemptTopologyById.set(node.id, {
+          dataType,
+          groupId: `${PROVIDER_GROUP_PREFIX}${dataType}`,
+          order: index + 1,
+        });
+      });
+  });
+
   const providerGroupNodes = Array.from(attemptsByDataType.entries()).map(([dataType, attempts]) => {
     const attemptIds = new Set(attempts.map((node) => node.id));
     const attemptEdges = snapshot.edges.filter((edge) => attemptIds.has(edge.from) && attemptIds.has(edge.to));
@@ -256,6 +281,22 @@ export const buildRunFlowTopologyModel = (
 
   const visibleNodes = snapshot.nodes
     .filter((node) => !collapsedNodeIds.has(node.id))
+    .map((node) => {
+      const topology = attemptTopologyById.get(node.id);
+      if (!topology) {
+        return node;
+      }
+      return {
+        ...node,
+        metadata: {
+          ...(node.metadata || {}),
+          data_type: topology.dataType,
+          topologyParentId: topology.groupId,
+          topologyRole: 'provider_attempt',
+          topologyOrder: topology.order,
+        },
+      };
+    })
     .map((node) => attachContextBlocksToPack(node, contextBlocks));
 
   const nodes = [...visibleNodes, ...providerGroupNodes];

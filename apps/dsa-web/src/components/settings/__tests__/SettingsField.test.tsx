@@ -161,6 +161,40 @@ describe('SettingsField', () => {
     expect(onChange).toHaveBeenCalledWith('NOTIFICATION_MIN_SEVERITY', '');
   });
 
+  it('shows the schema default for select fields when no explicit env value exists', () => {
+    const onChange = vi.fn();
+
+    render(
+      <SettingsField
+        item={{
+          key: 'GENERATION_BACKEND',
+          value: '',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'GENERATION_BACKEND',
+            title: 'Generation Backend',
+            category: 'ai_model',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            defaultValue: 'litellm',
+            options: [{ label: 'Default model settings', value: 'litellm' }],
+            validation: { enum: ['litellm'] },
+            displayOrder: 1,
+          },
+        }}
+        value=""
+        onChange={onChange}
+      />
+    );
+
+    expect(screen.getByLabelText('分析生成方式')).toHaveValue('litellm');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('renders localized labels for real system config select options', () => {
     const selectCases = [
       {
@@ -415,6 +449,93 @@ describe('SettingsField', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '自选股列表' })).not.toBeInTheDocument();
+  });
+
+  it('keeps generation channel help user-facing without env key or examples', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'GENERATION_BACKEND',
+          value: 'litellm',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'GENERATION_BACKEND',
+            title: 'Generation Backend',
+            category: 'ai_model',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [{ label: 'Default model settings', value: 'litellm' }],
+            validation: { enum: ['litellm'] },
+            displayOrder: 1,
+            helpKey: 'settings.ai_model.GENERATION_BACKEND',
+            examples: ['GENERATION_BACKEND=litellm'],
+            warningCodes: [],
+          },
+        }}
+        value="litellm"
+        onChange={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 分析生成方式 配置说明' }));
+
+    const dialog = screen.getByRole('dialog', { name: '分析生成方式' });
+    expect(dialog).toHaveTextContent('决定系统用哪种方式生成');
+    expect(dialog).not.toHaveTextContent('GENERATION_BACKEND');
+    expect(dialog).not.toHaveTextContent('配置样例');
+    expect(dialog).not.toHaveTextContent('Phase 1');
+    expect(dialog).toHaveTextContent('本机已安装并登录 Codex CLI');
+    expect(dialog).toHaveTextContent('默认模型配置会继续使用现有 API Key');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
+  });
+
+  it('describes agent auto generation without exposing implementation labels as the primary UI copy', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'AGENT_GENERATION_BACKEND',
+          value: 'auto',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'AGENT_GENERATION_BACKEND',
+            title: 'Agent Generation Backend',
+            category: 'agent',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [
+              { label: 'Auto', value: 'auto' },
+              { label: 'Default model settings', value: 'litellm' },
+            ],
+            validation: { enum: ['auto', 'litellm'] },
+            displayOrder: 1,
+            helpKey: 'settings.agent.AGENT_GENERATION_BACKEND',
+            examples: [],
+            warningCodes: [],
+          },
+        }}
+        value="auto"
+        onChange={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 问股生成方式 配置说明' }));
+
+    const dialog = screen.getByRole('dialog', { name: '问股生成方式' });
+    expect(dialog).toHaveTextContent('系统会选择当前可用的方式');
+    expect(dialog).toHaveTextContent('如果不确定，选择“自动”即可');
+    expect(dialog).toHaveTextContent('这项设置只影响问股助手');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
+    expect(dialog).not.toHaveTextContent('优先选择当前可用');
   });
 
   it('uses per-field schema titles even when helpKey is shared by multiple fields', () => {

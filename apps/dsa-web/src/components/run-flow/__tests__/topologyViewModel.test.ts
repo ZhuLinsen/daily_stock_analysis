@@ -144,6 +144,7 @@ describe('buildRunFlowTopologyModel', () => {
     });
     expect(newsGroup?.metadata).toMatchObject({
       topologyGroup: 'provider_attempts',
+      topologyRole: 'provider_group',
       data_type: 'news_search',
       success_count: 1,
       failed_count: 1,
@@ -246,6 +247,61 @@ describe('buildRunFlowTopologyModel', () => {
     expect(model.events.find((event) => event.id === 'evt-normalized-block')?.nodeId).toBe('context_pack');
   });
 
+  it('keeps retry-only provider groups successful when every attempt succeeds', () => {
+    const retryOnlySnapshot: RunFlowSnapshot = {
+      ...baseSnapshot,
+      nodes: baseSnapshot.nodes.map((node) => (
+        node.id === 'provider_news_search_tavily_1'
+          ? { ...node, status: 'success' as const }
+          : node
+      )),
+      edges: baseSnapshot.edges.map((edge) => (
+        edge.id === 'news-1-news-2'
+          ? { ...edge, kind: 'retry' as const, status: 'success' as const }
+          : edge
+      )),
+    };
+
+    const model = buildRunFlowTopologyModel(retryOnlySnapshot);
+    const newsGroup = model.nodes.find((node) => node.id === 'topology_data_news_search');
+
+    expect(newsGroup).toMatchObject({
+      status: 'success',
+      attempts: 2,
+    });
+    expect(newsGroup?.metadata).toMatchObject({
+      success_count: 2,
+      failed_count: 0,
+      fallback_count: 0,
+      retry_count: 1,
+    });
+  });
+
+  it('marks mixed success and failure without recovery transitions as degraded', () => {
+    const degradedSnapshot: RunFlowSnapshot = {
+      ...baseSnapshot,
+      edges: baseSnapshot.edges.map((edge) => (
+        edge.id === 'news-1-news-2'
+          ? { ...edge, kind: 'data' as const, status: 'success' as const }
+          : edge
+      )),
+    };
+
+    const model = buildRunFlowTopologyModel(degradedSnapshot);
+    const newsGroup = model.nodes.find((node) => node.id === 'topology_data_news_search');
+
+    expect(newsGroup).toMatchObject({
+      status: 'degraded',
+      attempts: 2,
+    });
+    expect(newsGroup?.metadata).toMatchObject({
+      success_count: 1,
+      failed_count: 1,
+      fallback_count: 0,
+      retry_count: 0,
+    });
+  });
+
   it('attaches context block states to ContextPack and remaps events', () => {
     const model = buildRunFlowTopologyModel(baseSnapshot);
     const contextPack = model.nodes.find((node) => node.id === 'context_pack');
@@ -284,5 +340,67 @@ describe('buildRunFlowTopologyModel', () => {
       ]),
     );
     expect(model.events.find((event) => event.id === 'evt-news-1')?.nodeId).toBe('provider_news_search_tavily_1');
+  });
+
+  it('adds stable topology metadata to expanded provider attempts even when data_type is missing', () => {
+    const snapshotWithoutDataType: RunFlowSnapshot = {
+      ...baseSnapshot,
+      nodes: baseSnapshot.nodes.map((node) => {
+        if (!node.id.startsWith('provider_')) {
+          return node;
+        }
+        return {
+          ...node,
+          metadata: {},
+        };
+      }),
+    };
+
+    const model = buildRunFlowTopologyModel(snapshotWithoutDataType, {
+      expandedGroupIds: new Set(['topology_data_news_search']),
+    });
+    const tavily = model.nodes.find((node) => node.id === 'provider_news_search_tavily_1');
+    const searxng = model.nodes.find((node) => node.id === 'provider_news_search_searxng_2');
+
+    expect(tavily?.metadata).toMatchObject({
+      data_type: 'news_search',
+      topologyParentId: 'topology_data_news_search',
+      topologyRole: 'provider_attempt',
+      topologyOrder: 1,
+    });
+    expect(searxng?.metadata).toMatchObject({
+      data_type: 'news_search',
+      topologyParentId: 'topology_data_news_search',
+      topologyRole: 'provider_attempt',
+      topologyOrder: 2,
+    });
+  });
+
+  it('keeps provider group running while any provider attempt is still running', () => {
+    const runningSnapshot: RunFlowSnapshot = {
+      ...baseSnapshot,
+      status: 'running',
+      nodes: baseSnapshot.nodes.map((node) => {
+        if (node.id === 'provider_news_search_tavily_1') {
+          return {
+            ...node,
+            status: 'success',
+          };
+        }
+        if (node.id === 'provider_news_search_searxng_2') {
+          return {
+            ...node,
+            status: 'running',
+            endedAt: null,
+          };
+        }
+        return node;
+      }),
+    };
+
+    const model = buildRunFlowTopologyModel(runningSnapshot);
+    const newsGroup = model.nodes.find((node) => node.id === 'topology_data_news_search');
+
+    expect(newsGroup?.status).toBe('running');
   });
 });

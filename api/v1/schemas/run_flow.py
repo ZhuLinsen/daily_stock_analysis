@@ -57,7 +57,7 @@ class RunFlowNode(BaseModel):
     started_at: Optional[str] = Field(None, description="ISO timestamp when the node started")
     ended_at: Optional[str] = Field(None, description="ISO timestamp when the node ended")
     duration_ms: Optional[int] = Field(None, ge=0, description="Node duration in milliseconds")
-    attempts: Optional[int] = Field(None, ge=1, description="Attempt count represented by this node")
+    attempts: Optional[int] = Field(None, ge=0, description="Attempt count represented by this node")
     record_count: Optional[int] = Field(None, ge=0, description="Returned record count")
     message: Optional[str] = Field(None, description="Short sanitized status message")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Sanitized low-sensitivity metadata")

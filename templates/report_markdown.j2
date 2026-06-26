@@ -24,6 +24,11 @@
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
+{% set signal_excerpt = decision_signal_excerpt(result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
+{% endif %}
+
 {% if intel %}
 ### 📰 {{ labels.info_heading }}
 

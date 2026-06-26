@@ -149,6 +149,28 @@ const appendEdge = (
   ];
 };
 
+const refreshIncomingEdgeStatus = (
+  edges: RunFlowEdge[],
+  nodeId: string | null,
+  status?: RunFlowEdge['status'],
+): RunFlowEdge[] => {
+  if (!nodeId || !status) {
+    return edges;
+  }
+  let changed = false;
+  const refreshed = edges.map((edge) => {
+    if (edge.to !== nodeId || edge.status === status) {
+      return edge;
+    }
+    changed = true;
+    return {
+      ...edge,
+      status,
+    };
+  });
+  return changed ? refreshed : edges;
+};
+
 const providerTransitionKind = (
   previous: { provider: string | null; success: boolean; fallbackTo: string | null },
   current: { provider: string | null; success: boolean; fallbackFrom: string | null },
@@ -191,12 +213,16 @@ const appendDerivedEdge = (
     return edges;
   }
 
-  if (displayEvent.type === 'provider_run') {
+  if (displayEvent.type === 'provider_run' || displayEvent.type === 'provider_run_started') {
     const dataType = dataTypeFromEvent(displayEvent, node);
     const currentTime = eventTime(displayEvent);
     const previousEvent = events
       .filter((event) => {
-        if (event.id === displayEvent.id || event.type !== 'provider_run' || !event.nodeId) {
+        if (
+          event.id === displayEvent.id
+          || (event.type !== 'provider_run' && event.type !== 'provider_run_started')
+          || !event.nodeId
+        ) {
           return false;
         }
         if (eventTime(event) >= currentTime) {
@@ -231,7 +257,7 @@ const appendDerivedEdge = (
     return appendEdge(edges, previousNode.id, nodeId, transitionKind, node.status, label, message);
   }
 
-  if (displayEvent.type === 'llm_run') {
+  if (displayEvent.type === 'llm_run' || displayEvent.type === 'llm_run_started') {
     const anchor = nodeById.has('analysis_pipeline') ? 'analysis_pipeline' : 'task_queue';
     return nodeById.has(anchor)
       ? appendEdge(edges, anchor, nodeId, 'data', node.status, '生成')
@@ -239,7 +265,7 @@ const appendDerivedEdge = (
   }
 
   if (displayEvent.type === 'history_run') {
-    const anchor = latestEventNodeId(events, nodeById, ['llm_run'], displayEvent)
+    const anchor = latestEventNodeId(events, nodeById, ['llm_run', 'llm_run_started'], displayEvent)
       || (nodeById.has('analysis_pipeline') ? 'analysis_pipeline' : 'task_queue');
     return nodeById.has(anchor)
       ? appendEdge(edges, anchor, nodeId, 'data', node.status, '保存')
@@ -248,7 +274,7 @@ const appendDerivedEdge = (
 
   if (displayEvent.type === 'notification_run') {
     const anchor = latestEventNodeId(events, nodeById, ['history_run'], displayEvent)
-      || latestEventNodeId(events, nodeById, ['llm_run'], displayEvent)
+      || latestEventNodeId(events, nodeById, ['llm_run', 'llm_run_started'], displayEvent)
       || (nodeById.has('analysis_pipeline') ? 'analysis_pipeline' : 'task_queue');
     return nodeById.has(anchor)
       ? appendEdge(edges, anchor, nodeId, 'control', node.status, '通知')
@@ -331,12 +357,16 @@ const mergeFlowEventIntoSnapshot = (
   const nodes = upsertNode(snapshot.nodes, node);
   const edges = eventAlreadyPresent
     ? snapshot.edges
-    : appendDerivedEdge(
-      nodes,
-      snapshot.edges,
-      events,
-      displayEvent,
+    : refreshIncomingEdgeStatus(
+      appendDerivedEdge(
+        nodes,
+        snapshot.edges,
+        events,
+        displayEvent,
+        eventNodeId(displayEvent, node),
+      ),
       eventNodeId(displayEvent, node),
+      node?.status,
     );
 
   return {
@@ -359,11 +389,34 @@ const rememberFlowEvent = (events: RunFlowEvent[], flowEvent: RunFlowEvent): Run
     .slice(-MAX_BUFFERED_FLOW_EVENTS);
 };
 
+const ACTIVE_NODE_STATUSES = new Set(['pending', 'running', 'cancel_requested']);
+
+const replayEventNodeId = (flowEvent: RunFlowEvent): string | null => {
+  const nodeCandidate = flowEvent.metadata?.node;
+  if (isRunFlowNode(nodeCandidate)) {
+    return nodeCandidate.id;
+  }
+  return flowEvent.nodeId || null;
+};
+
+const shouldReplayFlowEvent = (snapshot: RunFlowSnapshot, flowEvent: RunFlowEvent): boolean => {
+  const nodeId = replayEventNodeId(flowEvent);
+  if (!nodeId) {
+    return true;
+  }
+  const existingNode = snapshot.nodes.find((node) => node.id === nodeId);
+  return !existingNode || ACTIVE_NODE_STATUSES.has(existingNode.status);
+};
+
 const replayFlowEvents = (
   snapshot: RunFlowSnapshot,
   flowEvents: RunFlowEvent[],
 ): RunFlowSnapshot => flowEvents.reduce(
-  (currentSnapshot, flowEvent) => mergeFlowEventIntoSnapshot(currentSnapshot, flowEvent),
+  (currentSnapshot, flowEvent) => (
+    shouldReplayFlowEvent(currentSnapshot, flowEvent)
+      ? mergeFlowEventIntoSnapshot(currentSnapshot, flowEvent)
+      : currentSnapshot
+  ),
   snapshot,
 );
 

@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from src.core.config_registry import (
+    SCHEMA_VERSION,
     WEB_SETTINGS_HIDDEN_FROM_UI,
     build_schema_response,
     get_field_definition,
@@ -157,6 +158,143 @@ class TestAlphaSiftFieldsRegistered(unittest.TestCase):
         self.assertEqual(field["ui_control"], "password")
 
 
+class TestLLMUsageHMACFieldsRegistered(unittest.TestCase):
+    def test_secret_is_sensitive_password_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_SECRET")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_SECRET")
+        self.assertIn("high-entropy", field["description"])
+        self.assertIn("version control", field["description"])
+        self.assertIn("openssl rand -hex 32", field["examples"][0])
+        self.assertIn("secret_value", field.get("warning_codes", []))
+
+    def test_key_version_is_visible_non_sensitive_field(self):
+        field = get_field_definition("LLM_USAGE_HMAC_KEY_VERSION")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertFalse(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "text")
+        self.assertEqual(field["default_value"], "local-v1")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_USAGE_HMAC_KEY_VERSION")
+
+
+class TestGenerationBackendFieldsRegistered(unittest.TestCase):
+    def test_analysis_backend_fields_are_ai_model_selects(self):
+        expected = {
+            "GENERATION_BACKEND": "settings.ai_model.GENERATION_BACKEND",
+            "GENERATION_FALLBACK_BACKEND": "settings.ai_model.GENERATION_FALLBACK_BACKEND",
+        }
+        for key, help_key in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "ai_model")
+            self.assertEqual(field["ui_control"], "select")
+            self.assertEqual(field["default_value"], "litellm")
+            if key == "GENERATION_BACKEND":
+                self.assertEqual(field["validation"], {"enum": ["litellm", "codex_cli"]})
+                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
+                self.assertIn({"label": "Codex CLI (experimental)", "value": "codex_cli"}, field["options"])
+            else:
+                self.assertEqual(field["validation"], {"enum": ["", "litellm"]})
+                self.assertIn({"label": "Disabled", "value": ""}, field["options"])
+                self.assertIn({"label": "Default model settings", "value": "litellm"}, field["options"])
+            self.assertEqual(field["help_key"], help_key)
+            self.assertNotEqual(field["display_order"], 9000)
+
+    def test_agent_generation_backend_field_is_agent_select(self):
+        field = get_field_definition("AGENT_GENERATION_BACKEND")
+
+        self.assertEqual(field["category"], "agent")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "auto")
+        self.assertEqual(field["validation"], {"enum": ["auto", "litellm"]})
+        self.assertEqual(
+            field["options"],
+            [
+                {"label": "Auto", "value": "auto"},
+                {"label": "Default model settings", "value": "litellm"},
+            ],
+        )
+        self.assertEqual(field["help_key"], "settings.agent.AGENT_GENERATION_BACKEND")
+        self.assertNotEqual(field["display_order"], 9000)
+
+    def test_generation_backend_numeric_fields_have_upper_bounds(self):
+        expected = {
+            "GENERATION_BACKEND_TIMEOUT_SECONDS": {"min": 1, "max": 3600},
+            "GENERATION_BACKEND_MAX_OUTPUT_BYTES": {"min": 1, "max": 33554432},
+            "GENERATION_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 16},
+            "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": {"min": 1, "max": 4},
+        }
+
+        for key, validation in expected.items():
+            self.assertEqual(get_field_definition(key)["validation"], validation)
+
+    def test_schema_response_groups_generation_backend_fields(self):
+        schema = build_schema_response()
+        self.assertEqual(schema["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(SCHEMA_VERSION, "2026-06-23-local-cli-backend")
+
+        categories = {
+            category["category"]: {field["key"] for field in category["fields"]}
+            for category in schema["categories"]
+        }
+
+        self.assertIn("GENERATION_BACKEND", categories["ai_model"])
+        self.assertIn("GENERATION_FALLBACK_BACKEND", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_TIMEOUT_SECONDS", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES", categories["ai_model"])
+        self.assertIn("GENERATION_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
+        self.assertIn("LOCAL_CLI_BACKEND_MAX_CONCURRENCY", categories["ai_model"])
+        self.assertIn("AGENT_GENERATION_BACKEND", categories["agent"])
+
+
+class TestScheduleTimesFieldRegistered(unittest.TestCase):
+    def test_schedule_times_pattern_accepts_documented_empty_fallback(self):
+        field = get_field_definition("SCHEDULE_TIMES")
+        pattern = re.compile(field["validation"]["pattern"])
+
+        self.assertIsNotNone(pattern.fullmatch(""))
+        self.assertIsNotNone(pattern.fullmatch("   "))
+        self.assertIsNotNone(pattern.fullmatch("09:20,12:30,15:10"))
+        self.assertIsNone(pattern.fullmatch("09:20,"))
+        self.assertIsNone(pattern.fullmatch("25:70"))
+
+
+class TestLLMPromptCacheFieldsRegistered(unittest.TestCase):
+    def test_prompt_cache_telemetry_default_enabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_TELEMETRY_ENABLED")
+
+    def test_prompt_cache_hints_default_disabled(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["default_value"], "false")
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_HINTS_ENABLED")
+
+    def test_prompt_cache_diagnostics_is_select(self):
+        field = get_field_definition("LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+        self.assertEqual(field["category"], "ai_model")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(field["default_value"], "off")
+        self.assertEqual(
+            [option["value"] for option in field["options"]],
+            ["off", "basic", "debug"],
+        )
+        self.assertEqual(field["validation"], {"enum": ["off", "basic", "debug"]})
+        self.assertEqual(field["help_key"], "settings.ai_model.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 
@@ -193,10 +331,13 @@ class TestSettingsHelpMetadata(unittest.TestCase):
 
     _HELP_KEYS = (
         "STOCK_LIST",
+        "GENERATION_BACKEND",
+        "GENERATION_FALLBACK_BACKEND",
         "LITELLM_MODEL",
         "LLM_CHANNELS",
         "FEISHU_WEBHOOK_URL",
         "WEBUI_HOST",
+        "AGENT_GENERATION_BACKEND",
         "AGENT_LITELLM_MODEL",
         "LITELLM_FALLBACK_MODELS",
         "TUSHARE_TOKEN",

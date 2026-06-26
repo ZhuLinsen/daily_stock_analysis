@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { agentApi } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
@@ -154,6 +155,7 @@ const ChatPage: React.FC = () => {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [showSkillDesc, setShowSkillDesc] = useState<string | null>(null);
+  const [mobileSkillPickerOpen, setMobileSkillPickerOpen] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -593,6 +595,7 @@ const ChatPage: React.FC = () => {
       setIsFollowUpContextLoading(false);
 
       setInput('');
+      setMobileSkillPickerOpen(false);
       requestScrollToBottom('smooth');
       await startStream(payload, {
         skillNames: usedSkillNames,
@@ -858,6 +861,10 @@ const ChatPage: React.FC = () => {
       </ScrollArea>
     </>
   );
+
+  const selectedSkillSummary = selectedSkillIds.length > 0
+    ? getSkillNames(selectedSkillIds).join('、')
+    : '通用分析';
 
   return (
     <div
@@ -1278,61 +1285,91 @@ const ChatPage: React.FC = () => {
                   className="rounded-xl px-3 py-2 text-xs shadow-none"
                 />
               ) : null}
-            {skills.length > 0 && (
-              <div className="flex flex-wrap items-start gap-x-5 gap-y-2">
-                <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
-                  策略
-                </span>
-                <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
-                  <input
-                    type="checkbox"
-                    name="general-analysis"
-                    value=""
-                    checked={selectedSkillIds.length === 0}
-                    onChange={() => setSelectedSkillIds([])}
-                    className="chat-skill-checkbox"
-                  />
-                  <span
-                    className={`transition-colors text-sm ${selectedSkillIds.length === 0 ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+              {skills.length > 0 && (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    className="home-surface-button flex h-10 w-full items-center justify-between gap-3 rounded-xl px-3 text-left text-sm text-foreground md:hidden"
+                    aria-label={mobileSkillPickerOpen ? '收起策略选择' : '展开策略选择'}
+                    aria-expanded={mobileSkillPickerOpen}
+                    aria-controls="chat-skill-picker-panel"
+                    onClick={() => setMobileSkillPickerOpen((open) => !open)}
                   >
-                    通用分析
-                  </span>
-                </label>
-                {skills.map((s) => {
-                  const checked = selectedSkillIdSet.has(s.id);
-                  const disabled = !checked && skillLimitReached;
-                  return (
-                    <label
-                      key={s.id}
-                      className={`flex items-center gap-1.5 cursor-pointer group relative mt-0.5 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
-                      onMouseEnter={() => setShowSkillDesc(s.id)}
-                      onMouseLeave={() => setShowSkillDesc(null)}
-                    >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <SlidersHorizontal className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                      <span className="flex-shrink-0 font-medium">策略</span>
+                      <span className="truncate text-xs text-muted-text">{selectedSkillSummary}</span>
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        'h-4 w-4 flex-shrink-0 text-muted-text transition-transform',
+                        mobileSkillPickerOpen ? 'rotate-180' : '',
+                      )}
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <div
+                    id="chat-skill-picker-panel"
+                    data-testid="chat-skill-picker-panel"
+                    className={cn(
+                      mobileSkillPickerOpen ? 'flex' : 'hidden',
+                      'max-h-40 flex-wrap items-start gap-x-5 gap-y-2 overflow-y-auto rounded-xl border border-white/6 bg-surface/25 px-3 py-2 md:flex md:max-h-none md:overflow-visible md:border-0 md:bg-transparent md:p-0',
+                    )}
+                  >
+                    <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0 mt-1">
+                      策略
+                    </span>
+                    <label className="flex items-center gap-1.5 text-sm cursor-pointer group mt-0.5">
                       <input
                         type="checkbox"
-                        name="skills"
-                        value={s.id}
-                        checked={checked}
-                        disabled={disabled}
-                        onChange={() => toggleSkillSelection(s.id)}
+                        name="general-analysis"
+                        value=""
+                        checked={selectedSkillIds.length === 0}
+                        onChange={() => setSelectedSkillIds([])}
                         className="chat-skill-checkbox"
                       />
                       <span
-                        className={`transition-colors text-sm ${checked ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                        className={`transition-colors text-sm ${selectedSkillIds.length === 0 ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
                       >
-                        {s.name}
+                        通用分析
                       </span>
-                      {showSkillDesc === s.id && s.description && (
-                        <div className="skill-desc-tooltip">
-                          <p className="skill-title">{s.name}</p>
-                          <p>{s.description}</p>
-                        </div>
-                      )}
                     </label>
-                  );
-                })}
-              </div>
-            )}
+                    {skills.map((s) => {
+                      const checked = selectedSkillIdSet.has(s.id);
+                      const disabled = !checked && skillLimitReached;
+                      return (
+                        <label
+                          key={s.id}
+                          className={`flex items-center gap-1.5 cursor-pointer group relative mt-0.5 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          onMouseEnter={() => setShowSkillDesc(s.id)}
+                          onMouseLeave={() => setShowSkillDesc(null)}
+                        >
+                          <input
+                            type="checkbox"
+                            name="skills"
+                            value={s.id}
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={() => toggleSkillSelection(s.id)}
+                            className="chat-skill-checkbox"
+                          />
+                          <span
+                            className={`transition-colors text-sm ${checked ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                          >
+                            {s.name}
+                          </span>
+                          {showSkillDesc === s.id && s.description && (
+                            <div className="skill-desc-tooltip">
+                              <p className="skill-title">{s.name}</p>
+                              <p>{s.description}</p>
+                            </div>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
             {activeStockCode && (
               <div className="flex items-center gap-2">

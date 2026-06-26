@@ -246,6 +246,49 @@ describe('StockScreeningPage', () => {
     });
   });
 
+  it('localizes backend hotspot no-cache hint on initial load', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    getHotspots.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      providerUsed: 'akshare',
+      hotspots: [],
+      hotspotCount: 0,
+      message: 'No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.',
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('暂无缓存热点题材，展开后可点击刷新拉取实时数据。')).toBeInTheDocument();
+    expect(screen.queryByText(/No cached AlphaSift hotspot snapshot/)).not.toBeInTheDocument();
+  });
+
+  it('shows backend hotspot empty message before raw source diagnostics', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    getHotspots.mockResolvedValueOnce({
+      enabled: true,
+      provider: 'akshare',
+      providerUsed: 'DsaEastMoneyHotspotProvider',
+      hotspots: [],
+      hotspotCount: 0,
+      sourceErrors: ['eastmoney_hotspot_unavailable', "RemoteDisconnected('Remote end closed connection without response')"],
+      message: '热点源连接中断，暂无可用缓存。',
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('热点源连接中断，暂无可用缓存。')).toBeInTheDocument();
+    expect(screen.queryByText(/RemoteDisconnected/)).not.toBeInTheDocument();
+  });
+
   it('prefers merged hotspot route summaries over raw timeline items', async () => {
     getAlphaSiftStatus.mockResolvedValueOnce({
       enabled: true,

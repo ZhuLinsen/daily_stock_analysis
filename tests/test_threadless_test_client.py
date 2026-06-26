@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the local TestClient compatibility shim."""
 
+import asyncio
 from contextvars import ContextVar
 
 import anyio.to_thread
@@ -87,3 +88,11 @@ def test_anyio_to_thread_shim_preserves_contextvars() -> None:
         return await anyio.to_thread.run_sync(request_id.get)
 
     assert anyio.run(read_from_worker) == "req-123"
+
+
+def test_shutdown_default_executor_shim_accepts_timeout_argument() -> None:
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(loop.shutdown_default_executor(timeout=0.01))
+    finally:
+        loop.close()

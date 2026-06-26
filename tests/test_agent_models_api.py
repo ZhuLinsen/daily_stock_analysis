@@ -51,6 +51,20 @@ class AgentModelsApiTestCase(unittest.TestCase):
         self.assertTrue(deployments[0]["is_primary"])
         self.assertFalse("api_key" in str(deployments))
 
+    def test_models_endpoint_does_not_expose_codex_cli_as_litellm_deployment(self) -> None:
+        config = _build_config(
+            agent_generation_backend="codex_cli",
+            llm_models_source="litellm_config",
+            llm_model_list=[
+                {
+                    "model_name": "gemini-primary",
+                    "litellm_params": {"model": "gemini/gemini-2.5-flash", "api_key": "secret-1"},
+                },
+            ],
+        )
+
+        self.assertEqual(list_agent_model_deployments(config), [])
+
     def test_models_endpoint_returns_channel_deployments_with_api_base(self) -> None:
         config = _build_config(
             llm_channels=[{"name": "openai"}],

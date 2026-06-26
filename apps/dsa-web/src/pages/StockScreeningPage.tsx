@@ -32,6 +32,7 @@ import {
   type AlphaSiftCandidate,
   type AlphaSiftHotspotDetail,
   type AlphaSiftHotspot,
+  type AlphaSiftHotspotsResponse,
   type AlphaSiftScreenResponse,
   type AlphaSiftScreenTaskStatus,
   type AlphaSiftStrategy,
@@ -267,6 +268,25 @@ const formatScreenTaskFailure = (value: string | null | undefined) => {
     return '选股任务失败，请稍后重试。';
   }
   return `选股任务失败：${summarizeAlphaSiftDiagnostic(text)}`;
+};
+
+const ALPHASIFT_HOTSPOT_NO_CACHE_HINT = 'No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.';
+const ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE = 'eastmoney_hotspot_unavailable';
+
+const formatHotspotEmptyMessage = (result: AlphaSiftHotspotsResponse) => {
+  const message = String(result.message || '').trim();
+  const sourceErrors = result.sourceErrors || [];
+  if (message && sourceErrors.includes(ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE)) {
+    return message;
+  }
+  if (message === ALPHASIFT_HOTSPOT_NO_CACHE_HINT) {
+    return '暂无缓存热点题材，展开后可点击刷新拉取实时数据。';
+  }
+  const sourceError = sourceErrors[0];
+  if (sourceError) {
+    return `热点题材暂未返回数据：${summarizeAlphaSiftDiagnostic(sourceError)}`;
+  }
+  return '热点题材暂未返回数据';
 };
 
 const ScreenAlertMessage: React.FC<{ messages: string[] }> = ({ messages }) => {
@@ -562,8 +582,7 @@ const StockScreeningPage: React.FC = () => {
       }
       setHotspotDetailError('');
       if (nextHotspots.length === 0) {
-        const sourceError = result.sourceErrors?.[0];
-        setHotspotError(sourceError ? `热点题材暂未返回数据：${sourceError}` : '热点题材暂未返回数据');
+        setHotspotError(formatHotspotEmptyMessage(result));
       }
     } catch (err) {
       setHotspotError(toApiErrorMessage(err, '热点题材加载失败，请稍后重试。'));

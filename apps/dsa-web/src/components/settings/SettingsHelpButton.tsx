@@ -106,8 +106,9 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const titleId = useId();
-  const examples = providedExamples ?? schema?.examples ?? [];
+  const examples = providedExamples ?? help?.examples ?? schema?.examples ?? [];
   const docs = providedDocs?.length ? providedDocs : schema?.docs?.length ? schema.docs : help?.docs ?? [];
+  const showFieldKey = help?.showFieldKey ?? true;
   const helpButtonLabel = language === 'en'
     ? `View ${title} configuration help`
     : `查看 ${title} 配置说明`;
@@ -220,9 +221,11 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
                 <div className="h-1 w-full bg-gradient-to-r from-cyan/80 via-primary/70 to-purple/70" />
                 <div className="flex items-start justify-between gap-4 border-b border-border/60 px-5 py-4">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
-                      {fieldKey}
-                    </p>
+                    {showFieldKey ? (
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
+                        {fieldKey}
+                      </p>
+                    ) : null}
                     <h2 id={titleId} className="mt-1 text-lg font-semibold text-foreground">
                       {help.title || title}
                     </h2>
@@ -250,9 +253,11 @@ export const SettingsHelpButton: React.FC<SettingsHelpButtonProps> = ({
                     <HelpList items={help.valueNotes} />
                   </HelpSection>
 
-                  <HelpSection title={t('settings.helpExamples')}>
-                    <CodeExamples examples={examples} />
-                  </HelpSection>
+                  {hasItems(examples) ? (
+                    <HelpSection title={t('settings.helpExamples')}>
+                      <CodeExamples examples={examples} />
+                    </HelpSection>
+                  ) : null}
 
                   <HelpSection title={t('settings.helpImpact')}>
                     <HelpList items={help.impact} />

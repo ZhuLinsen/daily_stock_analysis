@@ -72,6 +72,38 @@ describe('TaskPanel', () => {
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
   });
 
+  it('keeps narrow sidebar task metadata in rows instead of squeezing diagnostics vertically', () => {
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            stockCode: '601869.SH',
+            stockName: '长飞光纤',
+            progress: 32,
+            message: '长飞光纤: 请求阶段: 自动阶段',
+            analysisPhase: 'auto',
+            traceId: 'c5b9665a64e3b9f42ad9f',
+          },
+        ]}
+        onOpenRunFlow={vi.fn()}
+      />,
+    );
+
+    const item = screen.getByTestId('task-panel-item');
+    expect(item).toHaveClass('grid');
+    expect(item).not.toHaveClass('flex');
+    expect(screen.getByText('长飞光纤')).toHaveClass('truncate');
+    expect(screen.getByText('601869.SH')).toHaveClass('shrink-0');
+    expect(screen.getByText('32%')).toBeInTheDocument();
+
+    const diagnosticsSummary = screen.getByTestId('task-panel-diagnostics-summary');
+    expect(diagnosticsSummary).toHaveClass('grid-cols-[auto_minmax(0,1fr)_auto]');
+    expect(screen.getByText('运行诊断')).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText('c5b9665a64...')).toHaveClass('truncate');
+    expect(screen.getByRole('button', { name: '查看 长飞光纤 运行流' })).toBeInTheDocument();
+  });
+
   it('opens the run-flow view from an active task icon button', () => {
     const onOpenRunFlow = vi.fn();
     render(

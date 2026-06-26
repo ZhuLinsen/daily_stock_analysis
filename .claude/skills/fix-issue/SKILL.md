@@ -20,10 +20,21 @@
 
 检查 `.claude/reviews/issues/issue-<number>.md` 是否存在；如果不存在，先补做 issue 分析或在本次修复中补齐最小分析结论。
 
-### Step 2: 选择安全的工作方式
+### Step 2: 同步最新代码基线并选择安全的工作方式
+
+开始修复或准备创建 / 更新 PR 前，先按 `AGENTS.md` 拉新：
+
+```bash
+git status --short
+git fetch --all --prune
+# 仅当工作区干净且当前分支可 fast-forward 时执行：
+git pull --ff-only
+```
 
 - 默认基于当前工作树做最小相关改动
-- 不要默认执行 `git pull`
+- 只有在工作区干净、当前分支有可 fast-forward 的上游时，才执行并接受 `git pull --ff-only` 的结果
+- 如存在本地改动、冲突状态、未跟踪风险文件、无上游分支或无法 fast-forward，不要执行 `stash`、`reset`、强制切分支或覆盖本地状态；先记录本地 HEAD、使用的远端基线与无法更新本地工作树的原因
+- 若后续要创建 / 更新 PR，先说明当前分支与目标基线差异；必要时请求用户确认 rebase、merge 或继续基于当前分支推进
 - 不要默认切换分支或改写用户当前工作状态
 - 如果用户明确要求建分支，再执行最小必要的分支操作
 
@@ -95,6 +106,7 @@
 ## Allowed Auto-Actions (No Confirmation Needed)
 
 - 阅读和分析代码
+- 执行 `git fetch --all --prune`，并在工作区干净且可 fast-forward 时执行 `git pull --ff-only`
 - 应用与当前任务直接相关的最小修复
 - 运行非破坏性的本地验证
 - 更新本地 issue 分析文档

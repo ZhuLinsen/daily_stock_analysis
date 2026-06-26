@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _STOCK_INDEX_FILENAME = "stocks.index.json"
 _STOCK_INDEX_CACHE: Dict[str, str] | None = None
+_STOCK_CODE_LOOKUP_CACHE: Dict[str, str] | None = None
 _REMOTE_INDEX_VALIDITY_CACHE: tuple[Path, float, int, bool] | None = None
 _STOCK_INDEX_CACHE_LOCK = RLock()
 
@@ -97,6 +98,66 @@ def _build_stock_name_map(raw_items: list) -> Dict[str, str]:
             stock_name_map[key] = str(name_zh).strip()
 
     return stock_name_map
+
+
+def _add_code_lookup(
+    lookup: dict[str, set[str]],
+    key: str,
+    canonical_code: str,
+) -> None:
+    candidate = str(key or "").strip().upper()
+    canonical = str(canonical_code or "").strip()
+    if not candidate or not canonical:
+        return
+    lookup.setdefault(candidate, set()).add(canonical)
+
+
+def _is_jp_kr_index_code(code: str) -> bool:
+    normalized = str(code or "").strip().upper()
+    if "." not in normalized:
+        return False
+    base, suffix = normalized.rsplit(".", 1)
+    if suffix == "T":
+        return base.isdigit() and len(base) in (4, 5)
+    if suffix in {"KS", "KQ"}:
+        return base.isdigit() and len(base) == 6
+    return False
+
+
+def _build_stock_code_lookup(raw_items: list) -> Dict[str, str]:
+    exact_lookup: dict[str, set[str]] = {}
+    suffix_base_lookup: dict[str, set[str]] = {}
+
+    for item in raw_items:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+
+        canonical_code = str(item[0] or "").strip()
+        display_code = str(item[1] or "").strip()
+        if not canonical_code:
+            continue
+        if not _is_jp_kr_index_code(canonical_code):
+            continue
+        if len(item) > 8 and item[8] is False:
+            continue
+
+        _add_code_lookup(exact_lookup, canonical_code, canonical_code)
+        _add_code_lookup(exact_lookup, display_code, canonical_code)
+
+        canonical_upper = canonical_code.upper()
+        if "." in canonical_upper:
+            base, suffix = canonical_upper.rsplit(".", 1)
+            if suffix in {"T", "KS", "KQ"} and base.isdigit():
+                _add_code_lookup(suffix_base_lookup, base, canonical_code)
+
+    result: Dict[str, str] = {}
+    for lookup in (exact_lookup, suffix_base_lookup):
+        for key, codes in lookup.items():
+            if key in result:
+                continue
+            if len(codes) == 1:
+                result[key] = next(iter(codes))
+    return result
 
 
 def _load_stock_index_file(index_path: Path) -> Dict[str, str]:
@@ -226,11 +287,73 @@ def get_index_stock_name(stock_code: str) -> str | None:
     return None
 
 
+def resolve_index_stock_code(query: str) -> str | None:
+    """Resolve an input code against the stock index pool.
+
+    Exact canonical/display-code matches win first. Bare JP/KR base-code matches
+    are accepted only when unambiguous, so ``005930`` can resolve to
+    ``005930.KS`` when that is the only indexed match.
+    """
+    code = str(query or "").strip().upper()
+    if not code:
+        return None
+
+    return get_stock_code_index_map().get(code)
+
+
+def get_stock_code_index_map() -> Dict[str, str]:
+    """Lazily load and cache generated stock-code lookup entries."""
+    global _STOCK_CODE_LOOKUP_CACHE
+
+    if _STOCK_CODE_LOOKUP_CACHE is not None:
+        return _STOCK_CODE_LOOKUP_CACHE
+
+    with _STOCK_INDEX_CACHE_LOCK:
+        if _STOCK_CODE_LOOKUP_CACHE is not None:
+            return _STOCK_CODE_LOOKUP_CACHE
+
+        merged_lookup: Dict[str, str] = {}
+        remote_path = get_remote_stock_index_cache_path()
+        for index_path in _get_fresh_stock_index_candidates(get_stock_index_candidate_paths(), remote_path):
+            try:
+                raw_items = _load_stock_index_payload(index_path)
+                if _same_path(index_path, remote_path):
+                    validate_stock_index_payload(raw_items)
+                for key, value in _build_stock_code_lookup(raw_items).items():
+                    merged_lookup.setdefault(key, value)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("[鑲＄エ绱㈠紩] 瑙ｆ瀽浠ｇ爜绱㈠紩澶辫触 %s: %s", index_path, exc)
+
+        _STOCK_CODE_LOOKUP_CACHE = merged_lookup
+        return _STOCK_CODE_LOOKUP_CACHE
+
+
+def _resolve_index_stock_code_uncached(query: str) -> str | None:
+    code = str(query or "").strip().upper()
+    if not code:
+        return None
+
+    remote_path = get_remote_stock_index_cache_path()
+    for index_path in _get_fresh_stock_index_candidates(get_stock_index_candidate_paths(), remote_path):
+        try:
+            raw_items = _load_stock_index_payload(index_path)
+            if _same_path(index_path, remote_path):
+                validate_stock_index_payload(raw_items)
+            resolved = _build_stock_code_lookup(raw_items).get(code)
+            if resolved:
+                return resolved
+        except (OSError, TypeError, ValueError) as exc:
+            logger.debug("[股票索引] 解析代码索引失败 %s: %s", index_path, exc)
+
+    return None
+
+
 def clear_stock_index_cache() -> None:
     """Clear the in-process stock index lookup cache."""
-    global _REMOTE_INDEX_VALIDITY_CACHE, _STOCK_INDEX_CACHE
+    global _REMOTE_INDEX_VALIDITY_CACHE, _STOCK_INDEX_CACHE, _STOCK_CODE_LOOKUP_CACHE
     with _STOCK_INDEX_CACHE_LOCK:
         _STOCK_INDEX_CACHE = None
+        _STOCK_CODE_LOOKUP_CACHE = None
         _REMOTE_INDEX_VALIDITY_CACHE = None
 
 

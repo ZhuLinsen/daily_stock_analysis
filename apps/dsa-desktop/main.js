@@ -37,6 +37,10 @@ const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
   path.join('data', 'stock_analysis.db'),
   path.join('data', 'stock_analysis.db-wal'),
   path.join('data', 'stock_analysis.db-shm'),
+  path.join('data', 'alphasift', 'hotspots.json'),
+  path.join('data', 'alphasift', 'hotspot.history.jsonl'),
+  path.join('data', 'alphasift', 'hotspot_details'),
+  path.join('data', 'alphasift', 'snapshot.last_good.json'),
   path.join('logs', 'desktop.log'),
 ]);
 
@@ -445,6 +449,26 @@ function normalizeBackupFileList(manifest) {
   return DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.slice();
 }
 
+function copyRuntimeStatePathSync(source, target) {
+  const stats = fs.statSync(source);
+  if (stats.isDirectory()) {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(target, { recursive: true });
+    fs.readdirSync(source, { withFileTypes: true }).forEach((entry) => {
+      copyRuntimeStatePathSync(path.join(source, entry.name), path.join(target, entry.name));
+    });
+    return;
+  }
+
+  if (!stats.isFile()) {
+    throw new Error(`unsupported runtime state path type: ${source}`);
+  }
+
+  ensureDirectory(path.dirname(target));
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.copyFileSync(source, target);
+}
+
 function backupPackagedRuntimeState() {
   if (!isWindowsNsisInstalledApp()) {
     return;
@@ -460,8 +484,7 @@ function backupPackagedRuntimeState() {
     if (!fs.existsSync(absolutePath)) {
       return;
     }
-    ensureDirectory(path.dirname(backupPath));
-    fs.copyFileSync(absolutePath, backupPath);
+    copyRuntimeStatePathSync(absolutePath, backupPath);
     backedUpFiles.push(relativePath);
   });
 
@@ -527,8 +550,7 @@ function restorePackagedRuntimeStateFromBackup() {
         if (!fs.existsSync(source)) {
           return;
         }
-        ensureDirectory(path.dirname(target));
-        fs.copyFileSync(source, target);
+        copyRuntimeStatePathSync(source, target);
         result.restored.push(relativePath);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -600,8 +622,7 @@ function migrateMacPackagedRuntimeState() {
     }
 
     try {
-      ensureDirectory(path.dirname(target));
-      fs.copyFileSync(source, target);
+      copyRuntimeStatePathSync(source, target);
       result.migrated.push(relativePath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -907,7 +928,6 @@ function startBackend({ port, envFile, dbPath, logDir }) {
     LOG_DIR: logDir,
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
-    SCHEDULE_ENABLED: 'false',
     WEBUI_ENABLED: 'false',
     BOT_ENABLED: 'false',
     DINGTALK_STREAM_ENABLED: 'false',
@@ -1706,6 +1726,7 @@ module.exports = {
   UPDATE_MODE,
   UPDATE_STATUS,
   buildUpdateState,
+  backupPackagedRuntimeState,
   checkForDesktopUpdates,
   compareVersions,
   evaluateReleaseUpdate,

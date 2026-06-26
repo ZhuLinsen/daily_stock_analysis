@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
@@ -39,7 +40,9 @@ DSA_ENRICHMENT_MAX_CANDIDATES = 3
 DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
 DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
 DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
-DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "em_datacenter,tushare,efinance,akshare_em"
+DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
+DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
+DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
 DSA_ALPHASIFT_DATA_DIR = Path("data") / "alphasift"
 DSA_ALPHASIFT_HOTSPOT_CACHE_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspots.json"
 DSA_ALPHASIFT_HOTSPOT_HISTORY_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspot.history.jsonl"
@@ -47,6 +50,23 @@ DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT = 3
 DSA_ALPHASIFT_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
 DSA_ALPHASIFT_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
 DSA_ALPHASIFT_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
+DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE = "eastmoney_hotspot_unavailable"
+DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE = "热点源连接中断，暂无可用缓存。"
+DSA_ALPHASIFT_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
+    "remote disconnected",
+    "remote end closed connection",
+    "connection aborted",
+    "connection reset",
+    "connection refused",
+    "connection timed out",
+    "read timed out",
+    "connecttimeout",
+    "readtimeout",
+    "max retries exceeded",
+    "chunkedencodingerror",
+    "protocolerror",
+    "incompleteread",
+)
 _DSA_FETCHER_MANAGER_LOCK = threading.RLock()
 _DSA_FETCHER_MANAGER: Any = None
 _FUNDAMENTAL_BLOCKS = ("valuation", "growth", "earnings", "institution", "capital_flow", "boards")
@@ -143,7 +163,7 @@ def _load_alphasift_hotspot_detail_cache(
     if stale and not allow_stale:
         return None
 
-    cached = dict(payload)
+    cached = _ensure_hotspot_detail_compat_fields(dict(payload))
     cached.update({
         "enabled": True,
         "provider": provider or cached.get("provider") or "akshare",
@@ -161,7 +181,7 @@ def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload:
     cache_path = _alphasift_hotspot_detail_cache_path(provider=provider, topic=topic)
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cleaned = _remove_non_finite_json_values(dict(payload))
+        cleaned = _remove_non_finite_json_values(_ensure_hotspot_detail_compat_fields(dict(payload)))
         cached_at = _utc_now_iso()
         cache_path.write_text(
             json.dumps(
@@ -179,6 +199,36 @@ def _write_alphasift_hotspot_detail_cache(*, provider: str, topic: str, payload:
         )
     except Exception as exc:
         logger.warning("Failed to write AlphaSift hotspot detail cache for %s: %s", topic, exc)
+
+
+def _ensure_hotspot_detail_compat_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep old and new AlphaSift hotspot detail consumers on the same shape."""
+    stocks = payload.get("stocks")
+    leader_stocks = payload.get("leader_stocks")
+    if not isinstance(stocks, list):
+        stocks = []
+    if not isinstance(leader_stocks, list) or not leader_stocks:
+        nested_leader_stocks = _extract_nested_hotspot_leader_stocks(payload)
+        leader_stocks = nested_leader_stocks or (leader_stocks if isinstance(leader_stocks, list) else [])
+    if not stocks and leader_stocks:
+        stocks = leader_stocks
+    if not leader_stocks and stocks:
+        leader_stocks = stocks
+    payload["stocks"] = stocks
+    payload["leader_stocks"] = leader_stocks
+    payload["stock_count"] = len(stocks)
+    return payload
+
+
+def _extract_nested_hotspot_leader_stocks(payload: Dict[str, Any]) -> List[Any]:
+    for key in ("summary_detail", "summary"):
+        summary = payload.get(key)
+        if not isinstance(summary, dict):
+            continue
+        leader_stocks = summary.get("leader_stocks")
+        if isinstance(leader_stocks, list) and leader_stocks:
+            return leader_stocks
+    return []
 
 
 def _load_alphasift_hotspot_cache(*, provider: str, top: int) -> Optional[Dict[str, Any]]:
@@ -660,6 +710,90 @@ def _attach_cached_hotspot_details(
     return payload
 
 
+def _empty_alphasift_hotspot_payload(
+    *,
+    provider: str,
+    provider_used: str = "",
+    source_errors: Optional[List[str]] = None,
+    message: str = "",
+) -> Dict[str, Any]:
+    return {
+        "enabled": True,
+        "provider": provider,
+        "provider_used": provider_used,
+        "fallback_used": False,
+        "cache_used": False,
+        "cached_at": None,
+        "source_errors": list(source_errors or []),
+        "stale": False,
+        "stale_age_hours": None,
+        "hotspots": [],
+        "hotspot_count": 0,
+        "message": message,
+    }
+
+
+def _is_known_eastmoney_hotspot_connectivity_error(exc: BaseException) -> bool:
+    retryable_types: List[Any] = [ConnectionError, TimeoutError]
+    try:
+        import requests
+
+        retryable_types.extend(
+            [
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+            ]
+        )
+    except Exception:
+        pass
+    try:
+        import http.client
+
+        retryable_types.extend([http.client.RemoteDisconnected, http.client.IncompleteRead])
+    except Exception:
+        pass
+    try:
+        import urllib3.exceptions
+
+        retryable_types.extend(
+            [
+                urllib3.exceptions.ProtocolError,
+                urllib3.exceptions.MaxRetryError,
+                urllib3.exceptions.ReadTimeoutError,
+                urllib3.exceptions.ConnectTimeoutError,
+            ]
+        )
+    except Exception:
+        pass
+
+    retryable_tuple = tuple(retryable_types)
+    pending: List[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        if isinstance(current, retryable_tuple):
+            return True
+        message = f"{current.__class__.__name__}: {current}".lower()
+        if any(marker in message for marker in DSA_ALPHASIFT_HOTSPOT_CONNECTIVITY_ERROR_MARKERS):
+            return True
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if isinstance(cause, BaseException):
+            pending.append(cause)
+        if isinstance(context, BaseException):
+            pending.append(context)
+    return False
+
+
+def _should_return_eastmoney_hotspot_unavailable(provider_arg: Any, exc: BaseException) -> bool:
+    return isinstance(provider_arg, DsaEastMoneyHotspotProvider) and _is_known_eastmoney_hotspot_connectivity_error(exc)
+
+
 class AlphaSiftStrategyResponse(BaseModel):
     id: str
     name: str = ""
@@ -723,20 +857,10 @@ class AlphaSiftService:
             cached = _load_alphasift_hotspot_cache(provider=provider_name, top=top_count)
             if cached is not None:
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
-            return {
-                "enabled": True,
-                "provider": provider_name,
-                "provider_used": "",
-                "fallback_used": False,
-                "cache_used": False,
-                "cached_at": None,
-                "source_errors": [],
-                "stale": False,
-                "stale_age_hours": None,
-                "hotspots": [],
-                "hotspot_count": 0,
-                "message": "No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.",
-            }
+            return _empty_alphasift_hotspot_payload(
+                provider=provider_name,
+                message="No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.",
+            )
 
         hotspot_module = _import_alphasift_hotspot()
         discover_hotspots = _get_adapter_callable(
@@ -764,10 +888,23 @@ class AlphaSiftService:
                 cached["fallback_used"] = True
                 cached["cache_used"] = True
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
-            raise HTTPException(
-                status_code=424,
-                detail={"error": "alphasift_hotspots_failed", "message": f"AlphaSift hotspots failed: {exc}"},
-            ) from exc
+            if not _should_return_eastmoney_hotspot_unavailable(provider_arg, exc):
+                diagnostics = _log_unexpected_alphasift_exception("hotspot_refresh", exc)
+                raise HTTPException(
+                    status_code=424,
+                    detail={
+                        "error": "alphasift_hotspot_refresh_failed",
+                        "message": f"AlphaSift hotspot refresh failed: {exc}",
+                        "diagnostics": diagnostics,
+                    },
+                ) from exc
+            logger.warning("AlphaSift hotspot live refresh failed without cache: %s", exc)
+            return _empty_alphasift_hotspot_payload(
+                provider=provider_name,
+                provider_used=type(provider_arg).__name__,
+                source_errors=[DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE],
+                message=DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE,
+            )
 
         items = _remove_non_finite_json_values(_to_plain(raw))
         if not isinstance(items, list):
@@ -921,6 +1058,7 @@ class AlphaSiftService:
             if search_routes:
                 route = normalized.get("route")
                 normalized["route"] = search_routes + (route if isinstance(route, list) else [])
+        normalized = _ensure_hotspot_detail_compat_fields(normalized)
         normalized["enabled"] = True
         normalized["provider"] = provider_name
         cleaned = _remove_non_finite_json_values(normalized)
@@ -998,7 +1136,9 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
     summary_value = raw.get("summary")
     summary: Dict[str, Any] = summary_value if isinstance(summary_value, dict) else {}
     stocks_value = raw.get("stocks")
+    leader_stocks_value = raw.get("leader_stocks")
     stocks: List[Any] = stocks_value if isinstance(stocks_value, list) else []
+    leader_stocks: List[Any] = leader_stocks_value if isinstance(leader_stocks_value, list) else []
     timeline_value = raw.get("timeline")
     timeline: List[Any] = timeline_value if isinstance(timeline_value, list) else []
     route_value = raw.get("route")
@@ -1015,7 +1155,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         if isinstance(summary_text_value, str)
         else _build_alphasift_hotspot_summary_text(summary, topic=topic, canonical_topic=canonical_topic)
     )
-    return {
+    return _ensure_hotspot_detail_compat_fields({
         "enabled": True,
         "provider": provider,
         "topic": topic,
@@ -1027,7 +1167,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         "route": route,
         "timeline": timeline,
         "stocks": stocks,
-        "stock_count": len(stocks),
+        "leader_stocks": leader_stocks,
         "source_errors": source_errors,
         "quality_status": quality_status,
         "missing_fields": missing_fields,
@@ -1035,7 +1175,7 @@ def _normalize_alphasift_hotspot_detail(detail: Any, *, provider: str, requested
         "stale": bool(summary.get("stale") or raw.get("stale") or False),
         "stale_age_hours": summary.get("stale_age_hours") or raw.get("stale_age_hours"),
         "resolver_candidates": _list_dict_values(summary.get("resolver_candidates") or raw.get("resolver_candidates")),
-    }
+    })
 
 
 def _list_text_values(value: Any) -> List[str]:
@@ -1704,6 +1844,13 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
             setattr(daily_module, "fetch_daily_history", original_fetch)
 
 
+def _resolve_alphasift_snapshot_source_priority(config: Config) -> str:
+    token = _env_text(getattr(config, "tushare_token", None) or os.getenv("TUSHARE_TOKEN"))
+    if token:
+        return DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE
+    return DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY
+
+
 def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] = None) -> Dict[str, str]:
     # Bridge runtime only: only inject resolved DSA values for this request/process scope.
     # User .env/config is never rewritten here; unset channels/models are not silently migrated.
@@ -1769,10 +1916,12 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
     _put_provider_keys(env, "DEEPSEEK", deepseek_keys)
 
     put("OPENAI_BASE_URL", config.openai_base_url or _first_channel_base_url(channels, {"openai"}))
+    put_default("DAILY_SOURCE", "auto")
     put("LLM_CANDIDATE_CONTEXT_ENABLED", "false")
+    put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS)
     put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER))
     put_default("LLM_MAX_CANDIDATES", str(_resolve_dsa_llm_max_candidates(max_results)))
-    put_default("SNAPSHOT_SOURCE_PRIORITY", DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY)
+    put_default("SNAPSHOT_SOURCE_PRIORITY", _resolve_alphasift_snapshot_source_priority(config))
     alphasift_data_dir = _resolve_alphasift_data_dir()
     put_default("ALPHASIFT_DATA_DIR", str(alphasift_data_dir))
     put_default("ALPHASIFT_FALLBACK_SNAPSHOT_PATH", str(alphasift_data_dir / "snapshot.last_good.json"))
@@ -1895,9 +2044,51 @@ class DsaEastMoneyHotspotProvider:
         "贵金属": "贵金属",
     }
     def __init__(self) -> None:
+        import requests
+
         self._board_changes_raw_cache: Any = None
         self._board_changes_frame_cache: Any = None
         self._constituent_cache: Dict[Tuple[str, str], Any] = {}
+        self._session = requests.Session()
+        self._request_lock = threading.RLock()
+        self._last_request_ts = 0.0
+        self._min_request_interval = 0.25
+
+    def _eastmoney_get_once(self, url: str, **kwargs: Any) -> Any:
+        with self._request_lock:
+            elapsed = time.monotonic() - self._last_request_ts
+            if elapsed < self._min_request_interval:
+                time.sleep(self._min_request_interval - elapsed)
+            try:
+                return self._session.get(url, **kwargs)
+            finally:
+                self._last_request_ts = time.monotonic()
+
+    def _eastmoney_get(self, url: str, **kwargs: Any) -> Any:
+        import requests
+
+        retryable_errors = (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        )
+        delays = (0.3, 0.8)
+        last_error: Optional[BaseException] = None
+        for attempt in range(len(delays) + 1):
+            try:
+                return self._eastmoney_get_once(url, **kwargs)
+            except retryable_errors as exc:
+                last_error = exc
+                if attempt >= len(delays):
+                    break
+                logger.warning(
+                    "AlphaSift EastMoney hotspot request failed; retrying attempt=%s: %s",
+                    attempt + 1,
+                    exc,
+                )
+                time.sleep(delays[attempt])
+        assert last_error is not None
+        raise last_error
 
     def stock_board_concept_name_em(self) -> Any:
         frame = self._fetch_board_changes_with_fallback()
@@ -2032,16 +2223,17 @@ class DsaEastMoneyHotspotProvider:
                     "change_pct": None,
                     "hot_stock_score": 60.0,
                 })
-        return {
+        return _ensure_hotspot_detail_compat_fields({
             "topic": topic,
             "name": self._display_hotspot_name(topic),
             "canonical_topic": topic,
             "summary": self._build_hotspot_summary(topic, summary),
             "route": route,
             "stocks": stocks[:30],
+            "leader_stocks": stocks[:30],
             "stock_count": len(stocks),
             "source_errors": [],
-        }
+        })
 
     def _fetch_board_changes(self) -> Any:
         import pandas as pd
@@ -2135,12 +2327,10 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_board_names(self, *, source_fs: str) -> Any:
         import pandas as pd
-        import requests
 
         params = dict(self._COMMON_PARAMS)
         params.update({"pz": "100", "fs": source_fs})
-        session = requests.Session()
-        response = session.get(
+        response = self._eastmoney_get(
             self._BASE_URL,
             params=params,
             timeout=self._HTTP_TIMEOUT_SECONDS,

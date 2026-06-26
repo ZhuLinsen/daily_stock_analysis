@@ -24,7 +24,11 @@ from src.services.run_flow import (
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
+    record_llm_run,
+    record_llm_run_started,
+    record_notification_run,
     record_provider_run,
+    record_provider_run_started,
     reset_run_diagnostic_context,
 )
 from src.services.task_queue import AnalysisTaskQueue, TaskInfo, TaskStatus
@@ -191,7 +195,13 @@ class _FakeHistoryDb:
     def get_analysis_history_by_id(self, record_id: int):
         return self.record if self.record is not None and record_id == self.record.id else None
 
-    def get_latest_analysis_by_query_id(self, query_id: str):
+    def get_latest_analysis_by_query_id(self, query_id: str, *, code: str | None = None, report_type: str | None = None):
+        if self.record is None or query_id != self.record.query_id:
+            return None
+        if code is not None and self.record.code != code:
+            return None
+        if report_type is not None and self.record.report_type != report_type:
+            return None
         return self.record if self.record is not None and query_id == self.record.query_id else None
 
 
@@ -204,6 +214,10 @@ class _FakeMarketReviewDb:
     def save_analysis_history(self, **kwargs):
         self.saved_context_snapshot = kwargs.get("context_snapshot")
         return self.save_result
+
+    def get_latest_analysis_by_query_id(self, query_id: str, *, code: str | None = None, report_type: str | None = None):
+        _ = (query_id, code, report_type)
+        return SimpleNamespace(id=42)
 
     def update_analysis_history_diagnostics(self, *, query_id: str, code: str, diagnostics: dict) -> None:
         _ = (query_id, code)
@@ -415,6 +429,213 @@ class RunFlowTestCase(unittest.TestCase):
                     getattr(history_provider, field),
                     f"{node_id}.{field}",
                 )
+
+    def test_active_started_events_update_same_provider_and_llm_nodes(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-started",
+            task_id="task-started",
+            query_id="query-started",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="daily_data",
+                provider="DailyFetcher",
+                operation="get_daily_data",
+            )
+            record_provider_run(
+                data_type="daily_data",
+                provider="DailyFetcher",
+                operation="get_daily_data",
+                success=True,
+                latency_ms=120,
+                record_count=30,
+            )
+            record_llm_run_started(
+                model="deepseek-chat",
+                call_type="analysis",
+            )
+            record_llm_run(
+                success=True,
+                model="deepseek-chat",
+                call_type="analysis",
+                duration_ms=900,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-started",
+                trace_id="trace-started",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 10, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+
+        provider_nodes = [node for node in snapshot.nodes if node.id == "provider_daily_data_dailyfetcher_1"]
+        llm_nodes = [node for node in snapshot.nodes if node.id == "llm_analysis_1"]
+        provider_edges = [
+            edge for edge in snapshot.edges
+            if edge.to_node == "provider_daily_data_dailyfetcher_1"
+        ]
+        llm_edges = [
+            edge for edge in snapshot.edges
+            if edge.to_node == "llm_analysis_1"
+        ]
+
+        self.assertEqual(len(provider_nodes), 1)
+        self.assertEqual(provider_nodes[0].status, "success")
+        self.assertEqual(provider_nodes[0].record_count, 30)
+        self.assertTrue(provider_edges)
+        self.assertTrue(all(edge.status == "success" for edge in provider_edges))
+        self.assertEqual(len(llm_nodes), 1)
+        self.assertEqual(llm_nodes[0].status, "success")
+        self.assertTrue(llm_edges)
+        self.assertTrue(all(edge.status == "success" for edge in llm_edges))
+        self.assertIn("provider_run_started", {event.type for event in snapshot.events})
+        self.assertIn("llm_run_started", {event.type for event in snapshot.events})
+
+    def test_active_chip_started_event_updates_same_provider_node(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-chip-started",
+            task_id="task-chip-started",
+            query_id="query-chip-started",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_provider_run_started(
+                data_type="chip",
+                provider="ChipFetcher",
+                operation="get_chip_distribution",
+            )
+            record_provider_run(
+                data_type="chip",
+                provider="ChipFetcher",
+                operation="get_chip_distribution",
+                success=True,
+                latency_ms=80,
+                record_count=1,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-chip-started",
+                trace_id="trace-chip-started",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 10, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+
+        chip_nodes = [node for node in snapshot.nodes if node.id == "provider_chip_chipfetcher_1"]
+
+        self.assertEqual(len(chip_nodes), 1)
+        self.assertEqual(chip_nodes[0].status, "success")
+        self.assertEqual(chip_nodes[0].record_count, 1)
+        self.assertEqual(chip_nodes[0].label, "筹码结构 · ChipFetcher")
+        self.assertIn("provider_run_started", {event.type for event in snapshot.events})
+
+    def test_llm_started_and_result_match_by_call_type_when_model_alias_differs(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-llm-alias",
+            task_id="task-llm-alias",
+            query_id="query-llm-alias",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_llm_run_started(
+                model="deepseek-chat",
+                call_type="agent_analysis",
+            )
+            record_llm_run(
+                success=True,
+                model="deepseek/deepseek-chat",
+                call_type="agent_analysis",
+                duration_ms=98000,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-llm-alias",
+                trace_id="trace-llm-alias",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.PROCESSING,
+                created_at=datetime(2026, 6, 8, 10, 0, 0),
+                flow_events=flow_events,
+            )
+        )
+
+        llm_nodes = [node for node in snapshot.nodes if node.id.startswith("llm_agent_analysis")]
+
+        self.assertEqual([node.id for node in llm_nodes], ["llm_agent_analysis_1"])
+        self.assertEqual(llm_nodes[0].status, "success")
+        self.assertIn("llm_run_started", {event.type for event in snapshot.events})
+        self.assertIn("llm_run", {event.type for event in snapshot.events})
+
+    def test_completed_active_snapshot_prunes_skeleton_tail_when_live_nodes_exist(self) -> None:
+        flow_events: list[dict] = []
+        token = activate_run_diagnostic_context(
+            trace_id="trace-completed-live",
+            task_id="task-completed-live",
+            query_id="query-completed-live",
+            stock_code="600519",
+            trigger_source="api",
+            event_sink=flow_events.append,
+        )
+        try:
+            record_llm_run(
+                success=True,
+                model="deepseek/deepseek-chat",
+                call_type="agent_analysis",
+                duration_ms=98000,
+            )
+            record_notification_run(
+                channel="report",
+                status="not_configured",
+                success=False,
+                attempts=0,
+            )
+        finally:
+            reset_run_diagnostic_context(token)
+
+        snapshot = build_task_run_flow_snapshot(
+            TaskInfo(
+                task_id="task-completed-live",
+                trace_id="trace-completed-live",
+                stock_code="600519",
+                stock_name="贵州茅台",
+                status=TaskStatus.COMPLETED,
+                created_at=datetime(2026, 6, 8, 10, 0, 0),
+                completed_at=datetime(2026, 6, 8, 10, 2, 0),
+                flow_events=flow_events,
+            )
+        )
+        node_ids = {node.id for node in snapshot.nodes}
+
+        self.assertIn("llm_agent_analysis_1", node_ids)
+        self.assertIn("notification_report_1", node_ids)
+        self.assertNotIn("llm", node_ids)
+        self.assertNotIn("notification", node_ids)
 
     def test_task_queue_stores_bounded_flow_events_and_broadcasts_task_progress(self) -> None:
         queue = AnalysisTaskQueue(max_workers=1)
@@ -713,12 +934,147 @@ class RunFlowTestCase(unittest.TestCase):
         self.assertEqual(snapshot.stock_code, "MARKET")
         self.assertEqual(snapshot.task_id, "task-market")
         self.assertIn("history_run", {event.type for event in snapshot.events})
+        notification = next(node for node in snapshot.nodes if node.id.startswith("notification_report"))
+        self.assertEqual(notification.attempts, 0)
         self.assertTrue(snapshot.lanes)
 
-    def test_market_review_persist_records_diagnostics_without_bool_history_id(self) -> None:
+    def test_market_review_run_flow_filters_leaked_stock_provider_runs(self) -> None:
+        context_snapshot = {
+            "report_kind": "market_review",
+            "diagnostics": {
+                "trace_id": "trace-market",
+                "query_id": "query-flow",
+                "stock_code": "688521.SH",
+                "provider_runs": [
+                    {
+                        "data_type": "daily_data",
+                        "provider": "StockFetcher",
+                        "success": True,
+                        "created_at": "2026-06-13T16:00:57",
+                    },
+                    {
+                        "data_type": "news_search",
+                        "provider": "Tavily",
+                        "success": True,
+                        "created_at": "2026-06-13T16:01:00",
+                    },
+                ],
+                "llm_runs": [],
+                "history_runs": [],
+                "notification_runs": [],
+            },
+        }
+
+        snapshot = build_history_run_flow_snapshot(
+            _history_record(
+                context_snapshot=context_snapshot,
+                code="MARKET",
+                name="大盘复盘",
+                report_type="market_review",
+            )
+        )
+
+        provider_labels = {node.label for node in snapshot.nodes if node.kind == "data_source"}
+        self.assertEqual(snapshot.stock_code, "MARKET")
+        self.assertNotIn("日线K线 · StockFetcher", provider_labels)
+        self.assertIn("新闻舆情 · Tavily", provider_labels)
+
+    def test_stock_run_flow_filters_nested_market_context_artifacts(self) -> None:
+        context_snapshot = {
+            "diagnostics": {
+                "trace_id": "trace-stock",
+                "query_id": "query-flow",
+                "stock_code": "688521.SH",
+                "provider_runs": [
+                    {
+                        "data_type": "news_search",
+                        "provider": "MarketNews",
+                        "success": True,
+                        "created_at": "2026-06-13T16:01:00",
+                    },
+                    {
+                        "data_type": "realtime_quote",
+                        "provider": "Akshare",
+                        "success": True,
+                        "created_at": "2026-06-13T16:01:51",
+                    },
+                    {
+                        "data_type": "news_search",
+                        "provider": "StockNews",
+                        "success": True,
+                        "created_at": "2026-06-13T16:02:25",
+                    },
+                ],
+                "llm_runs": [
+                    {
+                        "call_type": "analysis",
+                        "success": True,
+                        "created_at": "2026-06-13T16:03:54",
+                    }
+                ],
+                "history_runs": [
+                    {
+                        "report_saved": True,
+                        "metadata_saved": True,
+                        "created_at": "2026-06-13T16:01:51",
+                    },
+                    {
+                        "report_saved": True,
+                        "metadata_saved": True,
+                        "created_at": "2026-06-13T16:04:12",
+                    },
+                ],
+                "notification_runs": [
+                    {
+                        "channel": "report",
+                        "status": "skipped",
+                        "success": False,
+                        "attempts": 0,
+                        "created_at": "2026-06-13T16:01:51",
+                    },
+                    {
+                        "channel": "report",
+                        "status": "not_configured",
+                        "success": False,
+                        "attempts": 0,
+                        "created_at": "2026-06-13T16:04:12",
+                    },
+                ],
+            },
+            "analysis_context_pack_overview": _overview(
+                blocks=[
+                    {
+                        "key": "quote",
+                        "label": "行情",
+                        "status": "available",
+                        "source": "Akshare",
+                        "warnings": [],
+                        "missing_reasons": [],
+                    }
+                ]
+            ),
+        }
+
+        snapshot = build_history_run_flow_snapshot(_history_record(context_snapshot=context_snapshot))
+
+        self.assertEqual(
+            [node.label for node in snapshot.nodes if node.label == "保存报告"],
+            ["保存报告"],
+        )
+        self.assertEqual(
+            [node.label for node in snapshot.nodes if node.label.startswith("推送通知")],
+            ["推送通知 · report"],
+        )
+        provider_labels = {node.label for node in snapshot.nodes if node.kind == "data_source"}
+        self.assertNotIn("新闻舆情 · MarketNews", provider_labels)
+        self.assertIn("新闻舆情 · StockNews", provider_labels)
+        notification = next(node for node in snapshot.nodes if node.id.startswith("notification_report"))
+        self.assertEqual(notification.attempts, 0)
+
+    def test_market_review_persist_records_diagnostics_with_saved_history_id(self) -> None:
         from src.core.market_review import _persist_market_review_history
 
-        fake_db = _FakeMarketReviewDb(save_result=True)
+        fake_db = _FakeMarketReviewDb(save_result=42)
         config = SimpleNamespace(report_language="zh")
         token = activate_run_diagnostic_context(
             trace_id="trace-market",
@@ -742,10 +1098,11 @@ class RunFlowTestCase(unittest.TestCase):
         self.assertTrue(saved)
         self.assertIsNotNone(fake_db.saved_context_snapshot)
         self.assertIn("diagnostics", fake_db.saved_context_snapshot)
+        self.assertIn("analysis_context_pack_overview", fake_db.saved_context_snapshot)
         self.assertIsNotNone(fake_db.updated_diagnostics)
         history_runs = fake_db.updated_diagnostics["history_runs"]
         self.assertTrue(history_runs)
-        self.assertNotEqual(history_runs[-1].get("analysis_history_id"), True)
+        self.assertEqual(history_runs[-1].get("analysis_history_id"), 42)
 
     def test_flow_endpoints_return_404_for_missing_records(self) -> None:
         with self.assertRaises(HTTPException) as history_ctx:
@@ -760,6 +1117,56 @@ class RunFlowTestCase(unittest.TestCase):
             with self.assertRaises(HTTPException) as task_ctx:
                 get_task_run_flow("missing-task")
         self.assertEqual(task_ctx.exception.status_code, 404)
+
+    def test_completed_task_flow_refresh_uses_persisted_history_report_type_alias(self) -> None:
+        task = TaskInfo(
+            task_id="query-flow",
+            trace_id="trace-flow",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=TaskStatus.COMPLETED,
+            report_type="detailed",
+        )
+        queue = SimpleNamespace(get_task=lambda task_id: task)
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), patch(
+            "api.v1.endpoints.analysis._load_history_run_flow_by_query_id",
+            return_value=None,
+        ) as load_history:
+            snapshot = get_task_run_flow("query-flow")
+
+        self.assertEqual(snapshot.task_id, "query-flow")
+        load_history.assert_called_once_with(
+            "query-flow",
+            code="600519",
+            report_type="full",
+            fail_open=True,
+        )
+
+    def test_completed_market_review_task_flow_uses_market_history_filters(self) -> None:
+        task = TaskInfo(
+            task_id="market-query-flow",
+            trace_id="trace-market-flow",
+            stock_code="cn",
+            stock_name="大盘复盘",
+            status=TaskStatus.COMPLETED,
+            report_type="market-review",
+        )
+        queue = SimpleNamespace(get_task=lambda task_id: task)
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), patch(
+            "api.v1.endpoints.analysis._load_history_run_flow_by_query_id",
+            return_value=None,
+        ) as load_history:
+            snapshot = get_task_run_flow("market-query-flow")
+
+        self.assertEqual(snapshot.task_id, "market-query-flow")
+        load_history.assert_called_once_with(
+            "market-query-flow",
+            code="MARKET",
+            report_type="market_review",
+            fail_open=True,
+        )
 
     def test_run_flow_payload_redacts_errors_metadata_and_sensitive_paths(self) -> None:
         context_snapshot = {

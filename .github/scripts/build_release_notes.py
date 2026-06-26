@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHANGELOG = ROOT / "docs" / "CHANGELOG.md"
+LOGGER = logging.getLogger(__name__)
 KNOWN_AUTHOR_LOGINS = {
     "Alfred": "massif-01",
     "massif0601@gmail.com": "massif-01",
@@ -77,6 +79,9 @@ def _commit_authors(previous_tag: str, tag: str) -> list[str]:
 
 
 def _github_login_from_pr(repo: str, token: str, pr_number: str) -> str | None:
+    if not token:
+        return None
+
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
         headers={
@@ -89,7 +94,36 @@ def _github_login_from_pr(repo: str, token: str, pr_number: str) -> str | None:
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.load(response)
-    except (OSError, urllib.error.HTTPError, urllib.error.URLError):
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        LOGGER.warning(
+            "Release notes PR author lookup failed for PR #%s: exception_type=%s status=%s",
+            pr_number,
+            type(exc).__name__,
+            exc.code,
+        )
+        return None
+    except urllib.error.URLError as exc:
+        LOGGER.warning(
+            "Release notes PR author lookup failed for PR #%s: exception_type=%s",
+            pr_number,
+            type(exc).__name__,
+        )
+        return None
+    except OSError as exc:
+        LOGGER.warning(
+            "Release notes PR author lookup failed for PR #%s: exception_type=%s",
+            pr_number,
+            type(exc).__name__,
+        )
+        return None
+    except json.JSONDecodeError as exc:
+        LOGGER.warning(
+            "Release notes PR author lookup failed for PR #%s: exception_type=%s",
+            pr_number,
+            type(exc).__name__,
+        )
         return None
     user = payload.get("user") or {}
     login = user.get("login")
@@ -117,7 +151,7 @@ def _contributors(previous_tag: str, tag: str) -> list[str]:
     for subject in _commit_subjects(previous_tag, tag):
         pr_numbers = re.findall(r"\(#(\d+)\)", subject)
         for pr_number in pr_numbers:
-            login = _github_login_from_pr(repo, token, pr_number) if repo and token else None
+            login = _github_login_from_pr(repo, token, pr_number) if repo else None
             if login and login not in logins:
                 logins.append(login)
 

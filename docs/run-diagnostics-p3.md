@@ -31,6 +31,7 @@ GET /api/v1/analysis/tasks/stream
 - 原有 task payload 字段保持不变。
 - 当本次进度更新来自运行诊断时，可选追加 `flow_event` 字段；旧客户端忽略该字段即可。
 - `flow_event` 使用与 `RunFlowSnapshot.events[]` 相同的脱敏事件结构：`id`、`timestamp`、`severity`、`type`、`node_id`、`title`、`message`、`metadata`。
+- active task 可追加 `provider_run_started` / `llm_run_started` 实时事件；这些事件只用于运行中的 running 卡片展示，完成后由同 `node_id` 的 `provider_run` / `llm_run` 结果事件覆盖状态，历史诊断仍以最终结果为准。
 - 后端 TaskQueue 只为每个 active task 保留最近 N 条运行流事件，避免内存无限增长；完整历史仍以 `context_snapshot.diagnostics` 和历史 RunFlowSnapshot 为准。
 
 示例：
@@ -96,6 +97,9 @@ GET /api/v1/history/{record_id}/flow
 
 - `tasks/{task_id}/flow` 面向活跃任务。任务仍在内存队列中时优先返回当前任务快照；任务已完成时可按同一 `task_id/query_id` 尝试读取历史诊断。缺少诊断时返回 skeleton flow，不伪造 provider、LLM 或通知事件。
 - `history/{record_id}/flow` 面向历史报告，支持历史记录主键 ID 或可解析的 `query_id`。普通个股分析与 `MARKET/market_review` 大盘复盘复用同一 `RunFlowSnapshot` 契约。
+- 同一页面触发个股分析时，个股流程可按需生成或复用当日大盘上下文；这不是独立的个股分析步骤，而是 Prompt 背景生成。后台会用独立 `market_context_*` query_id 与 `scope=daily_market_context` 保存该大盘上下文，避免与个股报告共用 query_id。
+- 为兼容早期已写入的混合诊断，运行流会在读取历史时按报告类型做低风险过滤：`MARKET/market_review` 记录隐藏个股行情、日线、技术、基本面与筹码 provider 节点；个股记录隐藏首次个股行情前的大盘新闻搜索，以及首次个股 LLM 前的大盘保存/通知节点。
+- 通知跳过或未配置时允许 `attempts=0`，运行流展示为 skipped，不再因 Pydantic 校验失败导致 `/flow` 返回 500。
 - 快照顶层包含 `summary`、`lanes`、`nodes`、`edges`、`events` 和 `generated_at`。节点状态使用 `pending/running/success/failed/degraded/fallback/timeout/cancel_requested/cancelled/skipped/unknown`，其中用户取消类状态不会被映射成 `failed`。
 - 旧历史、缺失 `context_snapshot.diagnostics` 或证据不足时，后端返回 `unknown` 或 skeleton 节点；Web 端按空/未知状态展示，不影响报告详情读取。
 

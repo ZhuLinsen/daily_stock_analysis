@@ -88,6 +88,8 @@
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> 兼容说明：每日分析 workflow 也会绑定名为 `STOCK_LIST` 的 Environment，因此误把 `STOCK_LIST` 填到该 Environment variables 中也能被读取；但推荐位置仍是 Repository variables。除非你希望每日任务等待人工审批，否则不要给该 Environment 配置 required reviewers、wait timer 或部署分支限制。
+
 ---
 
 ### Q6: 修改 .env 文件后配置没有生效？
@@ -97,12 +99,12 @@
 2. **Docker 部署 / WebUI 系统设置**：
    - `--env-file .env` / Compose `env_file` 只会把宿主机 `.env` 作为启动环境变量注入容器，不会自动创建或回写容器内 `/app/.env`
    - WebUI 设置页会在当前活跃 `.env` 文件缺少某些键时展示启动注入的同名环境变量作为兜底；但“导出 `.env`”仍只导出当前活跃配置文件内容
-   - WebUI 保存后的 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 会写回容器内的 `.env`
+   - WebUI 保存后的 `STOCK_LIST`、`SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES`、`SCHEDULE_RUN_IMMEDIATELY`、`RUN_IMMEDIATELY` 会写回容器内的 `.env`
    - WebUI 保存后会触发当前进程的配置重载；运行中的读取路径会同步使用最新写回的 `.env`，例如定时任务会继续热读取保存后的 `STOCK_LIST`
    - 如果容器启动命令里传入了这些同名环境变量（如 `--env-file .env`、`docker run -e ...` 或 Compose `environment:`），后续重启时仍可能以启动环境变量为准；要让 WebUI 保存值接管，请同步更新或移除这些同名 override
    - 如需持久化 WebUI 保存的配置，请将 `ENV_FILE` 指向 `/app/data/runtime.env` 等可写数据卷文件，不要把宿主机 `.env` 单文件挂载到 `/app/.env`
-   - 其中 `SCHEDULE_*` 与 `RUN_IMMEDIATELY` 属于**启动期调度配置**，保存后不会立即触发一次分析，也不会热重建当前进程里的 scheduler
-   - 如需让调度开关立刻接管当前容器，请重启容器，并确保以 schedule 模式启动
+   - `SCHEDULE_ENABLED`、`SCHEDULE_TIME`、`SCHEDULE_TIMES` 保存后会让 WebUI/API/Desktop 长运行进程按新配置启停或重建 runtime scheduler
+   - `SCHEDULE_RUN_IMMEDIATELY` 与 `RUN_IMMEDIATELY` 仍属于启动期/一次性运行配置，保存后不会立即触发一次分析
 3. **Docker 手工改 `.env` 后**：修改后仍建议重启容器
    ```bash
    docker-compose down && docker-compose up -d

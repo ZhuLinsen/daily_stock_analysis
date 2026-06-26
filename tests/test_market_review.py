@@ -41,6 +41,7 @@ def _build_optional_module_stubs() -> dict[str, ModuleType]:
 sys.modules.update(_build_optional_module_stubs())
 import src.core.market_review as market_review_module
 from src.config import Config
+from src.llm.generation_backend import GenerationError, GenerationErrorCode
 from src.services.run_diagnostics import activate_run_diagnostic_context, reset_run_diagnostic_context
 from src.storage import AnalysisHistory, DatabaseManager
 
@@ -164,6 +165,40 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(notifier.save_report_to_file.call_args.args[0].startswith("# 🎯 Market Review\n\n"))
         self.assertEqual(result.market_review_payload["language"], "en")
         self.assertEqual(result.report, "English market review body")
+
+    def test_run_market_review_reraises_generation_backend_config_error(self) -> None:
+        notifier = self._make_notifier()
+        backend_error = GenerationError(
+            error_code=GenerationErrorCode.BACKEND_NOT_CONFIGURED,
+            stage="generation",
+            retryable=False,
+            fallbackable=False,
+            backend="codex",
+            details={
+                "field": "GENERATION_BACKEND",
+                "requested_backend": "codex",
+            },
+        )
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.side_effect = backend_error
+
+        with patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ):
+            with self.assertRaises(GenerationError) as exc_info:
+                run_market_review(
+                    notifier,
+                    config=SimpleNamespace(report_language="zh", market_review_region="cn"),
+                    send_notification=False,
+                    save_report_file=False,
+                    persist_history=False,
+                )
+
+        self.assertIs(exc_info.exception, backend_error)
+        notifier.save_report_to_file.assert_not_called()
+        notifier.send.assert_not_called()
 
     def test_run_market_review_merges_both_regions_with_english_wrappers(self) -> None:
         notifier = self._make_notifier()
@@ -430,13 +465,14 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     },
                 )
 
-                self.assertEqual(saved, 1)
+                self.assertGreater(saved, 0)
                 db = DatabaseManager.get_instance()
                 with db.get_session() as session:
                     row = session.query(AnalysisHistory).filter(
                         AnalysisHistory.query_id == "market-task-001"
                     ).first()
                     self.assertIsNotNone(row)
+                    self.assertEqual(row.id, saved)
                     self.assertEqual(row.code, market_review_module.MARKET_REVIEW_HISTORY_CODE)
                     self.assertEqual(row.name, "大盘复盘")
                     self.assertEqual(row.report_type, market_review_module.MARKET_REVIEW_REPORT_TYPE)
@@ -445,6 +481,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     self.assertIn('"market_light_snapshots"', row.context_snapshot)
                     self.assertIn('"market_review_payload"', row.context_snapshot)
                     self.assertIn('"trade_date": "2026-03-06"', row.context_snapshot)
+                    snapshot = json.loads(row.context_snapshot or "{}")
+                    self.assertIn("analysis_context_pack_overview", snapshot)
             finally:
                 DatabaseManager.reset_instance()
                 Config._instance = None

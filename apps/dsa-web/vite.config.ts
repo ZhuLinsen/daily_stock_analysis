@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 const packageJson = JSON.parse(
@@ -96,6 +97,7 @@ export default defineConfig({
     __APP_BUILD_TIME__: JSON.stringify(buildTime),
   },
   plugins: [
+    tailwindcss(),
     react({
       babel: {
         plugins: [['babel-plugin-react-compiler']],

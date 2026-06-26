@@ -86,6 +86,8 @@ This document compiles common issues encountered by users and their solutions.
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> Compatibility note: the daily analysis workflow also binds the `STOCK_LIST` environment, so a `STOCK_LIST` value mistakenly added under that Environment's variables can still be read. Repository variables remain the recommended location. Unless you want the daily job to wait for manual approval, do not add required reviewers, wait timers, or deployment branch restrictions to this Environment.
+
 ---
 
 ### Q6: Configuration not taking effect after modifying .env file?
@@ -95,12 +97,12 @@ This document compiles common issues encountered by users and their solutions.
 2. **Docker deployment / WebUI Settings**:
    - `--env-file .env` / Compose `env_file` only injects the host `.env` as startup environment variables; it does not create or write back to `/app/.env` inside the container
    - When the active `.env` file does not contain a key, the WebUI Settings page falls back to showing the same key from startup-injected environment variables; the raw `.env` export still contains only the active config file content
-   - WebUI saves `STOCK_LIST`, `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, `SCHEDULE_RUN_IMMEDIATELY`, and `RUN_IMMEDIATELY` back into the container's `.env`
+   - WebUI saves `STOCK_LIST`, `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, `SCHEDULE_TIMES`, `SCHEDULE_RUN_IMMEDIATELY`, and `RUN_IMMEDIATELY` back into the container's `.env`
    - Saving from WebUI triggers a config reload for the current process, and runtime reads continue from the latest persisted `.env`; for example, scheduled runs keep hot-reading the saved `STOCK_LIST`
    - If you pass the same keys as startup env vars (`--env-file .env`, `docker run -e ...`, or Compose `environment:`), those startup values can still win on later restarts; update or remove the same-name overrides if you want the WebUI-saved `.env` values to take over
    - To persist WebUI-saved config, point `ENV_FILE` at a writable data-volume file such as `/app/data/runtime.env`; do not bind-mount the host `.env` as a single file over `/app/.env`
-   - `SCHEDULE_*` and `RUN_IMMEDIATELY` are still **startup-time scheduling settings**: saving them does not immediately trigger an analysis run and does not hot-rebuild the scheduler inside the current process
-   - To make schedule changes take over the current container, restart it and make sure the process is started in schedule mode
+   - Saving `SCHEDULE_ENABLED`, `SCHEDULE_TIME`, or `SCHEDULE_TIMES` starts, stops, or rebuilds the runtime scheduler in long-running WebUI/API/Desktop processes
+   - `SCHEDULE_RUN_IMMEDIATELY` and `RUN_IMMEDIATELY` remain startup/one-shot settings; saving them does not immediately trigger an analysis run
 3. **Manual `.env` edits in Docker**: Restart the container after changes
    ```bash
    docker-compose down && docker-compose up -d

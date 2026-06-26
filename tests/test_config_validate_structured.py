@@ -185,6 +185,61 @@ class TestValidateStructuredStockList:
 # ---------------------------------------------------------------------------
 
 class TestValidateStructuredLLM:
+    def test_unknown_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_backend="codex")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "litellm 或 codex_cli" in error.message
+        assert "codex" in error.message
+
+    def test_unknown_generation_fallback_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_fallback_backend="claude_code")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_FALLBACK_BACKEND")
+        assert error.severity == "error"
+        assert "GENERATION_FALLBACK_BACKEND" in error.message
+        assert "claude_code" in error.message
+
+    def test_unknown_agent_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(agent_generation_backend="hermes")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "AGENT_GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "auto、litellm" in error.message
+        assert "不支持 Agent 工具调用" in error.message
+        assert "hermes" in error.message
+
+    def test_codex_cli_without_litellm_keys_is_not_llm_config_error(self):
+        cfg = _make_config(
+            generation_backend="codex_cli",
+            litellm_model="",
+            llm_model_list=[],
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+        )
+
+        issues = cfg.validate_structured()
+
+        assert not any(i.field == "LITELLM_CONFIG" and i.severity == "error" for i in issues)
+
+    def test_litellm_model_cannot_pretend_to_be_codex_cli_provider(self):
+        cfg = _make_config(litellm_model="codex_cli/gpt-5")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "LITELLM_MODEL")
+        assert error.severity == "error"
+        assert "不是 LiteLLM provider" in error.message
+
     def test_no_llm_is_error(self):
         """Empty llm_model_list must produce an error regardless of legacy keys."""
         cfg = _make_config(llm_model_list=[])
@@ -302,6 +357,19 @@ class TestValidateStructuredLLM:
         assert all(i.severity == "info" for i in llm_issues)
         assert all("LITELLM_MODEL" not in i.message for i in llm_issues)
         assert any("主模型" in i.message for i in llm_issues)
+
+    def test_codex_cli_without_litellm_model_does_not_emit_primary_model_hint(self):
+        cfg = _make_config(
+            generation_backend="codex_cli",
+            generation_fallback_backend="",
+            litellm_model="",
+            llm_model_list=[],
+        )
+
+        issues = cfg.validate_structured()
+
+        assert not any(i.field == "LITELLM_MODEL" and "主模型" in i.message for i in issues)
+        assert not any(i.severity == "error" and "AI 模型" in i.message for i in issues)
 
     def test_direct_env_provider_model_without_model_list_no_error(self):
         """Direct LiteLLM env providers should count as configured for runtime."""

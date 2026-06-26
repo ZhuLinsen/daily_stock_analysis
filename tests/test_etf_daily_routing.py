@@ -5,12 +5,20 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from data_provider.akshare_fetcher import AkshareFetcher
 from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager
 from data_provider.efinance_fetcher import EfinanceFetcher
+
+
+@pytest.fixture(autouse=True)
+def _reset_daily_source_health():
+    DataFetcherManager.reset_daily_source_health()
+    yield
+    DataFetcherManager.reset_daily_source_health()
 
 
 def _make_efinance_fetcher() -> EfinanceFetcher:

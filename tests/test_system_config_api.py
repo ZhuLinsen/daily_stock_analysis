@@ -88,6 +88,12 @@ class SystemConfigApiTestCase(unittest.TestCase):
             cookies=cookies if cookies is not None else {system_config.COOKIE_NAME: "valid-session-token"}
         )
 
+    def _rewrite_env(self, *lines: str) -> None:
+        self.env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        Config.reset_instance()
+        self.manager = ConfigManager(env_path=self.env_path)
+        self.service = SystemConfigService(manager=self.manager)
+
     def _build_client_app(self) -> FastAPI:
         app = FastAPI()
 
@@ -99,11 +105,29 @@ class SystemConfigApiTestCase(unittest.TestCase):
         add_auth_middleware(app)
         return app
 
-    def test_get_config_returns_raw_secret_value(self) -> None:
+    def test_get_config_keeps_regular_secret_value_unmasked(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
         self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
         self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
+
+    def test_get_config_masks_llm_usage_hmac_secret(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "GEMINI_API_KEY=secret-key-value",
+            "LLM_USAGE_HMAC_SECRET=telemetry-secret",
+            "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
+            "ADMIN_AUTH_ENABLED=true",
+        )
+
+        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(item_map["LLM_USAGE_HMAC_SECRET"]["value"], payload["mask_token"])
+        self.assertTrue(item_map["LLM_USAGE_HMAC_SECRET"]["is_masked"])
+        self.assertTrue(item_map["LLM_USAGE_HMAC_SECRET"]["raw_value_exists"])
+        self.assertEqual(item_map["LLM_USAGE_HMAC_KEY_VERSION"]["value"], "test-v1")
+        self.assertFalse(item_map["LLM_USAGE_HMAC_KEY_VERSION"]["is_masked"])
 
     def test_get_config_schema_includes_help_metadata(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
@@ -113,6 +137,30 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(stock_schema["help_key"], "settings.base.STOCK_LIST")
         self.assertTrue(stock_schema["examples"])
         self.assertTrue(stock_schema["docs"])
+
+    def test_get_config_schema_exposes_generation_backend_bounds_and_agent_options(self) -> None:
+        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_TIMEOUT_SECONDS"]["schema"]["validation"],
+            {"min": 1, "max": 3600},
+        )
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["schema"]["validation"],
+            {"min": 1, "max": 33554432},
+        )
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
+            {"min": 1, "max": 16},
+        )
+        self.assertEqual(
+            item_map["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
+            {"min": 1, "max": 4},
+        )
+        agent_schema = item_map["AGENT_GENERATION_BACKEND"]["schema"]
+        self.assertEqual(agent_schema["validation"]["enum"], ["auto", "litellm"])
+        self.assertNotIn("codex_cli", {option["value"] for option in agent_schema["options"]})
 
     def test_get_config_schema_includes_notification_noise_fields(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
@@ -171,6 +219,42 @@ class SystemConfigApiTestCase(unittest.TestCase):
         env_content = self.env_path.read_text(encoding="utf-8")
         self.assertIn("STOCK_LIST=600519,300750", env_content)
         self.assertIn("GEMINI_API_KEY=new-secret-value", env_content)
+
+    def test_put_config_escapes_custom_webhook_template_placeholders(self) -> None:
+        template = '{"title":$title_json,"content":$content_json}'
+        current = system_config.get_system_config(
+            include_schema=False,
+            service=self.service,
+        ).model_dump()
+
+        payload = system_config.update_system_config(
+            request=UpdateSystemConfigRequest(
+                config_version=current["config_version"],
+                mask_token="******",
+                reload_now=False,
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_BODY_TEMPLATE",
+                        "value": template,
+                    },
+                ],
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertEqual(payload["applied_count"], 1)
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        item_map = {
+            item["key"]: item
+            for item in system_config.get_system_config(
+                include_schema=True,
+                service=self.service,
+            ).model_dump(by_alias=True)["items"]
+        }
+        self.assertEqual(item_map["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
 
     def test_put_config_returns_conflict_when_version_is_stale(self) -> None:
         with self.assertRaises(HTTPException) as context:
@@ -313,6 +397,34 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertIn("STOCK_LIST=300750\n", env_content)
         self.assertIn("CUSTOM_NOTE=config backup\n", env_content)
         self.assertIn("GEMINI_API_KEY=secret-key-value\n", env_content)
+
+    def test_import_export_system_config_preserves_generation_backend_keys(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        payload = system_config.import_system_config(
+            request_obj=self._build_request(),
+            request=ImportSystemConfigRequest(
+                config_version=current["config_version"],
+                content=(
+                    "GENERATION_BACKEND=codex_cli\n"
+                    "GENERATION_FALLBACK_BACKEND=\n"
+                    "GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n"
+                    "AGENT_GENERATION_BACKEND=auto\n"
+                ),
+                reload_now=False,
+            ),
+            service=self.service,
+        ).model_dump()
+        export_payload = system_config.export_system_config(
+            request=self._build_request(),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertIn("GENERATION_BACKEND=codex_cli\n", export_payload["content"])
+        self.assertIn("GENERATION_FALLBACK_BACKEND=\n", export_payload["content"])
+        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n", export_payload["content"])
+        self.assertIn("AGENT_GENERATION_BACKEND=auto\n", export_payload["content"])
 
     def test_import_system_config_returns_conflict_when_version_is_stale(self) -> None:
         with self.assertRaises(HTTPException) as context:

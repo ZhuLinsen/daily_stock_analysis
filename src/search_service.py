@@ -38,7 +38,7 @@ from src.config import (
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
-from src.services.run_diagnostics import record_provider_run
+from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)
 
@@ -3704,6 +3704,11 @@ class SearchService:
 
                 started_at = time.monotonic()
                 try:
+                    record_provider_run_started(
+                        data_type="news_search",
+                        provider=provider.name,
+                        operation="search_stock_news",
+                    )
                     response = provider.search(query, provider_max_results, days=search_days, **search_kwargs)
                 except Exception as exc:
                     self._record_news_search_run(

@@ -58,7 +58,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
-    def test_get_config_returns_raw_sensitive_values(self) -> None:
+    def test_get_config_keeps_regular_sensitive_values_unmasked(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
 
@@ -80,6 +80,22 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["is_masked"])
         self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["schema"]["is_sensitive"])
 
+    def test_get_config_masks_llm_usage_hmac_secret(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "LLM_USAGE_HMAC_SECRET=telemetry-secret",
+            "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["LLM_USAGE_HMAC_SECRET"]["value"], payload["mask_token"])
+        self.assertTrue(items["LLM_USAGE_HMAC_SECRET"]["is_masked"])
+        self.assertTrue(items["LLM_USAGE_HMAC_SECRET"]["schema"]["is_sensitive"])
+        self.assertEqual(items["LLM_USAGE_HMAC_KEY_VERSION"]["value"], "test-v1")
+        self.assertFalse(items["LLM_USAGE_HMAC_KEY_VERSION"]["is_masked"])
+
     def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
@@ -100,6 +116,22 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
         self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
+
+    def test_get_config_preserves_manual_agent_codex_cli_value_without_schema_option(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "AGENT_GENERATION_BACKEND=codex_cli",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+        agent_item = items["AGENT_GENERATION_BACKEND"]
+
+        self.assertEqual(agent_item["value"], "codex_cli")
+        self.assertNotIn(
+            "codex_cli",
+            {option["value"] for option in agent_item["schema"]["options"]},
+        )
 
     def test_get_config_preserves_explicit_empty_switch_value(self) -> None:
         self._rewrite_env(
@@ -399,6 +431,53 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["stock_list"]["status"], "configured")
         self.assertEqual(checks["notification"]["status"], "optional")
 
+    def test_get_setup_status_treats_codex_cli_as_primary_runtime_without_api_keys(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_primary"]["status"], "configured")
+        self.assertIn("Codex CLI", checks["llm_primary"]["message"])
+        self.assertNotIn("llm_primary", status["required_missing_keys"])
+
+    def test_get_setup_status_rejects_agent_codex_cli_tool_backend(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "AGENT_GENERATION_BACKEND=codex_cli",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+        self.assertIn("暂不支持 codex_cli", checks["llm_agent"]["message"])
+
+    def test_get_setup_status_agent_litellm_without_model_reports_missing_model(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "AGENT_GENERATION_BACKEND=litellm",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("src.services.system_config_service.shutil.which", return_value="/usr/bin/codex"):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertEqual(checks["llm_agent"]["status"], "needs_action")
+        self.assertIn("未检测到可用 LiteLLM 模型配置", checks["llm_agent"]["message"])
+        self.assertNotIn("需要 LiteLLM backend", checks["llm_agent"]["message"])
+
     def test_get_setup_status_accepts_anspire_one_key_llm(self) -> None:
         self._rewrite_env(
             "ANSPIRE_API_KEYS=sk-anspire-test-value",
@@ -682,6 +761,40 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["LOG_LEVEL"], "")
 
+    def test_import_desktop_env_preserves_exported_braced_webhook_template(self) -> None:
+        template = '{"content":${content_json}}'
+
+        save_payload = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=False,
+        )
+        self.assertTrue(save_payload["success"])
+        backup_content = self.service.export_desktop_env()["content"]
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+            backup_content,
+        )
+
+        clear_payload = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": ""}],
+            reload_now=False,
+        )
+        self.assertTrue(clear_payload["success"])
+
+        restore_payload = self.service.import_desktop_env(
+            config_version=self.manager.get_config_version(),
+            content=backup_content,
+            reload_now=False,
+        )
+
+        self.assertTrue(restore_payload["success"])
+        self.assertEqual(
+            self.manager.read_config_map()["CUSTOM_WEBHOOK_BODY_TEMPLATE"],
+            template,
+        )
+
     def test_import_desktop_env_rejects_empty_or_comment_only_content(self) -> None:
         with self.assertRaises(ConfigImportError):
             self.service.import_desktop_env(
@@ -732,7 +845,9 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "LLM_OPENAI_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "ALPHASIFT_ENABLED=false",
-            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@d038c52c468543726fc1fd830b53c27d3f09d6da",
+            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8",
+            "LLM_USAGE_HMAC_SECRET=telemetry-secret",
+            "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
             "GEMINI_API_KEY=legacy-secret",
         )
 
@@ -741,6 +856,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             items=[
                 {"key": "ALPHASIFT_ENABLED", "value": "true"},
                 {"key": "ALPHASIFT_INSTALL_SPEC", "value": "******"},
+                {"key": "LLM_USAGE_HMAC_SECRET", "value": "******"},
                 {"key": "GEMINI_API_KEY", "value": "******"},
             ],
             mask_token="******",
@@ -750,14 +866,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(response["success"])
         self.assertEqual(response["applied_count"], 1)
         self.assertIn("ALPHASIFT_ENABLED", response["updated_keys"])
-        self.assertEqual(response["skipped_masked_count"], 2)
+        self.assertEqual(response["skipped_masked_count"], 3)
 
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
         self.assertEqual(
             current_map["ALPHASIFT_INSTALL_SPEC"],
-            "git+https://github.com/ZhuLinsen/alphasift.git@d038c52c468543726fc1fd830b53c27d3f09d6da",
+            "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8",
         )
+        self.assertEqual(current_map["LLM_USAGE_HMAC_SECRET"], "telemetry-secret")
+        self.assertEqual(current_map["LLM_USAGE_HMAC_KEY_VERSION"], "test-v1")
         self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
         self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
         self.assertEqual(current_map["AGENT_LITELLM_MODEL"], "openai/gpt-4o")
@@ -773,6 +891,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_format" for issue in validation["issues"]))
+
+    def test_validate_accepts_empty_schedule_times_fallback(self) -> None:
+        validation = self.service.validate(items=[{"key": "SCHEDULE_TIMES", "value": ""}])
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
 
     def test_validate_reports_invalid_searxng_url(self) -> None:
         validation = self.service.validate(items=[{"key": "SEARXNG_BASE_URLS", "value": "searx.local,https://ok.example"}])
@@ -1123,6 +1246,23 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
+
+    def test_validate_reports_generation_backend_numeric_maximum(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "3601"},
+                {"key": "GENERATION_BACKEND_MAX_OUTPUT_BYTES", "value": "33554433"},
+                {"key": "GENERATION_BACKEND_MAX_CONCURRENCY", "value": "17"},
+                {"key": "LOCAL_CLI_BACKEND_MAX_CONCURRENCY", "value": "5"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issues = {issue["key"]: issue for issue in validation["issues"]}
+        self.assertEqual(issues["GENERATION_BACKEND_TIMEOUT_SECONDS"]["expected"], "<=3600")
+        self.assertEqual(issues["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["expected"], "<=33554432")
+        self.assertEqual(issues["GENERATION_BACKEND_MAX_CONCURRENCY"]["expected"], "<=16")
+        self.assertEqual(issues["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["expected"], "<=4")
 
     def test_validate_accepts_report_language_english(self) -> None:
         validation = self.service.validate(items=[{"key": "REPORT_LANGUAGE", "value": "en"}])
@@ -2587,6 +2727,58 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(response["success"])
         self.assertEqual(Config.get_instance().stock_list, ["300750", "TSLA"])
 
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_escapes_custom_webhook_template_and_runtime_reads_literals(
+        self,
+        _mock_reload_runtime_singletons,
+    ) -> None:
+        template = '{"title":$title_json,"content":$content_json}'
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(Config.get_instance().custom_webhook_body_template, template)
+
+        items = {
+            item["key"]: item
+            for item in self.service.get_config(include_schema=True)["items"]
+        }
+        self.assertEqual(items["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
+
+    @patch.object(SystemConfigService, "_reload_runtime_singletons")
+    def test_update_escapes_braced_custom_webhook_template_and_runtime_reads_literals(
+        self,
+        _mock_reload_runtime_singletons,
+    ) -> None:
+        template = '{"content":${content_json}}'
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[{"key": "CUSTOM_WEBHOOK_BODY_TEMPLATE", "value": template}],
+            reload_now=True,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertIn(
+            'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+            self.env_path.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(Config.get_instance().custom_webhook_body_template, template)
+
+        items = {
+            item["key"]: item
+            for item in self.service.get_config(include_schema=True)["items"]
+        }
+        self.assertEqual(items["CUSTOM_WEBHOOK_BODY_TEMPLATE"]["value"], template)
+
     def test_update_raises_conflict_for_stale_version(self) -> None:
         with self.assertRaises(ConfigConflictError):
             self.service.update(
@@ -2644,13 +2836,20 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             for warning in response["warnings"]
             if "SCHEDULE_ENABLED" in warning
         )
+        schedule_run_warning = next(
+            warning
+            for warning in response["warnings"]
+            if "SCHEDULE_RUN_IMMEDIATELY" in warning
+        )
 
         self.assertIn("非 schedule 模式", run_warning)
         self.assertNotIn("以 schedule 模式", run_warning)
-        self.assertIn("SCHEDULE_RUN_IMMEDIATELY", schedule_warning)
-        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_warning)
-        self.assertIn("以 schedule 模式重新启动后生效", schedule_warning)
-        self.assertNotIn("它属于启动期单次运行配置", schedule_warning)
+        self.assertIn("runtime scheduler", schedule_warning)
+        self.assertIn("CLI schedule", schedule_warning)
+        self.assertIn("SCHEDULE_RUN_IMMEDIATELY", schedule_run_warning)
+        self.assertIn("不会因为本次保存启动、停止或重建 scheduler", schedule_run_warning)
+        self.assertIn("以 schedule 模式重新启动后生效", schedule_run_warning)
+        self.assertNotIn("它属于启动期单次运行配置", schedule_run_warning)
 
     def test_update_appends_schedule_time_runtime_rebind_warning(self) -> None:
         response = self.service.update(

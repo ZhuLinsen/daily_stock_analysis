@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -20,6 +21,7 @@ from src.agent.events import (
     validate_event_alert_rule,
 )
 from data_provider.base import normalize_stock_code
+from data_provider.us_index_mapping import is_us_index_code
 from src.analysis_context_pack_overview import (
     ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY,
     extract_analysis_context_pack_overview,
@@ -30,6 +32,11 @@ from src.market_phase_summary import (
     render_market_phase_summary,
 )
 from src.services.alert_service import AlertService
+from src.services.decision_signal_service import DecisionSignalService
+from src.services.decision_signal_summary import (
+    format_decision_signal_excerpt,
+    summarize_decision_signal,
+)
 from src.services.history_service import HistoryService
 from src.services.market_light_service import normalize_market_region
 
@@ -76,12 +83,14 @@ class AlertWorker:
         *,
         config_provider: Optional[Callable[[], Any]] = None,
         service: Optional[AlertService] = None,
+        decision_signal_service: Optional[DecisionSignalService] = None,
         notifier: Optional[Any] = None,
         now_provider: Optional[Callable[[], float]] = None,
         fingerprint_ttl_seconds: int = ALERT_WORKER_FINGERPRINT_TTL_SECONDS,
     ) -> None:
         self.config_provider = config_provider or self._default_config_provider
         self.service = service or AlertService()
+        self.decision_signal_service = decision_signal_service or DecisionSignalService()
         self.notifier = notifier
         self.now_provider = now_provider or time.time
         self.fingerprint_ttl_seconds = max(1, int(fingerprint_ttl_seconds))
@@ -152,6 +161,8 @@ class AlertWorker:
                 }
 
             record_status = result.get("record_status")
+            if record_status == "triggered":
+                self._attach_decision_signal_summary_safely(runtime_rule, result)
             if record_status in WRITABLE_TRIGGER_STATUSES:
                 trigger_write = self._record_trigger_safely(runtime_rule, result, record_status)
                 trigger_id = trigger_write.trigger_id
@@ -361,6 +372,154 @@ class AlertWorker:
             return dict(parsed) if isinstance(parsed, dict) else {"legacy_diagnostics": value}
         return {}
 
+    def _attach_decision_signal_summary_safely(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+    ) -> None:
+        try:
+            summary = self._resolve_decision_signal_summary(runtime_rule, result)
+            if not summary:
+                return
+            payload = self._diagnostics_payload(result.get("diagnostics"))
+            payload["decision_signal_summary"] = summary
+            result["diagnostics"] = payload
+        except Exception as exc:
+            logger.debug(
+                "[AlertWorker] decision signal summary unavailable for %s: %s",
+                self._display_target(runtime_rule),
+                self.service._sanitize_text(str(exc) or "decision signal summary failed"),
+            )
+
+    def _resolve_decision_signal_summary(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        identity = self._symbol_identity_for_decision_signal(runtime_rule)
+        if identity is None:
+            return None
+        stock_code, market = identity
+        latest = self.decision_signal_service.get_latest_active(
+            stock_code=stock_code,
+            market=market,
+            limit=1,
+        )
+        items = latest.get("items") if isinstance(latest, dict) else None
+        if items:
+            return summarize_decision_signal(items[0])
+
+        created = self.decision_signal_service.create_signal(
+            self._alert_decision_signal_payload(
+                runtime_rule,
+                result,
+                stock_code=stock_code,
+                market=market,
+            )
+        )
+        item = created.get("item") if isinstance(created, dict) else None
+        return summarize_decision_signal(item)
+
+    def _symbol_identity_for_decision_signal(self, runtime_rule: RuntimeAlertRule) -> Optional[Tuple[str, str]]:
+        rule = getattr(runtime_rule, "rule", runtime_rule)
+        metadata = getattr(rule, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+        target_scope = str(
+            getattr(rule, "target_scope", None)
+            or metadata.get("target_scope")
+            or ""
+        ).strip()
+        if target_scope in {"market", "portfolio_account"}:
+            return None
+        target = str(
+            metadata.get("effective_target")
+            or runtime_rule.effective_target
+            or getattr(rule, "stock_code", "")
+            or ""
+        ).strip()
+        if not target or ":" in target:
+            return None
+        stock_code = normalize_stock_code(target)
+        if is_us_index_code(stock_code):
+            return None
+        market = get_market_for_stock(stock_code)
+        if market not in {"cn", "hk", "us"}:
+            return None
+        return stock_code, market
+
+    def _alert_decision_signal_payload(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+        *,
+        stock_code: str,
+        market: str,
+    ) -> Dict[str, Any]:
+        rule = getattr(runtime_rule, "rule", runtime_rule)
+        metadata = getattr(rule, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+        alert_type = self._public_alert_type(getattr(rule, "alert_type", None) or result.get("alert_type"))
+        key_hash = hashlib.sha1(str(runtime_rule.key or "").encode("utf-8")).hexdigest()
+        return {
+            "stock_code": stock_code,
+            "stock_name": getattr(rule, "stock_name", None),
+            "market": market,
+            "source_type": "alert",
+            "source_agent": "alert_worker",
+            "trace_id": f"alert-rule-{key_hash[:32]}",
+            "trigger_source": "alert",
+            "action": "alert",
+            "reason": result.get("reason") or result.get("message") or getattr(rule, "description", None),
+            "watch_conditions": self._alert_watch_conditions(runtime_rule, result, alert_type),
+            "risk_summary": self._alert_risk_summary(runtime_rule, result),
+            "metadata": {
+                "rule_id": self.service._runtime_rule_id(rule),
+                "alert_type": alert_type,
+                "severity": runtime_rule.severity,
+                "observed_value": result.get("observed_value"),
+                "threshold": result.get("threshold"),
+                "data_source": result.get("data_source"),
+                "data_timestamp": self._iso_or_text(result.get("data_timestamp")),
+                "rule_key_hash": key_hash,
+            },
+        }
+
+    @staticmethod
+    def _public_alert_type(value: Any) -> str:
+        raw = getattr(value, "value", value)
+        return str(raw or "").strip()[:64]
+
+    def _alert_watch_conditions(
+        self,
+        runtime_rule: RuntimeAlertRule,
+        result: Dict[str, Any],
+        alert_type: str,
+    ) -> str:
+        threshold = result.get("threshold")
+        observed = result.get("observed_value")
+        target = self._display_target(runtime_rule)
+        parts = [part for part in (target, alert_type) if part]
+        if threshold not in (None, ""):
+            parts.append(f"threshold={threshold}")
+        if observed not in (None, ""):
+            parts.append(f"observed={observed}")
+        return " | ".join(str(part) for part in parts)
+
+    def _alert_risk_summary(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any]) -> str:
+        severity = str(runtime_rule.severity or "warning")
+        reason = result.get("reason") or result.get("message") or "Alert triggered"
+        return f"{severity}: {reason}"
+
+    @staticmethod
+    def _iso_or_text(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
     def _build_analysis_visibility(
         self,
         runtime_rule: RuntimeAlertRule,
@@ -492,6 +651,9 @@ class AlertWorker:
         )
         if excerpt:
             content = f"{content}\n\n{excerpt}"
+        signal_excerpt = format_decision_signal_excerpt(diagnostics.get("decision_signal_summary"))
+        if signal_excerpt:
+            content = f"{content}\n\n{signal_excerpt}"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
 
         return notification_service.send_with_results(alert_text, route_type="alert")

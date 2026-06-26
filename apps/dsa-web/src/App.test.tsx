@@ -44,12 +44,20 @@ vi.mock('./pages/PortfolioPage', () => ({
   default: () => <div data-testid="portfolio-page">Portfolio</div>,
 }));
 
+vi.mock('./pages/DecisionSignalsPage', () => ({
+  default: () => <div data-testid="decision-signals-page">Decision signals</div>,
+}));
+
 vi.mock('./pages/BacktestPage', () => ({
   default: () => <div data-testid="backtest-page">Backtest</div>,
 }));
 
 vi.mock('./pages/AlertsPage', () => ({
   default: () => <div data-testid="alerts-page">Alerts</div>,
+}));
+
+vi.mock('./pages/TokenUsagePage', () => ({
+  default: () => <div data-testid="token-usage-page">Usage</div>,
 }));
 
 vi.mock('./pages/SettingsPage', () => ({
@@ -121,6 +129,26 @@ describe('App routing behavior', () => {
     expect(await screen.findByTestId('chat-page')).toBeInTheDocument();
     expect(setCurrentRoute).toHaveBeenCalledWith('/chat');
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('routes /usage to the token usage page after auth is ready', async () => {
+    window.history.pushState({}, '', '/usage');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('token-usage-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/usage');
+    expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
+  });
+
+  it('routes /decision-signals to the AI signals page after auth is ready', async () => {
+    window.history.pushState({}, '', '/decision-signals');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('decision-signals-page')).toBeInTheDocument();
+    expect(setCurrentRoute).toHaveBeenCalledWith('/decision-signals');
     expect(screen.queryByTestId('home-page')).not.toBeInTheDocument();
   });
 

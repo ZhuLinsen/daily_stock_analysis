@@ -96,11 +96,19 @@ def resolved_provider_namespace(
     model_list: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> str:
     """Resolve router aliases before deriving the provider namespace."""
+    return resolved_model_provider_identity(model, model_list)[1]
+
+
+def resolved_model_provider_identity(
+    model: Any,
+    model_list: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Tuple[str, str]:
+    """Resolve router aliases to the LiteLLM wire model and provider namespace."""
     normalized = str(model or "").strip()
     if not normalized:
-        return ""
+        return "", ""
     wire_model = resolve_litellm_wire_model(normalized, list(model_list or []))
-    return provider_namespace(wire_model)
+    return wire_model, provider_namespace(wire_model)
 
 
 def trace_model_matches(

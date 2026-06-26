@@ -8,6 +8,7 @@ import logging
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,12 @@ from src.core.config_registry import (
     get_registered_field_keys,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.backend_registry import (
+    AUTO_AGENT_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
+    LITELLM_BACKEND_ID,
+    normalize_backend_id,
+)
 from src.llm.generation_params import apply_litellm_generation_params
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
@@ -116,7 +123,10 @@ class SystemConfigService:
             "skill": "specialist",
         }
     }
-    _SERVER_MASKED_CONFIG_KEYS: Set[str] = {"ALPHASIFT_INSTALL_SPEC"}
+    _SERVER_MASKED_CONFIG_KEYS: Set[str] = {
+        "ALPHASIFT_INSTALL_SPEC",
+        "LLM_USAGE_HMAC_SECRET",
+    }
     _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
         "wechat",
         "feishu",
@@ -207,8 +217,9 @@ class SystemConfigService:
         "astrbot": ("ASTRBOT_URL",),
     }
 
-    def __init__(self, manager: Optional[ConfigManager] = None):
+    def __init__(self, manager: Optional[ConfigManager] = None, runtime_scheduler: Optional[Any] = None):
         self._manager = manager or ConfigManager()
+        self._runtime_scheduler = runtime_scheduler
 
     def get_schema(self) -> Dict[str, Any]:
         """Return grouped schema metadata for UI rendering."""
@@ -350,7 +361,7 @@ class SystemConfigService:
         return cls._build_display_config_map(runtime_map)
 
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
-        """Return current config values without server-side secret masking."""
+        """Return display config values with mask metadata for server-masked fields."""
         saved_config_map = self._build_display_config_map(self._manager.read_config_map())
         runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
         config_map = {
@@ -1458,6 +1469,18 @@ class SystemConfigService:
                 updates=dict(updates),
             )
         )
+        if self._runtime_scheduler is not None and submitted_keys & {
+            "SCHEDULE_ENABLED",
+            "SCHEDULE_TIME",
+            "SCHEDULE_TIMES",
+        }:
+            try:
+                self._runtime_scheduler.reconcile_from_config(
+                    clear_enabled_override="SCHEDULE_ENABLED" in submitted_keys,
+                )
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.error("Runtime scheduler reconcile failed: %s", exc, exc_info=True)
+                warnings.append("Configuration updated but runtime scheduler reconcile failed")
 
         return {
             "success": True,
@@ -1536,7 +1559,6 @@ class SystemConfigService:
             )
 
         startup_only_schedule_keys = submitted_keys & {
-            "SCHEDULE_ENABLED",
             "SCHEDULE_RUN_IMMEDIATELY",
         }
         if startup_only_schedule_keys:
@@ -1545,6 +1567,28 @@ class SystemConfigService:
                     f"{', '.join(sorted(startup_only_schedule_keys))} 已写入 .env。"
                     "这些属于启动期调度模式配置：当前已运行的 WebUI/API 进程不会因为本次保存启动、"
                     "停止或重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                )
+            )
+
+        if "SCHEDULE_ENABLED" in submitted_keys:
+            schedule_enabled = (current_map.get("SCHEDULE_ENABLED", "false") or "false").strip().lower()
+            warnings.append(
+                (
+                    f"SCHEDULE_ENABLED={schedule_enabled} 已写入 .env。"
+                    "如果当前进程是 WebUI/API/Desktop 长运行进程，runtime scheduler 会按新配置启停；"
+                    "CLI schedule 模式仍按启动参数和配置运行。"
+                )
+            )
+
+        if "SCHEDULE_TIMES" in submitted_keys:
+            schedule_times = (current_map.get("SCHEDULE_TIMES", "") or "").strip()
+            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
+            effective = schedule_times or schedule_time
+            warnings.append(
+                (
+                    f"SCHEDULE_TIMES={effective} 已写入 .env。"
+                    "有效时间点会去重、排序；为空时继续使用 SCHEDULE_TIME。"
+                    "如果当前进程存在 runtime scheduler，会按新时间重建 daily jobs。"
                 )
             )
 
@@ -1634,14 +1678,14 @@ class SystemConfigService:
 
     @staticmethod
     def _parse_imported_env_content(content: str) -> List[Dict[str, str]]:
-        """Parse raw `.env` text into update items using current dotenv semantics."""
+        """Parse raw `.env` text into update items without expanding app templates."""
         normalized_content = content.replace("\ufeff", "")
         if not normalized_content.strip():
             raise ConfigImportError("未识别到有效 .env 配置")
 
         from dotenv import dotenv_values
 
-        parsed = dotenv_values(stream=io.StringIO(normalized_content))
+        parsed = dotenv_values(stream=io.StringIO(normalized_content), interpolate=False)
         updates: List[Dict[str, str]] = []
         for key, value in parsed.items():
             if key is None:
@@ -2617,6 +2661,30 @@ class SystemConfigService:
         return "", "尚未检测到主模型配置"
 
     def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        if generation_backend == CODEX_CLI_BACKEND_ID:
+            if shutil.which("codex"):
+                return self._setup_check(
+                    "llm_primary",
+                    "LLM 主渠道",
+                    "ai_model",
+                    True,
+                    "configured",
+                    "已启用 Codex CLI 本地生成 Backend（experimental/limited）。",
+                )
+            return self._setup_check(
+                "llm_primary",
+                "LLM 主渠道",
+                "ai_model",
+                True,
+                "needs_action",
+                "已选择 codex_cli，但未找到 codex 可执行文件。",
+                "请先安装并登录 Codex CLI，或将 GENERATION_BACKEND 设回 litellm。",
+            )
+
         model, source = self._resolve_setup_primary_model(effective_map)
         if model:
             source_label = {
@@ -2648,8 +2716,57 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        agent_backend = normalize_backend_id(
+            effective_map.get("AGENT_GENERATION_BACKEND"),
+            default=AUTO_AGENT_BACKEND_ID,
+        )
+        if agent_backend == CODEX_CLI_BACKEND_ID:
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                "Agent 工具调用暂不支持 codex_cli text-only backend。",
+                "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
+            )
+
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
         if not agent_model_raw:
+            if generation_backend == CODEX_CLI_BACKEND_ID:
+                litellm_model, _source = self._resolve_setup_primary_model(effective_map)
+                if litellm_model:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "configured",
+                        "Agent 工具调用将继续使用 LiteLLM 渠道。",
+                    )
+                if agent_backend == LITELLM_BACKEND_ID:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "needs_action",
+                        "AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。",
+                        "如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。",
+                    )
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "needs_action",
+                    "Agent 工具调用需要 LiteLLM 模型配置；codex_cli 主生成方式不会被自动继承。",
+                    "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
+                )
             if primary_check["status"] == "configured":
                 return self._setup_check(
                     "llm_agent",

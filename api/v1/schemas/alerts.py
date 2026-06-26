@@ -117,6 +117,7 @@ class AlertTriggerItem(BaseModel):
             "evaluator_snapshot / legacy_text / null"
         ),
     )
+    decision_signal_summary: Optional[Dict[str, Any]] = None
 
 
 class AlertTriggerListResponse(BaseModel):

@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.agent.provider_trace import (  # noqa: E402
     extract_provider_trace_turns,
     provider_namespace,
+    resolved_model_provider_identity,
     resolved_provider_namespace,
     trace_model_matches,
 )
@@ -35,6 +36,18 @@ def test_resolved_provider_namespace_uses_router_alias_before_slashless_default(
 
     assert resolved_provider_namespace("claude-router", model_list) == "anthropic"
     assert resolved_provider_namespace("gpt-4o-mini", model_list) == "openai"
+
+
+def test_resolved_model_provider_identity_returns_wire_model_and_provider() -> None:
+    model_list = [
+        {
+            "model_name": "fast",
+            "litellm_params": {"model": "openai/gpt-4o"},
+        }
+    ]
+
+    assert resolved_model_provider_identity("fast", model_list) == ("openai/gpt-4o", "openai")
+    assert resolved_model_provider_identity("gpt-4o-mini", model_list) == ("gpt-4o-mini", "openai")
 
 
 def test_extract_trace_scans_only_current_run_and_keeps_multi_step_tool_loop() -> None:

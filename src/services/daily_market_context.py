@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -17,6 +18,10 @@ from src.core.market_review_lock import (
     try_acquire_market_review_lock,
 )
 from src.report_language import normalize_report_language
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    reset_run_diagnostic_context,
+)
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -413,23 +418,39 @@ class DailyMarketContextService:
                 persist_market_review_history=persist_market_review_history,
             )
 
+        caller_query_id = (
+            current_query_id.strip()
+            if isinstance(current_query_id, str) and current_query_id.strip()
+            else None
+        )
+        market_context_query_id = (
+            f"market_context_{caller_query_id}_{region}"
+            if caller_query_id
+            else f"market_context_{uuid.uuid4().hex}_{region}"
+        )
+
+        diagnostic_token = None
         try:
+            diagnostic_token = activate_run_diagnostic_context(
+                trace_id=market_context_query_id,
+                query_id=market_context_query_id,
+                stock_code=MARKET_REVIEW_HISTORY_CODE,
+                trigger_source="daily_market_context",
+                scope="daily_market_context",
+            )
             result = run_market_review(
                 config=config,
                 notifier=notifier,
                 analyzer=analyzer,
                 search_service=search_service,
-                query_id=(
-                    current_query_id.strip()
-                    if isinstance(current_query_id, str) and current_query_id.strip()
-                    else None
-                ),
+                query_id=market_context_query_id,
                 send_notification=False,
                 merge_notification=False,
                 override_region=region,
                 return_structured=True,
                 save_report_file=False,
                 persist_history=persist_market_review_history,
+                trigger_source="daily_market_context",
             )
 
             if (
@@ -451,11 +472,7 @@ class DailyMarketContextService:
                 source="market_review_runtime",
                 fallback_summary=fallback_summary,
                 fallback_full_report=fallback_summary,
-                query_id=(
-                    current_query_id.strip()
-                    if isinstance(current_query_id, str) and current_query_id.strip()
-                    else None
-                ),
+                query_id=caller_query_id,
             )
         except Exception as exc:
             logger.warning(
@@ -465,6 +482,8 @@ class DailyMarketContextService:
             )
             return None
         finally:
+            if diagnostic_token is not None:
+                reset_run_diagnostic_context(diagnostic_token)
             if owns_lock:
                 release_market_review_lock(lock_token)
 

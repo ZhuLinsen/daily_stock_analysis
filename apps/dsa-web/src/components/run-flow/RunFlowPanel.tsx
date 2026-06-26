@@ -159,14 +159,16 @@ export const RunFlowPanel: React.FC<RunFlowPanelProps> = ({ source, title }) => 
           className="border-dashed"
         />
       ) : (
-        <div className="grid min-w-0 grid-cols-1 gap-3 2xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_19.25rem]" data-testid="run-flow-layout">
           <div className="min-w-0 space-y-3">
             <RunFlowGraph
               lanes={topology?.lanes || snapshot.lanes}
               nodes={topology?.nodes || snapshot.nodes}
               edges={topology?.edges || snapshot.edges}
               selectedNodeId={graphSelectedNodeId}
+              expandedNodeIds={expandedGroupIds}
               onSelectNode={selectNode}
+              onToggleExpanded={toggleExpandedGroup}
             />
             <RunFlowNodeDetails
               node={selectedNode}
@@ -178,7 +180,7 @@ export const RunFlowPanel: React.FC<RunFlowPanelProps> = ({ source, title }) => 
               }}
             />
           </div>
-          <div className="min-h-[20rem] 2xl:max-h-[calc(100vh-18rem)]">
+          <div className="min-h-[20rem] xl:max-h-[calc(100vh-18rem)]" data-testid="run-flow-events-column">
             <RunFlowEventList
               events={topology?.events || snapshot.events}
               selectedNodeId={graphSelectedNodeId}

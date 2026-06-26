@@ -12,6 +12,17 @@ const requiredLocalizedKeys = [
   'PYTDX_PORT',
   'PYTDX_SERVERS',
   'BIAS_THRESHOLD',
+  'GENERATION_BACKEND',
+  'GENERATION_FALLBACK_BACKEND',
+  'GENERATION_BACKEND_TIMEOUT_SECONDS',
+  'GENERATION_BACKEND_MAX_OUTPUT_BYTES',
+  'GENERATION_BACKEND_MAX_CONCURRENCY',
+  'LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
+  'LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
+  'LLM_PROMPT_CACHE_HINTS_ENABLED',
+  'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
+  'LLM_USAGE_HMAC_SECRET',
+  'LLM_USAGE_HMAC_KEY_VERSION',
   'TELEGRAM_BOT_TOKEN',
   'TELEGRAM_CHAT_ID',
   'TELEGRAM_MESSAGE_THREAD_ID',
@@ -69,6 +80,7 @@ const requiredLocalizedKeys = [
   'ANALYSIS_DELAY',
   'SAVE_CONTEXT_SNAPSHOT',
   'DEBUG',
+  'AGENT_GENERATION_BACKEND',
   'AGENT_NL_ROUTING',
   'AGENT_DEEP_RESEARCH_BUDGET',
   'AGENT_DEEP_RESEARCH_TIMEOUT',
@@ -90,6 +102,16 @@ describe('systemConfigI18n required key coverage', () => {
 
     expect(title).toBe('SearXNG 自建实例地址');
     expect(title).not.toBe('SearXNG Base URLs');
+  });
+
+  it('documents LLM usage HMAC privacy boundaries', () => {
+    const zh = getSettingsHelpContent('settings.ai_model.LLM_USAGE_HMAC_SECRET', undefined, 'zh-CN');
+    const en = getSettingsHelpContent('settings.ai_model.LLM_USAGE_HMAC_SECRET', undefined, 'en');
+
+    expect(zh?.summary).toContain('HMAC');
+    expect(zh?.notes?.join(' ')).toContain('不要');
+    expect(en?.summary).toContain('HMAC');
+    expect(en?.notes?.join(' ')).toContain('Do not');
   });
 });
 
@@ -114,12 +136,19 @@ describe('systemConfigI18n option label localization', () => {
     ['LOG_LEVEL', 'WARNING', undefined, '警告'],
     ['LOG_LEVEL', 'ERROR', undefined, '错误'],
     ['LOG_LEVEL', 'CRITICAL', undefined, '严重'],
+    ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'off', undefined, '关闭'],
+    ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'basic', undefined, '基础'],
+    ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'debug', undefined, '调试'],
     ['MARKET_REVIEW_REGION', 'cn', undefined, 'A 股'],
     ['MARKET_REVIEW_REGION', 'hk', undefined, '港股'],
     ['MARKET_REVIEW_REGION', 'us', undefined, '美股'],
     ['MARKET_REVIEW_REGION', 'both', undefined, '全部市场'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'green_up', 'Green Up / Red Down', '绿涨红跌'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'red_up', 'Red Up / Green Down', '红涨绿跌'],
+    ['GENERATION_BACKEND', 'litellm', undefined, '默认模型配置'],
+    ['GENERATION_FALLBACK_BACKEND', 'litellm', undefined, '默认模型配置'],
+    ['AGENT_GENERATION_BACKEND', 'auto', 'Auto', '自动'],
+    ['AGENT_GENERATION_BACKEND', 'litellm', undefined, '默认模型配置'],
     ['AGENT_ARCH', 'single', 'Single Agent', '单 Agent'],
     ['AGENT_ARCH', 'multi', 'Multi Agent (Orchestrator)', '多 Agent（编排）'],
     ['AGENT_ORCHESTRATOR_MODE', 'quick', 'Quick', '快速'],
@@ -158,5 +187,154 @@ describe('SAVE_CONTEXT_SNAPSHOT settings help contract', () => {
     expect(text).toContain('不关闭当次 AnalysisContextPack 构建');
     expect(text).toContain('不关闭 LLM Prompt');
     expect(text).not.toContain('旧记录');
+  });
+});
+
+describe('generation backend settings help contract', () => {
+  it('uses user-facing generation channel copy instead of implementation terms', () => {
+    const zhInlineText = [
+      getFieldTitleZh('GENERATION_BACKEND', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND', ''),
+      getFieldTitleZh('GENERATION_FALLBACK_BACKEND', ''),
+      getFieldDescriptionZh('GENERATION_FALLBACK_BACKEND', ''),
+      getFieldTitleZh('GENERATION_BACKEND_TIMEOUT_SECONDS', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_TIMEOUT_SECONDS', ''),
+      getFieldTitleZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', ''),
+      getFieldTitleZh('GENERATION_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldDescriptionZh('GENERATION_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldTitleZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldDescriptionZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', ''),
+      getFieldTitleZh('AGENT_GENERATION_BACKEND', ''),
+      getFieldDescriptionZh('AGENT_GENERATION_BACKEND', ''),
+    ].join('\n');
+    const zhBackend = getSettingsHelpContent('settings.ai_model.GENERATION_BACKEND', undefined, 'zh-CN');
+    const enBackend = getSettingsHelpContent('settings.ai_model.GENERATION_BACKEND', undefined, 'en');
+    const zhFallback = getSettingsHelpContent('settings.ai_model.GENERATION_FALLBACK_BACKEND', undefined, 'zh-CN');
+    const enFallback = getSettingsHelpContent('settings.ai_model.GENERATION_FALLBACK_BACKEND', undefined, 'en');
+    const zhAgent = getSettingsHelpContent('settings.agent.AGENT_GENERATION_BACKEND', undefined, 'zh-CN');
+    const enAgent = getSettingsHelpContent('settings.agent.AGENT_GENERATION_BACKEND', undefined, 'en');
+    const zhText = [
+      zhBackend?.title,
+      zhBackend?.summary,
+      zhBackend?.usage,
+      ...(zhBackend?.valueNotes ?? []),
+      ...(zhBackend?.impact ?? []),
+      ...(zhBackend?.notes ?? []),
+      zhFallback?.title,
+      zhFallback?.summary,
+      zhFallback?.usage,
+      ...(zhFallback?.valueNotes ?? []),
+      ...(zhFallback?.impact ?? []),
+      ...(zhFallback?.notes ?? []),
+      zhAgent?.title,
+      zhAgent?.summary,
+      zhAgent?.usage,
+      ...(zhAgent?.valueNotes ?? []),
+      ...(zhAgent?.impact ?? []),
+      ...(zhAgent?.notes ?? []),
+    ].join('\n');
+    const enText = [
+      enBackend?.title,
+      enBackend?.summary,
+      enBackend?.usage,
+      ...(enBackend?.valueNotes ?? []),
+      ...(enBackend?.impact ?? []),
+      ...(enBackend?.notes ?? []),
+      enFallback?.title,
+      enFallback?.summary,
+      enFallback?.usage,
+      ...(enFallback?.valueNotes ?? []),
+      ...(enFallback?.impact ?? []),
+      ...(enFallback?.notes ?? []),
+      enAgent?.title,
+      enAgent?.summary,
+      enAgent?.usage,
+      ...(enAgent?.valueNotes ?? []),
+      ...(enAgent?.impact ?? []),
+      ...(enAgent?.notes ?? []),
+    ].join('\n');
+
+    expect(zhBackend?.title).toBe('分析生成方式');
+    expect(zhFallback?.title).toBe('备用生成方式');
+    expect(zhAgent?.title).toBe('问股生成方式');
+    expect(getFieldTitleZh('GENERATION_BACKEND_TIMEOUT_SECONDS', '')).toBe('生成超时（秒）');
+    expect(getFieldTitleZh('GENERATION_BACKEND_MAX_OUTPUT_BYTES', '')).toBe('最大输出大小（字节）');
+    expect(getFieldTitleZh('GENERATION_BACKEND_MAX_CONCURRENCY', '')).toBe('模型生成最大并发');
+    expect(getFieldTitleZh('LOCAL_CLI_BACKEND_MAX_CONCURRENCY', '')).toBe('本地命令行最大并发');
+    expect(zhBackend?.showFieldKey).toBe(false);
+    expect(zhFallback?.showFieldKey).toBe(false);
+    expect(zhAgent?.showFieldKey).toBe(false);
+    expect(zhBackend?.examples).toEqual([]);
+    expect(zhFallback?.examples).toEqual([]);
+    expect(zhAgent?.examples).toEqual([]);
+    expect(zhInlineText).toContain('个股分析');
+    expect(zhInlineText).toContain('问股助手');
+    expect(zhInlineText).toContain('当前可用的方式');
+    expect(zhInlineText).not.toContain('沿用当前可用的模型通道');
+    expect(zhText).toContain('个股分析');
+    expect(zhText).toContain('大盘复盘');
+    expect(zhText).toContain('自动');
+    expect(zhBackend?.usage).toContain('默认模型配置');
+    expect(zhFallback?.usage).toContain('默认模型配置');
+    expect(zhAgent?.usage).toContain('当前可用的方式');
+    expect(zhAgent?.valueNotes).toContain('如果不确定，选择“自动”即可。');
+    expect(zhText).not.toContain('优先选择当前可用');
+    expect(zhText).not.toContain('unsupported_tool_calling');
+    expect(zhText).not.toContain('run_agent_loop');
+    [
+      'Backend',
+      'backend',
+      'backend-level',
+      'generation backend',
+      'self fallback',
+      'stdout',
+      'stderr',
+      'contract',
+      'MAX_WORKERS',
+      'Router',
+      'diagnostics',
+      'executable',
+      'coding-agent',
+      'experimental/limited',
+      'fail-fast',
+      'LiteLLM',
+    ].forEach((term) => {
+      expect(zhInlineText).not.toContain(term);
+      expect(zhText).not.toContain(term);
+    });
+
+    expect(enBackend?.title).toBe('Analysis Generation Method');
+    expect(enFallback?.title).toBe('Fallback Generation Method');
+    expect(enAgent?.title).toBe('Ask-Stock Generation Method');
+    expect(enText).toContain('stock analysis');
+    expect(enText).toContain('market reviews');
+    expect(enText).toContain('Auto');
+    expect(enBackend?.usage).toContain('Default model settings');
+    expect(enFallback?.usage).toContain('Default model settings');
+    expect(enAgent?.usage).toContain('currently available method');
+    expect(enAgent?.valueNotes).toContain('If you are unsure, choose Auto.');
+    expect(enBackend?.notes?.join('\n')).toContain('Default model settings continue');
+    expect(enBackend?.notes?.join('\n')).not.toContain('Advanced note');
+    expect(enBackend?.notes?.join('\n')).not.toContain('LiteLLM');
+    expect(enText).not.toContain('current available model channel');
+    expect(enText).not.toContain('unsupported_tool_calling');
+    expect(enText).not.toContain('run_agent_loop');
+  });
+});
+
+describe('decision signal settings guard', () => {
+  it('does not add placeholder DecisionSignal setting translations without a real schema field', () => {
+    const placeholderKeys = [
+      'DECISION_SIGNAL_ENABLED',
+      'DECISION_SIGNALS_ENABLED',
+      'DECISION_SIGNAL_WRITE_ENABLED',
+      'DECISION_SIGNAL_EXTRACT_ENABLED',
+    ];
+
+    placeholderKeys.forEach((key) => {
+      expect(getFieldTitleZh(key, key)).toBe(key);
+      expect(getFieldDescriptionZh(key, 'schema fallback description')).toBe('schema fallback description');
+    });
   });
 });

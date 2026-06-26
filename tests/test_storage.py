@@ -2,6 +2,7 @@
 import unittest
 import sys
 import os
+import sqlite3
 import tempfile
 import threading
 from datetime import date
@@ -18,6 +19,121 @@ from src.config import Config
 from src.storage import Base, CURRENT_SCHEMA_VERSION, DatabaseManager, DatabaseSchemaMigration, StockDaily
 
 class TestStorage(unittest.TestCase):
+
+    @staticmethod
+    def _list_sqlite_unique_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(f"PRAGMA index_list({table_name})").fetchall()
+            unique_indexes = {}
+            for row in rows:
+                if int(row[2]) != 1:
+                    continue
+                index_name = row[1]
+                index_columns = []
+                for index_info in conn.execute(f"PRAGMA index_xinfo({index_name})").fetchall():
+                    column_name = index_info[2]
+                    if column_name is not None:
+                        index_columns.append(column_name)
+                unique_indexes[index_name] = index_columns
+            return unique_indexes
+
+    def test_legacy_intelligence_items_url_unique_index_rebuilds_without_collision(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE intelligence_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    source_type TEXT NOT NULL DEFAULT 'rss',
+                    url TEXT NOT NULL,
+                    scope_type TEXT NOT NULL DEFAULT 'market',
+                    scope_value TEXT,
+                    market TEXT NOT NULL DEFAULT 'cn',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_status TEXT,
+                    last_error TEXT,
+                    last_fetched_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""
+                )
+                conn.execute(
+                    """CREATE TABLE intelligence_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER,
+                    source_name TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'rss',
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    url TEXT NOT NULL,
+                    source TEXT,
+                    published_at DATETIME,
+                    fetched_at DATETIME,
+                    scope_type TEXT NOT NULL DEFAULT 'market',
+                    scope_value TEXT,
+                    market TEXT NOT NULL DEFAULT 'cn',
+                    raw_payload TEXT
+                )"""
+                )
+                conn.execute("CREATE UNIQUE INDEX uix_intelligence_item_url_legacy ON intelligence_items(url)")
+                conn.execute("CREATE INDEX ix_intel_item_scope_time ON intelligence_items(scope_type, scope_value, market, published_at)")
+                conn.execute("CREATE INDEX ix_intel_item_fetch_time ON intelligence_items(fetched_at)")
+                conn.execute("INSERT INTO intelligence_sources (name, url) VALUES ('legacy', 'https://legacy.example.com/rss.xml')")
+                source_id = conn.execute("SELECT id FROM intelligence_sources WHERE name='legacy'").fetchone()[0]
+                conn.executemany(
+                    """INSERT INTO intelligence_items (
+                    source_id,
+                    source_name,
+                    source_type,
+                    title,
+                    summary,
+                    url,
+                    source,
+                    published_at,
+                    fetched_at,
+                    scope_type,
+                    scope_value,
+                    market,
+                    raw_payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (source_id, 'legacy-source', 'rss', 'A', 'legacy-a', 'https://legacy.example.com/a', 'legacy',
+                         '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'market', None, 'cn', None),
+                        (source_id, 'legacy-source', 'rss', 'B', 'legacy-b', 'https://legacy.example.com/b', 'legacy',
+                         '2026-01-02 00:00:00', '2026-01-02 00:00:00', 'market', None, 'cn', None),
+                    ],
+                )
+
+            unique_indexes_before = self._list_sqlite_unique_indexes(db_path, "intelligence_items")
+            self.assertIn("uix_intelligence_item_url_legacy", unique_indexes_before)
+            self.assertEqual(unique_indexes_before["uix_intelligence_item_url_legacy"], ["url"])
+
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            unique_indexes_after = self._list_sqlite_unique_indexes(db_path, "intelligence_items")
+            self.assertNotIn("uix_intelligence_item_url_legacy", unique_indexes_after)
+            self.assertIn("uix_intel_item_scope", unique_indexes_after)
+            self.assertEqual(
+                unique_indexes_after["uix_intel_item_scope"],
+                ["source_id", "url", "scope_type", "scope_value", "market"],
+            )
+            with sqlite3.connect(db_path) as conn:
+                table_count = conn.execute("SELECT COUNT(*) FROM intelligence_items").fetchone()[0]
+                temp_tables = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'intelligence_items_recreate_tmp_%'"
+                ).fetchall()
+
+            self.assertEqual(table_count, 2)
+            self.assertEqual(temp_tables, [])
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
 
     def test_database_initialization_records_schema_version(self):
         DatabaseManager.reset_instance()

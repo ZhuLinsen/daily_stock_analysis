@@ -46,6 +46,7 @@ _DATA_TYPE_LABELS = {
     "news_search": "新闻舆情",
     "fundamental": "基本面",
     "fundamentals": "基本面",
+    "belong_boards": "所属板块",
     "chip": "筹码结构",
 }
 
@@ -58,6 +59,7 @@ _DATA_TYPE_TO_BLOCK_KEY = {
     "news_search": "news",
     "fundamental": "fundamentals",
     "fundamentals": "fundamentals",
+    "belong_boards": "fundamentals",
     "chip": "chip",
 }
 
@@ -153,6 +155,7 @@ def build_task_run_flow_snapshot(
         _as_list(getattr(task, "flow_events", None)),
         flow_status=flow_status,
     )
+    _prune_active_skeleton_tail(nodes, edges)
 
     summary = _build_summary(
         nodes,
@@ -188,6 +191,7 @@ def build_history_run_flow_snapshot(
     snapshot = _as_mapping(context_snapshot if context_snapshot is not None else getattr(record, "context_snapshot", None))
     raw = _as_mapping(raw_result if raw_result is not None else getattr(record, "raw_result", None))
     diagnostics = _as_mapping(snapshot.get("diagnostics")) if snapshot else {}
+    diagnostics = _normalize_history_diagnostics_for_record(record, snapshot, diagnostics)
     overview = extract_analysis_context_pack_overview(snapshot) if snapshot else None
     overview_metadata = overview.get("metadata") if isinstance((overview or {}).get("metadata"), Mapping) else {}
 
@@ -694,7 +698,7 @@ def _append_notification_runs(
             status=status,
             provider=channel,
             ended_at=timestamp,
-            attempts=_safe_int(run.get("attempts")) or 1,
+            attempts=_safe_int(run.get("attempts")) if _safe_int(run.get("attempts")) is not None else 1,
             message=message,
             metadata={
                 "channel": channel,
@@ -719,6 +723,91 @@ def _append_notification_runs(
             },
         )
     return count
+
+
+_STOCK_CONTEXT_PROVIDER_DATA_TYPES = {
+    "realtime_quote",
+    "daily_data",
+    "daily_bars",
+    "technical",
+    "fundamental",
+    "fundamentals",
+    "belong_boards",
+    "chip",
+}
+
+
+def _normalize_history_diagnostics_for_record(
+    record: Any,
+    snapshot: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not diagnostics:
+        return diagnostics
+
+    normalized = dict(diagnostics)
+    report_type = _safe_key(getattr(record, "report_type", None))
+    code = _safe_text(getattr(record, "code", None), max_length=32)
+    report_kind = _safe_key(snapshot.get("report_kind")) if snapshot else ""
+
+    if report_type == "market_review" or report_kind == "market_review" or (code or "").upper() == "MARKET":
+        normalized["stock_code"] = "MARKET"
+        normalized.setdefault("scope", "market_review")
+        normalized["provider_runs"] = [
+            run
+            for run in _as_list(normalized.get("provider_runs"))
+            if _safe_key(_as_mapping(run).get("data_type")) not in _STOCK_CONTEXT_PROVIDER_DATA_TYPES
+        ]
+        return normalized
+
+    first_llm_at = _first_timestamp(_as_list(normalized.get("llm_runs")))
+    if first_llm_at is not None:
+        normalized["history_runs"] = [
+            run
+            for run in _as_list(normalized.get("history_runs"))
+            if not _timestamp_before(_as_mapping(run).get("created_at"), first_llm_at)
+        ]
+        normalized["notification_runs"] = [
+            run
+            for run in _as_list(normalized.get("notification_runs"))
+            if not _timestamp_before(_as_mapping(run).get("created_at"), first_llm_at)
+        ]
+
+    first_stock_data_at = _first_timestamp(
+        [
+            run
+            for run in _as_list(normalized.get("provider_runs"))
+            if _safe_key(_as_mapping(run).get("data_type")) in _STOCK_CONTEXT_PROVIDER_DATA_TYPES
+        ]
+    )
+    if first_stock_data_at is not None:
+        normalized["provider_runs"] = [
+            run
+            for run in _as_list(normalized.get("provider_runs"))
+            if _safe_key(_as_mapping(run).get("data_type")) != "news_search"
+            or not _timestamp_before(_as_mapping(run).get("created_at"), first_stock_data_at)
+        ]
+    return normalized
+
+
+def _first_timestamp(items: List[Any]) -> Optional[datetime]:
+    timestamps = [
+        parsed
+        for parsed in (_datetime_for_elapsed(_as_mapping(item).get("created_at")) for item in items)
+        if parsed is not None
+    ]
+    return min(timestamps) if timestamps else None
+
+
+def _timestamp_before(value: Any, boundary: datetime) -> bool:
+    parsed = _datetime_for_elapsed(value)
+    if parsed is None:
+        return False
+    if parsed.tzinfo is None and boundary.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=boundary.tzinfo)
+    elif parsed.tzinfo is not None and boundary.tzinfo is None:
+        boundary = boundary.replace(tzinfo=parsed.tzinfo)
+    return parsed < boundary
 
 
 def _put_skeleton_tail(
@@ -769,6 +858,26 @@ def _put_skeleton_tail(
     _append_edge(edges, "context_pack", "llm", "data", downstream_status, label="生成")
     _append_edge(edges, "llm", "history_save", "data", downstream_status, label="保存")
     _append_edge(edges, "history_save", "notification", "control", downstream_status, label="通知")
+
+
+def _prune_active_skeleton_tail(
+    nodes: Dict[str, Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+) -> None:
+    remove_node_ids = set()
+    if "llm" in nodes and any(node_id.startswith("llm_") for node_id in nodes):
+        remove_node_ids.add("llm")
+    if "notification" in nodes and any(node_id.startswith("notification_") for node_id in nodes):
+        remove_node_ids.add("notification")
+    if not remove_node_ids:
+        return
+    for node_id in remove_node_ids:
+        nodes.pop(node_id, None)
+    edges[:] = [
+        edge
+        for edge in edges
+        if edge.get("from") not in remove_node_ids and edge.get("to") not in remove_node_ids
+    ]
 
 
 def _append_task_events(events: List[Dict[str, Any]], task: Any, flow_status: str) -> None:
@@ -873,15 +982,28 @@ def _append_active_flow_events(
                 )
 
         event_type = _safe_key(event.get("type")) or "event"
+        provider_data_type = None
+        provider_run = None
+        if event_type in {"provider_run", "provider_run_started"} and node_id and node_id in nodes:
+            provider_data_type = _safe_key(metadata.get("data_type") or "provider")
+            provider_run = {
+                "provider": metadata.get("provider") or nodes[node_id].get("provider"),
+                "success": event.get("severity") == "success" or nodes[node_id].get("status") in {"success", "fallback"},
+                "fallback_from": metadata.get("fallback_from"),
+                "fallback_to": metadata.get("fallback_to"),
+            }
+
+        if node_id and node_id in nodes and node_id in known_node_ids:
+            _refresh_incoming_edge_status(edges, node_id, nodes[node_id].get("status"))
+            if provider_data_type and provider_run:
+                last_provider_node_by_type[provider_data_type] = (node_id, provider_run)
+            elif event_type in {"llm_run", "llm_run_started"}:
+                last_llm_node = node_id
+            elif event_type == "history_run":
+                last_history_node = node_id
+
         if node_id and node_id in nodes and node_id not in known_node_ids:
-            if event_type == "provider_run":
-                provider_data_type = _safe_key(metadata.get("data_type") or "provider")
-                provider_run = {
-                    "provider": metadata.get("provider") or nodes[node_id].get("provider"),
-                    "success": event.get("severity") == "success" or nodes[node_id].get("status") in {"success", "fallback"},
-                    "fallback_from": metadata.get("fallback_from"),
-                    "fallback_to": metadata.get("fallback_to"),
-                }
+            if provider_data_type and provider_run:
                 previous_provider = last_provider_node_by_type.get(provider_data_type)
                 if previous_provider:
                     previous_provider_node, previous_provider_run = previous_provider
@@ -897,7 +1019,7 @@ def _append_active_flow_events(
                 else:
                     _append_edge(edges, "task_queue", node_id, "control", nodes[node_id].get("status", "unknown"), label="调用")
                 last_provider_node_by_type[provider_data_type] = (node_id, provider_run)
-            elif event_type == "llm_run":
+            elif event_type in {"llm_run", "llm_run_started"}:
                 anchor = "analysis_pipeline" if "analysis_pipeline" in nodes else "task_queue"
                 _append_edge(edges, anchor, node_id, "data", nodes[node_id].get("status", "unknown"), label="生成")
                 last_llm_node = node_id
@@ -1167,7 +1289,19 @@ def _append_edge(
     metadata: Optional[Any] = None,
 ) -> None:
     edge_id = f"{from_node}_to_{to_node}_{kind}"
-    if any(edge["id"] == edge_id for edge in edges):
+    for edge in edges:
+        if edge["id"] != edge_id:
+            continue
+        edge["status"] = _valid_status(status)
+        safe_label = _safe_text(label, max_length=40)
+        if safe_label:
+            edge["label"] = safe_label
+        safe_message = _safe_text(message, max_length=180)
+        if safe_message:
+            edge["message"] = safe_message
+        safe_metadata = _sanitize_metadata(metadata or {})
+        if safe_metadata:
+            edge["metadata"] = safe_metadata
         return
     edges.append(
         {
@@ -1181,6 +1315,19 @@ def _append_edge(
             "metadata": _sanitize_metadata(metadata or {}),
         }
     )
+
+
+def _refresh_incoming_edge_status(
+    edges: List[Dict[str, Any]],
+    node_id: Optional[str],
+    status: Optional[Any],
+) -> None:
+    if not node_id or status is None:
+        return
+    valid_status = _valid_status(status)
+    for edge in edges:
+        if edge.get("to") == node_id:
+            edge["status"] = valid_status
 
 
 def _append_event(
