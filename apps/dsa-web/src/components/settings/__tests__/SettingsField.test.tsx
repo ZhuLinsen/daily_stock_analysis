@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { UiLanguageProvider, useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { getFieldDescriptionZh, getFieldTitleZh } from '../../../utils/systemConfigI18n';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { SettingsField } from '../SettingsField';
 
@@ -66,8 +67,42 @@ describe('SettingsField', () => {
       />
     );
 
-    expect(screen.getByLabelText('TickFlow 优先级')).toBeInTheDocument();
-    expect(screen.getByText(/控制 TickFlow 在 A 股日线数据源回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.getByLabelText('TickFlow 日 K 优先级')).toBeInTheDocument();
+    expect(screen.getByText(/控制 TickFlow 在 A 股日 K 数据源回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
+  it('uses schema key for TickFlow localization when the runtime item key differs', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'runtime.tickflow.priority',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText(getFieldTitleZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.getByText(getFieldDescriptionZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.queryByLabelText('TickFlow Priority')).not.toBeInTheDocument();
     expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
   });
   it('renders sensitive field metadata and validation errors', () => {

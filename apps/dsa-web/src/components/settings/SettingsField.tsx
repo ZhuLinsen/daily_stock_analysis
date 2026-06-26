@@ -224,11 +224,14 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   const schema = item.schema;
   const isMultiValue = isMultiValueField(item);
   const helpContent = getSettingsHelpContent(schema?.helpKey, schema?.description, language);
+  const localizationKey = schema?.key ?? item.key;
   const fallbackTitle = schema?.title ?? item.key;
-  const title = language === 'zh' ? getFieldTitleZh(item.key, fallbackTitle) : fallbackTitle;
+  const title = language === 'zh'
+    ? getFieldTitleZh(localizationKey, getFieldTitleZh(item.key, fallbackTitle))
+    : fallbackTitle;
   const description = language === 'en'
     ? helpContent?.summary ?? schema?.description ?? ''
-    : getFieldDescriptionZh(item.key, schema?.description);
+    : getFieldDescriptionZh(localizationKey, getFieldDescriptionZh(item.key, schema?.description));
   const hasError = issues.some((issue) => issue.severity === 'error');
   const [isPasswordEditable, setIsPasswordEditable] = useState(false);
   const controlId = `setting-${item.key}`;
@@ -247,7 +250,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
           {title}
         </label>
         <SettingsHelpButton
-          fieldKey={item.key}
+          fieldKey={localizationKey}
           title={title}
           schema={schema}
           description={description}
