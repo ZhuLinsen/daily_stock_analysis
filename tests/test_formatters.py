@@ -452,3 +452,32 @@ class TestNotificationMarkdownFormatters(unittest.TestCase):
         )
         result = markdown_tables_to_key_value_rows(text)
         self.assertEqual(result, "• Header1：Value1 | Header2： | Header3：Value3")
+
+    def test_markdown_tables_to_key_value_rows_with_empty_first_cell_two_columns(self):
+        text = (
+            "| Header1 | Header2 |\n"
+            "|---------|---------|\n"
+            "|         | Value2  |"
+        )
+        result = markdown_tables_to_key_value_rows(text)
+        self.assertEqual(result, "• Header1： | Header2：Value2")
+
+    def test_feishu_markdown_with_empty_cells(self):
+        text = (
+            "| Header1 | Header2 | Header3 |\n"
+            "| --- | --- | --- |\n"
+            "| Value1 | | Value3 |"
+        )
+        result = format_feishu_markdown(text)
+        self.assertEqual(result, "• Header1：Value1 | Header2： | Header3：Value3")
+
+    def test_markdown_tables_to_key_value_rows_with_completely_empty_row(self):
+        text = (
+            "| Header1 | Header2 |\n"
+            "|---------|---------|\n"
+            "|         |         |\n"
+            "| Value1  | Value2  |"
+        )
+        result = markdown_tables_to_key_value_rows(text)
+        self.assertEqual(result, "• Value1：Value2")
+
