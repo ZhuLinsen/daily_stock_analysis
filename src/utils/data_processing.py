@@ -257,3 +257,74 @@ def extract_board_detail_fields(
         "belong_boards": _normalize_belong_boards(fundamental_ctx.get("belong_boards")),
         "sector_rankings": _normalize_sector_rankings(sector_rankings),
     }
+
+
+def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Normalize signal_attribution values in-place.
+
+    - Convert string percentages like "70%" to int 70
+    - Convert "N/A", "N/A%", "" to None
+    - Clamp negative numbers to 0
+    - Normalize four contributions to sum = 100 (only if all four are valid numbers)
+    """
+    if not isinstance(signal_attr, dict):
+        return None
+
+    keys = ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
+
+    def _parse_contribution(raw: Any) -> Optional[float]:
+        if raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            val = float(raw)
+            return max(0.0, val)
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text or text in ("N/A", "N/A%"):
+                return None
+            text = text.rstrip("%").strip()
+            try:
+                return max(0.0, float(text))
+            except ValueError:
+                return None
+        return None
+
+    parsed: Dict[str, Optional[float]] = {}
+    for k in keys:
+        parsed[k] = _parse_contribution(signal_attr.get(k))
+
+    valid_values = [v for v in parsed.values() if v is not None]
+    if len(valid_values) == 4:
+        total = sum(valid_values)
+        if total > 0:
+            normalized = [(v / total) * 100.0 for v in valid_values]
+            int_values = [round(v) for v in normalized]
+            diff = 100 - sum(int_values)
+            if diff != 0:
+                max_idx = int_values.index(max(int_values))
+                int_values[max_idx] += diff
+            for i, k in enumerate(keys):
+                parsed[k] = int_values[i]
+        else:
+            for k in keys:
+                parsed[k] = 25
+
+    for k in keys:
+        signal_attr[k] = parsed[k]
+
+    for k in ["strongest_bullish_signal", "strongest_bearish_signal"]:
+        v = signal_attr.get(k)
+        if v is not None and isinstance(v, str) and v.strip() == "":
+            signal_attr[k] = None
+
+    return signal_attr
+
+
+def normalize_dashboard_signal_attribution(dashboard: Optional[Dict[str, Any]]) -> None:
+    """Normalize signal_attribution in dashboard dict (in-place)."""
+    if not isinstance(dashboard, dict):
+        return
+    signal_attr = dashboard.get("signal_attribution")
+    if signal_attr is not None:
+        normalize_signal_attribution_values(signal_attr)

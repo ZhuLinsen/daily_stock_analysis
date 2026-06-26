@@ -141,14 +141,14 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "confidence_reason": "置信度理由，说明阶段和数据质量限制",
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }},
-        "signal_attribution": {
+        "signal_attribution": {{
             "technical_indicators": 技术指标贡献度(0-100，四个贡献度之和必须等于100),
             "news_sentiment": 新闻舆情贡献度(0-100，四个贡献度之和必须等于100),
             "fundamentals": 基本面贡献度(0-100，四个贡献度之和必须等于100),
             "market_conditions": 市场环境贡献度(0-100，四个贡献度之和必须等于100),
             "strongest_bullish_signal": "最强看多信号名称",
             "strongest_bearish_signal": "最强看空信号名称"
-        }
+        }}
     }},
     "analysis_summary": "100字综合分析摘要",
     "key_points": "3-5个核心看点，逗号分隔",
@@ -300,14 +300,14 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "confidence_reason": "置信度理由，说明阶段和数据质量限制",
             "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
         }},
-        "signal_attribution": {
+        "signal_attribution": {{
             "technical_indicators": 技术指标贡献度(0-100，四个贡献度之和必须等于100),
             "news_sentiment": 新闻舆情贡献度(0-100，四个贡献度之和必须等于100),
             "fundamentals": 基本面贡献度(0-100，四个贡献度之和必须等于100),
             "market_conditions": 市场环境贡献度(0-100，四个贡献度之和必须等于100),
             "strongest_bullish_signal": "最强看多信号名称",
             "strongest_bearish_signal": "最强看空信号名称"
-        }
+        }}
     }},
     "analysis_summary": "100字综合分析摘要",
     "key_points": "3-5个核心看点，逗号分隔",

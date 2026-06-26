@@ -1104,6 +1104,32 @@ class HistoryService:
                     report_lines.append(f"- {item}")
                 report_lines.append("")
 
+        # ========== 信号归因分析 ==========
+        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        if isinstance(signal_attr, dict):
+            has_content = any(
+                signal_attr.get(k) is not None
+                for k in ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
+            )
+            if has_content:
+                report_lines.extend([
+                    f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                    "",
+                ])
+                report_lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
+                report_lines.append(f"- 📈 {labels.get('technical_indicators_label', '技术指标')}: {signal_attr.get('technical_indicators', 'N/A')}%")
+                report_lines.append(f"- 📰 {labels.get('news_sentiment_label', '新闻舆情')}: {signal_attr.get('news_sentiment', 'N/A')}%")
+                report_lines.append(f"- 📊 {labels.get('fundamentals_label', '基本面')}: {signal_attr.get('fundamentals', 'N/A')}%")
+                report_lines.append(f"- 🌐 {labels.get('market_conditions_label', '市场环境')}: {signal_attr.get('market_conditions', 'N/A')}%")
+                report_lines.append("")
+                bullish = signal_attr.get('strongest_bullish_signal')
+                bearish = signal_attr.get('strongest_bearish_signal')
+                if bullish:
+                    report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+                if bearish:
+                    report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+                report_lines.append("")
+
         # ========== 如果没有 dashboard，显示传统格式 ==========
         if not dashboard:
             # 操作理由

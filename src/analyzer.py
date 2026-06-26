@@ -264,6 +264,9 @@ class _AllModelsFailedError(Exception):
         self.last_usage = last_usage or {}
 
 
+from src.utils.data_processing import normalize_dashboard_signal_attribution
+
+
 def check_content_integrity(
     result: "AnalysisResult",
     *,
@@ -4100,6 +4103,8 @@ class GeminiAnalyzer:
 
             # 提取 dashboard 数据
             dashboard = data.get('dashboard', None)
+            # 归一化 signal_attribution（LLM 可能返回字符串/负数/总和≠100）
+            normalize_dashboard_signal_attribution(dashboard)
 
             # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
             ai_stock_name = data.get('stock_name')
