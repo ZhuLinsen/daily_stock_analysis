@@ -97,7 +97,7 @@ vi.mock('recharts', () => ({
 type AccountItem = {
   id: number;
   name: string;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
   baseCurrency?: string;
 };
 

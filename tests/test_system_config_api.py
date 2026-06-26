@@ -138,6 +138,30 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertTrue(stock_schema["examples"])
         self.assertTrue(stock_schema["docs"])
 
+    def test_get_config_schema_exposes_generation_backend_bounds_and_agent_options(self) -> None:
+        payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_TIMEOUT_SECONDS"]["schema"]["validation"],
+            {"min": 1, "max": 3600},
+        )
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_MAX_OUTPUT_BYTES"]["schema"]["validation"],
+            {"min": 1, "max": 33554432},
+        )
+        self.assertEqual(
+            item_map["GENERATION_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
+            {"min": 1, "max": 16},
+        )
+        self.assertEqual(
+            item_map["LOCAL_CLI_BACKEND_MAX_CONCURRENCY"]["schema"]["validation"],
+            {"min": 1, "max": 4},
+        )
+        agent_schema = item_map["AGENT_GENERATION_BACKEND"]["schema"]
+        self.assertEqual(agent_schema["validation"]["enum"], ["auto", "litellm"])
+        self.assertNotIn("codex_cli", {option["value"] for option in agent_schema["options"]})
+
     def test_get_config_schema_includes_notification_noise_fields(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
@@ -373,6 +397,34 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertIn("STOCK_LIST=300750\n", env_content)
         self.assertIn("CUSTOM_NOTE=config backup\n", env_content)
         self.assertIn("GEMINI_API_KEY=secret-key-value\n", env_content)
+
+    def test_import_export_system_config_preserves_generation_backend_keys(self) -> None:
+        current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()
+
+        payload = system_config.import_system_config(
+            request_obj=self._build_request(),
+            request=ImportSystemConfigRequest(
+                config_version=current["config_version"],
+                content=(
+                    "GENERATION_BACKEND=codex_cli\n"
+                    "GENERATION_FALLBACK_BACKEND=\n"
+                    "GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n"
+                    "AGENT_GENERATION_BACKEND=auto\n"
+                ),
+                reload_now=False,
+            ),
+            service=self.service,
+        ).model_dump()
+        export_payload = system_config.export_system_config(
+            request=self._build_request(),
+            service=self.service,
+        ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertIn("GENERATION_BACKEND=codex_cli\n", export_payload["content"])
+        self.assertIn("GENERATION_FALLBACK_BACKEND=\n", export_payload["content"])
+        self.assertIn("GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576\n", export_payload["content"])
+        self.assertIn("AGENT_GENERATION_BACKEND=auto\n", export_payload["content"])
 
     def test_import_system_config_returns_conflict_when_version_is_stale(self) -> None:
         with self.assertRaises(HTTPException) as context:

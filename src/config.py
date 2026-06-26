@@ -38,9 +38,20 @@ from src.notification_contracts import (
 )
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
     LITELLM_BACKEND_ID,
     SUPPORTED_AGENT_GENERATION_BACKENDS,
     SUPPORTED_GENERATION_BACKENDS,
+)
+from src.llm.local_cli_backend import (
+    DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+    DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+    DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
+    DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
+    MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+    MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+    MAX_LOCAL_CLI_OUTPUT_BYTES,
+    MAX_LOCAL_CLI_TIMEOUT_SECONDS,
 )
 from src.llm import generation_params as llm_generation_params
 from src.scheduler import normalize_schedule_times
@@ -683,6 +694,10 @@ class Config:
     # === AI 分析配置 ===
     generation_backend: str = LITELLM_BACKEND_ID
     generation_fallback_backend: str = LITELLM_BACKEND_ID
+    generation_backend_timeout_seconds: int = DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS
+    generation_backend_max_output_bytes: int = DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES
+    generation_backend_max_concurrency: int = DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY
+    local_cli_backend_max_concurrency: int = DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
     litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
@@ -1364,13 +1379,42 @@ class Config:
             os.getenv('GENERATION_BACKEND', LITELLM_BACKEND_ID).strip().lower()
             or LITELLM_BACKEND_ID
         )
-        generation_fallback_backend = (
-            os.getenv('GENERATION_FALLBACK_BACKEND', LITELLM_BACKEND_ID).strip().lower()
-            or LITELLM_BACKEND_ID
-        )
+        _generation_fallback_raw = os.getenv('GENERATION_FALLBACK_BACKEND')
+        if _generation_fallback_raw is None:
+            generation_fallback_backend = LITELLM_BACKEND_ID
+        else:
+            generation_fallback_backend = _generation_fallback_raw.strip().lower()
         agent_generation_backend = (
             os.getenv('AGENT_GENERATION_BACKEND', AUTO_AGENT_BACKEND_ID).strip().lower()
             or AUTO_AGENT_BACKEND_ID
+        )
+        generation_backend_timeout_seconds = parse_env_int(
+            os.getenv('GENERATION_BACKEND_TIMEOUT_SECONDS'),
+            DEFAULT_LOCAL_CLI_TIMEOUT_SECONDS,
+            field_name='GENERATION_BACKEND_TIMEOUT_SECONDS',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_TIMEOUT_SECONDS,
+        )
+        generation_backend_max_output_bytes = parse_env_int(
+            os.getenv('GENERATION_BACKEND_MAX_OUTPUT_BYTES'),
+            DEFAULT_LOCAL_CLI_MAX_OUTPUT_BYTES,
+            field_name='GENERATION_BACKEND_MAX_OUTPUT_BYTES',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_OUTPUT_BYTES,
+        )
+        generation_backend_max_concurrency = parse_env_int(
+            os.getenv('GENERATION_BACKEND_MAX_CONCURRENCY'),
+            DEFAULT_GENERATION_BACKEND_MAX_CONCURRENCY,
+            field_name='GENERATION_BACKEND_MAX_CONCURRENCY',
+            minimum=1,
+            maximum=MAX_GENERATION_BACKEND_MAX_CONCURRENCY,
+        )
+        local_cli_backend_max_concurrency = parse_env_int(
+            os.getenv('LOCAL_CLI_BACKEND_MAX_CONCURRENCY'),
+            DEFAULT_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
+            field_name='LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
+            minimum=1,
+            maximum=MAX_LOCAL_CLI_BACKEND_MAX_CONCURRENCY,
         )
 
         agent_litellm_model = normalize_agent_litellm_model(
@@ -1518,6 +1562,10 @@ class Config:
             ),
             generation_backend=generation_backend,
             generation_fallback_backend=generation_fallback_backend,
+            generation_backend_timeout_seconds=generation_backend_timeout_seconds,
+            generation_backend_max_output_bytes=generation_backend_max_output_bytes,
+            generation_backend_max_concurrency=generation_backend_max_concurrency,
+            local_cli_backend_max_concurrency=local_cli_backend_max_concurrency,
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -2588,9 +2636,7 @@ class Config:
 
         # --- Generation backend selection ---
         generation_backend = (self.generation_backend or LITELLM_BACKEND_ID).strip().lower()
-        generation_fallback_backend = (
-            self.generation_fallback_backend or LITELLM_BACKEND_ID
-        ).strip().lower()
+        generation_fallback_backend = str(self.generation_fallback_backend or "").strip().lower()
         agent_generation_backend = (
             self.agent_generation_backend or AUTO_AGENT_BACKEND_ID
         ).strip().lower()
@@ -2598,16 +2644,18 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_BACKEND 当前仅支持 litellm。"
+                    "GENERATION_BACKEND 当前支持 litellm 或 codex_cli。"
                     f"已配置的值为：{generation_backend}。"
                 ),
                 field="GENERATION_BACKEND",
             ))
-        if generation_fallback_backend not in SUPPORTED_GENERATION_BACKENDS:
+        if generation_fallback_backend and generation_fallback_backend == generation_backend:
+            generation_fallback_backend = ""
+        if generation_fallback_backend and generation_fallback_backend != LITELLM_BACKEND_ID:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "GENERATION_FALLBACK_BACKEND 当前仅支持 litellm。"
+                    "GENERATION_FALLBACK_BACKEND 当前支持 litellm、与 primary 相同的 no-op 值，或空字符串。"
                     f"已配置的值为：{generation_fallback_backend}。"
                 ),
                 field="GENERATION_FALLBACK_BACKEND",
@@ -2616,10 +2664,20 @@ class Config:
             issues.append(ConfigIssue(
                 severity="error",
                 message=(
-                    "AGENT_GENERATION_BACKEND 当前仅支持 auto 或 litellm。"
+                    "AGENT_GENERATION_BACKEND 当前支持 auto、litellm；"
+                    "codex_cli 仅作为显式 unsupported diagnostic 保留，不支持 Agent 工具调用。"
                     f"已配置的值为：{agent_generation_backend}。"
                 ),
                 field="AGENT_GENERATION_BACKEND",
+            ))
+        if (self.litellm_model or "").strip().lower().startswith(f"{CODEX_CLI_BACKEND_ID}/"):
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "codex_cli 是 GENERATION_BACKEND，不是 LiteLLM provider。"
+                    "请不要使用 LITELLM_MODEL=codex_cli/...。"
+                ),
+                field="LITELLM_MODEL",
             ))
 
         # --- LLM availability ---
@@ -2627,7 +2685,8 @@ class Config:
         # Other LiteLLM-native providers (for example cohere/*) run through the
         # direct litellm env path and therefore do not populate llm_model_list.
         has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
-        if not self.llm_model_list and not has_direct_env_model:
+        local_generation_backend = generation_backend == CODEX_CLI_BACKEND_ID
+        if not local_generation_backend and not self.llm_model_list and not has_direct_env_model:
             if self.litellm_config_path:
                 issues.append(ConfigIssue(
                     severity="error",
@@ -2658,7 +2717,7 @@ class Config:
                     ),
                     field="LITELLM_CONFIG",
                 ))
-        elif not self.litellm_model:
+        elif not local_generation_backend and not self.litellm_model:
             issues.append(ConfigIssue(
                 severity="info",
                 message=(

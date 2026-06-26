@@ -86,6 +86,8 @@ This document compiles common issues encountered by users and their solutions.
    - `GEMINI_MODEL`
    - `REPORT_TYPE`
 
+> Compatibility note: the daily analysis workflow also binds the `STOCK_LIST` environment, so a `STOCK_LIST` value mistakenly added under that Environment's variables can still be read. Repository variables remain the recommended location. Unless you want the daily job to wait for manual approval, do not add required reviewers, wait timers, or deployment branch restrictions to this Environment.
+
 ---
 
 ### Q6: Configuration not taking effect after modifying .env file?

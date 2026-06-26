@@ -258,44 +258,123 @@ describe('BacktestPage', () => {
   });
 
   it('runs a backtest and refreshes results using the shared filter values', async () => {
+    mockRun.mockResolvedValueOnce({
+      processed: 0,
+      saved: 0,
+      completed: 0,
+      insufficient: 0,
+      errors: 0,
+      message: '未找到符合条件的历史分析记录',
+      diagnostics: { emptyReason: 'no_matching_analysis' },
+    });
     render(<BacktestPage />);
 
     const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
+    const fromInput = screen.getByLabelText('分析开始日期');
+    const toInput = screen.getByLabelText('分析结束日期');
 
-    fireEvent.change(filterInput, { target: { value: 'tsla' } });
+    fireEvent.change(filterInput, { target: { value: '600519.SH' } });
     fireEvent.change(windowInput, { target: { value: '15' } });
+    fireEvent.change(fromInput, { target: { value: '2026-03-01' } });
+    fireEvent.change(toInput, { target: { value: '2026-03-31' } });
     fireEvent.click(screen.getByRole('button', { name: '运行回测' }));
 
     await waitFor(() => {
       expect(mockRun).toHaveBeenCalledWith({
-        code: 'TSLA',
+        code: '600519.SH',
         force: undefined,
         minAgeDays: undefined,
         evalWindowDays: 15,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
       });
     });
 
     await waitFor(() => {
       expect(mockGetResults).toHaveBeenLastCalledWith({
-        code: 'TSLA',
+        code: '600519.SH',
         evalWindowDays: 15,
-        analysisDateFrom: undefined,
-        analysisDateTo: undefined,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
         analysisPhase: undefined,
         page: 1,
         limit: 20,
       });
-      expect(mockGetStockPerformance).toHaveBeenLastCalledWith('TSLA', {
+      expect(mockGetStockPerformance).toHaveBeenLastCalledWith('600519.SH', {
         evalWindowDays: 15,
-        analysisDateFrom: undefined,
-        analysisDateTo: undefined,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
         analysisPhase: undefined,
       });
     });
 
     expect(await screen.findByText('已处理:')).toBeInTheDocument();
     expect(screen.getByText('已保存:')).toBeInTheDocument();
+    expect(screen.getByText('未找到符合条件的历史分析记录')).toBeInTheDocument();
+  });
+
+  it('uses backend-applied eval window when run input is empty', async () => {
+    mockRun.mockResolvedValueOnce({
+      processed: 0,
+      saved: 0,
+      completed: 0,
+      insufficient: 0,
+      errors: 0,
+      appliedEvalWindowDays: 10,
+      message: '未找到符合条件的历史分析记录',
+      diagnostics: { emptyReason: 'no_matching_analysis' },
+    });
+    render(<BacktestPage />);
+
+    const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
+    const windowInput = screen.getByPlaceholderText('10');
+    const fromInput = screen.getByLabelText('分析开始日期');
+    const toInput = screen.getByLabelText('分析结束日期');
+
+    fireEvent.change(filterInput, { target: { value: '600519.SH' } });
+    fireEvent.change(windowInput, { target: { value: '' } });
+    fireEvent.change(fromInput, { target: { value: '2026-03-01' } });
+    fireEvent.change(toInput, { target: { value: '2026-03-31' } });
+    fireEvent.click(screen.getByRole('button', { name: '运行回测' }));
+
+    await waitFor(() => {
+      expect(mockRun).toHaveBeenCalledWith({
+        code: '600519.SH',
+        force: undefined,
+        minAgeDays: undefined,
+        evalWindowDays: undefined,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
+      });
+    });
+
+    await waitFor(() => {
+      expect(windowInput).toHaveValue(10);
+      expect(mockGetResults).toHaveBeenLastCalledWith({
+        code: '600519.SH',
+        evalWindowDays: 10,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
+        analysisPhase: undefined,
+        page: 1,
+        limit: 20,
+      });
+      expect(mockGetStockPerformance).toHaveBeenLastCalledWith('600519.SH', {
+        evalWindowDays: 10,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
+        analysisPhase: undefined,
+      });
+      expect(mockGetOverallPerformance).toHaveBeenLastCalledWith({
+        evalWindowDays: 10,
+        analysisDateFrom: '2026-03-01',
+        analysisDateTo: '2026-03-31',
+        analysisPhase: undefined,
+      });
+    });
+
+    expect(await screen.findByText('未找到符合条件的历史分析记录')).toBeInTheDocument();
   });
 
   it('switches to next-day validation with the 1D shortcut', async () => {

@@ -60,6 +60,35 @@ def test_docker_compose_injects_env_without_single_file_env_mount() -> None:
     assert "../longbridge_tokens:/home/dsa/.longbridge" in common["volumes"]
 
 
+def test_docker_compose_default_memory_recommendation_is_not_512m() -> None:
+    compose_text = (REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_text)
+    resources = compose["x-common"]["deploy"]["resources"]
+
+    assert resources["limits"]["memory"] == "1G"
+    assert resources["reservations"]["memory"] == "512M"
+    assert "512M" in compose_text
+    assert "MAX_WORKERS=1" in compose_text
+
+
+def test_docker_memory_guides_describe_resource_profiles() -> None:
+    doc_paths = (
+        "docs/DEPLOY.md",
+        "docs/DEPLOY_EN.md",
+        "docs/full-guide.md",
+        "docs/full-guide_EN.md",
+        "docs/docker/zeabur-deployment.md",
+    )
+
+    for doc_path in doc_paths:
+        doc = (REPO_ROOT / doc_path).read_text(encoding="utf-8")
+
+        assert "512M" in doc
+        assert "1G" in doc
+        assert "2G+" in doc
+        assert "MAX_WORKERS=1" in doc
+
+
 def test_docker_guides_do_not_recommend_single_file_env_bind_mount() -> None:
     forbidden_mount_patterns = [
         r"\$\(pwd\)/\.env:/app/\.env",

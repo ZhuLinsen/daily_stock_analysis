@@ -65,24 +65,55 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
-    def test_generation_backend_env_accepts_phase1_values(
+    def test_generation_backend_env_accepts_phase2_values(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
         with patch.dict(
             os.environ,
             {
                 "STOCK_LIST": "600519",
-                "GENERATION_BACKEND": " LiteLLM ",
-                "GENERATION_FALLBACK_BACKEND": "LITELLM",
-                "AGENT_GENERATION_BACKEND": " litellm ",
+                "GENERATION_BACKEND": " codex_CLI ",
+                "GENERATION_FALLBACK_BACKEND": "",
+                "GENERATION_BACKEND_TIMEOUT_SECONDS": "300",
+                "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "1048576",
+                "GENERATION_BACKEND_MAX_CONCURRENCY": "2",
+                "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "1",
+                "AGENT_GENERATION_BACKEND": " codex_cli ",
             },
             clear=True,
         ):
             config = Config._load_from_env()
 
-        self.assertEqual(config.generation_backend, "litellm")
-        self.assertEqual(config.generation_fallback_backend, "litellm")
-        self.assertEqual(config.agent_generation_backend, "litellm")
+        self.assertEqual(config.generation_backend, "codex_cli")
+        self.assertEqual(config.generation_fallback_backend, "")
+        self.assertEqual(config.generation_backend_timeout_seconds, 300)
+        self.assertEqual(config.generation_backend_max_output_bytes, 1048576)
+        self.assertEqual(config.generation_backend_max_concurrency, 2)
+        self.assertEqual(config.local_cli_backend_max_concurrency, 1)
+        self.assertEqual(config.agent_generation_backend, "codex_cli")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_clamps_phase2_numeric_maxima(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "GENERATION_BACKEND_TIMEOUT_SECONDS": "999999",
+                "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "999999999",
+                "GENERATION_BACKEND_MAX_CONCURRENCY": "999",
+                "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "999",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend_timeout_seconds, 3600)
+        self.assertEqual(config.generation_backend_max_output_bytes, 33554432)
+        self.assertEqual(config.generation_backend_max_concurrency, 16)
+        self.assertEqual(config.local_cli_backend_max_concurrency, 4)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

@@ -656,10 +656,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_dashboard_report([result], report_date="2026-02-01")
 
-        self.assertIn("AI 决策信号", out)
-        self.assertIn("动作: 卖出", out)
-        self.assertIn("周期: 1d", out)
-        self.assertIn("理由: 技术面走弱", out)
+        summary_section, detail_section = out.split("---", 1)
+        self.assertNotIn("AI 决策信号", summary_section)
+        self.assertIn("AI 决策信号", detail_section)
+        self.assertIn("动作: 卖出", detail_section)
+        self.assertIn("周期: 1d", detail_section)
+        self.assertIn("理由: 技术面走弱", detail_section)
 
     @mock.patch("src.notification.get_config")
     def test_generate_daily_report_appends_decision_signal_excerpt_fallback(
@@ -679,10 +681,13 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             service = NotificationService()
             service._report_summary_only = summary_only
             out = service.generate_daily_report([result], report_date="2026-02-01")
-            self.assertEqual(out.count("AI 决策信号"), 1)
-            self.assertIn("动作: 卖出", out)
-            self.assertIn("周期: 1d", out)
-            self.assertIn("理由: 技术面走弱", out)
+            self.assertEqual(out.count("AI 决策信号"), 0 if summary_only else 1)
+            if summary_only:
+                self.assertNotIn("动作: 卖出", out)
+            else:
+                self.assertIn("动作: 卖出", out)
+                self.assertIn("周期: 1d", out)
+                self.assertIn("理由: 技术面走弱", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_wechat_dashboard_appends_decision_signal_excerpt_fallback(
@@ -702,13 +707,16 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
             service = NotificationService()
             service._report_summary_only = summary_only
             out = service.generate_wechat_dashboard([result])
-            self.assertIn("AI 决策信号", out)
-            self.assertIn("动作: 卖出", out)
-            self.assertIn("周期: 1d", out)
-            self.assertIn("理由: 技术面走弱", out)
+            self.assertEqual(out.count("AI 决策信号"), 0 if summary_only else 1)
+            if summary_only:
+                self.assertNotIn("动作: 卖出", out)
+            else:
+                self.assertIn("动作: 卖出", out)
+                self.assertIn("周期: 1d", out)
+                self.assertIn("理由: 技术面走弱", out)
 
     @mock.patch("src.notification.get_config")
-    def test_generate_wechat_summary_appends_decision_signal_excerpt(
+    def test_generate_wechat_summary_omits_decision_signal_excerpt(
         self, mock_get_config: mock.MagicMock
     ):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
@@ -724,10 +732,8 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_wechat_summary([result])
 
-        self.assertEqual(out.count("AI 决策信号"), 1)
-        self.assertIn("动作: 卖出", out)
-        self.assertIn("周期: 1d", out)
-        self.assertIn("理由: 技术面走弱", out)
+        self.assertNotIn("AI 决策信号", out)
+        self.assertNotIn("动作: 卖出", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_dashboard_report_appends_decision_signal_excerpt_with_renderer(
@@ -746,10 +752,12 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_dashboard_report([result], report_date="2026-02-01")
 
-        self.assertIn("AI 决策信号", out)
-        self.assertIn("动作: 卖出", out)
-        self.assertIn("周期: 1d", out)
-        self.assertIn("理由: 技术面走弱", out)
+        summary_section, detail_section = out.split("---", 1)
+        self.assertNotIn("AI 决策信号", summary_section)
+        self.assertIn("AI 决策信号", detail_section)
+        self.assertIn("动作: 卖出", detail_section)
+        self.assertIn("周期: 1d", detail_section)
+        self.assertIn("理由: 技术面走弱", detail_section)
 
     @mock.patch("src.notification.get_config")
     def test_aggregate_reports_show_compact_market_status_only(self, mock_get_config: mock.MagicMock):

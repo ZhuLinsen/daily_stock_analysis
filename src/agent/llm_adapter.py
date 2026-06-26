@@ -32,7 +32,12 @@ from src.agent.provider_trace import (
     trace_model_matches,
 )
 from src.llm.errors import call_litellm_with_param_recovery
-from src.llm.backend_registry import LITELLM_BACKEND_ID, resolve_agent_generation_backend_id
+from src.llm.backend_registry import (
+    AUTO_AGENT_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
+    LITELLM_BACKEND_ID,
+    resolve_agent_generation_backend_id,
+)
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
 from src.llm.generation_params import apply_litellm_generation_params, resolve_litellm_wire_model
 from src.llm.usage import attach_message_hmacs, extract_usage_payload, normalize_litellm_usage
@@ -383,6 +388,7 @@ class LLMToolAdapter:
                 retryable=False,
                 fallbackable=False,
                 backend=self._generation_backend_id,
+                provider=self._generation_backend_id,
                 details={
                     "field": "AGENT_GENERATION_BACKEND",
                     "requested_backend": self._generation_backend_id,
@@ -390,13 +396,41 @@ class LLMToolAdapter:
                 },
             )
             logger.error(
-                "Agent LLM backend %s does not support Phase 1 tool calling",
+                "Agent LLM backend %s does not support tool calling",
                 self._generation_backend_id,
             )
             return
 
         litellm_model = get_effective_agent_primary_model(config)
         if not litellm_model:
+            generation_backend = str(
+                getattr(config, "generation_backend", LITELLM_BACKEND_ID) or LITELLM_BACKEND_ID
+            ).strip().lower()
+            agent_backend = str(
+                getattr(config, "agent_generation_backend", AUTO_AGENT_BACKEND_ID)
+                or AUTO_AGENT_BACKEND_ID
+            ).strip().lower()
+            if generation_backend == CODEX_CLI_BACKEND_ID and agent_backend == AUTO_AGENT_BACKEND_ID:
+                self._backend_error = GenerationError(
+                    error_code=GenerationErrorCode.UNSUPPORTED_TOOL_CALLING,
+                    stage="generation",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=CODEX_CLI_BACKEND_ID,
+                    provider=CODEX_CLI_BACKEND_ID,
+                    details={
+                        "field": "AGENT_GENERATION_BACKEND",
+                        "requested_backend": AUTO_AGENT_BACKEND_ID,
+                        "generation_backend": CODEX_CLI_BACKEND_ID,
+                        "supported_tool_backend": LITELLM_BACKEND_ID,
+                        "reason": "litellm_agent_backend_unavailable",
+                    },
+                )
+                logger.error(
+                    "Agent auto backend cannot inherit %s because it does not support tool calling",
+                    CODEX_CLI_BACKEND_ID,
+                )
+                return
             logger.warning("Agent LLM: no effective primary model configured")
             return
 

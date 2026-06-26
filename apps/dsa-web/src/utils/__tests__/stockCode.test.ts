@@ -60,6 +60,14 @@ describe('normalizeStockCode', () => {
     expect(normalizeStockCode('005930')).toBe('005930');
   });
 
+  it('keeps TW Yahoo suffix codes (.TW / .TWO) in canonical uppercase suffix form', () => {
+    expect(normalizeStockCode('2330.tw')).toBe('2330.TW');
+    expect(normalizeStockCode('0050.TW')).toBe('0050.TW');
+    expect(normalizeStockCode('006208.tw')).toBe('006208.TW');
+    expect(normalizeStockCode('6505.two')).toBe('6505.TWO');
+    expect(normalizeStockCode('2330')).toBe('2330');
+  });
+
   it('is case-insensitive for prefixes', () => {
     expect(normalizeStockCode('sh600519')).toBe('600519');
     expect(normalizeStockCode('sz000001')).toBe('000001');

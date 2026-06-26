@@ -42,18 +42,25 @@ from src.config import (
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
+    CODEX_CLI_BACKEND_ID,
     LITELLM_BACKEND_ID,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
 )
-from src.llm.generation_backend import GenerationError, GenerationErrorCode
-from src.llm.litellm_backend import LiteLLMGenerationBackend
+from src.llm.backend_factory import create_generation_backend
+from src.llm.generation_backend import (
+    GenerationBackend,
+    GenerationError,
+    GenerationErrorCode,
+)
 from src.llm.usage import (
     attach_legacy_message_stability_audit,
     attach_message_hmacs,
     extract_usage_payload,
     normalize_litellm_usage,
+    should_persist_usage_telemetry,
 )
+from src.llm.local_cli_backend import redact_diagnostic_text
 from src.llm.provider_cache import (
     apply_prompt_cache_hints,
     build_provider_cache_route_context,
@@ -2133,7 +2140,17 @@ class GeminiAnalyzer:
         self._litellm_available = False
         self._init_litellm()
         if not self._litellm_available:
-            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
+            try:
+                backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+            except GenerationError:
+                backend_id = ""
+            if backend_id == CODEX_CLI_BACKEND_ID:
+                logger.info(
+                    "Analyzer generation backend: codex_cli configured; "
+                    "LiteLLM API keys are not required for stock analysis generation"
+                )
+            else:
+                logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
 
     def _get_runtime_config(self) -> Config:
         """Return the runtime config, honoring injected overrides for tests/pipeline."""
@@ -2274,7 +2291,18 @@ class GeminiAnalyzer:
         config = self._get_runtime_config()
         litellm_model = config.litellm_model
         if not litellm_model:
-            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
+            backend_id = ""
+            try:
+                backend_id = resolve_generation_backend_id(config)
+            except GenerationError:
+                pass
+            if backend_id == CODEX_CLI_BACKEND_ID:
+                logger.info(
+                    "Analyzer LiteLLM: LITELLM_MODEL not configured; "
+                    "using codex_cli generation backend"
+                )
+            else:
+                logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
             return
 
         self._litellm_available = True
@@ -2353,29 +2381,45 @@ class GeminiAnalyzer:
 
     def is_available(self) -> bool:
         """Check whether the configured generation backend is available."""
-        if self.get_generation_backend_config_error() is not None:
-            return False
+        backend_error = self.get_generation_backend_config_error()
+        if backend_error is not None:
+            return self._can_use_generation_fallback(backend_error)
+        backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        if backend_id == CODEX_CLI_BACKEND_ID:
+            return True
+        return self._litellm_runtime_available()
+
+    def _litellm_runtime_available(self) -> bool:
         return self._router is not None or self._litellm_available
 
+    def _can_use_generation_fallback(self, backend_error: GenerationError) -> bool:
+        if not backend_error.fallbackable:
+            return False
+        try:
+            _backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+        except GenerationError:
+            return False
+        return (
+            fallback_backend_id == LITELLM_BACKEND_ID
+            and self._litellm_runtime_available()
+        )
+
     def _resolve_generation_backend_config(self) -> Tuple[str, Optional[str]]:
-        """Resolve and validate Phase 1 generation backend settings."""
+        """Resolve and validate generation backend ids."""
         config = self._get_runtime_config()
         backend_id = resolve_generation_backend_id(config)
         fallback_backend_id = resolve_generation_fallback_backend_id(config)
-        if backend_id != LITELLM_BACKEND_ID:
-            raise GenerationError(
-                error_code=GenerationErrorCode.CAPABILITY_UNSUPPORTED,
-                stage="generation",
-                retryable=False,
-                fallbackable=False,
-                backend=backend_id,
-            )
         return backend_id, fallback_backend_id
 
     def get_generation_backend_config_error(self) -> Optional[GenerationError]:
-        """Return a structured backend config error, if Phase 1 cannot run it."""
+        """Return a structured backend config error, if the backend cannot run."""
         try:
-            self._resolve_generation_backend_config()
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+            if backend_id == CODEX_CLI_BACKEND_ID:
+                backend = self._get_generation_backend(backend_id)
+                get_config_error = getattr(backend, "get_config_error", None)
+                if callable(get_config_error):
+                    return get_config_error()
         except GenerationError as exc:
             return exc
         return None
@@ -2572,10 +2616,15 @@ class GeminiAnalyzer:
 
         return response_text, usage
 
-    def _get_generation_backend(self) -> LiteLLMGenerationBackend:
-        """Return the configured Phase 1 generation backend."""
-        self._resolve_generation_backend_config()
-        return LiteLLMGenerationBackend(self._call_litellm_impl)
+    def _get_generation_backend(self, backend_id: Optional[str] = None) -> GenerationBackend:
+        """Return the configured generation backend."""
+        config = self._get_runtime_config()
+        resolved_backend_id = backend_id or self._resolve_generation_backend_config()[0]
+        return create_generation_backend(
+            resolved_backend_id,
+            config=config,
+            litellm_completion_callable=self._call_litellm_impl,
+        )
 
     def _call_litellm(
         self,
@@ -2589,15 +2638,99 @@ class GeminiAnalyzer:
         audit_context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Compatibility wrapper around the configured generation backend."""
-        result = self._get_generation_backend().generate(
-            prompt,
-            generation_config,
-            system_prompt=system_prompt,
-            stream=stream,
-            stream_progress_callback=stream_progress_callback,
-            response_validator=response_validator,
-            audit_context=audit_context,
-        )
+        backend_id, fallback_backend_id = self._resolve_generation_backend_config()
+        try:
+            result = self._get_generation_backend(backend_id).generate(
+                prompt,
+                generation_config,
+                system_prompt=system_prompt,
+                stream=stream,
+                stream_progress_callback=stream_progress_callback,
+                response_validator=response_validator,
+                audit_context=audit_context,
+            )
+        except GenerationError as exc:
+            if not exc.fallbackable or not fallback_backend_id:
+                raise
+            try:
+                fallback_backend = self._get_generation_backend(fallback_backend_id)
+            except GenerationError as fallback_exc:
+                raise GenerationError(
+                    error_code=fallback_exc.error_code,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_exc.provider,
+                    details={
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": fallback_exc.details,
+                    },
+                ) from fallback_exc
+            try:
+                result = fallback_backend.generate(
+                    prompt,
+                    generation_config,
+                    system_prompt=system_prompt,
+                    stream=stream,
+                    stream_progress_callback=stream_progress_callback,
+                    response_validator=response_validator,
+                    audit_context=audit_context,
+                )
+            except _AllModelsFailedError:
+                raise
+            except GenerationError as fallback_exc:
+                raise GenerationError(
+                    error_code=fallback_exc.error_code,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_exc.provider,
+                    details={
+                        "reason": "fallback_backend_failed",
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": {
+                            "error_code": fallback_exc.error_code.value,
+                            "backend": fallback_exc.backend,
+                            "provider": fallback_exc.provider,
+                            "stage": fallback_exc.stage,
+                            "details": fallback_exc.details,
+                        },
+                    },
+                ) from fallback_exc
+            except Exception as fallback_exc:
+                raise GenerationError(
+                    error_code=GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                    stage="fallback",
+                    retryable=False,
+                    fallbackable=False,
+                    backend=fallback_backend_id,
+                    provider=fallback_backend_id,
+                    details={
+                        "reason": "fallback_backend_failed",
+                        "primary_error": {
+                            "error_code": exc.error_code.value,
+                            "backend": exc.backend,
+                            "provider": exc.provider,
+                            "stage": exc.stage,
+                            "details": exc.details,
+                        },
+                        "fallback_error": str(fallback_exc),
+                    },
+                ) from fallback_exc
         return result.text, result.model, result.usage
 
     def _call_litellm_impl(
@@ -2854,7 +2987,8 @@ class GeminiAnalyzer:
             )
             if isinstance(result, tuple):
                 text, model_used, usage = result
-                persist_llm_usage(usage, model_used, call_type="market_review")
+                if should_persist_usage_telemetry(usage):
+                    persist_llm_usage(usage, model_used, call_type="market_review")
                 return text
             return result
         except GenerationError:
@@ -2883,7 +3017,7 @@ class GeminiAnalyzer:
         Args:
             context: 从 storage.get_analysis_context() 获取的上下文数据
             news_context: 预先搜索的新闻内容（可选）
-            
+
         Returns:
             AnalysisResult 对象
         """
@@ -2919,26 +3053,28 @@ class GeminiAnalyzer:
                 name = STOCK_NAME_MAP.get(code, f'股票{code}')
 
         backend_error = self.get_generation_backend_config_error()
-        if backend_error is not None:
+        if backend_error is not None and not self._can_use_generation_fallback(backend_error):
             details = backend_error.details or {}
             field = str(details.get("field") or "GENERATION_BACKEND")
             requested_backend = str(details.get("requested_backend") or backend_error.backend)
+            reason = str(details.get("reason") or backend_error.error_code.value)
             if report_language == "en":
                 summary = (
                     "AI analysis is unavailable because the generation backend "
-                    f"configuration is invalid: {field}={requested_backend}."
+                    f"cannot start: {backend_error.error_code.value}."
                 )
                 risk_warning = (
-                    f"Phase 1 only supports litellm for {field}; set it back to "
-                    "litellm and retry."
+                    f"Check {field}={requested_backend} ({reason}) or set a valid "
+                    "backend/fallback before retrying."
                 )
             else:
                 summary = (
-                    "AI 分析功能不可用：生成后端配置错误，"
-                    f"{field}={requested_backend}。"
+                    "AI 分析功能不可用：生成后端无法启动，"
+                    f"{backend_error.error_code.value}。"
                 )
                 risk_warning = (
-                    f"Phase 1 中 {field} 仅支持 litellm；请设回 litellm 后重试。"
+                    f"请检查 {field}={requested_backend}（{reason}），"
+                    "或配置有效后端/回退后重试。"
                 )
             return AnalysisResult(
                 code=code,
@@ -3005,16 +3141,24 @@ class GeminiAnalyzer:
             }
             
             config = self._get_runtime_config()
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
             model_name = config.litellm_model or "unknown"
+            if backend_id == CODEX_CLI_BACKEND_ID:
+                model_name = CODEX_CLI_BACKEND_ID
+                legacy_audit_context["transport"] = CODEX_CLI_BACKEND_ID
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
 
-            # 记录完整 prompt 到日志（INFO级别记录摘要，DEBUG记录完整）
-            prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
+            # 本地 CLI backend 是进程执行能力，不记录完整 prompt。
+            if backend_id == CODEX_CLI_BACKEND_ID:
+                prompt_preview = redact_diagnostic_text(prompt, limit=500)
+            else:
+                prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
-            logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
+            if backend_id != CODEX_CLI_BACKEND_ID:
+                logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
             # 设置生成配置
             generation_config = {
@@ -3060,11 +3204,15 @@ class GeminiAnalyzer:
                 logger.info(
                     f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
                 )
-                response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
+                if backend_id == CODEX_CLI_BACKEND_ID:
+                    response_preview = redact_diagnostic_text(response_text, limit=300)
+                else:
+                    response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
                 logger.info(f"[LLM返回 预览]\n{response_preview}")
-                logger.debug(
-                    f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
-                )
+                if backend_id != CODEX_CLI_BACKEND_ID:
+                    logger.debug(
+                        f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                    )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)
                 _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
@@ -3114,7 +3262,8 @@ class GeminiAnalyzer:
                     )
                     break
 
-            persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
+            if should_persist_usage_telemetry(llm_usage):
+                persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
 
@@ -3775,6 +3924,137 @@ class GeminiAnalyzer:
         """Delegate to module-level apply_placeholder_fill."""
         apply_placeholder_fill(result, missing_fields)
 
+    def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
+        """Extract the single allowed JSON object from an LLM response."""
+
+        text = response_text or ""
+        stripped = text.strip()
+        if not stripped:
+            raise ValueError("empty_response")
+
+        fence_pattern = re.compile(
+            r"```[ \t]*(?P<lang>[A-Za-z0-9_-]*)[ \t]*\n?(?P<body>.*?)```",
+            flags=re.DOTALL,
+        )
+        fenced_matches = list(fence_pattern.finditer(text))
+        if len(fenced_matches) > 1:
+            raise ValueError("ambiguous_json")
+        if len(fenced_matches) == 1:
+            match = fenced_matches[0]
+            outside = (text[:match.start()] + text[match.end():]).strip()
+            if outside:
+                raise ValueError("ambiguous_json")
+            fence_lang = (match.group("lang") or "").strip().lower()
+            if fence_lang not in {"", "json"}:
+                raise ValueError("ambiguous_json")
+            json_str = match.group("body").strip()
+            data = self._load_analysis_json_candidate(json_str)
+            return json_str, data
+        if "```" in text:
+            raise ValueError("ambiguous_json")
+
+        try:
+            data = self._load_analysis_json_candidate(stripped)
+        except json.JSONDecodeError as exc:
+            if self._contains_embedded_json_object(text):
+                raise ValueError("ambiguous_json") from exc
+            raise
+        return stripped, data
+
+    def _load_analysis_json_candidate(self, json_str: str) -> Dict[str, Any]:
+        """Parse one already-selected JSON candidate, repairing common LLM JSON drift."""
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            stripped = (json_str or "").strip()
+            try:
+                _obj, end = json.JSONDecoder().raw_decode(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if stripped[end:].strip():
+                    raise
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                raise
+            repaired = self._fix_json_string(stripped)
+            data = json.loads(repaired)
+        if not isinstance(data, dict):
+            raise TypeError("json_root_not_object")
+        return data
+
+    @staticmethod
+    def _contains_embedded_json_object(text: str) -> bool:
+        decoder = json.JSONDecoder()
+        count = 0
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _obj, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            count += 1
+            before = text[:index].strip()
+            after = text[index + end:].strip()
+            if count > 1 or before or after:
+                return True
+        return False
+
+    def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
+        try:
+            AnalysisReportSchema.model_validate(data)
+        except Exception as exc:
+            logger.warning(
+                "AnalysisReportSchema validation failed; continuing with raw parser contract: %s",
+                str(exc)[:200],
+            )
+        minimal_keys = {
+            "sentiment_score",
+            "trend_prediction",
+            "operation_advice",
+            "analysis_summary",
+            "dashboard",
+        }
+        if not any(key in data for key in minimal_keys):
+            raise self._generation_validation_error(
+                GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+                reason="minimal_contract_failed",
+                message="analysis JSON does not contain any minimal parser field",
+            )
+        if "sentiment_score" in data:
+            try:
+                int(data.get("sentiment_score", 50))
+            except (TypeError, ValueError) as exc:
+                raise self._generation_validation_error(
+                    GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+                    reason="parser_contract_failed",
+                    message="sentiment_score must be integer-compatible",
+                ) from exc
+
+    def _generation_validation_error(
+        self,
+        error_code: GenerationErrorCode,
+        *,
+        reason: str,
+        message: str,
+    ) -> GenerationError:
+        try:
+            backend_id, _fallback_backend_id = self._resolve_generation_backend_config()
+        except GenerationError:
+            backend_id = "generation_backend"
+        return GenerationError(
+            error_code=error_code,
+            stage="validation",
+            retryable=True,
+            fallbackable=True,
+            backend=backend_id,
+            provider=backend_id,
+            details={
+                "reason": reason,
+                "message": message,
+            },
+        )
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -3791,100 +4071,75 @@ class GeminiAnalyzer:
             report_language = normalize_report_language(
                 getattr(self._get_runtime_config(), "report_language", "zh")
             )
-            # 清理响应文本：移除 markdown 代码块标记
-            cleaned_text = response_text
-            if '```json' in cleaned_text:
-                cleaned_text = cleaned_text.replace('```json', '').replace('```', '')
-            elif '```' in cleaned_text:
-                cleaned_text = cleaned_text.replace('```', '')
-            
-            # 尝试找到 JSON 内容
-            json_start = cleaned_text.find('{')
-            json_end = cleaned_text.rfind('}') + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_str = cleaned_text[json_start:json_end]
-                
-                # 尝试修复常见的 JSON 问题
-                json_str = self._fix_json_string(json_str)
-                
-                data = json.loads(json_str)
-
-                # Schema validation (lenient: on failure, continue with raw dict)
-                try:
-                    AnalysisReportSchema.model_validate(data)
-                except Exception as e:
-                    logger.warning(
-                        "LLM report schema validation failed, continuing with raw dict: %s",
-                        str(e)[:100],
-                    )
-
-                # 提取 dashboard 数据
-                dashboard = data.get('dashboard', None)
-
-                # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
-                ai_stock_name = data.get('stock_name')
-                if ai_stock_name and (name.startswith('股票') or name == code or 'Unknown' in name):
-                    name = ai_stock_name
-
-                # 解析所有字段，使用默认值防止缺失
-                # 解析 decision_type，如果没有则根据 operation_advice 推断
-                decision_type = data.get('decision_type', '')
-                if not decision_type:
-                    op = data.get('operation_advice', 'Hold' if report_language == "en" else '持有')
-                    decision_type = infer_decision_type_from_advice(op, default='hold')
-                
-                explicit_action = data.get("action")
-                if explicit_action is None and isinstance(dashboard, dict):
-                    explicit_action = dashboard.get("action")
-
-                result = AnalysisResult(
-                    code=code,
-                    name=name,
-                    # 核心指标
-                    sentiment_score=int(data.get('sentiment_score', 50)),
-                    trend_prediction=data.get('trend_prediction', 'Sideways' if report_language == "en" else '震荡'),
-                    operation_advice=data.get('operation_advice', 'Hold' if report_language == "en" else '持有'),
-                    decision_type=decision_type,
-                    confidence_level=localize_confidence_level(
-                        data.get('confidence_level', 'Medium' if report_language == "en" else '中'),
-                        report_language,
-                    ),
-                    report_language=report_language,
-                    # 决策仪表盘
-                    dashboard=dashboard,
-                    # 走势分析
-                    trend_analysis=data.get('trend_analysis', ''),
-                    short_term_outlook=data.get('short_term_outlook', ''),
-                    medium_term_outlook=data.get('medium_term_outlook', ''),
-                    # 技术面
-                    technical_analysis=data.get('technical_analysis', ''),
-                    ma_analysis=data.get('ma_analysis', ''),
-                    volume_analysis=data.get('volume_analysis', ''),
-                    pattern_analysis=data.get('pattern_analysis', ''),
-                    # 基本面
-                    fundamental_analysis=data.get('fundamental_analysis', ''),
-                    sector_position=data.get('sector_position', ''),
-                    company_highlights=data.get('company_highlights', ''),
-                    # 情绪面/消息面
-                    news_summary=data.get('news_summary', ''),
-                    market_sentiment=data.get('market_sentiment', ''),
-                    hot_topics=data.get('hot_topics', ''),
-                    # 综合
-                    analysis_summary=data.get('analysis_summary', 'Analysis completed' if report_language == "en" else '分析完成'),
-                    key_points=data.get('key_points', ''),
-                    risk_warning=data.get('risk_warning', ''),
-                    buy_reason=data.get('buy_reason', ''),
-                    # 元数据
-                    search_performed=data.get('search_performed', False),
-                    data_sources=data.get('data_sources', 'Technical data' if report_language == "en" else '技术面数据'),
-                    success=True,
-                )
-                return populate_decision_action_fields(result, explicit_action=explicit_action)
-            else:
-                # 没有找到 JSON，标记为失败
-                logger.warning(f"无法从响应中提取 JSON，标记为解析失败")
+            try:
+                _json_str, data = self._extract_analysis_json_object(response_text)
+                self._validate_analysis_minimal_contract(data)
+            except Exception as exc:
+                logger.warning("无法从响应中提取唯一有效 JSON，标记为解析失败: %s", exc)
                 return self._parse_text_response(response_text, code, name)
+
+            # 提取 dashboard 数据
+            dashboard = data.get('dashboard', None)
+
+            # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
+            ai_stock_name = data.get('stock_name')
+            if ai_stock_name and (name.startswith('股票') or name == code or 'Unknown' in name):
+                name = ai_stock_name
+
+            # 解析所有字段，使用默认值防止缺失
+            # 解析 decision_type，如果没有则根据 operation_advice 推断
+            decision_type = data.get('decision_type', '')
+            if not decision_type:
+                op = data.get('operation_advice', 'Hold' if report_language == "en" else '持有')
+                decision_type = infer_decision_type_from_advice(op, default='hold')
+
+            explicit_action = data.get("action")
+            if explicit_action is None and isinstance(dashboard, dict):
+                explicit_action = dashboard.get("action")
+
+            result = AnalysisResult(
+                code=code,
+                name=name,
+                # 核心指标
+                sentiment_score=int(data.get('sentiment_score', 50)),
+                trend_prediction=data.get('trend_prediction', 'Sideways' if report_language == "en" else '震荡'),
+                operation_advice=data.get('operation_advice', 'Hold' if report_language == "en" else '持有'),
+                decision_type=decision_type,
+                confidence_level=localize_confidence_level(
+                    data.get('confidence_level', 'Medium' if report_language == "en" else '中'),
+                    report_language,
+                ),
+                report_language=report_language,
+                # 决策仪表盘
+                dashboard=dashboard,
+                # 走势分析
+                trend_analysis=data.get('trend_analysis', ''),
+                short_term_outlook=data.get('short_term_outlook', ''),
+                medium_term_outlook=data.get('medium_term_outlook', ''),
+                # 技术面
+                technical_analysis=data.get('technical_analysis', ''),
+                ma_analysis=data.get('ma_analysis', ''),
+                volume_analysis=data.get('volume_analysis', ''),
+                pattern_analysis=data.get('pattern_analysis', ''),
+                # 基本面
+                fundamental_analysis=data.get('fundamental_analysis', ''),
+                sector_position=data.get('sector_position', ''),
+                company_highlights=data.get('company_highlights', ''),
+                # 情绪面/消息面
+                news_summary=data.get('news_summary', ''),
+                market_sentiment=data.get('market_sentiment', ''),
+                hot_topics=data.get('hot_topics', ''),
+                # 综合
+                analysis_summary=data.get('analysis_summary', 'Analysis completed' if report_language == "en" else '分析完成'),
+                key_points=data.get('key_points', ''),
+                risk_warning=data.get('risk_warning', ''),
+                buy_reason=data.get('buy_reason', ''),
+                # 元数据
+                search_performed=data.get('search_performed', False),
+                data_sources=data.get('data_sources', 'Technical data' if report_language == "en" else '技术面数据'),
+                success=True,
+            )
+            return populate_decision_action_fields(result, explicit_action=explicit_action)
                 
         except json.JSONDecodeError as e:
             logger.warning(f"JSON 解析失败: {e}，标记为解析失败")
@@ -3911,32 +4166,44 @@ class GeminiAnalyzer:
         return json_str
 
     def _validate_json_response(self, text: str) -> None:
-        """Validate that *text* contains a parseable JSON object.
+        """Validate that *text* contains one parser-compatible JSON object.
 
         Used as the ``response_validator`` argument to :meth:`_call_litellm` so
         that a JSON-less or unparseable reply from the primary model is treated
         as a model failure and triggers fallback to the next configured model.
 
         Raises:
-            ValueError: if no JSON object is found in *text*.
-            json.JSONDecodeError: if the extracted JSON cannot be parsed (after
-                :meth:`_fix_json_string` attempts repair).
+            GenerationError: if the response has no unique parser-compatible
+                JSON object, the selected JSON candidate cannot be parsed, or
+                the parsed object cannot satisfy the minimal parser contract.
         """
-        cleaned = text
-        if "```json" in cleaned:
-            cleaned = cleaned.replace("```json", "").replace("```", "")
-        elif "```" in cleaned:
-            cleaned = cleaned.replace("```", "")
+        try:
+            _json_str, data = self._extract_analysis_json_object(text)
+        except ValueError as exc:
+            reason = str(exc) or "invalid_json"
+            if reason == "ambiguous_json":
+                message = "JSON source is ambiguous"
+            else:
+                message = "No unique JSON object found in LLM response"
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason=reason,
+                message=message,
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason="invalid_json",
+                message=str(exc)[:200],
+            ) from exc
+        except Exception as exc:
+            raise self._generation_validation_error(
+                GenerationErrorCode.INVALID_JSON,
+                reason="invalid_json",
+                message=str(exc)[:200],
+            ) from exc
 
-        json_start = cleaned.find("{")
-        json_end = cleaned.rfind("}") + 1
-
-        if json_start < 0 or json_end <= json_start:
-            raise ValueError("No JSON object found in LLM response")
-
-        json_str = cleaned[json_start:json_end]
-        json_str = self._fix_json_string(json_str)
-        json.loads(json_str)
+        self._validate_analysis_minimal_contract(data)
     
     def _parse_text_response(
         self, 

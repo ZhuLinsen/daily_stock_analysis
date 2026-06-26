@@ -47,13 +47,14 @@ x-common: &common
     options:
       max-size: "10m"
       max-file: "3"
-  # 资源限制
+  # 资源限制：完整分析建议 1G+；512M 仅适合轻量 Web/API、单股、低并发场景，
+  # 且建议设置 MAX_WORKERS=1 并避免同时启动 analyzer 和 server。
   deploy:
     resources:
       limits:
-        memory: 512M
+        memory: 1G
       reservations:
-        memory: 256M
+        memory: 512M
 
 services:
   # 定时任务模式

@@ -30,22 +30,47 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".T": (4, 5),
     ".KS": (6,),
     ".KQ": (6,),
+    # Taiwan: TWSE `.TW` and TPEx `.TWO`; base is 4-6 digits (ETFs up to 6).
+    # `.TWO` listed before `.TW` as a defensive ordering convention.
+    ".TWO": (4, 5, 6),
+    ".TW": (4, 5, 6),
 }
 
-_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ"}
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
+
+
+def _infer_cn_exchange(base: str) -> str:
+    """Infer CN exchange from a 6-digit A/B-share code."""
+    if not (base.isdigit() and len(base) == 6):
+        return ""
+
+    if is_bse_code(base):
+        return "BJ"
+    if base.startswith(("5", "6", "9")):
+        return "SH"
+    return "SZ"
 
 
 def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
     if not (base.isdigit() and len(base) in digit_lens):
         return False
+    if exchange in {"SH", "SS"}:
+        return _infer_cn_exchange(base) == "SH"
+    if exchange == "SZ":
+        return _infer_cn_exchange(base) == "SZ"
     if exchange == "BJ":
-        return is_bse_code(base)
+        return _infer_cn_exchange(base) == "BJ"
     return True
 
 
 def _strip_exchange_prefix(text: str) -> Optional[str]:
     """Strip leading exchange prefix (SH/SZ/HK etc.) and return the bare digits, or None."""
     for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
+        dotted_prefix = f"{prefix}."
+        if text.startswith(dotted_prefix):
+            base = text[len(dotted_prefix):]
+            if _valid_exchange_code(prefix, base, digit_lens):
+                return base.zfill(5) if prefix == "HK" else base
         if text.startswith(prefix):
             base = text[len(prefix):]
             if _valid_exchange_code(prefix, base, digit_lens):
@@ -87,7 +112,7 @@ def normalize_code(raw: str) -> Optional[str]:
     Supports:
     - Plain digit codes: 600519, 00700
     - Suffix format: 600519.SH, 600519.SZ, 920493.BJ, 00700.HK
-    - Prefix format: SH600519, SZ000001, BJ920493, HK00700 (case-insensitive)
+    - Prefix format: SH600519, SH.600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
     """
     text = raw.strip().upper()

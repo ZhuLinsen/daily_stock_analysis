@@ -72,6 +72,32 @@ def _result(**overrides) -> AnalysisResult:
     return result
 
 
+def test_build_payload_includes_tw_market() -> None:
+    """A Taiwan (`tw`) stock is now first-class on the DecisionSignal write path
+    (service VALID_MARKETS accepts tw, matching jp/kr).
+
+    Regression guard for the data-layer MVP follow-up: the analysis pipeline
+    auto-extracts a DecisionSignal after history save, so tw must PRODUCE a
+    payload (market == "tw") rather than be silently dropped by _normalize_market.
+    A plain action ("buy") is set so the path reaches the market mapping.
+    """
+    result = _result(code="2330.TW", name="台积电")
+
+    payload = build_decision_signal_payload_from_report(
+        result,
+        context_snapshot=None,
+        portfolio_context=None,
+        source_report_id=None,
+        trace_id="trace-tw",
+        query_source="api",
+        report_type="full",
+    )
+
+    assert payload is not None
+    assert payload["market"] == "tw"
+    assert payload["action"] == "buy"
+
+
 def test_build_payload_maps_report_context_and_price_plan() -> None:
     result = _result()
     result.market_phase_summary = {"phase": "postmarket"}
@@ -307,6 +333,37 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     assert persisted["reason"] == "趋势确认 token=[REDACTED]"
     assert persisted["entry_low"] == 1690.0
     assert persisted["entry_high"] == 1700.0
+
+
+def test_extract_and_persist_writes_tw_signal(isolated_db) -> None:
+    """End-to-end write-leg guard: a tw analysis must PERSIST a DecisionSignal
+    through create_signal -> _normalize_market -> DB, not merely build the payload.
+
+    Closes the silent-failure leg where _normalize_market("tw") raised ValueError
+    inside extract_and_persist and was swallowed by its broad except -> return None,
+    so every tw analysis produced no signal while jp/kr did.
+    """
+    service = DecisionSignalService(db_manager=isolated_db)
+    result = _result(code="2330.TW", name="台积电")
+
+    created = extract_and_persist_from_analysis_result(
+        result,
+        context_snapshot={"market_phase_summary": {"phase": "intraday"}},
+        portfolio_context={"quantity": 10},
+        source_report_id=2330,
+        trace_id="trace-tw-persist",
+        query_source="api",
+        report_type="full",
+        service=service,
+    )
+
+    assert created is not None
+    assert created["created"] is True
+    assert created["item"]["market"] == "tw"
+
+    listed = service.list_signals(source_report_id=2330)
+    assert listed["total"] == 1
+    assert listed["items"][0]["market"] == "tw"
 
 
 def test_extract_and_persist_missing_price_plan_does_not_fabricate_fields(isolated_db) -> None:
