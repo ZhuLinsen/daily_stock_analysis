@@ -18,6 +18,8 @@ from typing import Dict, Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+from src.analyzer import AnalysisResult
 logger = logging.getLogger(__name__)
 
 
@@ -63,8 +65,8 @@ class TestGenerateSingleStockReport:
         assert len(report) > 0, "没有 signal_attribution 时也应生成报告"
         print("  ✅ 没有 signal_attribution 时不会崩溃")
     
+    
     def _make_result(self, dashboard: Dict[str, Any]) -> "AnalysisResult":
-        from src.analyzer import AnalysisResult
         return AnalysisResult(
             code="600519",
             name="贵州茅台",
