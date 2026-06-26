@@ -756,7 +756,7 @@ Normalization functions are explicitly called in `_parse_response()` and `parse_
 - All-zero values are preserved as 0 to mean no effective signal
 - Values are clamped to [0, 100]
 
-`signal_attribution` is a recommended field (not required). Missing it does not fail integrity checks, but it is recorded in the `missing` list and triggers a completion prompt. `check_content_integrity()` lists it as recommended; missing only generates a warning.
+`signal_attribution` is an optional display field, not a required integrity field. Missing it does not fail integrity checks, is not recorded in the `missing` list, and does not trigger a completion prompt; when present, it is normalized and rendered by supported report paths.
 
 ### Alerts, Portfolio, and History Linkage (Issue #1386 P6)
 

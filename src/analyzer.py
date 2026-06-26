@@ -278,10 +278,9 @@ def check_content_integrity(
 
     Note:
     - Required fields: missing → pass=False, added to missing_fields
-    - Recommended fields (e.g., signal_attribution): missing → pass=True, added to missing_fields with "(recommended)" suffix
+    - Optional fields (e.g., signal_attribution): missing → pass=True and are not added to missing_fields
     """
     missing: List[str] = []
-    warnings: List[str] = []  # For recommended fields
 
     def _is_blank_text(value: Any) -> bool:
         if value is None:
@@ -344,20 +343,7 @@ def check_content_integrity(
             missing.append("dashboard.phase_decision.confidence_reason")
         if not isinstance(phase_decision.get("data_limitations"), list):
             missing.append("dashboard.phase_decision.data_limitations")
-    # 信号归因分析（推荐输出，缺失仅警告）
-    signal_attr = dash.get("signal_attribution") if isinstance(dash, dict) else None
-    if signal_attr is None or not isinstance(signal_attr, dict):
-        missing.append("dashboard.signal_attribution (recommended)")
-    else:
-        # 检查四个贡献度是否都存在且有效
-        for key in ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]:
-            val = signal_attr.get(key)
-            if val is None or (isinstance(val, str) and val.strip() in ("", "N/A", "N/A%")):
-                missing.append(f"dashboard.signal_attribution.{key} (recommended)")
-                break
-    # 计算 passed：required 字段缺失才失败，recommended 字段缺失只警告
-    required_missing = [m for m in missing if "(recommended)" not in m]
-    return len(required_missing) == 0, missing
+    return len(missing) == 0, missing
 
 
 def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:
@@ -1968,7 +1954,7 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- 必须输出 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
@@ -2145,7 +2131,7 @@ class GeminiAnalyzer:
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
-- 必须输出 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。

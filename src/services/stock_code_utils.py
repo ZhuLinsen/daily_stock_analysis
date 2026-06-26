@@ -30,9 +30,13 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".T": (4, 5),
     ".KS": (6,),
     ".KQ": (6,),
+    # Taiwan: TWSE `.TW` and TPEx `.TWO`; base is 4-6 digits (ETFs up to 6).
+    # `.TWO` listed before `.TW` as a defensive ordering convention.
+    ".TWO": (4, 5, 6),
+    ".TW": (4, 5, 6),
 }
 
-_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ"}
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
 
 
 def _infer_cn_exchange(base: str) -> str:

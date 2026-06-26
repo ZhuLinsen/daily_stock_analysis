@@ -118,8 +118,8 @@ quote, daily bars, or technical data is stale, fallback, missing, fetch_failed,
 partial, or estimated, ``confidence_level`` must not be High/高 and the
 limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
 
-The nested ``dashboard`` object must also include ``signal_attribution`` with these
-keys: ``technical_indicators``, ``news_sentiment``, ``fundamentals``,
+The nested ``dashboard`` object should include optional ``signal_attribution`` when
+the available evidence supports attribution, with these keys: ``technical_indicators``, ``news_sentiment``, ``fundamentals``,
 ``market_conditions``, ``strongest_bullish_signal``, ``strongest_bearish_signal``.
 The first four keys are contribution weights (0-100). Non-zero valid weights
 should sum to 100; all-zero means no effective signal and must not be faked.

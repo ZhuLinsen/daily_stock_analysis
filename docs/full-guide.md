@@ -887,7 +887,7 @@ Issue #1742 在个股分析报告的 `dashboard.signal_attribution` 中新增信
 - 总和≠100 时归一化为总和=100
 - 值裁剪到 [0, 100] 范围
 
-`signal_attribution` 是 recommended 字段（非必填），缺失不会失败完整性检查，但会记录到 `missing` 列表并触发补全 prompt。`check_content_integrity()` 将其列为 recommended，缺失仅警告。
+`signal_attribution` 是可选展示字段（非必填）。缺失不会失败完整性检查，也不会写入 `missing` 列表或触发补全 prompt；存在时会被归一化并在支持的报告路径展示。
 
 #### 告警、持仓和历史联动（Issue #1386 P6）
 

@@ -37,12 +37,26 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "持有观望"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {"stop_loss": "110元"}},
-                "signal_attribution": {
-                    "technical_indicators": 25,
-                    "news_sentiment": 25,
-                    "fundamentals": 25,
-                    "market_conditions": 25,
-                },
+            },
+        )
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
+    def test_pass_when_signal_attribution_missing(self) -> None:
+        """Signal attribution is optional and does not enter missing_fields."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=70,
+            operation_advice="持有",
+            analysis_summary="稳健",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "110元"}},
             },
         )
         ok, missing = check_content_integrity(result)
@@ -143,12 +157,6 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "建议卖出"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {}},
-                "signal_attribution": {
-                    "technical_indicators": 25,
-                    "news_sentiment": 25,
-                    "fundamentals": 25,
-                    "market_conditions": 25,
-                },
             },
         )
         ok, missing = check_content_integrity(result)
@@ -189,12 +197,6 @@ class TestCheckContentIntegrity(unittest.TestCase):
                 "core_conclusion": {"one_sentence": "持有"},
                 "intelligence": {"risk_alerts": []},
                 "battle_plan": {"sniper_points": {"stop_loss": "110"}},
-                "signal_attribution": {
-                    "technical_indicators": 25,
-                    "news_sentiment": 25,
-                    "fundamentals": 25,
-                    "market_conditions": 25,
-                },
             },
         )
 
@@ -487,12 +489,6 @@ class TestApplyPlaceholderFill(unittest.TestCase):
                     "phase_context": "invalid",
                     "watch_conditions": "invalid",
                     "data_limitations": None,
-                },
-                "signal_attribution": {
-                    "technical_indicators": 25,
-                    "news_sentiment": 25,
-                    "fundamentals": 25,
-                    "market_conditions": 25,
                 },
             },
         )

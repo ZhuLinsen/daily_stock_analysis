@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 SourceTypeValue = Literal["rss", "atom", "newsnow"]
 ScopeTypeValue = Literal["symbol", "market", "sector"]
-MarketValue = Literal["cn", "hk", "us", "jp", "kr", "global"]
+MarketValue = Literal["cn", "hk", "us", "jp", "kr", "tw", "global"]
 
 
 class IntelligenceSourceCreateRequest(BaseModel):

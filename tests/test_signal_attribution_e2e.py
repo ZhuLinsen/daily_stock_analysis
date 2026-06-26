@@ -262,15 +262,15 @@ class TestSignalAttributionE2E:
         assert "35%" in markdown, "Markdown 应显示 technical_indicators=35%"
         assert "MACD金叉" in markdown, "Markdown 应显示 strongest_bullish_signal"
 
-    # ========== 测试 5: check_content_integrity() 契约检查 ==========
-    def test_check_content_integrity_with_signal_attribution(self):
+    # ========== 测试 5: check_content_integrity() optional 契约 ==========
+    def test_check_content_integrity_treats_signal_attribution_as_optional(self):
         """
-        测试 check_content_integrity() 正确检查 signal_attribution。
+        测试 check_content_integrity() 将 signal_attribution 作为可选展示字段。
 
         验证：
         1. signal_attribution 存在时，不添加到 missing
-        2. signal_attribution 缺失时，添加到 missing (warning only)
-        3. signal_attribution 贡献度缺失时，添加到 missing
+        2. signal_attribution 缺失时，不添加到 missing
+        3. signal_attribution 贡献度缺失时，不添加到 missing
         """
         # 情况 1: signal_attribution 完整
         signal_attr = {
@@ -283,18 +283,18 @@ class TestSignalAttributionE2E:
         result = self._make_result(dashboard)
 
         passed, missing = check_content_integrity(result)
-        # 注意：signal_attribution 是 recommended，缺失不会使 passed=False
-        # 但我们会检查 missing 列表
         signal_attr_missing = [m for m in missing if "signal_attribution" in m]
         assert len(signal_attr_missing) == 0, f"signal_attribution 完整时不应出现在 missing 中，实际: {signal_attr_missing}"
 
         # 情况 2: signal_attribution 缺失
         dashboard_no_attr = self._make_dashboard_with_signal_attr(None)
+        dashboard_no_attr["battle_plan"] = {"sniper_points": {"stop_loss": "100"}}
         result_no_attr = self._make_result(dashboard_no_attr)
 
         passed, missing = check_content_integrity(result_no_attr)
+        assert passed is True
         signal_attr_missing = [m for m in missing if "signal_attribution" in m]
-        assert len(signal_attr_missing) > 0, "signal_attribution 缺失时应出现在 missing 中"
+        assert len(signal_attr_missing) == 0, "signal_attribution 缺失时不应出现在 missing 中"
 
         # 情况 3: signal_attribution 贡献度缺失
         signal_attr_incomplete = {
@@ -303,11 +303,13 @@ class TestSignalAttributionE2E:
             # 缺少 fundamentals 和 market_conditions
         }
         dashboard_incomplete = self._make_dashboard_with_signal_attr(signal_attr_incomplete)
+        dashboard_incomplete["battle_plan"] = {"sniper_points": {"stop_loss": "100"}}
         result_incomplete = self._make_result(dashboard_incomplete)
 
         passed, missing = check_content_integrity(result_incomplete)
+        assert passed is True
         signal_attr_missing = [m for m in missing if "signal_attribution" in m]
-        assert len(signal_attr_missing) > 0, "signal_attribution 贡献度缺失时应出现在 missing 中"
+        assert len(signal_attr_missing) == 0, "signal_attribution 贡献度缺失时不应出现在 missing 中"
 
     # ========== 测试 6: 归一化函数测试 ==========
     def test_normalize_dashboard_signal_attribution_direct(self):
