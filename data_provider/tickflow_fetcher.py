@@ -20,6 +20,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 
 try:
+    import exchange_calendars as xcals
+except ImportError:  # pragma: no cover - optional dependency in lightweight installs.
+    xcals = None
+
+try:
     from zoneinfo import ZoneInfo
 except Exception:  # pragma: no cover - defensive fallback for old runtimes.
     ZoneInfo = None  # type: ignore
@@ -50,6 +55,10 @@ _CN_UNIVERSE_ID = "CN_Equity_A"
 _MAX_SYMBOLS_PER_QUOTE_REQUEST = 5
 _CAPABILITY_NEGATIVE_CACHE_TTL_SECONDS = 900
 _MAX_DAILY_PREFETCH_LOOKBACK_DAYS = 730
+_MIN_DAILY_KLINE_COUNT = 30
+_MAX_DAILY_KLINE_COUNT = 10000
+_DAILY_KLINE_COUNT_MULTIPLIER = 1.8
+_DAILY_KLINE_COUNT_BUFFER = 20
 _SUPPORTED_KLINE_ADJUSTS = {
     "none",
     "forward",
@@ -75,7 +84,7 @@ class TickFlowFetcher(BaseFetcher):
     """TickFlow-backed optional A-share fetcher."""
 
     name = "TickFlowFetcher"
-    priority = _parse_env_int("TICKFLOW_PRIORITY", 2, minimum=0)
+    priority = 2
 
     def __init__(
         self,
@@ -85,9 +94,11 @@ class TickFlowFetcher(BaseFetcher):
         kline_adjust: Optional[str] = None,
         batch_daily_enabled: Optional[bool] = None,
         batch_size: Optional[int] = None,
+        priority: Optional[int] = None,
     ):
         self.api_key = (api_key or "").strip()
         self.timeout = timeout
+        self.priority = self._normalize_priority(priority)
         self.kline_adjust = self._normalize_adjust(
             kline_adjust or os.getenv("TICKFLOW_KLINE_ADJUST", "none")
         )
@@ -166,10 +177,12 @@ class TickFlowFetcher(BaseFetcher):
         if client is None:
             raise DataFetchError("TickFlow API key is not configured")
 
+        request_count = self._daily_kline_count(start_date, end_date)
         try:
             df = client.klines.get(
                 symbol,
                 period="1d",
+                count=request_count,
                 start_time=self._date_to_ms(start_date),
                 end_time=self._date_to_ms(end_date, end_of_day=True),
                 adjust=self.kline_adjust,
@@ -178,7 +191,14 @@ class TickFlowFetcher(BaseFetcher):
         except Exception as exc:
             raise DataFetchError(f"TickFlow daily K-line request failed: {exc}") from exc
 
-        raw_df = self._coerce_frame(df)
+        raw_df = self._prepare_daily_frame(
+            df,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            count=request_count,
+            context="single",
+        )
         self._set_daily_cache(cache_key, raw_df)
         return raw_df.copy()
 
@@ -228,6 +248,16 @@ class TickFlowFetcher(BaseFetcher):
         if not normalized:
             return default
         return normalized not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _normalize_priority(value: Optional[int]) -> int:
+        if value is None:
+            return _parse_env_int("TICKFLOW_PRIORITY", 2, minimum=0)
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            logger.warning("Invalid TickFlow priority=%r; falling back to 2", value)
+            return 2
 
     @staticmethod
     def _normalize_adjust(value: Optional[str]) -> str:
@@ -398,6 +428,112 @@ class TickFlowFetcher(BaseFetcher):
                 return pd.to_datetime(numeric, unit="ms", errors="coerce").dt.normalize()
         return pd.Series(pd.NaT, index=raw.index)
 
+    @staticmethod
+    def _daily_kline_count(start_date: str, end_date: str) -> int:
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            calendar_days = max(1, (end - start).days + 1)
+        except (TypeError, ValueError):
+            calendar_days = 365
+        estimated = int(calendar_days * _DAILY_KLINE_COUNT_MULTIPLIER) + _DAILY_KLINE_COUNT_BUFFER
+        return max(_MIN_DAILY_KLINE_COUNT, min(_MAX_DAILY_KLINE_COUNT, estimated))
+
+    @classmethod
+    def _prepare_daily_frame(
+        cls,
+        value: Any,
+        *,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        count: int,
+        context: str,
+    ) -> pd.DataFrame:
+        frame = cls._coerce_frame(value)
+        if frame.empty:
+            return frame
+
+        dates = cls._extract_date_series(frame)
+        valid_dates = dates.dropna()
+        if valid_dates.empty:
+            logger.warning(
+                "[TickFlowFetcher] daily K-line response has no usable dates: symbol=%s context=%s rows=%d count=%d",
+                symbol,
+                context,
+                len(frame),
+                count,
+            )
+            return pd.DataFrame(columns=frame.columns)
+
+        if cls._is_daily_frame_truncated(
+            dates=valid_dates,
+            start_date=start_date,
+            end_date=end_date,
+            count=count,
+            returned_rows=len(frame),
+        ):
+            first_date = valid_dates.min().strftime("%Y-%m-%d")
+            last_date = valid_dates.max().strftime("%Y-%m-%d")
+            logger.warning(
+                "[TickFlowFetcher] reject incomplete daily K-line response: symbol=%s context=%s "
+                "start=%s end=%s first=%s last=%s rows=%d count=%d reason=count_cap",
+                symbol,
+                context,
+                start_date,
+                end_date,
+                first_date,
+                last_date,
+                len(frame),
+                count,
+            )
+            raise DataFetchError(
+                "TickFlow daily K-line response may be truncated by count: "
+                f"symbol={symbol} start={start_date} end={end_date} rows={len(frame)} count={count}"
+            )
+
+        start = pd.Timestamp(start_date).normalize()
+        end = pd.Timestamp(end_date).normalize()
+        in_range = dates.notna() & (dates >= start) & (dates <= end)
+        if not in_range.any():
+            return pd.DataFrame(columns=frame.columns)
+        return frame.loc[in_range].reset_index(drop=True)
+
+    @classmethod
+    def _is_daily_frame_truncated(
+        cls,
+        *,
+        dates: pd.Series,
+        start_date: str,
+        end_date: str,
+        count: int,
+        returned_rows: int,
+    ) -> bool:
+        if returned_rows < count:
+            return False
+        try:
+            requested_start = datetime.strptime(start_date, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            return False
+
+        first_expected = cls._first_trading_date_on_or_after(requested_start)
+        first_returned = dates.min().to_pydatetime().replace(tzinfo=None)
+        return first_returned > first_expected
+
+    @staticmethod
+    def _first_trading_date_on_or_after(start_date: datetime) -> datetime:
+        if xcals is not None:
+            try:
+                cal = xcals.get_calendar("XSHG")
+                session = cal.date_to_session(start_date.date(), direction="next")
+                return datetime.combine(session.date(), datetime.min.time())
+            except Exception:
+                pass
+        current = start_date
+        while current.weekday() >= 5:
+            current += timedelta(days=1)
+        return current
+
     def _daily_cache_key(self, symbol: str, start_date: str, end_date: str) -> Tuple[str, str, str, str]:
         return (symbol.upper(), start_date, end_date, self.kline_adjust)
 
@@ -485,9 +621,11 @@ class TickFlowFetcher(BaseFetcher):
         for offset in range(0, len(symbols), self.batch_size):
             batch_symbols = symbols[offset : offset + self.batch_size]
             try:
+                request_count = self._daily_kline_count(start_date, end_date)
                 batch_result = client.klines.batch(
                     batch_symbols,
                     period="1d",
+                    count=request_count,
                     start_time=self._date_to_ms(start_date),
                     end_time=self._date_to_ms(end_date, end_of_day=True),
                     adjust=self.kline_adjust,
@@ -514,7 +652,17 @@ class TickFlowFetcher(BaseFetcher):
                 if not symbol:
                     continue
                 cache_key = self._daily_cache_key(symbol, start_date, end_date)
-                frame = self._coerce_frame(df)
+                try:
+                    frame = self._prepare_daily_frame(
+                        df,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        count=request_count,
+                        context="batch",
+                    )
+                except DataFetchError:
+                    continue
                 if frame.empty:
                     continue
                 self._set_daily_cache(cache_key, frame)

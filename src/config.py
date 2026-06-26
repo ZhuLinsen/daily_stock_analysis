@@ -693,6 +693,7 @@ class Config:
     tushare_token: Optional[str] = None
     tickflow_api_key: Optional[str] = None
     tickflow_kline_adjust: str = "none"
+    tickflow_priority: int = 2
     tickflow_batch_daily_enabled: bool = True
     tickflow_batch_size: int = 100
     finnhub_api_key: Optional[str] = None
@@ -1567,6 +1568,7 @@ class Config:
             tushare_token=os.getenv('TUSHARE_TOKEN'),
             tickflow_api_key=os.getenv('TICKFLOW_API_KEY'),
             tickflow_kline_adjust=normalize_tickflow_kline_adjust(os.getenv('TICKFLOW_KLINE_ADJUST')),
+            tickflow_priority=parse_env_int(os.getenv('TICKFLOW_PRIORITY'), 2, field_name='TICKFLOW_PRIORITY', minimum=0),
             tickflow_batch_daily_enabled=parse_env_bool(os.getenv('TICKFLOW_BATCH_DAILY_ENABLED'), default=True),
             tickflow_batch_size=parse_env_int(os.getenv('TICKFLOW_BATCH_SIZE'), 100, field_name='TICKFLOW_BATCH_SIZE', minimum=1),
             finnhub_api_key=os.getenv('FINNHUB_API_KEY') or None,

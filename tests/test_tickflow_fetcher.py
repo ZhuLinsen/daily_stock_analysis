@@ -11,6 +11,7 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+from data_provider.base import DataFetchError
 from data_provider.realtime_types import RealtimeSource
 from data_provider.tickflow_fetcher import TickFlowFetcher
 
@@ -117,6 +118,24 @@ def _daily_rows(symbol="600519.SH"):
     )
 
 
+def _dated_daily_rows(start, periods, symbol="600519.SH"):
+    return pd.DataFrame(
+        [
+            {
+                "symbol": symbol,
+                "trade_date": day.strftime("%Y-%m-%d"),
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10 + index,
+                "volume": 100 + index,
+                "amount": 1000 + index,
+            }
+            for index, day in enumerate(pd.bdate_range(start, periods=periods))
+        ]
+    )
+
+
 def _quote(symbol, *, last_price=11.0, prev_close=10.0, amount=1000.0, volume=100, name="", change_pct=0.1, amplitude=0.2, turnover_rate=0.03):
     ext = {"change_pct": change_pct, "amplitude": amplitude, "turnover_rate": turnover_rate}
     if name:
@@ -144,6 +163,7 @@ class TestTickFlowFetcher(unittest.TestCase):
 
         self.assertEqual(fetcher._client.klines.get_calls[0]["symbol"], "600519.SH")
         self.assertEqual(fetcher._client.klines.get_calls[0]["period"], "1d")
+        self.assertEqual(fetcher._client.klines.get_calls[0]["count"], 30)
         self.assertEqual(fetcher._client.klines.get_calls[0]["adjust"], "none")
         self.assertEqual(df.iloc[0]["volume"], 10000)
         self.assertEqual(df.iloc[1]["volume"], 20000)
@@ -204,6 +224,59 @@ class TestTickFlowFetcher(unittest.TestCase):
         self.assertEqual(fetcher._client.klines.get_calls, [])
         self.assertEqual(len(df), 2)
 
+    def test_daily_kline_request_passes_count_and_rejects_capped_incomplete_history(self):
+        request_count = TickFlowFetcher._daily_kline_count("2020-01-01", "2026-05-10")
+        rows = _dated_daily_rows("2023-01-03", request_count)
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient(daily_data=rows)
+
+        with self.assertRaises(DataFetchError):
+            fetcher.get_daily_data("600519", start_date="2020-01-01", end_date="2026-05-10")
+
+        call = fetcher._client.klines.get_calls[0]
+        self.assertEqual(call["count"], request_count)
+        self.assertEqual(call["period"], "1d")
+        self.assertIn("start_time", call)
+        self.assertIn("end_time", call)
+
+    def test_daily_kline_keeps_short_history_when_count_cap_not_hit(self):
+        request_count = TickFlowFetcher._daily_kline_count("2020-01-01", "2026-05-10")
+        rows = _dated_daily_rows("2023-01-03", 2)
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient(daily_data=rows)
+
+        df = fetcher.get_daily_data("600519", start_date="2020-01-01", end_date="2026-05-10")
+
+        self.assertEqual(len(df), 2)
+        self.assertEqual(fetcher._client.klines.get_calls[0]["count"], request_count)
+
+    def test_daily_kline_keeps_capped_history_when_requested_start_is_weekend(self):
+        request_count = TickFlowFetcher._daily_kline_count("2024-03-02", "2027-05-10")
+        rows = _dated_daily_rows("2024-03-04", request_count)
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient(daily_data=rows)
+
+        df = fetcher.get_daily_data("600519", start_date="2024-03-02", end_date="2027-05-10")
+
+        self.assertGreater(len(df), 0)
+        self.assertEqual(pd.Timestamp(df.iloc[0]["date"]).strftime("%Y-%m-%d"), "2024-03-04")
+        self.assertLessEqual(pd.Timestamp(df.iloc[-1]["date"]).strftime("%Y-%m-%d"), "2027-05-10")
+
+    def test_batch_daily_prefetch_passes_count_and_skips_truncated_cache(self):
+        request_count = TickFlowFetcher._daily_kline_count("2020-01-01", "2026-05-10")
+        batch_data = {"600519.SH": _dated_daily_rows("2023-01-03", request_count, "600519.SH")}
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient(daily_data=_daily_rows(), batch_data=batch_data)
+
+        cached = fetcher.prefetch_daily_klines(["600519"], start_date="2020-01-01", end_date="2026-05-10")
+        df = fetcher.get_daily_data("600519", start_date="2020-01-01", end_date="2026-05-10")
+
+        self.assertEqual(cached, 0)
+        batch_call = fetcher._client.klines.batch_calls[0]
+        self.assertEqual(batch_call["count"], request_count)
+        self.assertEqual(len(fetcher._client.klines.get_calls), 1)
+        self.assertEqual(len(df), 2)
+
     def test_batch_daily_prefetch_batches_and_logs_summary(self):
         batch_data = {
             "600519.SH": _daily_rows("600519.SH"),
@@ -224,6 +297,7 @@ class TestTickFlowFetcher(unittest.TestCase):
             [call["symbols"] for call in fetcher._client.klines.batch_calls],
             [["600519.SH"], ["000001.SZ"]],
         )
+        self.assertEqual([call["count"] for call in fetcher._client.klines.batch_calls], [30, 30])
         self.assertIn("cached=2 total=2 batches=2", "\n".join(logs.output))
 
     def test_batch_daily_permission_failure_negative_caches_and_single_fallback_still_works(self):

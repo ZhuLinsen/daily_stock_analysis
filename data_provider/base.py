@@ -895,6 +895,7 @@ class DataFetcherManager:
                     kline_adjust=getattr(config, "tickflow_kline_adjust", "none"),
                     batch_daily_enabled=getattr(config, "tickflow_batch_daily_enabled", True),
                     batch_size=getattr(config, "tickflow_batch_size", 100),
+                    priority=getattr(config, "tickflow_priority", 2),
                 )
                 self._tickflow_fetcher = fetcher
                 self._tickflow_api_key = api_key
@@ -1190,6 +1191,7 @@ class DataFetcherManager:
                     kline_adjust=getattr(config, "tickflow_kline_adjust", "none"),
                     batch_daily_enabled=getattr(config, "tickflow_batch_daily_enabled", True),
                     batch_size=getattr(config, "tickflow_batch_size", 100),
+                    priority=getattr(config, "tickflow_priority", 2),
                 )
             )
         else:
