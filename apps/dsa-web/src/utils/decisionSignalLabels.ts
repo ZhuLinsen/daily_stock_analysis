@@ -15,6 +15,7 @@ const MARKET_LABEL_KEYS: Record<DecisionSignalMarket, UiTextKey> = {
   us: 'decisionSignals.market.us',
   jp: 'decisionSignals.market.jp',
   kr: 'decisionSignals.market.kr',
+  tw: 'decisionSignals.market.tw',
 };
 
 const MARKET_PHASE_LABEL_KEYS: Record<MarketPhaseValue, UiTextKey> = {

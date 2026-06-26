@@ -1,12 +1,15 @@
 import type React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
+import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
 
 const {
+  analyzeAsync,
   exportEnv,
   getSchedulerStatus,
+  getSetupStatus,
   importEnv,
   runSchedulerNow,
   updateSystemConfig,
@@ -34,8 +37,10 @@ const {
   useSystemConfigMock,
   webBuildInfoMock,
 } = vi.hoisted(() => ({
+  analyzeAsync: vi.fn(),
   exportEnv: vi.fn(),
   getSchedulerStatus: vi.fn(),
+  getSetupStatus: vi.fn(),
   importEnv: vi.fn(),
   runSchedulerNow: vi.fn(),
   updateSystemConfig: vi.fn(),
@@ -81,9 +86,16 @@ vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     exportEnv: (...args: unknown[]) => exportEnv(...args),
     getSchedulerStatus: (...args: unknown[]) => getSchedulerStatus(...args),
+    getSetupStatus: (...args: unknown[]) => getSetupStatus(...args),
     importEnv: (...args: unknown[]) => importEnv(...args),
     runSchedulerNow: (...args: unknown[]) => runSchedulerNow(...args),
     update: (...args: unknown[]) => updateSystemConfig(...args),
+  },
+}));
+
+vi.mock('../../api/analysis', () => ({
+  analysisApi: {
+    analyzeAsync: (...args: unknown[]) => analyzeAsync(...args),
   },
 }));
 
@@ -410,6 +422,16 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -435,6 +457,46 @@ describe('SettingsPage', () => {
       lastRunAt: null,
       lastSuccessAt: null,
       lastError: null,
+    });
+    getSetupStatus.mockResolvedValue({
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '已配置自选股。',
+          nextStep: null,
+        },
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'configured',
+          message: '已配置模型渠道。',
+          nextStep: null,
+        },
+        {
+          key: 'notification',
+          title: '通知',
+          category: 'notification',
+          required: false,
+          status: 'optional',
+          message: '通知可选。',
+          nextStep: null,
+        },
+      ],
+    });
+    analyzeAsync.mockResolvedValue({
+      taskId: 'task-setup-smoke',
+      status: 'pending',
+      message: 'accepted',
     });
     runSchedulerNow.mockResolvedValue({
       accepted: true,
@@ -495,6 +557,184 @@ describe('SettingsPage', () => {
     expect(screen.getByText('认证与登录保护')).toBeInTheDocument();
     expect(screen.getByText('修改密码')).toBeInTheDocument();
     expect(load).toHaveBeenCalled();
+  });
+
+  it('renders first-run setup checks and routes setup actions', async () => {
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
+    expect(screen.getByText('自选股')).toBeInTheDocument();
+    expect(screen.getAllByText('已配置')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '维护自选股' }));
+    fireEvent.click(screen.getByRole('button', { name: '配置通知' }));
+
+    expect(setActiveCategory).toHaveBeenNthCalledWith(1, 'ai_model');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(2, 'base');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
+  });
+
+  it('keeps first-run setup summary neutral while setup status is loading', async () => {
+    getSetupStatus.mockImplementation(() => new Promise(() => undefined));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('正在检查首次启动配置')).toBeInTheDocument();
+    expect(screen.getByText('正在读取配置状态，完成后会显示缺失项和试跑入口。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps first-run setup summary neutral when setup status fails', async () => {
+    getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('暂无法判断配置状态')).toBeInTheDocument();
+    expect(screen.getByText('配置状态读取失败。可先检查或修改设置项，稍后刷新检查结果。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps the latest first-run setup status when refresh responses resolve out of order', async () => {
+    const staleRefresh = createDeferred<SetupStatusResponse>();
+    const latestRefresh = createDeferred<SetupStatusResponse>();
+    const initialStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'initial-status',
+          title: '初始状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '初始配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+    const staleStatus: SetupStatusResponse = {
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'stale-status',
+          title: '过期状态',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '过期的配置状态。',
+          nextStep: '这条旧响应不应覆盖最新状态。',
+        },
+      ],
+    };
+    const latestStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'latest-status',
+          title: '最新状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '最新配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+
+    getSetupStatus
+      .mockResolvedValueOnce(initialStatus)
+      .mockImplementationOnce(() => staleRefresh.promise)
+      .mockImplementationOnce(() => latestRefresh.promise);
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('初始状态')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新检查' }));
+    fireEvent.click(screen.getByRole('button', { name: 'merge stock list' }));
+
+    await waitFor(() => expect(getSetupStatus).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      latestRefresh.resolve(latestStatus);
+      await latestRefresh.promise;
+    });
+
+    expect(await screen.findByText('最新状态')).toBeInTheDocument();
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+
+    await act(async () => {
+      staleRefresh.resolve(staleStatus);
+      await staleRefresh.promise;
+    });
+
+    await waitFor(() => expect(screen.getByText('最新状态')).toBeInTheDocument());
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
+  });
+
+  it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
+    render(<SettingsPage />);
+
+    await screen.findByText('基础配置已满足最小可用分析');
+    fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
+
+    await waitFor(() => expect(analyzeAsync).toHaveBeenCalledWith({
+      stockCode: 'SH600000',
+      reportType: 'brief',
+      asyncMode: true,
+      notify: false,
+      originalQuery: 'SH600000',
+      selectionSource: 'manual',
+    }));
+    expect(await screen.findByText(/task-setup-smoke/)).toBeInTheDocument();
+  });
+
+  it('shows missing setup items and lets the user reopen the setup check', async () => {
+    getSetupStatus.mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '还没有配置模型渠道。',
+          nextStep: '请先配置模型渠道。',
+        },
+      ],
+    });
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('还有基础配置需要处理')).toBeInTheDocument();
+    expect(screen.getByText('还缺少 1 项：模型渠道')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '暂时隐藏' }));
+    expect(screen.getByText('首次启动配置检查已隐藏')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开检查' }));
+    expect(screen.getByText('首次启动配置检查')).toBeInTheDocument();
   });
 
   it('renders web build info in system settings', async () => {

@@ -63,8 +63,8 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
         if parameter["name"] == "market"
     ]
     assert market_descriptions == [
-        "Optional market filter: cn/hk/us/jp/kr",
-        "Optional market filter: cn/hk/us/jp/kr",
+        "Optional market filter: cn/hk/us/jp/kr/tw",
+        "Optional market filter: cn/hk/us/jp/kr/tw",
     ]
 
 
