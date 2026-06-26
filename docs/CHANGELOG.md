@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Web/API runtime scheduler 接管 `--serve --schedule` 后保留 `--dry-run`、`--no-notify` 等启动参数语义。
 - [改进] Web 历史报告详情不再内嵌展示 AI 建议卡片，结构化决策信号集中在 AI 建议页查询，并保留按来源报告 ID 筛选或 URL 参数精确定位入口。
 - [改进] 新增 GenerationBackend Phase 1 抽象与 LiteLLM backend 配置，默认保持普通分析、`generate_text()` 和 Agent Chat 的 LiteLLM 行为不变。
+- [新功能] 新增统一 AI 服务适配层 (`src/ai_services/`)，提供 `generate_text()` / `embed_text()` / `check_connection()` 标准接口，支持 DeepSeek 和红蝶AI 服务的无缝切换。
+- [新功能] 实现 DeepSeek AI 服务集成 (`DeepSeekService`)，支持多版本模型选择、温度与最大令牌数参数控制，通过 litellm `deepseek/` 前缀路由。
+- [新功能] 实现红蝶AI 服务集成 (`HongdieService`)，默认地址 `https://tokento.vip/v1`，支持 GPT/Claude/Gemini/DeepSeek 等多种模型，通过 litellm `openai/` 前缀 + 自定义 `api_base` 路由。
+- [新功能] 实现 LRU+TTL 请求缓存 (`AIServiceCache`)，SHA256 哈希缓存键，线程安全，避免重复请求。
+- [新功能] 实现令牌桶算法频率限制 (`TokenBucket` / `RateLimiter`)，支持多服务独立限流与指数退避重试。
+- [新功能] 实现层次化异常分类 (`AIError` → `AIAuthenticationError` / `AIRateLimitError` / `AITimeoutError` / `AIInvalidResponseError` / `AIServiceError`)。
+- [新功能] 实现 `AIServiceFactory` 单例工厂，支持按名称动态创建和切换服务实例。
+- [新功能] 添加 `check_connection()` 连接健康检查方法，支持服务未配置时的优雅降级检测。
+- [文档] 新增 DeepSeek 和红蝶AI 配置说明到 `.env.example`，补充完整可配置项说明。
 - [新功能] #1743 Phase 2 新增显式 opt-in 的 `codex_cli` 本地 CLI generation backend，固定安全 preset、结构化错误、fallback、stream 降级和 usage unavailable contract。
 - [改进] `GENERATION_BACKEND=codex_cli` 下普通分析与大盘复盘不再因缺少 LiteLLM API Key 被误判不可用，local CLI 失败会暴露结构化错误或按配置回退 LiteLLM。
 - [改进] `codex_cli` preset 改用 `--output-last-message` 文件读取最终响应，stdout/stderr 仅作为诊断预览，避免 Codex CLI session 元数据混入主分析 JSON。

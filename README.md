@@ -53,7 +53,7 @@
 
 | 类型 | 支持 |
 |------|------|
-| AI 模型 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[AIHubMix](https://aihubmix.com/?aff=CfMq)、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
+| AI 模型 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[AIHubMix](https://aihubmix.com/?aff=CfMq)、Gemini、OpenAI 兼容、[DeepSeek](https://platform.deepseek.com)、通义千问、Claude、Ollama 本地模型等；统一 AI 服务适配层支持 [DeepSeek](src/ai_services/deepseek_service.py) 与 [红蝶AI](https://tokento.vip)（见 [AI 服务文档](docs/ai-services.md)） |
 | 行情数据 | [TickFlow](https://tickflow.org/auth/register?ref=WDSGSPS5XC)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
 | 新闻搜索 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)、[Tavily](https://tavily.com/)、[Bocha](https://open.bocha.cn/)、[Brave](https://brave.com/search/api/)、[MiniMax](https://platform.minimaxi.com/)、SearXNG |
 | 社交舆情 | [Stock Sentiment API](https://api.adanos.org/docs)（Reddit / X / Polymarket，仅美股，可选） |
@@ -87,6 +87,8 @@
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` / `OPENAI_MODEL` | 使用 OpenAI 兼容服务时填写 | 可选 |
+| `DEEPSEEK_API_KEY` | [DeepSeek](https://platform.deepseek.com) API Key，性价比高，通过统一 AI 服务适配层接入 | 可选 |
+| `HONGDIE_API_KEY` | [红蝶AI](https://tokento.vip) API Key，兼容 GPT/Claude/Gemini/DeepSeek 等多种主流模型，默认地址 `https://tokento.vip/v1` | 可选 |
 
 > Ollama 更适合本地 / Docker 部署，GitHub Actions 推荐使用云端 API。
 
