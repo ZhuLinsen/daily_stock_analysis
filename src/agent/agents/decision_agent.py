@@ -121,7 +121,8 @@ limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
 The nested ``dashboard`` object must also include ``signal_attribution`` with these
 keys: ``technical_indicators``, ``news_sentiment``, ``fundamentals``,
 ``market_conditions``, ``strongest_bullish_signal``, ``strongest_bearish_signal``.
-The first four keys are contribution weights (0-100) that must sum to 100.
+The first four keys are contribution weights (0-100). Non-zero valid weights
+should sum to 100; all-zero means no effective signal and must not be faked.
 ``technical_indicators`` explains the impact of technical signals on the recommendation.
 ``news_sentiment`` explains the impact of news/sentiment on the recommendation.
 ``fundamentals`` explains the impact of fundamental factors (valuation, earnings, financials) on the recommendation.

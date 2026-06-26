@@ -4,10 +4,20 @@ Shared data parsing and normalization helpers.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 _MODEL_PLACEHOLDER_VALUES = {"unknown", "error", "none", "null", "n/a"}
+SIGNAL_ATTRIBUTION_WEIGHT_KEYS: Tuple[str, ...] = (
+    "technical_indicators",
+    "news_sentiment",
+    "fundamentals",
+    "market_conditions",
+)
+SIGNAL_ATTRIBUTION_SIGNAL_KEYS: Tuple[str, ...] = (
+    "strongest_bullish_signal",
+    "strongest_bearish_signal",
+)
 
 
 def normalize_model_used(value: Any) -> Optional[str]:
@@ -266,12 +276,11 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
     - Convert string percentages like "70%" to int 70
     - Convert "N/A", "N/A%", "" to None
     - Clamp negative numbers to 0
-    - Normalize four contributions to sum = 100 (only if all four are valid numbers)
+    - Normalize four non-zero contributions to sum = 100 (only if all four are valid numbers)
+    - Preserve all-zero as "no effective signal"; do not fake 25/25/25/25
     """
     if not isinstance(signal_attr, dict):
         return None
-
-    keys = ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
 
     def _parse_contribution(raw: Any) -> Optional[float]:
         """
@@ -301,7 +310,7 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
         return None
 
     parsed: Dict[str, Optional[float]] = {}
-    for k in keys:
+    for k in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
         parsed[k] = _parse_contribution(signal_attr.get(k))
 
     valid_values = [v for v in parsed.values() if v is not None]
@@ -314,16 +323,16 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
             if diff != 0:
                 max_idx = int_values.index(max(int_values))
                 int_values[max_idx] += diff
-            for i, k in enumerate(keys):
+            for i, k in enumerate(SIGNAL_ATTRIBUTION_WEIGHT_KEYS):
                 parsed[k] = int_values[i]
         # else: total == 0 → all contributions are 0
         #   Keep as 0 (truthful "no contribution"), do NOT fake 25/25/25/25
         #   If LLM returned None for some fields, they stay None (meaning "unable to judge")
 
-    for k in keys:
+    for k in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
         signal_attr[k] = parsed[k]
 
-    for k in ["strongest_bullish_signal", "strongest_bearish_signal"]:
+    for k in SIGNAL_ATTRIBUTION_SIGNAL_KEYS:
         v = signal_attr.get(k)
         if v is not None and isinstance(v, str) and v.strip() == "":
             signal_attr[k] = None
@@ -337,4 +346,40 @@ def normalize_dashboard_signal_attribution(dashboard: Optional[Dict[str, Any]]) 
         return
     signal_attr = dashboard.get("signal_attribution")
     if signal_attr is not None:
+        if not isinstance(signal_attr, dict):
+            dashboard.pop("signal_attribution", None)
+            return
         normalize_signal_attribution_values(signal_attr)
+
+
+def normalize_report_signal_attribution(payload: Optional[Dict[str, Any]]) -> None:
+    """Normalize signal attribution in either a dashboard dict or full report dict."""
+    if not isinstance(payload, dict):
+        return
+    normalize_dashboard_signal_attribution(payload)
+    dashboard = payload.get("dashboard")
+    if isinstance(dashboard, dict):
+        normalize_dashboard_signal_attribution(dashboard)
+
+
+def signal_attribution_weight_items(signal_attr: Any) -> List[Tuple[str, int]]:
+    """Return displayable attribution weights as (key, integer percent) pairs."""
+    if not isinstance(signal_attr, dict):
+        return []
+    items: List[Tuple[str, int]] = []
+    for key in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
+        value = signal_attr.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            items.append((key, int(round(float(value)))))
+    return items
+
+
+def signal_attribution_has_content(signal_attr: Any) -> bool:
+    """Whether a signal_attribution payload has anything meaningful to render."""
+    if not isinstance(signal_attr, dict):
+        return False
+    if signal_attribution_weight_items(signal_attr):
+        return True
+    return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)

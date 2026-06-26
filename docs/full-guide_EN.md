@@ -741,7 +741,7 @@ Regular analysis and Agent analysis now apply lightweight guardrails before hist
 
 ### Signal Attribution Analysis (Issue #1742)
 
-Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values summing to 100), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values; valid non-zero values are normalized to 100; all-zero means no effective signal), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
 
 Signal attribution analysis is rendered in all report paths:
 - `generate_dashboard_report()` (default notification report)
@@ -752,7 +752,8 @@ Signal attribution analysis is rendered in all report paths:
 Normalization functions are explicitly called in `_parse_response()` and `parse_dashboard_json()` to ensure:
 - String percentages are converted to int (e.g., `"35%"` → `35`)
 - Negative numbers are clamped to 0
-- Values with sum ≠ 100 are normalized to sum = 100
+- Non-zero valid values with sum ≠ 100 are normalized to sum = 100
+- All-zero values are preserved as 0 to mean no effective signal
 - Values are clamped to [0, 100]
 
 `signal_attribution` is a recommended field (not required). Missing it does not fail integrity checks, but it is recorded in the `missing` list and triggers a completion prompt. `check_content_integrity()` lists it as recommended; missing only generates a warning.

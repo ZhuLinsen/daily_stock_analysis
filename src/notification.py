@@ -51,7 +51,11 @@ from src.report_language import (
 )
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
-from src.utils.data_processing import normalize_model_used
+from src.utils.data_processing import (
+    signal_attribution_has_content,
+    signal_attribution_weight_items,
+    normalize_model_used,
+)
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
@@ -1299,28 +1303,24 @@ class NotificationService(
 
                 # ========== 信号归因分析 ==========
                 signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
-                if signal_attr:
+                if signal_attribution_has_content(signal_attr):
                     report_lines.extend([
                         f"### 🎯 {labels['signal_attribution_heading']}",
                         "",
                     ])
-                    # 归因权重
-                    report_lines.append(f"**{labels['attribution_weights_label']}**:")
-
-                    # Helper to format contribution value
-                    def format_contribution(val):
-                        if val is None:
-                            return "N/A"
-                        try:
-                            return f"{float(val):.0f}"
-                        except (TypeError, ValueError):
-                            return "N/A"
-
-                    report_lines.append(f"- 📈 {labels['technical_indicators_label']}: {format_contribution(signal_attr.get('technical_indicators'))}%")
-                    report_lines.append(f"- 📰 {labels['news_sentiment_label']}: {format_contribution(signal_attr.get('news_sentiment'))}%")
-                    report_lines.append(f"- 📊 {labels['fundamentals_label']}: {format_contribution(signal_attr.get('fundamentals'))}%")
-                    report_lines.append(f"- 🌐 {labels['market_conditions_label']}: {format_contribution(signal_attr.get('market_conditions'))}%")
-                    report_lines.append("")
+                    weight_items = signal_attribution_weight_items(signal_attr)
+                    if weight_items:
+                        report_lines.append(f"**{labels['attribution_weights_label']}**:")
+                        weight_labels = {
+                            "technical_indicators": ("📈", labels['technical_indicators_label']),
+                            "news_sentiment": ("📰", labels['news_sentiment_label']),
+                            "fundamentals": ("📊", labels['fundamentals_label']),
+                            "market_conditions": ("🌐", labels['market_conditions_label']),
+                        }
+                        for key, value in weight_items:
+                            icon, label = weight_labels[key]
+                            report_lines.append(f"- {icon} {label}: {value}%")
+                        report_lines.append("")
 
                     # 最强信号
                     if signal_attr.get('strongest_bullish_signal'):
@@ -1795,40 +1795,34 @@ class NotificationService(
 
         # ========== 信号归因分析 ==========
         signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
-        if signal_attr:
-            has_content = any(
-                signal_attr.get(k) is not None
-                for k in ["technical_indicators", "news_sentiment", "fundamentals", "market_conditions"]
-            )
-            if has_content:
-                lines.extend([
-                    f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
-                    "",
-                ])
-                # 归因权重
+        if signal_attribution_has_content(signal_attr):
+            lines.extend([
+                f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                "",
+            ])
+            # 归因权重
+            weight_items = signal_attribution_weight_items(signal_attr)
+            if weight_items:
                 lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
-                tech = signal_attr.get('technical_indicators')
-                news = signal_attr.get('news_sentiment')
-                fund = signal_attr.get('fundamentals')
-                market = signal_attr.get('market_conditions')
-                if tech is not None:
-                    lines.append(f"- 📈 {labels.get('technical_indicators_label', '技术指标')}: {tech}%")
-                if news is not None:
-                    lines.append(f"- 📰 {labels.get('news_sentiment_label', '新闻舆情')}: {news}%")
-                if fund is not None:
-                    lines.append(f"- 📊 {labels.get('fundamentals_label', '基本面')}: {fund}%")
-                if market is not None:
-                    lines.append(f"- 🌐 {labels.get('market_conditions_label', '市场环境')}: {market}%")
+                weight_labels = {
+                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
+                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
+                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
+                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
+                }
+                for key, value in weight_items:
+                    icon, label = weight_labels[key]
+                    lines.append(f"- {icon} {label}: {value}%")
                 lines.append("")
 
-                # 最强信号
-                bullish = signal_attr.get('strongest_bullish_signal')
-                bearish = signal_attr.get('strongest_bearish_signal')
-                if bullish:
-                    lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
-                if bearish:
-                    lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
-                lines.append("")
+            # 最强信号
+            bullish = signal_attr.get('strongest_bullish_signal')
+            bearish = signal_attr.get('strongest_bearish_signal')
+            if bullish:
+                lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+            if bearish:
+                lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+            lines.append("")
 
         # 持仓建议
         pos_advice = core.get('position_advice', {}) if core else {}

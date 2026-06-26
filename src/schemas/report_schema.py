@@ -141,7 +141,8 @@ class SignalAttribution(BaseModel):
 
         - Try to convert string values to numbers
         - Clamp values to 0-100
-        - Normalize sum to 100 if all four values are valid numbers
+        - Normalize non-zero sum to 100 if all four values are valid numbers
+        - Preserve all-zero as "no effective signal"
         - Set invalid values to None
         """
         contrib_fields = ['technical_indicators', 'news_sentiment', 'fundamentals', 'market_conditions']
@@ -183,17 +184,17 @@ class SignalAttribution(BaseModel):
 
             values[field] = val
 
-        # Normalize to sum = 100 if all values are valid
+        # Normalize to sum = 100 if all values are valid and non-zero
         valid_values = {k: v for k, v in values.items() if v is not None}
         if len(valid_values) == 4:
             total = sum(valid_values.values())
             if total > 0:
-                # Normalize to sum = 100
+                # Normalize non-zero sum to 100
                 for field in contrib_fields:
                     if values[field] is not None:
                         values[field] = round(values[field] * 100 / total)
 
-                # Adjust for rounding errors to ensure sum = 100
+                # Adjust rounding errors to keep non-zero sums at 100
                 final_sum = sum(values[f] for f in contrib_fields)
                 if final_sum != 100:
                     # Add/subtract the difference to/from the first non-zero value
