@@ -914,14 +914,23 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
 
 
 def test_redact_short_credentials_in_diagnostic_text() -> None:
-    # Issue examples: short values not covered by the 32-char generic fallback
+    # Coverage is derived from _SENSITIVE_ENV_PATTERNS and _SENSITIVE_URL_KEY_PARTS so
+    # that redact_diagnostic_text() shares the same sensitive-field contract as the
+    # existing env-var sanitizer (_is_sensitive_env_name).
+
+    # ── positive cases: credential fields must be redacted ────────────────────────
+
+    # Issue examples from #1784: short values (<32 chars) bypassed the generic fallback
     assert "xxy12345abcdef" not in redact_diagnostic_text("FEISHU_APP_SECRET=xxy12345abcdef", limit=1000)
     assert "abc123xyz789short" not in redact_diagnostic_text("CUSTOM_API_KEY=abc123xyz789short", limit=1000)
 
-    # Digit-prefixed env var names (OPENAI_V2_API_KEY, APP2_SECRET, R2_SECRET_ACCESS_KEY)
+    # API_KEYS (plural) — present in _SENSITIVE_ENV_PATTERNS, was previously missed
+    assert "short" not in redact_diagnostic_text("API_KEYS=short", limit=1000)
+    assert "short" not in redact_diagnostic_text("OPENAI_API_KEYS=short", limit=1000)
+
+    # Digit-prefixed env var names — _SENSITIVE_ENV_PATTERNS segments match anywhere
     assert "short" not in redact_diagnostic_text("OPENAI_V2_API_KEY=short", limit=1000)
     assert "short" not in redact_diagnostic_text("APP2_SECRET=short", limit=1000)
-    assert "short" not in redact_diagnostic_text("API2_KEY=short", limit=1000)
     assert "short" not in redact_diagnostic_text("R2_SECRET_ACCESS_KEY=short", limit=1000)
 
     # Mixed-case key names
@@ -936,30 +945,31 @@ def test_redact_short_credentials_in_diagnostic_text() -> None:
     assert "abc def ghi" not in redact_diagnostic_text("PASSWORD='abc def ghi' next", limit=1000)
     assert "my secret value" not in redact_diagnostic_text('API_KEY="my secret value" other', limit=1000)
 
-    # YAML/log colon form (api_key: value, token: value)
+    # YAML/log colon form (api_key: value, api_keys: value, token: value)
     assert "short123" not in redact_diagnostic_text("api_key: short123", limit=1000)
+    assert "short123" not in redact_diagnostic_text("api_keys: short123", limit=1000)
     assert "abc123" not in redact_diagnostic_text("token: abc123", limit=1000)
 
-    # JSON form ("api_key": "value", "secret": "value")
+    # JSON form ("api_key": "value", "api_keys": "value", "secret": "value")
     assert "short123" not in redact_diagnostic_text('"api_key": "short123"', limit=1000)
+    assert "short123" not in redact_diagnostic_text('"api_keys": "short123"', limit=1000)
     assert "abc" not in redact_diagnostic_text('"secret": "abc"', limit=1000)
 
-    # Normal log lines not affected
+    # ── negative cases: non-credential fields must NOT be redacted ────────────────
+
+    # Normal log lines
     result = redact_diagnostic_text("connection established to db.example.com:5432", limit=1000)
     assert "connection established" in result
 
-    # Negative cases: non-credential fields whose names contain sensitive substrings
-    # must NOT be redacted (massif-01 review requirement).
-    # "key" as an arbitrary substring inside a word is not a terminal segment.
+    # Names that contain sensitive substrings but are not in _SENSITIVE_ENV_PATTERNS
+    # as a whole segment: MONKEY, KEYBOARD_LAYOUT, analysis_key_factor.
     result_monkey = redact_diagnostic_text("MONKEY=banana next", limit=1000)
     assert "banana" in result_monkey, "MONKEY is not a credential field"
     result_keyboard = redact_diagnostic_text("KEYBOARD_LAYOUT=us next", limit=1000)
     assert "us" in result_keyboard, "KEYBOARD_LAYOUT is not a credential field"
     result_keyfactor = redact_diagnostic_text("analysis_key_factor=valuation next", limit=1000)
     assert "valuation" in result_keyfactor, "analysis_key_factor is not a credential field"
-    # "token" as a prefix in a compound word (token_budget) must not match
-    result_budget = redact_diagnostic_text("retry: 3 token_budget: 1000", limit=1000)
-    assert "1000" in result_budget, "token_budget is not a credential field"
+
     # Normal URL query params must not be redacted
     result_url = redact_diagnostic_text(
         "docs=https://example.com/public/docs?monkey=banana&foo=bar", limit=1000

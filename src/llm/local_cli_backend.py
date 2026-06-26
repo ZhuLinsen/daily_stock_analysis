@@ -222,26 +222,37 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     # and JSON ("name": "value") forms, regardless of value length.
     # Must run before the 32-char generic fallback so short values are also covered.
     # Quoted spans (single/double) are consumed fully so partial leaks are avoided.
+    #
+    # The pattern is derived from _SENSITIVE_ENV_PATTERNS so that both code paths
+    # share the same sensitive-field contract and stay in sync as patterns are added.
     # Two branches:
-    #   1. Compound env-var names where the sensitive keyword is the terminal segment
-    #      (e.g. API_KEY, OPENAI_V2_API_KEY, R2_SECRET_ACCESS_KEY, FEISHU_APP_SECRET).
-    #      The keyword must end the name so MONKEY (contains "key" as substring) and
-    #      KEYBOARD_LAYOUT are not matched.
+    #   1. Compound env-var names: any _SENSITIVE_ENV_PATTERNS token appears as a
+    #      whole underscore-delimited segment anywhere in the field name.
+    #      e.g. OPENAI_V2_API_KEY (OPENAI segment), R2_SECRET_ACCESS_KEY (SECRET segment).
+    #      Names like MONKEY or KEYBOARD_LAYOUT contain no matching segment and are safe.
     #   2. Exact standalone lowercase field names common in YAML/JSON/log/config output
-    #      (e.g. api_key, secret, token). \b ensures "token_budget" does not match "token".
+    #      (api_key, api_keys, secret, token, etc.). Derived from _SENSITIVE_URL_KEY_PARTS.
+    _env_seg_alt = "|".join(
+        re.escape(p) for p in sorted(_SENSITIVE_ENV_PATTERNS, key=len, reverse=True)
+    )
+    _lower_alt = "|".join(re.escape(s) for s in sorted((
+        "api_key", "api_keys", "apikey", "api_secret",
+        "access_token", "auth_token", "authorization", "cookie",
+        "password", "credential", "secret", "sendkey", "session", "token", "webhook",
+    ), key=len, reverse=True))
     redacted = re.sub(
-        r"""(?ix)
-        \"?                                                          # optional opening quote (JSON key)
+        rf"""(?ix)
+        \"?                                        # optional opening quote (JSON key)
         \b(
-            [A-Z0-9]+(?:_[A-Z0-9]+)*_                               # prefix segments (e.g. OPENAI_V2_)
-            (?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|WEBHOOK|SENDKEY) # terminal keyword — must be last segment
+            (?:[A-Z0-9]+_)*                        # optional prefix segments
+            (?:{_env_seg_alt})                     # one of the _SENSITIVE_ENV_PATTERNS segments
+            (?:_[A-Z0-9]+)*                        # optional suffix segments
             |
-            (?:api_key|api_secret|secret|token|password|             # exact standalone lowercase names
-               credential|webhook|access_token|auth_token|sendkey)
+            (?:{_lower_alt})                       # exact standalone lowercase name
         )\b
-        \"?                                                          # optional closing quote (JSON key)
-        \s*(?:=|:)\s*                                                # = (env/shell) or : (YAML/JSON/log)
-        (?:\"[^\"]*\"|'[^']*'|\S+)                                   # quoted span or bare token
+        \"?                                        # optional closing quote (JSON key)
+        \s*(?:=|:)\s*                              # = (env/shell) or : (YAML/JSON/log)
+        (?:\"[^\"]*\"|'[^']*'|\S+)                # quoted span or bare token
         """,
         lambda m: f"{m.group(1)}=<redacted>",
         redacted,
