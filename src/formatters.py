@@ -495,7 +495,7 @@ def _flush_table_as_key_value_rows(buffer: List[str], output: List[str], *, bull
         if _is_markdown_table_separator(raw):
             continue
         parsed = _parse_markdown_table_row(raw)
-        if parsed:
+        if any(parsed):
             rows.append(parsed)
 
     if not rows:
@@ -504,7 +504,7 @@ def _flush_table_as_key_value_rows(buffer: List[str], output: List[str], *, bull
     header = rows[0]
     data_rows = rows[1:] if len(rows) > 1 else []
     for row in data_rows:
-        if len(header) == 2 and len(row) >= 2:
+        if len(header) == 2 and len(row) >= 2 and row[0]:
             output.append(f"{bullet} {_format_two_column_table_row(header, row)}")
             continue
 
@@ -789,7 +789,7 @@ def format_feishu_markdown(content: str) -> str:
             if re.match(r'^\s*\|?\s*[:-]+\s*(\|\s*[:-]+\s*)+\|?\s*$', raw):
                 continue
             parsed = _parse_row(raw)
-            if parsed:
+            if any(parsed):
                 rows.append(parsed)
 
         if not rows:
