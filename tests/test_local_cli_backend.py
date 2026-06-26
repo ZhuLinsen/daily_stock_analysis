@@ -948,6 +948,24 @@ def test_redact_short_credentials_in_diagnostic_text() -> None:
     result = redact_diagnostic_text("connection established to db.example.com:5432", limit=1000)
     assert "connection established" in result
 
+    # Negative cases: non-credential fields whose names contain sensitive substrings
+    # must NOT be redacted (massif-01 review requirement).
+    # "key" as an arbitrary substring inside a word is not a terminal segment.
+    result_monkey = redact_diagnostic_text("MONKEY=banana next", limit=1000)
+    assert "banana" in result_monkey, "MONKEY is not a credential field"
+    result_keyboard = redact_diagnostic_text("KEYBOARD_LAYOUT=us next", limit=1000)
+    assert "us" in result_keyboard, "KEYBOARD_LAYOUT is not a credential field"
+    result_keyfactor = redact_diagnostic_text("analysis_key_factor=valuation next", limit=1000)
+    assert "valuation" in result_keyfactor, "analysis_key_factor is not a credential field"
+    # "token" as a prefix in a compound word (token_budget) must not match
+    result_budget = redact_diagnostic_text("retry: 3 token_budget: 1000", limit=1000)
+    assert "1000" in result_budget, "token_budget is not a credential field"
+    # Normal URL query params must not be redacted
+    result_url = redact_diagnostic_text(
+        "docs=https://example.com/public/docs?monkey=banana&foo=bar", limit=1000
+    )
+    assert "banana" in result_url, "URL query param with key-like name must not be redacted"
+
 
 def test_effective_local_cli_concurrency_uses_minimum() -> None:
     assert effective_local_cli_concurrency(_config()) == 1

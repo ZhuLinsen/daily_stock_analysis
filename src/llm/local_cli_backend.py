@@ -221,12 +221,24 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     # Catch sensitive field assignments in env-var (NAME=value), YAML/log (name: value),
     # and JSON ("name": "value") forms, regardless of value length.
     # Must run before the 32-char generic fallback so short values are also covered.
-    # [A-Z0-9_]* allows digits anywhere in the name (e.g. OPENAI_V2_API_KEY, R2_SECRET_ACCESS_KEY).
     # Quoted spans (single/double) are consumed fully so partial leaks are avoided.
+    # Two branches:
+    #   1. Compound env-var names where the sensitive keyword is the terminal segment
+    #      (e.g. API_KEY, OPENAI_V2_API_KEY, R2_SECRET_ACCESS_KEY, FEISHU_APP_SECRET).
+    #      The keyword must end the name so MONKEY (contains "key" as substring) and
+    #      KEYBOARD_LAYOUT are not matched.
+    #   2. Exact standalone lowercase field names common in YAML/JSON/log/config output
+    #      (e.g. api_key, secret, token). \b ensures "token_budget" does not match "token".
     redacted = re.sub(
         r"""(?ix)
         \"?                                                          # optional opening quote (JSON key)
-        \b([A-Z0-9_]*(?:key|secret|token|password|credential|api_key|webhook)[A-Z0-9_]*)\b
+        \b(
+            [A-Z0-9]+(?:_[A-Z0-9]+)*_                               # prefix segments (e.g. OPENAI_V2_)
+            (?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|WEBHOOK|SENDKEY) # terminal keyword — must be last segment
+            |
+            (?:api_key|api_secret|secret|token|password|             # exact standalone lowercase names
+               credential|webhook|access_token|auth_token|sendkey)
+        )\b
         \"?                                                          # optional closing quote (JSON key)
         \s*(?:=|:)\s*                                                # = (env/shell) or : (YAML/JSON/log)
         (?:\"[^\"]*\"|'[^']*'|\S+)                                   # quoted span or bare token
