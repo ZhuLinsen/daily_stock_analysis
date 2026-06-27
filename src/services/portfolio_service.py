@@ -1077,11 +1077,11 @@ class PortfolioService:
                     as_of_date=as_of_date,
                 )
                 unrealized_base = market_base - cost_base
-                fx_stale = fx_stale or stale_marker or stale_cost
+                fx_stale = fx_stale or stale_market or stale_cost
             else:
                 market_base = 0.0
                 cost_base = 0.0
-                unresearched_base = 0.0
+                unrealized_base = 0.0
 
             unrealized_pct = None
             if abs(cost_base) > EPS:
