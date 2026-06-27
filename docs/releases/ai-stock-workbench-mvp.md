@@ -54,3 +54,14 @@
 - 自选股：`/workbench/watchlist`。
 - 个股详情：`/workbench/stocks/{symbol}`，例如 `/workbench/stocks/600519`。
 - 每日复盘：`/workbench/daily-review`，页面内可导出 Markdown。
+
+## 页面截图
+
+| 页面 | 截图 |
+|------|------|
+| 市场总览 Dashboard | ![市场总览](../assets/workbench-dashboard.png) |
+| 自选股 Watchlist | ![自选股](../assets/workbench-watchlist.png) |
+| 个股详情 StockDetail | ![个股详情](../assets/workbench-stock-detail.png) |
+| 每日复盘 DailyReview | ![每日复盘](../assets/workbench-daily-review.png) |
+| 持仓操作建议卡 | ![持仓建议卡](../assets/workbench-portfolio-actions.png) |
+| 场外基金分析 | ![场外基金分析](../assets/workbench-fund-analysis.png) |
