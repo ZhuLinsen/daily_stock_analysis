@@ -12,6 +12,8 @@ Fixes: https://github.com/ZhuLinsen/daily_stock_analysis/issues/644
 import re
 from typing import Optional
 
+from src.services.market_symbol_utils import get_suffix_market
+
 
 def detect_market(stock_code: Optional[str]) -> str:
     """Detect market from stock code.
@@ -34,21 +36,11 @@ def detect_market(stock_code: Optional[str]) -> str:
     if code.isdigit() and len(code) == 5:
         return "hk"
 
-    # Japan/Korea suffix-only symbols supported by Yahoo Finance.
-    # Bare Korean six-digit codes remain A-share fallback to avoid collision.
-    if re.match(r'^\d{4,5}\.T$', code):
-        return "jp"
-    if re.match(r'^\d{6}\.(KS|KQ)$', code):
-        return "kr"
-
-    # Taiwan suffix-only symbols supported by Yahoo Finance (TWSE `.TW`, TPEx `.TWO`).
-    # Base is 4-6 digits (common stocks 4, ETFs/others up to 6, e.g. 00878, 006208).
-    # Bare 4-digit codes remain A-share fallback to avoid collision; only the
-    # explicit `.TW`/`.TWO` suffix opts a code into the Taiwan market.
-    if re.match(r'^\d{4,6}\.TWO$', code):
-        return "tw"
-    if re.match(r'^\d{4,6}\.TW$', code):
-        return "tw"
+    # Suffix-only Yahoo symbols for JP/KR/TW. Bare Korean/Taiwan numeric
+    # codes keep existing fallback semantics to avoid cross-market collisions.
+    suffix_market = get_suffix_market(code)
+    if suffix_market:
+        return suffix_market
 
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B

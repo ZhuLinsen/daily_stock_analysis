@@ -291,6 +291,26 @@ class TestStockIndexLoader(unittest.TestCase):
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("005930"))
                 self.assertIsNone(stock_index_loader.resolve_index_stock_code("7203"))
 
+    def test_resolve_index_stock_code_does_not_bare_resolve_tw_suffix_entries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bundled_path = Path(temp_dir) / "stocks.index.json"
+            bundled_path.write_text(
+                json.dumps(
+                    [
+                        ["2330.TW", "2330.TW", "台积电", "taijidian", "tjd", [], "TW", "stock", True, 100],
+                        ["6505.TWO", "6505.TWO", "台塑化", "taisu", "ts", [], "TW", "stock", True, 100],
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(stock_index_loader, "get_remote_stock_index_cache_path", return_value=Path(temp_dir) / "missing.json"), \
+                 patch.object(stock_index_loader, "get_stock_index_candidate_paths", return_value=(bundled_path,)):
+                self.assertIsNone(stock_index_loader.resolve_index_stock_code("2330"))
+                self.assertIsNone(stock_index_loader.resolve_index_stock_code("2330.TW"))
+                self.assertIsNone(stock_index_loader.resolve_index_stock_code("6505.TWO"))
+
 
 if __name__ == "__main__":
     unittest.main()

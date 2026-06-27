@@ -5,6 +5,7 @@ import { useTaskStream } from './useTaskStream';
 type UseDashboardLifecycleOptions = {
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
+  refreshHistoryForCompletedTask?: (task: TaskInfo) => Promise<void>;
   refreshActiveTasks: () => Promise<void>;
   loadStockBar: () => Promise<void>;
   refreshStockBar: () => Promise<void>;
@@ -20,6 +21,7 @@ type UseDashboardLifecycleOptions = {
 export function useDashboardLifecycle({
   loadInitialHistory,
   refreshHistory,
+  refreshHistoryForCompletedTask,
   refreshActiveTasks,
   loadStockBar,
   refreshStockBar,
@@ -102,7 +104,11 @@ export function useDashboardLifecycle({
     },
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
-      void refreshHistory(true);
+      if (refreshHistoryForCompletedTask) {
+        void refreshHistoryForCompletedTask(task);
+      } else {
+        void refreshHistory(true);
+      }
       void refreshStockBar();
       void refreshMarketReviewHistory?.(true);
       scheduleTaskRemoval(task.taskId, 2_000);

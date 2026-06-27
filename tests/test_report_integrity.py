@@ -43,6 +43,26 @@ class TestCheckContentIntegrity(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(missing, [])
 
+    def test_pass_when_signal_attribution_missing(self) -> None:
+        """Signal attribution is optional and does not enter missing_fields."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=70,
+            operation_advice="持有",
+            analysis_summary="稳健",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "110元"}},
+            },
+        )
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
     def test_fail_when_analysis_summary_empty(self) -> None:
         """Integrity fails when analysis_summary is empty."""
         result = AnalysisResult(

@@ -2187,7 +2187,7 @@ class TestMarketAnalyzerBypassFix:
         assert "### 1. Market Summary" in result
         assert "### 3. Breadth & Liquidity" in result
         assert "Turnover (CNY 100m)" in result
-        assert "### 4. Sector Highlights" in result
+        assert "### 4. Sector / Theme Highlights" in result
         assert "### 6. Strategy Framework" in result
         assert "### 一、市场总结" not in result
 
@@ -2267,9 +2267,9 @@ Sector text.
         assert "- **Breadth**: Advancers 3200 / Decliners 1800 / Flat 100;" in result
         assert "Turnover 14567 (CNY 100m)" in result
         assert "| Index | Last | Change % | Open | High | Low | Amplitude | Turnover (CNY 100m) |" in result
-        assert "#### Leading Sectors" in result
+        assert "#### Leading Industry Sectors" in result
         assert "| 1 | AI算力 | +3.25% |" in result
-        assert "#### Lagging Sectors" in result
+        assert "#### Lagging Industry Sectors" in result
         assert "| 1 | 煤炭 | -1.12% |" in result
 
     def test_inject_data_into_review_matches_reference_style_chinese_headings(self):
@@ -2337,7 +2337,7 @@ Sector text.
         assert "| 上涨/下跌/平盘 | 3200 / 1800 / 100 |" in result
         assert "| 指数 | 最新 | 涨跌幅 | 开盘 | 最高 | 最低 | 振幅 | 成交额(亿) |" in result
         assert "| 上证指数 | 3300.00 | 🟢 +0.36% | 3288.00 | 3312.00 | 3276.00 | 1.10% | 1450 |" in result
-        assert "#### 领涨板块 Top 5" in result
+        assert "#### 行业板块领涨 Top 5" in result
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日市场线索" not in result
         assert "AI算力板块走强" not in result
@@ -2618,6 +2618,37 @@ Sector text.
         assert payload["breadth"]["limit_up_count"] == 12
         assert payload["breadth"]["total_amount"] == 12345.0
 
+    def test_market_review_includes_concept_rankings_in_prompt_payload_and_tables(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        overview = MarketOverview(
+            date="2026-03-18",
+            indices=[
+                MarketIndex(code="000001", name="上证指数", current=3200.0, change_pct=0.6),
+            ],
+            top_sectors=[{"name": "半导体", "change_pct": 2.35}],
+            bottom_sectors=[{"name": "煤炭", "change_pct": -1.1}],
+            top_concepts=[{"name": "机器人概念", "change_pct": 4.2}],
+            bottom_concepts=[{"name": "转基因", "change_pct": -2.05}],
+        )
+
+        prompt = ma._build_review_prompt(overview, [])
+        table_block = ma._build_sector_block(overview)
+        payload = ma.build_market_review_payload(
+            overview,
+            [],
+            "A股复盘报告",
+            market_light_snapshot={"dimensions": {"breadth": {"score": 55, "available": False}}},
+        )
+
+        assert "行业领涨: 半导体(+2.35%)" in prompt
+        assert "概念领涨: 机器人概念(+4.20%)" in prompt
+        assert "#### 概念板块领涨 Top 5" in table_block
+        assert "| 1 | 机器人概念 | +4.20% |" in table_block
+        assert payload["sectors"]["top"][0]["name"] == "半导体"
+        assert payload["concepts"]["top"][0]["name"] == "机器人概念"
+
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE
         from src.core.market_strategy import get_market_strategy_blueprint
@@ -2690,7 +2721,7 @@ Sector text.
         import ast
         import pathlib
 
-        src = pathlib.Path("src/market_analyzer.py").read_text()
+        src = pathlib.Path("src/market_analyzer.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         forbidden = {
             "_model", "_router", "_use_openai", "_use_anthropic",  # historical

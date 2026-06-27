@@ -241,6 +241,11 @@ class TestResolveIndexStockCodeForAnalysis:
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="005930.KS"):
             assert resolve_index_stock_code_for_analysis("005930") == "005930.KS"
 
+    def test_resolves_indexed_4_digit_jp_base(self):
+        assert is_code_like("7203") is False
+        with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value="7203.T"):
+            assert resolve_index_stock_code_for_analysis("7203") == "7203.T"
+
     def test_falls_back_to_canonical_when_index_miss(self):
         with patch("src.data.stock_index_loader.resolve_index_stock_code", return_value=None):
             assert resolve_index_stock_code_for_analysis("005930") == "005930"

@@ -108,8 +108,9 @@ describe('useDashboardLifecycle', () => {
     expect(removeTask).not.toHaveBeenCalled();
   });
 
-  it('refreshes history and removes completed tasks after the grace window', () => {
+  it('refreshes completed task history and removes completed tasks after the grace window', () => {
     const refreshHistory = vi.fn().mockResolvedValue(undefined);
+    const refreshHistoryForCompletedTask = vi.fn().mockResolvedValue(undefined);
     const syncTaskUpdated = vi.fn();
     const removeTask = vi.fn();
 
@@ -117,6 +118,7 @@ describe('useDashboardLifecycle', () => {
       useDashboardLifecycle({
         loadInitialHistory: vi.fn().mockResolvedValue(undefined),
         refreshHistory,
+        refreshHistoryForCompletedTask,
         refreshActiveTasks: vi.fn().mockResolvedValue(undefined),
         syncTaskCreated: vi.fn(),
         syncTaskUpdated,
@@ -134,7 +136,8 @@ describe('useDashboardLifecycle', () => {
     });
 
     expect(syncTaskUpdated).toHaveBeenCalledWith(completedTask);
-    expect(refreshHistory).toHaveBeenCalledWith(true);
+    expect(refreshHistoryForCompletedTask).toHaveBeenCalledWith(completedTask);
+    expect(refreshHistory).not.toHaveBeenCalledWith(true);
     expect(defaultMocks.refreshMarketReviewHistory).toHaveBeenCalledWith(true);
 
     act(() => {

@@ -10,14 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [改进] TickFlow 扩展为可选 A 股日 K、实时行情、股票列表/名称数据源，并为日 K 请求增加 count、完整性校验和批量预取缓存保护。
-- [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
+- [修复] API 异步批量分析共享概念板块排行缓存，避免同批多股重复拉取全市场概念排行。
+- [文档] 补齐概念板块排行字段契约与通知报告行业/概念类型列展示说明。
+- [新功能] #1742 新增信号归因分析功能（dashboard.signal_attribution），解释推荐理由的构成（技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号）。支持默认通知报告和 Jinja2 模板渲染，包含中英文国际化标签。归一化函数在 _parse_response() 和 parse_dashboard_json() 中显式调用，确保有效非零贡献度归一化到 100，all-zero 保留为 0（表示无有效信号）。
+- [改进] Agent 路径同步：更新 executor.py 和 decision_agent.py 的 prompt，确保 agent/multi-agent 分析时也生成 signal_attribution 字段。
+- [改进] #1815 Phase 1 硬化日本/韩国 suffix-only 个股 MVP：集中 JP/KR/TW suffix 识别规则，扩充日韩股票种子索引，并为 yfinance 报价/基本面上下文补充市场、币种与数据质量元数据。
+- [文档] #1815 补充 JP/KR/TW suffix-only MVP 在外部 API、provider/model/base URL 与运行时配置上的边界说明：当前为结构化字段兼容验证且可回退到旧链路。
 - [修复] 修复通知 Markdown 表格转换在空单元格后将后续内容错配到错误表头的问题。
+- [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
+- [修复] 持仓快照今日估值改为受限并发预取多只持仓实时价，减少持仓较多时 Web 组合页面刷新超时。
+- [修复] Web 首页重新分析完成后自动切换到同一股票最新生成的报告，避免仍停留在旧报告内容。
+
 - [修复] 默认通知报告补充展示 `dashboard.phase_decision` 盘中决策护栏字段，避免与模板渲染路径展示不一致。
 - [修复] 修复 Windows 环境下 Web/Desktop 静态 JS 资源可能被识别为 `text/plain` 导致前端黑屏的问题。
 - [改进] Web 设置页新增首次启动配置检查卡，串联基础配置状态、自选股入口、模型配置入口和一次简短试跑。
 - [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
+- [新功能] 大盘复盘、Web 报告页和通知关联板块补齐概念板块排行与概念信号展示。
 - [改进] 将 Docker Compose 默认内存建议从 512M 提升到 1G，并补充低配部署说明。
 - [改进] 每日分析 workflow 兼容误将 `STOCK_LIST` 配到同名 Environment variables 的场景，同时保留 Repository variables 作为推荐配置入口。
 - [新功能] #1772 新增台湾（台股）suffix-only 个股分析 MVP（**市场识别与数据路由层**）：手输 `.TW`（TWSE 上市）/ `.TWO`（TPEx 上柜）代码可走 YFinance 日线与近实时行情，补充市场识别、交易日历（XTAI / Asia/Taipei）、Prompt 语义与能力边界文档；加权指数 `^TWII`、柜买指数 `^TWOII`。台股股票索引/种子、Web 自动补全与告警（大盘红绿灯）市场放行作为后续 PR。

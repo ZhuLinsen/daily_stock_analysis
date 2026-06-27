@@ -2201,6 +2201,10 @@ textarea {
   touch-action: pan-y;
 }
 
+.touch-pan-x {
+  touch-action: pan-x pan-y;
+}
+
 .shell-page-frame::before {
   content: "";
   position: absolute;
