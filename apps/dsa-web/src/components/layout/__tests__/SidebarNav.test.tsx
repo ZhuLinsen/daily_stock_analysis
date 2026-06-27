@@ -71,7 +71,28 @@ describe('SidebarNav', () => {
 
     await screen.findByRole('link', { name: '选股' });
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(hrefs.slice(0, 5)).toEqual(['/', '/chat', '/screening', '/portfolio', '/decision-signals']);
+    expect(hrefs.slice(0, 8)).toEqual([
+      '/',
+      '/workbench',
+      '/workbench/watchlist',
+      '/workbench/daily-review',
+      '/chat',
+      '/screening',
+      '/portfolio',
+      '/decision-signals',
+    ]);
+  });
+
+  it('renders the workbench navigation items', () => {
+    render(
+      <MemoryRouter initialEntries={['/workbench/watchlist']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: '复盘台' })).toHaveAttribute('href', '/workbench');
+    expect(screen.getByRole('link', { name: '自选股' })).toHaveAttribute('href', '/workbench/watchlist');
+    expect(screen.getByRole('link', { name: '每日复盘' })).toHaveAttribute('href', '/workbench/daily-review');
   });
 
   it('refreshes the screening navigation item after any config save event', async () => {

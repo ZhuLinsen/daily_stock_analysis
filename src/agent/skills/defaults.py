@@ -17,6 +17,7 @@ from typing import Dict, Iterable, List, Optional
 
 
 _BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "strategies"
+_BUILTIN_SKILL_BUNDLE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "skills"
 
 SKILL_AGENT_PREFIX = "skill_"
 LEGACY_STRATEGY_AGENT_PREFIX = "strategy_"
@@ -94,7 +95,11 @@ def _load_builtin_skill_catalog() -> tuple[object, ...]:
     try:
         from src.agent.skills.base import load_skills_from_directory
 
-        return tuple(load_skills_from_directory(_BUILTIN_SKILLS_DIR))
+        skills = []
+        for skills_dir in (_BUILTIN_SKILLS_DIR, _BUILTIN_SKILL_BUNDLE_DIR):
+            if skills_dir.is_dir():
+                skills.extend(load_skills_from_directory(skills_dir))
+        return tuple(skills)
     except Exception:
         return ()
 

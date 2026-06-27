@@ -21,6 +21,8 @@ const vendorChunkByPackage: Record<string, string> = {
   'motion-utils': 'vendor-motion',
   'lucide-react': 'vendor-icons',
   recharts: 'vendor-charts',
+  echarts: 'vendor-echarts',
+  zrender: 'vendor-echarts',
   'victory-vendor': 'vendor-charts',
   '@reduxjs/toolkit': 'vendor-charts',
   'decimal.js-light': 'vendor-charts',

@@ -14,6 +14,9 @@ type ShellHeaderProps = {
 
 const TITLES: Record<string, { title: UiTextKey; description: UiTextKey }> = {
   '/': { title: 'layout.route.home.title', description: 'layout.route.home.description' },
+  '/workbench': { title: 'layout.route.workbench.title', description: 'layout.route.workbench.description' },
+  '/workbench/watchlist': { title: 'layout.route.watchlist.title', description: 'layout.route.watchlist.description' },
+  '/workbench/daily-review': { title: 'layout.route.dailyReview.title', description: 'layout.route.dailyReview.description' },
   '/chat': { title: 'layout.route.chat.title', description: 'layout.route.chat.description' },
   '/portfolio': { title: 'layout.route.portfolio.title', description: 'layout.route.portfolio.description' },
   '/screening': { title: 'layout.route.screening.title', description: 'layout.route.screening.description' },
@@ -30,7 +33,9 @@ export const ShellHeader: React.FC<ShellHeaderProps> = ({
 }) => {
   const location = useLocation();
   const { t } = useUiLanguage();
-  const current = TITLES[location.pathname];
+  const current = TITLES[location.pathname] ?? (location.pathname.startsWith('/workbench/stocks/')
+    ? { title: 'layout.route.stockDetail.title' as UiTextKey, description: 'layout.route.stockDetail.description' as UiTextKey }
+    : undefined);
 
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/84 backdrop-blur-xl">

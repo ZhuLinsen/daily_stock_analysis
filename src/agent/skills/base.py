@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Built-in skill YAML directory (project_root/strategies/ kept for compatibility)
 _BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "strategies"
+_BUILTIN_SKILL_BUNDLE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "skills"
 
 
 @dataclass
@@ -347,17 +348,23 @@ class SkillManager:
         Returns:
             Number of skills loaded.
         """
-        skills_dir = _BUILTIN_SKILLS_DIR
-        if not skills_dir.is_dir():
-            logger.warning(f"Built-in skill directory not found: {skills_dir}")
+        skill_dirs = [path for path in (_BUILTIN_SKILLS_DIR, _BUILTIN_SKILL_BUNDLE_DIR) if path.is_dir()]
+        if not skill_dirs:
+            logger.warning(
+                "Built-in skill directories not found: %s, %s",
+                _BUILTIN_SKILLS_DIR,
+                _BUILTIN_SKILL_BUNDLE_DIR,
+            )
             return 0
 
-        skills = load_skills_from_directory(skills_dir)
+        skills: List[Skill] = []
+        for skills_dir in skill_dirs:
+            skills.extend(load_skills_from_directory(skills_dir))
         for skill in skills:
             skill.source = "builtin"
             self.register(skill)
 
-        logger.info(f"Loaded {len(skills)} built-in skills from {skills_dir}")
+        logger.info("Loaded %d built-in skills from %s", len(skills), ", ".join(str(path) for path in skill_dirs))
         return len(skills)
 
     def load_custom_skills(self, directory: Union[str, Path, None]) -> int:

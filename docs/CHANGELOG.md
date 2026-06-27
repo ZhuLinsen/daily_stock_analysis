@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [修复] 修复通知 Markdown 表格转换在空单元格后将后续内容错配到错误表头的问题。
-- [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
+- [新功能] 新增 AI 股票复盘工作台 MVP，接入东方财富/同花顺 Provider、四个 Web 页面、ECharts K线图、AI评分卡、风险标签和每日复盘 Markdown 导出。
+- [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.74，避免包索引缺少更新版本时导致 docker-build 失败。
 
 - [修复] 默认通知报告补充展示 `dashboard.phase_decision` 盘中决策护栏字段，避免与模板渲染路径展示不一致。
 - [修复] 修复 Windows 环境下 Web/Desktop 静态 JS 资源可能被识别为 `text/plain` 导致前端黑屏的问题。

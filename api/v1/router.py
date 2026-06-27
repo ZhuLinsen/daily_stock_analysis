@@ -26,6 +26,7 @@ from api.v1.endpoints import (
     stocks,
     system_config,
     usage,
+    workbench,
 )
 
 # 创建 v1 版本主路由。
@@ -78,6 +79,12 @@ router.include_router(
     usage.router,
     prefix="/usage",
     tags=["Usage"]
+)
+
+router.include_router(
+    workbench.router,
+    prefix="/workbench",
+    tags=["Workbench"]
 )
 
 router.include_router(

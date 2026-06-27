@@ -23,6 +23,10 @@ const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
+const WorkbenchDashboardPage = lazy(() => import('./pages/WorkbenchDashboardPage'));
+const WorkbenchWatchlistPage = lazy(() => import('./pages/WorkbenchWatchlistPage'));
+const WorkbenchStockDetailPage = lazy(() => import('./pages/WorkbenchStockDetailPage'));
+const WorkbenchDailyReviewPage = lazy(() => import('./pages/WorkbenchDailyReviewPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -80,6 +84,10 @@ const AppContent: React.FC = () => {
         )}
       >
         <Route path="/" element={<HomePage />} />
+        <Route path="/workbench" element={<WorkbenchDashboardPage />} />
+        <Route path="/workbench/watchlist" element={<WorkbenchWatchlistPage />} />
+        <Route path="/workbench/stocks/:symbol" element={<WorkbenchStockDetailPage />} />
+        <Route path="/workbench/daily-review" element={<WorkbenchDailyReviewPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
