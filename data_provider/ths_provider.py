@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -14,6 +15,8 @@ import requests
 from data_provider.base import DataFetcherManager, normalize_stock_code
 
 logger = logging.getLogger(__name__)
+
+A_SHARE_EXCHANGE_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def _now_iso() -> str:
@@ -493,17 +496,57 @@ class THSProvider:
         try:
             if parsed > 10_000_000_000:
                 parsed = parsed / 1000
-            return datetime.fromtimestamp(parsed).isoformat(timespec="seconds")
+            return datetime.fromtimestamp(parsed, tz=A_SHARE_EXCHANGE_TZ).isoformat(timespec="seconds")
         except Exception:
             return None
+
+    @classmethod
+    def _kline_date_from_item(cls, item: Dict[str, Any]) -> str:
+        for key in ("trade_date", "trading_date", "date"):
+            explicit = cls._normalize_explicit_date(item.get(key))
+            if explicit:
+                return explicit
+        for key in ("date_ms", "timestamp", "time", "date"):
+            date_text = cls._date_from_timestamp(item.get(key))
+            if date_text:
+                return date_text
+        return ""
+
+    @staticmethod
+    def _normalize_explicit_date(value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.astimezone(A_SHARE_EXCHANGE_TZ).date().isoformat() if value.tzinfo else value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+
+        text = _text(value)
+        if not text:
+            return ""
+        compact = text.replace("-", "").replace("/", "")
+        if compact.isdigit() and len(compact) == 8 and compact.startswith(("19", "20")):
+            try:
+                return datetime.strptime(compact, "%Y%m%d").date().isoformat()
+            except ValueError:
+                return ""
+        if _safe_float(text) is not None:
+            return ""
+        normalized = text.replace("/", "-")
+        try:
+            return datetime.fromisoformat(normalized[:10]).date().isoformat()
+        except ValueError:
+            return normalized[:10] if len(normalized) >= 10 else normalized
+
+    @classmethod
+    def _date_from_timestamp(cls, value: Any) -> str:
+        iso_text = cls._timestamp_to_iso(value)
+        return iso_text[:10] if iso_text else ""
 
     @classmethod
     def _normalize_kline_items(cls, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for item in items:
-            date_text = cls._timestamp_to_iso(item.get("date_ms") or item.get("date"))
             rows.append({
-                "date": date_text[:10] if date_text else _text(item.get("trade_date") or item.get("date")),
+                "date": cls._kline_date_from_item(item),
                 "open": _safe_float(item.get("open_price") or item.get("open")),
                 "high": _safe_float(item.get("high_price") or item.get("high")),
                 "low": _safe_float(item.get("low_price") or item.get("low")),

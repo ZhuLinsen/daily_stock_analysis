@@ -1,6 +1,6 @@
 <div align="center">
 
-# AI 股票复盘工作台
+# daily_stock_analysis — AI 股票复盘工作台
 
 **一个面向普通 A 股用户的 AI 复盘、行情、持仓与基金分析工作台。**
 
@@ -12,7 +12,7 @@
 
 市场总览 · 自选股 · 个股详情 · 每日复盘 · 持仓建议 · ETF · 场外基金
 
-> 本仓库基于开源项目 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 做最小改造增强，并参考 [ArvinLovegood/go-stock](https://github.com/ArvinLovegood/go-stock) 的工作台体验，面向“看得懂、用得上、可复盘”的普通投资者场景。
+> 本仓库在 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 基础上新增了 AI 股票复盘工作台功能，并参考 [ArvinLovegood/go-stock](https://github.com/ArvinLovegood/go-stock) 的工作台体验，面向“看得懂、用得上、可复盘”的普通投资者场景。
 
 </div>
 
@@ -25,6 +25,8 @@ AI 股票复盘工作台不是量化交易终端，也不是荐股软件。它�
 项目尽量复用 `daily_stock_analysis` 原有能力：多数据源行情、LLM 分析、Markdown 报告、FastAPI、WebUI、Docker、定时任务和企业微信/飞书/邮件等推送能力。在此基础上补齐更适合 A 股用户的四个核心页面，并新增东方财富、同花顺 Fuyao、东方财富妙想 Skill、ETF 和场外基金分析支持。
 
 ![工作台预览](docs/assets/readme_workspace_tour_20260510.gif)
+
+> 详细功能介绍、页面截图与配置对照请参阅 [工作台功能说明](docs/workbench-features.md)。
 
 ## 核心亮点
 
@@ -109,8 +111,8 @@ flowchart LR
 ### Docker 运行
 
 ```bash
-git clone https://github.com/zqj372-ops/daily_stock_analysis_workbench.git
-cd daily_stock_analysis_workbench
+git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
 cp .env.example .env
 
 # 编辑 .env，至少配置 STOCK_LIST 和一个可用 LLM Key
@@ -122,8 +124,8 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.local.yml u
 ### 本地开发
 
 ```bash
-git clone https://github.com/zqj372-ops/daily_stock_analysis_workbench.git
-cd daily_stock_analysis_workbench
+git clone https://github.com/ZhuLinsen/daily_stock_analysis.git
+cd daily_stock_analysis
 
 python -m venv .venv
 source .venv/bin/activate
@@ -185,7 +187,7 @@ curl http://127.0.0.1:8000/api/v1/workbench/funds/000001?budget=10000
 
 ## 模块来源与开源说明
 
-本仓库是面向 AI 股票复盘工作台场景的二次开发版本，主要模块来源如下：
+本仓库在原有 daily_stock_analysis 基础上新增了 AI 股票复盘工作台相关模块，主要模块来源如下：
 
 | 模块 | 来源 / 参考 | 说明 |
 | --- | --- | --- |
