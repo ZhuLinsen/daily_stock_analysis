@@ -2465,6 +2465,8 @@ class SystemConfigService:
             "CUSTOM_WEBHOOK",
             "WECOM_",
             "ASTRBOT_",
+            "FUYAO_",
+            "MX_",
         )
         return key.startswith(prefixes) or key.endswith("_API_KEY") or key.endswith("_API_KEYS")
 

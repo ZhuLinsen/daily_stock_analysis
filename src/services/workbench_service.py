@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, TimeoutError, wait
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -12,6 +14,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from data_provider.base import normalize_stock_code
 from data_provider.provider_router import ProviderRouter, get_provider_router
 from src.config import get_config
+from src.data.stock_index_loader import get_index_stock_name
+from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.history_service import HistoryService
 from src.services.system_config_service import SystemConfigService
 from src.storage import DatabaseManager
@@ -28,6 +32,22 @@ STATUS_TAGS = {
     "outflow": "资金流出",
     "confirm": "等待确认",
 }
+BENIGN_DATA_ERRORS = {
+    "empty_limit_up_pool",
+    "remote_fetch_skipped_for_fast_view",
+    "fuyao_quote_unavailable",
+    "unsupported_fuyao_stock_code",
+    "market_stats_deferred_for_fast_view",
+    "limit_up_pool_deferred_for_fast_view",
+}
+PROVIDER_TIMEOUT_SECONDS = 5.0
+DETAIL_KLINE_TIMEOUT_SECONDS = 8.0
+WATCHLIST_MAX_WORKERS = 8
+WATCHLIST_TOTAL_TIMEOUT_SECONDS = 14.0
+DASHBOARD_TOTAL_TIMEOUT_SECONDS = 6.0
+DETAIL_TOTAL_TIMEOUT_SECONDS = 10.0
+WATCHLIST_ROW_TIMEOUT_SECONDS = 3.0
+DAILY_REVIEW_TOTAL_TIMEOUT_SECONDS = 18.0
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -80,13 +100,32 @@ def _unwrap(block: Any, default: Any) -> Any:
 
 def _block_status(*blocks: Dict[str, Any]) -> Dict[str, Any]:
     stale = any(bool(block.get("stale")) for block in blocks if isinstance(block, dict))
-    errors = [str(block.get("error")) for block in blocks if isinstance(block, dict) and block.get("error")]
+    errors: List[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or not block.get("error"):
+            continue
+        errors.extend(_non_benign_errors(block.get("error")))
     sources = [str(block.get("source")) for block in blocks if isinstance(block, dict) and block.get("source")]
     return {
         "source": ",".join(dict.fromkeys(sources)) or "workbench",
         "stale": stale,
         "error": "; ".join(errors) if errors else None,
     }
+
+
+def _non_benign_errors(error: Any) -> List[str]:
+    parts = [part.strip() for part in str(error or "").split(";") if part and part.strip()]
+    return [part for part in parts if part not in BENIGN_DATA_ERRORS]
+
+
+def _local_stock_name(code: str) -> str:
+    static_name = STOCK_NAME_MAP.get(code)
+    if is_meaningful_stock_name(static_name, code):
+        return str(static_name)
+    index_name = get_index_stock_name(code)
+    if is_meaningful_stock_name(index_name, code):
+        return str(index_name)
+    return ""
 
 
 @dataclass
@@ -112,11 +151,21 @@ class WorkbenchService:
         self.system_config_service = system_config_service or SystemConfigService()
 
     def get_dashboard(self) -> Dict[str, Any]:
-        indices = self._safe_provider_block("main_indices", lambda: _data_block("DataFetcherManager", data=self.router.manager.get_main_indices(region="cn")))
-        stats = self._safe_provider_block("market_stats", lambda: _data_block("DataFetcherManager", data=self.router.manager.get_market_stats(purpose="workbench_dashboard")))
-        industries = self.router.get_industry_boards()
-        concepts = self.router.get_concept_boards()
-        limit_pool = self.router.get_limit_up_pool()
+        blocks = self._collect_provider_blocks(
+            {
+                "indices": self.router.get_main_indices,
+                "stats": self.router.get_market_stats,
+                "industries": self.router.get_industry_boards,
+                "concepts": self.router.get_concept_boards,
+                "limit_pool": self.router.get_limit_up_pool,
+            },
+            total_timeout_seconds=DASHBOARD_TOTAL_TIMEOUT_SECONDS,
+        )
+        indices = blocks["indices"]
+        stats = blocks["stats"]
+        industries = blocks["industries"]
+        concepts = blocks["concepts"]
+        limit_pool = blocks["limit_pool"]
 
         indices_data = self._pick_main_indices(_unwrap(indices, []))
         stats_data = _unwrap(stats, {}) or {}
@@ -137,6 +186,10 @@ class WorkbenchService:
                 "limit_up_count": _safe_int(stats_data.get("limit_up_count")) or len(limit_data),
                 "limit_down_count": _safe_int(stats_data.get("limit_down_count")),
                 "total_amount": _round(stats_data.get("total_amount")),
+                "sample_size": _safe_int(stats_data.get("sample_size")),
+                "total_count": _safe_int(stats_data.get("total_count")),
+                "partial": bool(stats_data.get("partial")),
+                "estimated": bool(stats_data.get("estimated")),
             },
             "strong_industries": industry_top,
             "strong_concepts": concept_top,
@@ -146,8 +199,10 @@ class WorkbenchService:
 
     def get_watchlist(self) -> Dict[str, Any]:
         codes = self._read_watchlist_codes()
-        rows = [self._build_watchlist_row(code) for code in codes]
-        errors = [row.get("error") for row in rows if row.get("error")]
+        rows = self._build_watchlist_rows(codes)
+        errors: List[str] = []
+        for row in rows:
+            errors.extend(_non_benign_errors(row.get("error")))
         return {
             "source": "STOCK_LIST,provider_router",
             "stale": any(bool(row.get("stale")) for row in rows),
@@ -158,12 +213,29 @@ class WorkbenchService:
 
     def get_stock_detail(self, symbol: str) -> Dict[str, Any]:
         code = normalize_stock_code(symbol)
-        quote = self.router.get_realtime_quote(code)
-        kline = self.router.get_daily_kline(code)
-        money_flow = self.router.get_money_flow(code)
-        themes = self.router.infer_stock_themes(code)
-        news = self.router.get_stock_news(code)
-        lhb = self.router.get_lhb(code)
+        blocks = self._collect_provider_blocks(
+            {
+                "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=False),
+                "kline": lambda: self.router.get_ths_stock_daily_kline(code),
+                "money_flow": lambda: self.router.get_money_flow(code, allow_remote=False),
+                "themes": lambda: self.router.infer_stock_themes(code, allow_remote=False),
+                "news": lambda: _data_block("workbench.fast", data=[], stale=True, error="remote_fetch_skipped_for_fast_view"),
+                "lhb": lambda: _data_block("workbench.fast", data={}, stale=True, error="remote_fetch_skipped_for_fast_view"),
+            },
+            total_timeout_seconds=DETAIL_TOTAL_TIMEOUT_SECONDS,
+        )
+        quote = blocks["quote"]
+        kline = blocks["kline"]
+        if not _unwrap(kline, []):
+            kline = self._safe_provider_block(
+                "daily_kline_cache",
+                lambda: self.router.get_daily_kline(code, allow_remote=False),
+                timeout_seconds=2.0,
+            )
+        money_flow = blocks["money_flow"]
+        themes = blocks["themes"]
+        news = blocks["news"]
+        lhb = blocks["lhb"]
 
         quote_data = _unwrap(quote, {}) or {}
         bars = _unwrap(kline, []) or []
@@ -175,7 +247,7 @@ class WorkbenchService:
             **status,
             "disclaimer": DISCLAIMER,
             "symbol": code,
-            "name": quote_data.get("name") or self.router.manager.get_stock_name(code, allow_realtime=False) or code,
+            "name": quote_data.get("name") or _local_stock_name(code) or code,
             "quote": quote_data,
             "kline": bars,
             "money_flow": _unwrap(money_flow, {}) or {},
@@ -190,8 +262,12 @@ class WorkbenchService:
         }
 
     def get_daily_review(self) -> Dict[str, Any]:
-        dashboard = self.get_dashboard()
-        watchlist = self.get_watchlist()
+        pages = self._collect_page_payloads(
+            {"dashboard": self.get_dashboard, "watchlist": self.get_watchlist},
+            total_timeout_seconds=DAILY_REVIEW_TOTAL_TIMEOUT_SECONDS,
+        )
+        dashboard = pages["dashboard"]
+        watchlist = pages["watchlist"]
         items = watchlist.get("items", [])
         strongest = dashboard.get("strong_industries", [])[:3] + dashboard.get("strong_concepts", [])[:3]
         risk_boards = self._risk_boards()
@@ -207,7 +283,9 @@ class WorkbenchService:
         return {
             "source": dashboard.get("source", "workbench"),
             "stale": bool(dashboard.get("stale")) or bool(watchlist.get("stale")),
-            "error": "; ".join([x for x in [dashboard.get("error"), watchlist.get("error")] if x]) or None,
+            "error": "; ".join(
+                dict.fromkeys(_non_benign_errors(dashboard.get("error")) + _non_benign_errors(watchlist.get("error")))
+            ) or None,
             "disclaimer": DISCLAIMER,
             "one_liner": dashboard.get("ai_market_summary"),
             "strongest_boards": strongest,
@@ -260,15 +338,185 @@ class WorkbenchService:
                 lines.append(f"- {item.get('name') or item.get('symbol')}: {'；'.join(watch[:2])}")
         return "\n".join(lines).strip() + "\n"
 
-    def _safe_provider_block(self, label: str, getter) -> Dict[str, Any]:
+    def _safe_provider_block(self, label: str, getter, *, timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
         try:
-            block = getter()
-            if isinstance(block, dict) and {"source", "stale", "error", "data"}.issubset(block.keys()):
-                return block
-            return _data_block(label, data=block)
+            block = self._call_with_timeout(label, getter, timeout_seconds) if timeout_seconds is not None else getter()
+            return self._normalize_provider_block(label, block)
         except Exception as exc:
             logger.warning("Workbench provider block failed: %s: %s", label, exc, exc_info=True)
             return _data_block(label, data=None, stale=True, error=str(exc) or type(exc).__name__)
+
+    @staticmethod
+    def _normalize_provider_block(label: str, block: Any) -> Dict[str, Any]:
+        if isinstance(block, dict) and block.get("error") in BENIGN_DATA_ERRORS:
+            block = {**block, "error": None, "stale": True}
+        if isinstance(block, dict) and {"source", "stale", "error", "data"}.issubset(block.keys()):
+            return block
+        return _data_block(label, data=block)
+
+    def _collect_provider_blocks(self, getters: Dict[str, Any], *, total_timeout_seconds: float) -> Dict[str, Dict[str, Any]]:
+        if not getters:
+            return {}
+        executor = ThreadPoolExecutor(max_workers=min(len(getters), 8), thread_name_prefix="workbench-block")
+        futures = {executor.submit(getter): label for label, getter in getters.items()}
+        results: Dict[str, Dict[str, Any]] = {}
+        pending = set(futures)
+        deadline = time.monotonic() + total_timeout_seconds
+        try:
+            while pending and time.monotonic() < deadline:
+                done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                for future in done:
+                    label = futures[future]
+                    try:
+                        results[label] = self._normalize_provider_block(label, future.result())
+                    except Exception as exc:
+                        logger.warning("Workbench provider block failed: %s: %s", label, exc, exc_info=True)
+                        results[label] = _data_block(label, data=None, stale=True, error=str(exc) or type(exc).__name__)
+            for future in pending:
+                label = futures[future]
+                future.cancel()
+                results[label] = _data_block(label, data=None, stale=True, error=f"timeout_after_{total_timeout_seconds:.0f}s")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return {label: results.get(label, _data_block(label, data=None, stale=True, error="not_started")) for label in getters}
+
+    def _collect_page_payloads(self, getters: Dict[str, Any], *, total_timeout_seconds: float) -> Dict[str, Dict[str, Any]]:
+        executor = ThreadPoolExecutor(max_workers=min(len(getters), 4), thread_name_prefix="workbench-page")
+        futures = {executor.submit(getter): label for label, getter in getters.items()}
+        results: Dict[str, Dict[str, Any]] = {}
+        pending = set(futures)
+        deadline = time.monotonic() + total_timeout_seconds
+        try:
+            while pending and time.monotonic() < deadline:
+                done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                for future in done:
+                    label = futures[future]
+                    try:
+                        payload = future.result()
+                        results[label] = payload if isinstance(payload, dict) else self._fallback_page_payload(label, "invalid_page_payload")
+                    except Exception as exc:
+                        logger.warning("Workbench page payload failed: %s: %s", label, exc, exc_info=True)
+                        results[label] = self._fallback_page_payload(label, str(exc) or type(exc).__name__)
+            for future in pending:
+                label = futures[future]
+                future.cancel()
+                results[label] = self._fallback_page_payload(label, f"timeout_after_{total_timeout_seconds:.0f}s")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return {label: results.get(label, self._fallback_page_payload(label, "not_started")) for label in getters}
+
+    @staticmethod
+    def _fallback_page_payload(label: str, error: str) -> Dict[str, Any]:
+        if label == "dashboard":
+            return {
+                "source": "workbench.page_timeout",
+                "stale": True,
+                "error": error,
+                "disclaimer": DISCLAIMER,
+                "indices": [],
+                "breadth": {
+                    "up_count": 0,
+                    "down_count": 0,
+                    "flat_count": 0,
+                    "limit_up_count": 0,
+                    "limit_down_count": 0,
+                    "total_amount": None,
+                    "sample_size": 0,
+                    "total_count": 0,
+                    "partial": False,
+                    "estimated": False,
+                },
+                "strong_industries": [],
+                "strong_concepts": [],
+                "limit_up_pool": [],
+                "ai_market_summary": "市场数据源响应较慢，已先返回降级复盘视图。",
+            }
+        if label == "watchlist":
+            return {
+                "source": "workbench.page_timeout",
+                "stale": True,
+                "error": error,
+                "disclaimer": DISCLAIMER,
+                "items": [],
+            }
+        return {"source": "workbench.page_timeout", "stale": True, "error": error, "disclaimer": DISCLAIMER}
+
+    @staticmethod
+    def _call_with_timeout(label: str, getter, timeout_seconds: float) -> Any:
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"workbench-{label}")
+        future = executor.submit(getter)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except TimeoutError:
+            future.cancel()
+            return _data_block(label, data=None, stale=True, error=f"timeout_after_{timeout_seconds:.0f}s")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _build_watchlist_rows(self, codes: List[str]) -> List[Dict[str, Any]]:
+        if not codes:
+            return []
+        max_workers = min(WATCHLIST_MAX_WORKERS, max(1, len(codes)))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="workbench-watchlist")
+        futures = {
+            executor.submit(self._build_watchlist_row, code, True): (index, code)
+            for index, code in enumerate(codes)
+        }
+        results: Dict[int, Dict[str, Any]] = {}
+        pending = set(futures)
+        deadline = time.monotonic() + WATCHLIST_TOTAL_TIMEOUT_SECONDS
+        try:
+            while pending and time.monotonic() < deadline:
+                done, pending = wait(pending, timeout=0.4, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index, raw_code = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:
+                        logger.warning("Workbench watchlist row failed for %s: %s", raw_code, exc, exc_info=True)
+                        results[index] = self._fallback_watchlist_row(raw_code, error=str(exc) or type(exc).__name__)
+            for future in pending:
+                index, raw_code = futures[future]
+                future.cancel()
+                results[index] = self._fallback_watchlist_row(
+                    raw_code,
+                    error=f"timeout_after_{WATCHLIST_TOTAL_TIMEOUT_SECONDS:.0f}s",
+                )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        return [results[index] for index in sorted(results)]
+
+    def _fallback_watchlist_row(self, raw_code: str, *, error: str) -> Dict[str, Any]:
+        code = normalize_stock_code(raw_code)
+        name = _local_stock_name(code) or raw_code
+        analysis = self._build_ai_analysis(
+            code,
+            {"name": name},
+            [],
+            _data_block("workbench.fast", data={}),
+            _data_block("workbench.fast", data={"symbol": code, "industry": [], "concepts": [], "boards": []}),
+            include_history_summary=False,
+        )
+        return {
+            "symbol": code,
+            "name": name,
+            "latest_price": None,
+            "change_pct": None,
+            "amount": None,
+            "turnover_rate": None,
+            "main_net_inflow": None,
+            "industry": "",
+            "concepts": [],
+            "ai_score": analysis.payload.get("ai_score"),
+            "status_tag": analysis.payload.get("status_tag"),
+            "risk_tags": analysis.risk_tags,
+            "opportunity_tags": analysis.opportunity_tags,
+            "watch_tags": analysis.watch_tags,
+            "next_day_watch": analysis.payload.get("next_day_watch", []),
+            "source": "workbench.fast_timeout",
+            "stale": True,
+            "error": error,
+        }
 
     def _read_watchlist_codes(self) -> List[str]:
         try:
@@ -286,22 +534,37 @@ class WorkbenchService:
             except Exception:
                 return []
 
-    def _build_watchlist_row(self, raw_code: str) -> Dict[str, Any]:
+    def _build_watchlist_row(self, raw_code: str, fast: bool = False) -> Dict[str, Any]:
         code = normalize_stock_code(raw_code)
-        quote = self.router.get_realtime_quote(code)
-        money_flow = self.router.get_money_flow(code)
-        themes = self.router.infer_stock_themes(code)
-        kline = self.router.get_daily_kline(code)
+        if fast:
+            quote = self._normalize_provider_block("quote", self.router.get_realtime_quote(code, allow_legacy_remote=False))
+            money_flow = _data_block("workbench.fast", data={}, stale=True, error="remote_fetch_skipped_for_fast_view")
+            themes = self._normalize_provider_block("themes", self.router.infer_stock_themes(code, allow_remote=False))
+            kline = self._normalize_provider_block("kline", self.router.get_daily_kline(code, allow_remote=False))
+        else:
+            blocks = self._collect_provider_blocks(
+                {
+                    "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=False),
+                    "money_flow": lambda: self.router.get_money_flow(code, allow_remote=True),
+                    "themes": lambda: self.router.infer_stock_themes(code, allow_remote=False),
+                    "kline": lambda: self.router.get_daily_kline(code, allow_remote=True),
+                },
+                total_timeout_seconds=DETAIL_TOTAL_TIMEOUT_SECONDS,
+            )
+            quote = blocks["quote"]
+            money_flow = blocks["money_flow"]
+            themes = blocks["themes"]
+            kline = blocks["kline"]
         quote_data = _unwrap(quote, {}) or {}
         bars = _unwrap(kline, []) or []
-        analysis = self._build_ai_analysis(code, quote_data, bars, money_flow, themes)
+        analysis = self._build_ai_analysis(code, quote_data, bars, money_flow, themes, include_history_summary=not fast)
         themes_data = _unwrap(themes, {}) or {}
         capital = _unwrap(money_flow, {}) or {}
         stock_flow = capital.get("stock_flow") if isinstance(capital, dict) else {}
         status = _block_status(quote, money_flow, themes, kline)
         return {
             "symbol": code,
-            "name": quote_data.get("name") or self.router.manager.get_stock_name(code, allow_realtime=False) or raw_code,
+            "name": quote_data.get("name") or _local_stock_name(code) or raw_code,
             "latest_price": quote_data.get("price"),
             "change_pct": quote_data.get("change_pct"),
             "amount": quote_data.get("amount"),
@@ -357,8 +620,8 @@ class WorkbenchService:
 
     def _risk_boards(self) -> List[Dict[str, Any]]:
         try:
-            industries = self.router.get_industry_boards()
-            concepts = self.router.get_concept_boards()
+            industries = self._safe_provider_block("risk_industry_boards", self.router.get_industry_boards, timeout_seconds=PROVIDER_TIMEOUT_SECONDS)
+            concepts = self._safe_provider_block("risk_concept_boards", self.router.get_concept_boards, timeout_seconds=PROVIDER_TIMEOUT_SECONDS)
             rows = (_unwrap(industries, []) or []) + (_unwrap(concepts, []) or [])
             return sorted(
                 [item for item in rows if _safe_float(item.get("change_pct"), 0) is not None],
@@ -392,6 +655,8 @@ class WorkbenchService:
         bars: List[Dict[str, Any]],
         money_flow: Dict[str, Any],
         themes: Dict[str, Any],
+        *,
+        include_history_summary: bool = True,
     ) -> WorkbenchAnalysis:
         latest = bars[-1] if bars else {}
         close = _safe_float(quote.get("price"), _safe_float(latest.get("close")))
@@ -465,11 +730,11 @@ class WorkbenchService:
 
         support = self._price_level([ma5, ma10, ma20, latest.get("boll_lower")], prefer="below", price=close)
         resistance = self._price_level([latest.get("boll_upper"), latest.get("high"), ma60], prefer="above", price=close)
-        history_summary = self._latest_history_summary(code)
+        history_summary = self._latest_history_summary(code) if include_history_summary else ""
         summary = history_summary or self._plain_stock_summary(status_tag, ai_score, risk_tags, opportunity_tags)
         payload = {
             "symbol": code,
-            "name": quote.get("name") or self.router.manager.get_stock_name(code, allow_realtime=False) or "",
+            "name": quote.get("name") or _local_stock_name(code) or "",
             "summary": summary,
             "ai_score": ai_score,
             "status_tag": status_tag,

@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from data_provider.base import DataFetcherManager, normalize_stock_code
+from src.data.stock_index_loader import get_index_stock_name
+from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.repositories.stock_repo import StockRepository
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,16 @@ def _empty_payload(source: str, *, error: Optional[str] = None, stale: bool = Fa
     }
 
 
+def _local_stock_name(code: str) -> str:
+    static_name = STOCK_NAME_MAP.get(code)
+    if is_meaningful_stock_name(static_name, code):
+        return str(static_name)
+    index_name = get_index_stock_name(code)
+    if is_meaningful_stock_name(index_name, code):
+        return str(index_name)
+    return ""
+
+
 class EastMoneyProvider:
     """Thin EastMoney provider with stable workbench response envelopes."""
 
@@ -85,7 +97,7 @@ class EastMoneyProvider:
                     stale=bool(getattr(quote, "is_stale", False)),
                     data={
                         "code": getattr(quote, "code", code) or code,
-                        "name": getattr(quote, "name", "") or self.manager.get_stock_name(code, allow_realtime=False) or "",
+                        "name": getattr(quote, "name", "") or _local_stock_name(code),
                         "price": getattr(quote, "price", None),
                         "change_pct": getattr(quote, "change_pct", None),
                         "change_amount": getattr(quote, "change_amount", None),
@@ -111,11 +123,18 @@ class EastMoneyProvider:
             logger.warning("EastMoney realtime quote failed for %s: %s", code, exc, exc_info=True)
             return self._fallback_quote_from_sqlite(code, error=str(exc) or type(exc).__name__)
 
-    def get_daily_kline(self, symbol: str, period: str = "daily") -> Dict[str, Any]:
+    def get_cached_quote(self, symbol: str, *, error: str = "remote_quote_unavailable") -> Dict[str, Any]:
+        """Return only the latest local quote-like daily bar without remote calls."""
+        code = normalize_stock_code(symbol)
+        return self._fallback_quote_from_sqlite(code, error=error)
+
+    def get_daily_kline(self, symbol: str, period: str = "daily", *, allow_remote: bool = True) -> Dict[str, Any]:
         """Return daily K-line bars with MA/MACD/KDJ/RSI/BOLL fields."""
         code = normalize_stock_code(symbol)
         if period != "daily":
             return _empty_payload(self.source, error=f"unsupported period: {period}", stale=True, data=[])
+        if not allow_remote:
+            return self._fallback_kline_from_sqlite(code, error="remote_fetch_skipped_for_fast_view")
         try:
             df, provider = self.manager.get_daily_data(code, days=160)
             if df is not None and not df.empty:
@@ -130,8 +149,10 @@ class EastMoneyProvider:
             logger.warning("EastMoney daily kline failed for %s: %s", code, exc, exc_info=True)
             return self._fallback_kline_from_sqlite(code, error=str(exc) or type(exc).__name__)
 
-    def get_money_flow(self, symbol: str) -> Dict[str, Any]:
+    def get_money_flow(self, symbol: str, *, allow_remote: bool = True) -> Dict[str, Any]:
         code = normalize_stock_code(symbol)
+        if not allow_remote:
+            return _empty_payload(self.source, error="remote_fetch_skipped_for_fast_view", stale=True, data={})
         try:
             context = self.manager.get_capital_flow_context(code)
             data = context.get("data") if isinstance(context, dict) else {}
@@ -229,7 +250,7 @@ class EastMoneyProvider:
                 stale=True,
                 data={
                     "code": code,
-                    "name": self.manager.get_stock_name(code, allow_realtime=False) or "",
+                    "name": _local_stock_name(code),
                     "price": close,
                     "change_pct": change_pct,
                     "change_amount": change_amount,
@@ -261,6 +282,18 @@ class EastMoneyProvider:
         except Exception as exc:
             logger.debug("SQLite kline fallback failed for %s: %s", code, exc)
             return _empty_payload("sqlite.stock_daily", error=error, stale=True, data=[])
+
+    def enrich_kline_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add common indicators to provider-normalized K-line records."""
+        try:
+            if not records:
+                return []
+            df = pd.DataFrame(records)
+            enriched = self._enrich_indicators(df)
+            return self._df_to_records(enriched)
+        except Exception as exc:
+            logger.debug("Failed to enrich kline records: %s", exc)
+            return records
 
     @staticmethod
     def _enrich_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -300,7 +333,9 @@ class EastMoneyProvider:
         work["boll_upper"] = mid + 2 * std
         work["boll_lower"] = mid - 2 * std
 
-        return work.round(4)
+        numeric_cols = work.select_dtypes(include="number").columns
+        work.loc[:, numeric_cols] = work.loc[:, numeric_cols].round(4)
+        return work
 
     @staticmethod
     def _df_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:

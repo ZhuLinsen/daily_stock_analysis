@@ -54,6 +54,11 @@ const WorkbenchDashboardPage: React.FC = () => {
       {data ? (
         <>
           <WorkbenchDataNotice stale={data.stale} error={data.error} source={data.source} />
+          {data.breadth.partial ? (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-200">
+              涨跌家数使用同花顺 Fuyao 快照样本 {data.breadth.sampleSize ?? 0} / {data.breadth.totalCount ?? '--'} 只估算，完整全市场统计可由后台定时缓存补齐。
+            </div>
+          ) : null}
           <section className="grid gap-3 md:grid-cols-3">
             {data.indices.map((item) => (
               <Card key={item.name} className="rounded-lg" padding="sm">
@@ -73,7 +78,7 @@ const WorkbenchDashboardPage: React.FC = () => {
 
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard label="成交额" value={formatAmountYi(data.breadth.totalAmount)} icon={<BarChart3 className="h-5 w-5" />} />
-            <StatCard label="涨跌家数" value={`${data.breadth.upCount} / ${data.breadth.downCount}`} hint={`平盘 ${data.breadth.flatCount}`} icon={<TrendingUp className="h-5 w-5" />} />
+            <StatCard label="涨跌家数" value={`${data.breadth.upCount} / ${data.breadth.downCount}`} hint={`${data.breadth.partial ? '样本估算 · ' : ''}平盘 ${data.breadth.flatCount}`} icon={<TrendingUp className="h-5 w-5" />} />
             <StatCard label="涨停/跌停" value={`${data.breadth.limitUpCount} / ${data.breadth.limitDownCount}`} hint="短线情绪温度" icon={<TrendingDown className="h-5 w-5" />} />
             <StatCard label="数据状态" value={data.stale ? '延迟' : '正常'} hint={data.source} icon={<RefreshCw className="h-5 w-5" />} />
           </section>

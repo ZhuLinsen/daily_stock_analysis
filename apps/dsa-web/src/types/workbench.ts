@@ -21,6 +21,10 @@ export type MarketBreadth = {
   limitUpCount: number;
   limitDownCount: number;
   totalAmount?: number | null;
+  sampleSize?: number | null;
+  totalCount?: number | null;
+  partial?: boolean;
+  estimated?: boolean;
 };
 
 export type BoardHeatItem = {
