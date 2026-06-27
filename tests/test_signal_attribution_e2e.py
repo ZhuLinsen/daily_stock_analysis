@@ -257,6 +257,72 @@ class TestSignalAttributionE2E:
             assert "信号归因" not in output
             assert "Signal Attribution" not in output
 
+    def test_non_finite_signal_attribution_is_hidden_across_real_paths(self):
+        """NaN/Infinity weights are missing values, not confident attribution."""
+        from src.analyzer import GeminiAnalyzer
+        from src.notification import NotificationService
+        from src.services.history_service import HistoryService
+
+        def non_finite_signal_attr():
+            return {
+                "technical_indicators": float("nan"),
+                "news_sentiment": "NaN",
+                "fundamentals": float("inf"),
+                "market_conditions": "-Infinity",
+                "strongest_bullish_signal": None,
+                "strongest_bearish_signal": "",
+            }
+
+        response_text = json.dumps({
+            "sentiment_score": 50,
+            "trend_prediction": "震荡",
+            "operation_advice": "持有",
+            "decision_type": "hold",
+            "confidence_level": "中",
+            "analysis_summary": "测试",
+            "dashboard": {
+                "core_conclusion": {"one_sentence": "测试", "signal": "hold", "confidence": "中"},
+                "intelligence": {"risk_alerts": []},
+                "signal_attribution": non_finite_signal_attr(),
+            },
+        })
+
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        result = analyzer._parse_response(response_text, "600519", "测试")
+        dashboard = result.dashboard
+        signal_attr = dashboard["signal_attribution"]
+
+        for key in ("technical_indicators", "news_sentiment", "fundamentals", "market_conditions"):
+            assert signal_attr[key] is None
+        assert signal_attr["strongest_bearish_signal"] is None
+
+        parsed = parse_dashboard_json(json.dumps({
+            "dashboard": {
+                "signal_attribution": non_finite_signal_attr(),
+            }
+        }))
+        assert parsed is not None
+        parsed_attr = parsed["dashboard"]["signal_attribution"]
+        for key in ("technical_indicators", "news_sentiment", "fundamentals", "market_conditions"):
+            assert parsed_attr[key] is None
+
+        notification = NotificationService()
+        dashboard_report = notification.generate_dashboard_report([result], [dashboard])
+        single_report = notification.generate_single_stock_report(result)
+
+        class MockRecord:
+            created_at = None
+
+        history_report = HistoryService.__new__(HistoryService)._generate_single_stock_markdown(result, MockRecord())
+        template_report = render("markdown", [result], summary_only=False, extra_context={"report_language": "zh"})
+
+        for output in [dashboard_report, single_report, history_report, template_report]:
+            assert output is not None
+            assert "信号归因" not in output
+            assert "Signal Attribution" not in output
+            assert "NaN" not in output
+            assert "Infinity" not in output
+
     # ========== 测试 4: HistoryService markdown 渲染 ==========
     def test_history_service_renders_signal_attribution(self):
         """

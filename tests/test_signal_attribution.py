@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Tests for signal_attribution feature (Issue #1742)."""
 
+import math
+
 import pytest
 from src.schemas.report_schema import SignalAttribution, Dashboard
 from src.report_language import _REPORT_LABELS
@@ -69,6 +71,28 @@ class TestSignalAttributionSchema:
             market_conditions=0
         )
         assert attr.technical_indicators is None
+
+    def test_non_finite_contributions_are_rejected(self):
+        """Test NaN/Infinity contribution weights are converted to None."""
+        attr = SignalAttribution(
+            technical_indicators="NaN",
+            news_sentiment=float("nan"),
+            fundamentals="Infinity",
+            market_conditions=float("-inf"),
+        )
+        assert attr.technical_indicators is None
+        assert attr.news_sentiment is None
+        assert attr.fundamentals is None
+        assert attr.market_conditions is None
+        assert not any(
+            isinstance(value, float) and not math.isfinite(value)
+            for value in [
+                attr.technical_indicators,
+                attr.news_sentiment,
+                attr.fundamentals,
+                attr.market_conditions,
+            ]
+        )
 
     def test_negative_contributions(self):
         """Test negative contribution weights are clamped to 0."""

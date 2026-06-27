@@ -9,6 +9,7 @@ Aligns with SYSTEM_PROMPT in src/analyzer.py.
 Uses Optional for lenient parsing; business-layer integrity checks are separate.
 """
 
+import math
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -173,6 +174,10 @@ class SignalAttribution(BaseModel):
             try:
                 val = float(val)
             except (TypeError, ValueError):
+                values[field] = None
+                continue
+
+            if not math.isfinite(val):
                 values[field] = None
                 continue
 

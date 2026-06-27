@@ -4,6 +4,7 @@ Shared data parsing and normalization helpers.
 """
 
 import json
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -294,6 +295,8 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
             return None
         if isinstance(raw, (int, float)):
             val = float(raw)
+            if not math.isfinite(val):
+                return None
             # Clamp to [0, 100] — values outside this range are invalid
             return max(0.0, min(100.0, val))
         if isinstance(raw, str):
@@ -303,6 +306,8 @@ def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -
             text = text.rstrip("%").strip()
             try:
                 val = float(text)
+                if not math.isfinite(val):
+                    return None
                 # Clamp to [0, 100]
                 return max(0.0, min(100.0, val))
             except ValueError:
@@ -372,7 +377,9 @@ def signal_attribution_weight_items(signal_attr: Any) -> List[Tuple[str, int]]:
         if isinstance(value, bool):
             continue
         if isinstance(value, (int, float)):
-            items.append((key, int(round(float(value)))))
+            number = float(value)
+            if math.isfinite(number):
+                items.append((key, int(round(number))))
     return items
 
 
