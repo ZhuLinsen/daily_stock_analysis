@@ -10,17 +10,36 @@ fail-open and return a uniform envelope containing source/stale/error.
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import date, datetime, timedelta
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from data_provider.base import DataFetcherManager, normalize_stock_code
+from data_provider.base import DataFetcherManager, normalize_stock_code, _is_etf_code
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.repositories.stock_repo import StockRepository
 
 logger = logging.getLogger(__name__)
+
+_ETF_REALTIME_CACHE: Dict[str, Any] = {"data": None, "timestamp": 0.0, "ttl": 30}
+_ETF_REALTIME_CACHE_LOCK = Lock()
+_ETF_REALTIME_TIMEOUT_SECONDS = 3.0
+
+_ETF_NAME_MAP = {
+    "589020": "科创半导体设备ETF鹏华",
+    "589090": "科创AIETF鹏华",
+    "159516": "半导体设备ETF国泰",
+    "159558": "半导体设备ETF易方达",
+    "159310": "芯片ETF天弘",
+    "159997": "电子ETF天弘",
+    "159813": "半导体ETF鹏华",
+    "159538": "信创ETF富国",
+    "159995": "芯片ETF华夏",
+}
 
 
 def _now_iso() -> str:
@@ -68,6 +87,9 @@ def _empty_payload(source: str, *, error: Optional[str] = None, stale: bool = Fa
 
 
 def _local_stock_name(code: str) -> str:
+    etf_name = _ETF_NAME_MAP.get(code)
+    if etf_name:
+        return etf_name
     static_name = STOCK_NAME_MAP.get(code)
     if is_meaningful_stock_name(static_name, code):
         return str(static_name)
@@ -128,6 +150,121 @@ class EastMoneyProvider:
         code = normalize_stock_code(symbol)
         return self._fallback_quote_from_sqlite(code, error=error)
 
+    def get_etf_quote(self, symbol: str, *, allow_remote: bool = True) -> Dict[str, Any]:
+        """Return an ETF quote payload with a cached realtime path and daily fallback."""
+        code = normalize_stock_code(symbol)
+        if not _is_etf_code(code):
+            return _empty_payload(self.source, error="not_etf_code", stale=True, data=None)
+
+        if allow_remote:
+            realtime = self._get_etf_realtime_quote(code)
+            if self._has_quote_data(realtime):
+                return realtime
+
+        cached = self._fallback_quote_from_sqlite(code, error="etf_quote_cache_unavailable")
+        if self._has_quote_data(cached):
+            return self._mark_etf_quote(cached, source="sqlite.stock_daily.etf", error=None)
+
+        if allow_remote:
+            kline = self.get_etf_daily_kline(code, allow_remote=True)
+            quote = self._quote_from_kline_payload(code, kline)
+            if self._has_quote_data(quote):
+                return quote
+
+        return self._mark_etf_quote(cached, source="sqlite.stock_daily.etf", error="etf_quote_unavailable")
+
+    def get_etf_daily_kline(self, symbol: str, period: str = "daily", *, allow_remote: bool = True) -> Dict[str, Any]:
+        """Return ETF daily K-line bars through the existing ETF-capable data manager."""
+        code = normalize_stock_code(symbol)
+        if not _is_etf_code(code):
+            return _empty_payload(self.source, error="not_etf_code", stale=True, data=[])
+        return self.get_daily_kline(code, period=period, allow_remote=allow_remote)
+
+    def _get_etf_realtime_quote(self, code: str) -> Dict[str, Any]:
+        try:
+            df = self._get_etf_realtime_frame()
+            if df is None or df.empty:
+                return _empty_payload("eastmoney.efinance.etf", error="empty_etf_realtime", stale=True, data=None)
+            code_col = "股票代码" if "股票代码" in df.columns else "code"
+            code_series = df[code_col].astype(str).str.zfill(6)
+            row = df[code_series == code]
+            if row.empty:
+                return _empty_payload("eastmoney.efinance.etf", error="etf_realtime_not_found", stale=True, data=None)
+            return _empty_payload("eastmoney.efinance.etf", data=self._normalize_etf_realtime_row(code, row.iloc[0]))
+        except Exception as exc:
+            logger.warning("ETF realtime quote failed for %s: %s", code, exc)
+            return _empty_payload("eastmoney.efinance.etf", error=str(exc) or type(exc).__name__, stale=True, data=None)
+
+    @staticmethod
+    def _get_etf_realtime_frame() -> Optional[pd.DataFrame]:
+        now = time.time()
+        cached = _ETF_REALTIME_CACHE.get("data")
+        if cached is not None and now - float(_ETF_REALTIME_CACHE.get("timestamp") or 0) < float(_ETF_REALTIME_CACHE.get("ttl") or 30):
+            return cached
+
+        with _ETF_REALTIME_CACHE_LOCK:
+            now = time.time()
+            cached = _ETF_REALTIME_CACHE.get("data")
+            if cached is not None and now - float(_ETF_REALTIME_CACHE.get("timestamp") or 0) < float(_ETF_REALTIME_CACHE.get("ttl") or 30):
+                return cached
+            try:
+                import efinance as ef
+
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="workbench-etf-realtime")
+                future = executor.submit(ef.stock.get_realtime_quotes, ["ETF"])
+                try:
+                    df = future.result(timeout=_ETF_REALTIME_TIMEOUT_SECONDS)
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
+            except FuturesTimeoutError:
+                _ETF_REALTIME_CACHE["data"] = cached
+                _ETF_REALTIME_CACHE["timestamp"] = time.time()
+                logger.warning("ETF realtime quote timeout after %.0fs", _ETF_REALTIME_TIMEOUT_SECONDS)
+                return cached if cached is not None else None
+            except Exception as exc:
+                _ETF_REALTIME_CACHE["data"] = cached
+                _ETF_REALTIME_CACHE["timestamp"] = time.time()
+                logger.warning("ETF realtime quote fetch failed: %s", exc)
+                return cached if cached is not None else None
+            if df is not None and not getattr(df, "empty", True):
+                _ETF_REALTIME_CACHE["data"] = df
+                _ETF_REALTIME_CACHE["timestamp"] = time.time()
+                return df
+            return cached if cached is not None else df
+
+    @staticmethod
+    def _normalize_etf_realtime_row(code: str, row: Any) -> Dict[str, Any]:
+        def pick(*names: str) -> Any:
+            for name in names:
+                if name in row:
+                    value = row.get(name)
+                    if value is not None and not (isinstance(value, float) and value != value):
+                        return value
+            return None
+
+        return {
+            "code": code,
+            "name": _text(pick("股票名称", "名称", "name")) or _local_stock_name(code) or code,
+            "asset_type": "ETF",
+            "quote_type": "realtime",
+            "price": _safe_float(pick("最新价", "price")),
+            "change_pct": _safe_float(pick("涨跌幅", "pct_chg", "change_pct")),
+            "change_amount": _safe_float(pick("涨跌额", "change", "change_amount")),
+            "volume": _safe_int(pick("成交量", "volume")),
+            "amount": _safe_float(pick("成交额", "amount")),
+            "volume_ratio": _safe_float(pick("量比", "volume_ratio")),
+            "turnover_rate": _safe_float(pick("换手率", "turnover_rate")),
+            "amplitude": _safe_float(pick("振幅", "amplitude")),
+            "open": _safe_float(pick("今开", "开盘", "open")),
+            "high": _safe_float(pick("最高", "high")),
+            "low": _safe_float(pick("最低", "low")),
+            "pre_close": _safe_float(pick("昨收", "pre_close")),
+            "pe_ratio": _safe_float(pick("动态市盈率", "市盈率", "pe_ratio")),
+            "total_mv": _safe_float(pick("总市值", "total_mv")),
+            "circ_mv": _safe_float(pick("流通市值", "circ_mv")),
+            "fetched_at": _now_iso(),
+        }
+
     def get_daily_kline(self, symbol: str, period: str = "daily", *, allow_remote: bool = True) -> Dict[str, Any]:
         """Return daily K-line bars with MA/MACD/KDJ/RSI/BOLL fields."""
         code = normalize_stock_code(symbol)
@@ -148,6 +285,64 @@ class EastMoneyProvider:
         except Exception as exc:
             logger.warning("EastMoney daily kline failed for %s: %s", code, exc, exc_info=True)
             return self._fallback_kline_from_sqlite(code, error=str(exc) or type(exc).__name__)
+
+    @staticmethod
+    def _has_quote_data(payload: Dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        data = payload.get("data")
+        return isinstance(data, dict) and data.get("price") is not None
+
+    @staticmethod
+    def _mark_etf_quote(payload: Dict[str, Any], *, source: str, error: Optional[str]) -> Dict[str, Any]:
+        data = dict(payload.get("data") or {}) if isinstance(payload.get("data"), dict) else None
+        if data is not None:
+            data["asset_type"] = "ETF"
+            data["quote_type"] = "daily_close"
+        return {**payload, "source": source, "stale": True, "error": error, "data": data}
+
+    def _quote_from_kline_payload(self, code: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        bars = payload.get("data") if isinstance(payload, dict) else []
+        if not isinstance(bars, list) or not bars:
+            return _empty_payload(
+                payload.get("source", "eastmoney.etf_daily") if isinstance(payload, dict) else "eastmoney.etf_daily",
+                error=(payload.get("error") if isinstance(payload, dict) else None) or "empty_etf_kline",
+                stale=True,
+                data=None,
+            )
+        latest = bars[-1]
+        previous = bars[-2] if len(bars) > 1 else {}
+        close = _safe_float(latest.get("close"))
+        prev_close = _safe_float(previous.get("close"))
+        change_pct = _safe_float(latest.get("pct_chg"))
+        change_amount = None
+        if close is not None and prev_close not in (None, 0):
+            change_amount = close - prev_close
+            if change_pct is None:
+                change_pct = change_amount / prev_close * 100
+        source = str(payload.get("source") or "eastmoney.etf_daily") if isinstance(payload, dict) else "eastmoney.etf_daily"
+        return _empty_payload(
+            f"{source}.etf_quote",
+            stale=True,
+            data={
+                "code": code,
+                "name": _local_stock_name(code) or code,
+                "asset_type": "ETF",
+                "quote_type": "daily_close",
+                "price": close,
+                "change_pct": change_pct,
+                "change_amount": change_amount,
+                "volume": _safe_float(latest.get("volume")),
+                "amount": _safe_float(latest.get("amount")),
+                "turnover_rate": _safe_float(latest.get("turnover_rate")),
+                "open": _safe_float(latest.get("open")),
+                "high": _safe_float(latest.get("high")),
+                "low": _safe_float(latest.get("low")),
+                "pre_close": prev_close,
+                "provider_timestamp": _text(latest.get("date")),
+                "fetched_at": _now_iso(),
+            },
+        )
 
     def get_money_flow(self, symbol: str, *, allow_remote: bool = True) -> Dict[str, Any]:
         code = normalize_stock_code(symbol)

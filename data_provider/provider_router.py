@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from data_provider.base import DataFetcherManager
+from data_provider.base import DataFetcherManager, normalize_stock_code, _is_etf_code
 from data_provider.eastmoney_provider import EastMoneyProvider
 from data_provider.ths_provider import THSProvider
 
@@ -89,33 +89,39 @@ class ProviderRouter:
         return self._cached("market_stats", 30, getter)
 
     def get_realtime_quote(self, symbol: str, *, allow_legacy_remote: bool = True) -> Dict[str, Any]:
+        code = normalize_stock_code(symbol)
         def getter() -> Dict[str, Any]:
-            fuyao = self.ths.get_stock_snapshot(symbol)
+            if _is_etf_code(code):
+                return self.eastmoney.get_etf_quote(code, allow_remote=allow_legacy_remote)
+            fuyao = self.ths.get_stock_snapshot(code)
             if self._has_data(fuyao):
                 return fuyao
             if allow_legacy_remote:
-                fallback = self.eastmoney.get_realtime_quote(symbol)
+                fallback = self.eastmoney.get_realtime_quote(code)
             else:
-                fallback = self.eastmoney.get_cached_quote(symbol, error="fuyao_quote_unavailable")
+                fallback = self.eastmoney.get_cached_quote(code, error="fuyao_quote_unavailable")
             return self._merge_fallback_errors(fallback, fuyao)
 
         mode = "legacy" if allow_legacy_remote else "fast"
-        return self._cached(f"quote:{mode}:{symbol}", 15, getter)
+        return self._cached(f"quote:{mode}:{code}", 15, getter)
 
     def get_daily_kline(self, symbol: str, period: str = "daily", *, allow_remote: bool = True) -> Dict[str, Any]:
+        code = normalize_stock_code(symbol)
         ttl = 300 if allow_remote else 60
         mode = "remote" if allow_remote else "cache"
         def getter() -> Dict[str, Any]:
+            if _is_etf_code(code):
+                return self.eastmoney.get_etf_daily_kline(code, period=period, allow_remote=allow_remote)
             if period == "daily" and allow_remote:
-                fuyao = self.ths.get_stock_daily_kline(symbol)
+                fuyao = self.ths.get_stock_daily_kline(code)
                 if self._has_data(fuyao):
                     enriched = self.eastmoney.enrich_kline_records(fuyao.get("data") or [])
                     return {**fuyao, "data": enriched}
-                fallback = self.eastmoney.get_daily_kline(symbol, period=period, allow_remote=allow_remote)
+                fallback = self.eastmoney.get_daily_kline(code, period=period, allow_remote=allow_remote)
                 return self._merge_fallback_errors(fallback, fuyao)
-            return self.eastmoney.get_daily_kline(symbol, period=period, allow_remote=allow_remote)
+            return self.eastmoney.get_daily_kline(code, period=period, allow_remote=allow_remote)
 
-        return self._cached(f"kline:{mode}:{symbol}:{period}", ttl, getter)
+        return self._cached(f"kline:{mode}:{code}:{period}", ttl, getter)
 
     def get_money_flow(self, symbol: str, *, allow_remote: bool = True) -> Dict[str, Any]:
         ttl = 300 if allow_remote else 60
@@ -144,17 +150,23 @@ class ProviderRouter:
         return self._cached("limit_up_pool", 180, getter)
 
     def get_ths_stock_snapshot(self, symbol: str) -> Dict[str, Any]:
-        return self._cached(f"ths_snapshot:{symbol}", 15, lambda: self.ths.get_stock_snapshot(symbol))
+        code = normalize_stock_code(symbol)
+        if _is_etf_code(code):
+            return self._cached(f"etf_snapshot:{code}", 15, lambda: self.eastmoney.get_etf_quote(code, allow_remote=True))
+        return self._cached(f"ths_snapshot:{code}", 15, lambda: self.ths.get_stock_snapshot(code))
 
     def get_ths_stock_daily_kline(self, symbol: str) -> Dict[str, Any]:
+        code = normalize_stock_code(symbol)
         def getter() -> Dict[str, Any]:
-            payload = self.ths.get_stock_daily_kline(symbol)
+            if _is_etf_code(code):
+                return self.eastmoney.get_etf_daily_kline(code, allow_remote=True)
+            payload = self.ths.get_stock_daily_kline(code)
             if self._has_data(payload):
                 return {**payload, "data": self.eastmoney.enrich_kline_records(payload.get("data") or [])}
-            fallback = self.eastmoney.get_daily_kline(symbol, allow_remote=False)
+            fallback = self.eastmoney.get_daily_kline(code, allow_remote=False)
             return self._merge_fallback_errors(fallback, payload)
 
-        return self._cached(f"ths_kline:{symbol}", 300, getter)
+        return self._cached(f"ths_kline:{code}", 300, getter)
 
     def get_stock_news(self, symbol: str) -> Dict[str, Any]:
         return self._cached(f"stock_news:{symbol}", 600, lambda: self.eastmoney.get_stock_news(symbol))

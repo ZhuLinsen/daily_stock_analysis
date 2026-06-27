@@ -37,6 +37,9 @@ BENIGN_DATA_ERRORS = {
     "remote_fetch_skipped_for_fast_view",
     "fuyao_quote_unavailable",
     "unsupported_fuyao_stock_code",
+    "etf_quote_cache_unavailable",
+    "etf_quote_unavailable",
+    "empty_etf_kline",
     "market_stats_deferred_for_fast_view",
     "limit_up_pool_deferred_for_fast_view",
 }
