@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { ClipboardCopy, Download, Eye, RefreshCw, ShieldAlert, Target } from 'lucide-react';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { workbenchApi } from '../api/workbench';
-import { ApiErrorAlert, AppPage, Card, EmptyState, Loading, PageHeader, StatCard } from '../components/common';
+import { ApiErrorAlert, AppPage, Badge, Card, EmptyState, Loading, PageHeader, StatCard } from '../components/common';
 import { BoardHeatList, RiskTags, WorkbenchDataNotice } from '../components/workbench';
 import type { WorkbenchDailyReview } from '../types/workbench';
 import { cn } from '../utils/cn';
@@ -19,6 +19,14 @@ const downloadMarkdown = (filename: string, content: string) => {
   anchor.click();
   URL.revokeObjectURL(url);
 };
+
+function actionVariant(action: string): 'default' | 'success' | 'warning' | 'danger' | 'info' {
+  if (action === '止损观察') return 'danger';
+  if (action === '减仓') return 'warning';
+  if (action === '加仓等待') return 'info';
+  if (action === '持有') return 'success';
+  return 'default';
+}
 
 const WorkbenchDailyReviewPage: React.FC = () => {
   const [data, setData] = useState<WorkbenchDailyReview | null>(null);
@@ -100,7 +108,7 @@ const WorkbenchDailyReviewPage: React.FC = () => {
           <section className="grid gap-3 md:grid-cols-3">
             <StatCard label="自选股数量" value={data.watchlistPerformance.length} hint="纳入今日复盘" />
             <StatCard label="风险提醒" value={data.holdingRisks.length} hint="高位、破位或资金流出" tone={data.holdingRisks.length > 0 ? 'danger' : 'success'} />
-            <StatCard label="明日观察" value={data.nextDayWatchlist.length} hint="等待确认或缩量等待" />
+            <StatCard label="持仓处理" value={data.portfolioActionList?.length || 0} hint="真实持仓建议卡" tone={(data.holdingActionSummary?.止损观察 || data.holdingActionSummary?.减仓 || 0) > 0 ? 'warning' : 'success'} />
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
@@ -151,9 +159,56 @@ const WorkbenchDailyReviewPage: React.FC = () => {
 
             <div className="space-y-4">
               <Card className="rounded-lg" padding="sm">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Target className="h-4 w-4 text-cyan" />
+                    <h3 className="text-base font-semibold text-foreground">明日持仓处理清单</h3>
+                  </div>
+                  <span className="text-xs text-secondary-text">{data.holdingActionSummary?.total || 0} 只</span>
+                </div>
+                {(data.portfolioActionList || []).length === 0 ? (
+                  <p className="text-sm leading-6 text-secondary-text">暂无真实持仓建议。导入持仓后，这里会按盈亏和仓位生成处理清单。</p>
+                ) : (
+                  <div className="space-y-3">
+                    {(data.portfolioActionList || []).slice(0, 8).map((item) => (
+                      <div key={`${item.accountId ?? 'all'}-${item.symbol}`} className="rounded-lg border border-border/60 bg-card/60 p-3">
+                        <div className="flex items-start justify-between gap-3 text-sm">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-foreground">{item.name || item.symbol}</div>
+                            <div className="mt-1 font-mono text-xs text-secondary-text">{item.symbol} · 仓位 {formatPercent(item.weightPct)}</div>
+                          </div>
+                          <Badge variant={actionVariant(item.action)}>{item.action}</Badge>
+                        </div>
+                        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-secondary-text">盈亏</div>
+                            <div className={cn('mt-1 font-semibold', item.unrealizedPnlPct !== null && item.unrealizedPnlPct !== undefined && item.unrealizedPnlPct < 0 ? 'text-danger' : 'text-red-500 dark:text-red-300')}>{formatPercent(item.unrealizedPnlPct)}</div>
+                          </div>
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-secondary-text">AI评分</div>
+                            <div className="mt-1 font-semibold text-cyan">{item.aiScore}</div>
+                          </div>
+                          <div className="rounded-md bg-muted/40 p-2">
+                            <div className="text-secondary-text">价格</div>
+                            <div className="mt-1 font-semibold text-foreground">{item.priceStale ? '延迟' : '可用'}</div>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-secondary-text">{item.reason}</p>
+                        {item.nextDayWatch.length > 0 ? (
+                          <div className="mt-2 space-y-1 text-xs leading-5 text-secondary-text">
+                            {item.nextDayWatch.slice(0, 2).map((watch) => <p key={`${item.symbol}-${watch}`}>- {watch}</p>)}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card className="rounded-lg" padding="sm">
                 <div className="mb-3 flex items-center gap-2">
                   <ShieldAlert className="h-4 w-4 text-danger" />
-                  <h3 className="text-base font-semibold text-foreground">持仓风险</h3>
+                  <h3 className="text-base font-semibold text-foreground">自选股风险</h3>
                 </div>
                 {data.holdingRisks.length === 0 ? (
                   <p className="text-sm leading-6 text-secondary-text">暂无明显风险标签，仍需按计划控制仓位。</p>

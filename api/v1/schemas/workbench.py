@@ -40,6 +40,10 @@ class WorkbenchDailyReviewResponse(WorkbenchBaseResponse):
     pass
 
 
+class WorkbenchPortfolioActionsResponse(WorkbenchBaseResponse):
+    pass
+
+
 class WorkbenchFundResponse(WorkbenchBaseResponse):
     pass
 

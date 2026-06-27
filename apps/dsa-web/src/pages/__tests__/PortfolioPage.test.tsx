@@ -28,6 +28,7 @@ const {
   createAccount,
   deleteAccount,
   analyzePosition,
+  getPortfolioActions,
   listDecisionSignals,
   getLatestDecisionSignals,
 } = vi.hoisted(() => ({
@@ -50,6 +51,7 @@ const {
   createAccount: vi.fn(),
   deleteAccount: vi.fn(),
   analyzePosition: vi.fn(),
+  getPortfolioActions: vi.fn(),
   listDecisionSignals: vi.fn(),
   getLatestDecisionSignals: vi.fn(),
 }));
@@ -82,6 +84,12 @@ vi.mock('../../api/portfolio', () => ({
     createAccount,
     deleteAccount,
     analyzePosition,
+  },
+}));
+
+vi.mock('../../api/workbench', () => ({
+  workbenchApi: {
+    getPortfolioActions,
   },
 }));
 
@@ -329,6 +337,17 @@ describe('PortfolioPage FX refresh', () => {
       message: '分析任务已加入队列: HK00700',
       analysisPhase: 'auto',
     });
+    getPortfolioActions.mockResolvedValue({
+      source: 'portfolio_snapshot,workbench_rules',
+      stale: false,
+      error: null,
+      disclaimer: '仅供学习和复盘，不构成投资建议。',
+      asOf: '2026-03-19',
+      currency: 'CNY',
+      totalMarketValue: 0,
+      items: [],
+      summary: { 持有: 0, 减仓: 0, 加仓等待: 0, 止损观察: 0, total: 0 },
+    });
     getLatestDecisionSignals.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 1 });
   });
 
@@ -546,8 +565,8 @@ describe('PortfolioPage FX refresh', () => {
 
     const hkRowCells = within(hkRow as HTMLTableRowElement).getAllByRole('cell');
     const aaplRowCells = within(aaplRow as HTMLTableRowElement).getAllByRole('cell');
-    expect(hkRowCells.at(-3)).toHaveClass('text-success');
-    expect(aaplRowCells.at(-3)).toHaveClass('text-secondary');
+    expect(hkRowCells[7]).toHaveClass('text-success');
+    expect(aaplRowCells[7]).toHaveClass('text-secondary');
   });
 
   it('loads latest active signals for holdings without scanning paginated signal lists', async () => {

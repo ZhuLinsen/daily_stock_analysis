@@ -84,6 +84,31 @@ const WorkbenchFundsPage: React.FC = () => {
             <StatCard label="基金评分" value={fund.aiScore} hint={`风险等级：${fund.riskLevel}`} />
           </section>
 
+          <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="盘中估值"
+              value={formatNumber(fund.intradayEstimate?.estimateNav, 4)}
+              hint={fund.intradayEstimate?.estimateTime || fund.intradayEstimate?.error || '天天基金估值'}
+              tone={(fund.intradayEstimate?.estimateGrowthPct ?? 0) >= 0 ? 'danger' : 'success'}
+            />
+            <StatCard
+              label="估值涨跌"
+              value={formatPercent(fund.intradayEstimate?.estimateGrowthPct)}
+              hint={fund.intradayEstimate?.stale ? '估值延迟/不可用' : '盘中估算，仅作参考'}
+              tone={(fund.intradayEstimate?.estimateGrowthPct ?? 0) >= 0 ? 'danger' : 'success'}
+            />
+            <StatCard
+              label="同类排名"
+              value={fund.rank?.rank && fund.rank?.total ? `${fund.rank.rank}/${fund.rank.total}` : '--'}
+              hint={`${fund.rank?.type || fund.type} · ${fund.rank?.period || '近一年'}`}
+            />
+            <StatCard
+              label="同类分位"
+              value={fund.rank?.percentile !== null && fund.rank?.percentile !== undefined ? `${formatNumber(fund.rank.percentile, 1)}%` : '--'}
+              hint={fund.rank?.error || '越高代表同类越靠前'}
+            />
+          </section>
+
           <Card className="rounded-lg" padding="md">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -130,6 +155,67 @@ const WorkbenchFundsPage: React.FC = () => {
               ))}
             </div>
           </Card>
+
+          <section className="grid gap-4 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
+            <Card className="rounded-lg" padding="sm">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-foreground">基金持仓行业</h3>
+                {fund.industryAllocationStatus?.stale || fund.industryAllocationStatus?.error ? <Badge variant="warning">数据延迟</Badge> : null}
+              </div>
+              {(fund.industryAllocation || []).length === 0 ? (
+                <p className="text-sm leading-6 text-secondary-text">暂无行业配置数据。部分基金只在季报披露后更新持仓行业。</p>
+              ) : (
+                <div className="space-y-3">
+                  {(fund.industryAllocation || []).slice(0, 8).map((item) => (
+                    <div key={item.name}>
+                      <div className="mb-1 flex items-center justify-between text-xs">
+                        <span className="truncate text-secondary-text">{item.name}</span>
+                        <span className="font-medium text-foreground">{formatPercent(item.weightPct)}</span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-muted/60">
+                        <div className="h-full rounded-full bg-cyan" style={{ width: `${Math.max(0, Math.min(100, item.weightPct ?? 0))}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {fund.industryAllocationStatus?.error ? <p className="mt-3 text-xs text-warning">{fund.industryAllocationStatus.error}</p> : null}
+            </Card>
+
+            <Card className="rounded-lg" padding="sm">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="text-base font-semibold text-foreground">前十大持仓</h3>
+                {fund.holdingsStatus?.stale || fund.holdingsStatus?.error ? <Badge variant="warning">数据延迟</Badge> : null}
+              </div>
+              {(fund.holdings || []).length === 0 ? (
+                <p className="text-sm leading-6 text-secondary-text">暂无持仓明细。场外基金持仓通常按季报披露，不是实时股票池。</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead className="bg-muted/50 text-left text-xs text-secondary-text">
+                      <tr>
+                        <th className="px-3 py-2">名称</th>
+                        <th className="px-3 py-2">代码</th>
+                        <th className="px-3 py-2 text-right">占净值</th>
+                        <th className="px-3 py-2 text-right">市值</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(fund.holdings || []).slice(0, 10).map((item) => (
+                        <tr key={`${item.code || item.name}`} className="border-t border-border/50">
+                          <td className="px-3 py-2 font-medium text-foreground">{item.name}</td>
+                          <td className="px-3 py-2 font-mono text-secondary-text">{item.code || '--'}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{formatPercent(item.weightPct)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums">{formatNumber(item.marketValue, 2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {fund.holdingsStatus?.error ? <p className="mt-3 text-xs text-warning">{fund.holdingsStatus.error}</p> : null}
+            </Card>
+          </section>
         </>
       ) : null}
     </AppPage>

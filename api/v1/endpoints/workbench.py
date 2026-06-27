@@ -17,6 +17,7 @@ from api.v1.schemas.workbench import (
     WorkbenchDashboardResponse,
     WorkbenchFundResponse,
     WorkbenchMarkdownResponse,
+    WorkbenchPortfolioActionsResponse,
     WorkbenchStockDetailResponse,
     WorkbenchWatchlistResponse,
 )
@@ -100,6 +101,22 @@ def get_daily_review() -> WorkbenchDailyReviewResponse:
         return WorkbenchDailyReviewResponse(**_service().get_daily_review())
     except Exception as exc:
         raise _internal_error("获取每日复盘失败", exc)
+
+
+@router.get(
+    "/portfolio-actions",
+    response_model=WorkbenchPortfolioActionsResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="AI 股票复盘工作台 - 持仓操作建议卡",
+)
+def get_portfolio_actions(
+    account_id: Optional[int] = Query(None, ge=1, description="可选账户 ID，不传则聚合全部账户"),
+    cost_method: str = Query("fifo", pattern="^(fifo|avg)$", description="成本计算方式"),
+) -> WorkbenchPortfolioActionsResponse:
+    try:
+        return WorkbenchPortfolioActionsResponse(**_service().get_portfolio_actions(account_id=account_id, cost_method=cost_method))
+    except Exception as exc:
+        raise _internal_error("获取持仓操作建议失败", exc)
 
 
 @router.get(

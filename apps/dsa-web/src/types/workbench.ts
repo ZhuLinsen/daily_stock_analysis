@@ -242,9 +242,57 @@ export type WorkbenchDailyReview = ProviderEnvelope & {
   riskBoards: BoardHeatItem[];
   watchlistPerformance: WatchlistItem[];
   holdingRisks: WatchlistItem[];
+  portfolioActionList: PortfolioActionCard[];
+  holdingActionSummary: PortfolioActionSummary;
   nextDayWatchlist: WatchlistItem[];
   aiSummary: string;
   markdown: string;
+};
+
+export type PortfolioAction = '持有' | '减仓' | '加仓等待' | '止损观察' | string;
+
+export type PortfolioActionCard = {
+  accountId?: number | null;
+  accountName?: string | null;
+  symbol: string;
+  name: string;
+  market?: string | null;
+  currency?: string | null;
+  quantity: number;
+  avgCost?: number | null;
+  lastPrice?: number | null;
+  marketValue: number;
+  weightPct: number;
+  unrealizedPnl: number;
+  unrealizedPnlPct?: number | null;
+  aiScore: number;
+  riskTags: string[];
+  action: PortfolioAction;
+  reason: string;
+  nextDayWatch: string[];
+  invalidCondition?: string | null;
+  priceSource?: string | null;
+  priceDate?: string | null;
+  priceStale?: boolean;
+  priceAvailable?: boolean;
+  disclaimer: string;
+};
+
+export type PortfolioActionSummary = {
+  持有: number;
+  减仓: number;
+  加仓等待: number;
+  止损观察: number;
+  total: number;
+  [key: string]: number;
+};
+
+export type WorkbenchPortfolioActions = ProviderEnvelope & {
+  asOf?: string | null;
+  currency?: string | null;
+  totalMarketValue?: number | null;
+  items: PortfolioActionCard[];
+  summary: PortfolioActionSummary;
 };
 
 export type WorkbenchMarkdown = {
@@ -273,6 +321,45 @@ export type FundSubscriptionReference = {
   disclaimer: string;
 };
 
+export type FundIntradayEstimate = {
+  estimateNav?: number | null;
+  estimateGrowthPct?: number | null;
+  estimateTime?: string | null;
+  source?: string | null;
+  stale?: boolean;
+  error?: string | null;
+};
+
+export type FundRank = {
+  type?: string | null;
+  period?: string | null;
+  rank?: number | null;
+  total?: number | null;
+  percentile?: number | null;
+  source?: string | null;
+  stale?: boolean;
+  error?: string | null;
+};
+
+export type FundHolding = {
+  code?: string | null;
+  name: string;
+  weightPct?: number | null;
+  shares?: number | null;
+  marketValue?: number | null;
+};
+
+export type FundIndustryAllocation = {
+  name: string;
+  weightPct?: number | null;
+};
+
+export type FundDataStatus = {
+  source?: string | null;
+  stale?: boolean;
+  error?: string | null;
+};
+
 export type FundAnalysis = {
   code: string;
   name: string;
@@ -287,6 +374,12 @@ export type FundAnalysis = {
   riskLevel: string;
   aiScore: number;
   summary: string;
+  intradayEstimate?: FundIntradayEstimate | null;
+  rank?: FundRank | null;
+  holdings?: FundHolding[];
+  holdingsStatus?: FundDataStatus | null;
+  industryAllocation?: FundIndustryAllocation[];
+  industryAllocationStatus?: FundDataStatus | null;
   subscriptionReference: FundSubscriptionReference;
   navHistory: FundNavPoint[];
   disclaimer: string;

@@ -5,9 +5,11 @@ import type {
   WorkbenchDailyReview,
   WorkbenchFundResponse,
   WorkbenchMarkdown,
+  WorkbenchPortfolioActions,
   WorkbenchStockDetail,
   WorkbenchWatchlist,
 } from '../types/workbench';
+import type { PortfolioCostMethod } from '../types/portfolio';
 
 const WORKBENCH_TIMEOUT_MS = 20000;
 
@@ -38,6 +40,17 @@ export const workbenchApi = {
   async exportDailyReviewMarkdown(): Promise<WorkbenchMarkdown> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/workbench/daily-review/markdown', { timeout: WORKBENCH_TIMEOUT_MS });
     return toCamelCase<WorkbenchMarkdown>(response.data);
+  },
+
+  async getPortfolioActions(params: { accountId?: number; costMethod?: PortfolioCostMethod } = {}): Promise<WorkbenchPortfolioActions> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/workbench/portfolio-actions', {
+      params: {
+        account_id: params.accountId,
+        cost_method: params.costMethod || 'fifo',
+      },
+      timeout: WORKBENCH_TIMEOUT_MS,
+    });
+    return toCamelCase<WorkbenchPortfolioActions>(response.data);
   },
 
   async getFundAnalysis(fundCode: string, budget = 10000): Promise<WorkbenchFundResponse> {

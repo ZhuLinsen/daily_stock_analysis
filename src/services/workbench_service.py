@@ -17,6 +17,7 @@ from src.config import get_config
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
 from src.services.history_service import HistoryService
+from src.services.portfolio_service import PortfolioService
 from src.services.system_config_service import SystemConfigService
 from src.storage import DatabaseManager
 
@@ -51,6 +52,7 @@ DASHBOARD_TOTAL_TIMEOUT_SECONDS = 6.0
 DETAIL_TOTAL_TIMEOUT_SECONDS = 10.0
 WATCHLIST_ROW_TIMEOUT_SECONDS = 3.0
 DAILY_REVIEW_TOTAL_TIMEOUT_SECONDS = 18.0
+PORTFOLIO_ACTIONS_TIMEOUT_SECONDS = 8.0
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -215,6 +217,64 @@ class WorkbenchService:
             "items": rows,
         }
 
+    def get_portfolio_actions(self, *, account_id: Optional[int] = None, cost_method: str = "fifo") -> Dict[str, Any]:
+        """Build plain-language action cards from the existing portfolio snapshot.
+
+        This intentionally stays rule-based and fast. It reuses the portfolio
+        service's current price, P/L, stale-price, and account value fields so
+        page loads do not wait on a fresh LLM analysis for every holding.
+        """
+        try:
+            snapshot = self._call_with_timeout(
+                "portfolio_actions_snapshot",
+                lambda: PortfolioService().get_portfolio_snapshot(account_id=account_id, cost_method=cost_method),
+                PORTFOLIO_ACTIONS_TIMEOUT_SECONDS,
+            )
+            if isinstance(snapshot, dict) and snapshot.get("error"):
+                return {
+                    "source": "portfolio_snapshot",
+                    "stale": True,
+                    "error": snapshot.get("error"),
+                    "disclaimer": DISCLAIMER,
+                    "as_of": datetime.now().date().isoformat(),
+                    "items": [],
+                    "summary": self._portfolio_action_summary([]),
+                }
+            if not isinstance(snapshot, dict):
+                raise ValueError("invalid_portfolio_snapshot")
+
+            items = self._build_portfolio_action_items(snapshot)
+            errors = []
+            if snapshot.get("fx_stale"):
+                errors.append("portfolio_fx_or_price_stale")
+            for item in items:
+                if item.get("price_stale"):
+                    errors.append("portfolio_position_price_stale")
+                if not item.get("price_available", True):
+                    errors.append("portfolio_position_price_unavailable")
+            return {
+                "source": "portfolio_snapshot,workbench_rules",
+                "stale": bool(snapshot.get("fx_stale")) or any(bool(item.get("price_stale")) for item in items),
+                "error": "; ".join(dict.fromkeys(errors)) if errors else None,
+                "disclaimer": DISCLAIMER,
+                "as_of": snapshot.get("as_of"),
+                "currency": snapshot.get("currency") or "CNY",
+                "total_market_value": _round(snapshot.get("total_market_value"), 2) or 0,
+                "items": items,
+                "summary": self._portfolio_action_summary(items),
+            }
+        except Exception as exc:
+            logger.warning("Portfolio action cards failed: %s", exc, exc_info=True)
+            return {
+                "source": "portfolio_snapshot,workbench_rules",
+                "stale": True,
+                "error": str(exc) or type(exc).__name__,
+                "disclaimer": DISCLAIMER,
+                "as_of": datetime.now().date().isoformat(),
+                "items": [],
+                "summary": self._portfolio_action_summary([]),
+            }
+
     def get_stock_detail(self, symbol: str) -> Dict[str, Any]:
         code = normalize_stock_code(symbol)
         blocks = self._collect_provider_blocks(
@@ -267,28 +327,37 @@ class WorkbenchService:
 
     def get_daily_review(self) -> Dict[str, Any]:
         pages = self._collect_page_payloads(
-            {"dashboard": self.get_dashboard, "watchlist": self.get_watchlist},
+            {"dashboard": self.get_dashboard, "watchlist": self.get_watchlist, "portfolio_actions": self.get_portfolio_actions},
             total_timeout_seconds=DAILY_REVIEW_TOTAL_TIMEOUT_SECONDS,
         )
         dashboard = pages["dashboard"]
         watchlist = pages["watchlist"]
+        portfolio_actions = pages["portfolio_actions"]
         items = watchlist.get("items", [])
+        action_items = portfolio_actions.get("items", []) if isinstance(portfolio_actions, dict) else []
         strongest = dashboard.get("strong_industries", [])[:3] + dashboard.get("strong_concepts", [])[:3]
         risk_boards = self._risk_boards()
         risk_items = [item for item in items if item.get("status_tag") in {STATUS_TAGS["high_risk"], STATUS_TAGS["reduce"], STATUS_TAGS["outflow"]}]
         watch_items = [item for item in items if item.get("status_tag") in {STATUS_TAGS["confirm"], STATUS_TAGS["wait_volume"]}]
+        urgent_holding_actions = [item for item in action_items if item.get("action") in {"减仓", "止损观察"}]
 
         summary_parts = [dashboard.get("ai_market_summary") or "今日市场暂无完整数据，先以自选股和板块热度做轻量复盘。"]
         if risk_items:
             summary_parts.append(f"自选股里 {len(risk_items)} 只出现风险标签，明日优先看能否止跌或资金回流。")
+        if urgent_holding_actions:
+            summary_parts.append(f"持仓里 {len(urgent_holding_actions)} 只需要优先处理，先看仓位和止损观察条件。")
         if strongest:
             summary_parts.append("强势方向集中在 " + "、".join(item.get("name", "") for item in strongest[:3] if item.get("name")) + "。")
 
         return {
             "source": dashboard.get("source", "workbench"),
-            "stale": bool(dashboard.get("stale")) or bool(watchlist.get("stale")),
+            "stale": bool(dashboard.get("stale")) or bool(watchlist.get("stale")) or bool(portfolio_actions.get("stale")),
             "error": "; ".join(
-                dict.fromkeys(_non_benign_errors(dashboard.get("error")) + _non_benign_errors(watchlist.get("error")))
+                dict.fromkeys(
+                    _non_benign_errors(dashboard.get("error"))
+                    + _non_benign_errors(watchlist.get("error"))
+                    + _non_benign_errors(portfolio_actions.get("error"))
+                )
             ) or None,
             "disclaimer": DISCLAIMER,
             "one_liner": dashboard.get("ai_market_summary"),
@@ -296,14 +365,22 @@ class WorkbenchService:
             "risk_boards": risk_boards,
             "watchlist_performance": items,
             "holding_risks": risk_items,
+            "portfolio_action_list": action_items,
+            "holding_action_summary": portfolio_actions.get("summary", self._portfolio_action_summary([])),
             "next_day_watchlist": watch_items[:10],
             "ai_summary": " ".join(summary_parts),
-            "markdown": self.build_daily_review_markdown(dashboard=dashboard, watchlist=watchlist),
+            "markdown": self.build_daily_review_markdown(dashboard=dashboard, watchlist=watchlist, portfolio_actions=portfolio_actions),
         }
 
-    def build_daily_review_markdown(self, dashboard: Optional[Dict[str, Any]] = None, watchlist: Optional[Dict[str, Any]] = None) -> str:
+    def build_daily_review_markdown(
+        self,
+        dashboard: Optional[Dict[str, Any]] = None,
+        watchlist: Optional[Dict[str, Any]] = None,
+        portfolio_actions: Optional[Dict[str, Any]] = None,
+    ) -> str:
         dashboard = dashboard or self.get_dashboard()
         watchlist = watchlist or self.get_watchlist()
+        portfolio_actions = portfolio_actions or self.get_portfolio_actions()
         today = datetime.now().strftime("%Y-%m-%d")
         lines = [
             f"# {today} AI 股票复盘",
@@ -334,6 +411,17 @@ class WorkbenchService:
             lines.append(
                 f"| {item.get('symbol', '')} | {item.get('name', '')} | {_fmt_pct(item.get('change_pct'))} | "
                 f"{item.get('ai_score', '--')} | {item.get('status_tag', '')} |"
+            )
+        lines.extend([
+            "",
+            "## 明日持仓处理清单",
+            "| 代码 | 名称 | 仓位 | 盈亏 | 建议 | 普通话解释 |",
+            "| --- | --- | ---: | ---: | --- | --- |",
+        ])
+        for item in portfolio_actions.get("items", []):
+            lines.append(
+                f"| {item.get('symbol', '')} | {item.get('name', '')} | {_fmt_pct(item.get('weight_pct'))} | "
+                f"{_fmt_pct(item.get('unrealized_pnl_pct'))} | {item.get('action', '')} | {item.get('reason', '')} |"
             )
         lines.extend(["", "## 明日观察清单"])
         for item in watchlist.get("items", [])[:10]:
@@ -443,7 +531,272 @@ class WorkbenchService:
                 "disclaimer": DISCLAIMER,
                 "items": [],
             }
+        if label == "portfolio_actions":
+            return {
+                "source": "workbench.page_timeout",
+                "stale": True,
+                "error": error,
+                "disclaimer": DISCLAIMER,
+                "as_of": datetime.now().date().isoformat(),
+                "items": [],
+                "summary": {"持有": 0, "减仓": 0, "加仓等待": 0, "止损观察": 0, "total": 0},
+            }
         return {"source": "workbench.page_timeout", "stale": True, "error": error, "disclaimer": DISCLAIMER}
+
+    def _build_portfolio_action_items(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for account in snapshot.get("accounts", []) or []:
+            if not isinstance(account, dict):
+                continue
+            account_market_value = _safe_float(account.get("total_market_value"), 0) or 0
+            for position in account.get("positions", []) or []:
+                if not isinstance(position, dict):
+                    continue
+                item = self._build_portfolio_action_item(
+                    account=account,
+                    position=position,
+                    account_market_value=account_market_value,
+                )
+                items.append(item)
+        action_order = {"止损观察": 0, "减仓": 1, "加仓等待": 2, "持有": 3}
+        return sorted(
+            items,
+            key=lambda item: (action_order.get(str(item.get("action")), 99), -(_safe_float(item.get("weight_pct"), 0) or 0)),
+        )
+
+    def _build_portfolio_action_item(
+        self,
+        *,
+        account: Dict[str, Any],
+        position: Dict[str, Any],
+        account_market_value: float,
+    ) -> Dict[str, Any]:
+        symbol = str(position.get("symbol") or "").strip()
+        market_value = _safe_float(position.get("market_value_base"), 0) or 0
+        weight_pct = (market_value / account_market_value * 100) if account_market_value > 0 else 0
+        pnl_pct = _safe_float(position.get("unrealized_pnl_pct"))
+        pnl_value = _safe_float(position.get("unrealized_pnl_base"), 0) or 0
+        price_available = bool(position.get("price_available", True))
+        price_stale = bool(position.get("price_stale"))
+        risk_tags = self._portfolio_risk_tags(
+            pnl_pct=pnl_pct,
+            weight_pct=weight_pct,
+            price_available=price_available,
+            price_stale=price_stale,
+        )
+        ai_score = self._portfolio_ai_score(
+            pnl_pct=pnl_pct,
+            weight_pct=weight_pct,
+            price_available=price_available,
+            price_stale=price_stale,
+            risk_tags=risk_tags,
+        )
+        action = self._portfolio_action_label(
+            pnl_pct=pnl_pct,
+            weight_pct=weight_pct,
+            ai_score=ai_score,
+            price_available=price_available,
+            risk_tags=risk_tags,
+        )
+        reason = self._portfolio_action_reason(
+            action=action,
+            pnl_pct=pnl_pct,
+            weight_pct=weight_pct,
+            ai_score=ai_score,
+            price_available=price_available,
+            price_stale=price_stale,
+            risk_tags=risk_tags,
+        )
+        next_day_watch = self._portfolio_next_day_watch(
+            action=action,
+            avg_cost=_safe_float(position.get("avg_cost")),
+            last_price=_safe_float(position.get("last_price")),
+            pnl_pct=pnl_pct,
+            weight_pct=weight_pct,
+            price_available=price_available,
+        )
+        return {
+            "account_id": account.get("account_id"),
+            "account_name": account.get("account_name") or "",
+            "symbol": symbol,
+            "name": _local_stock_name(normalize_stock_code(symbol)) or symbol,
+            "market": position.get("market") or account.get("market"),
+            "currency": account.get("base_currency") or position.get("valuation_currency") or "CNY",
+            "quantity": _round(position.get("quantity"), 2) or 0,
+            "avg_cost": _round(position.get("avg_cost"), 4),
+            "last_price": _round(position.get("last_price"), 4),
+            "market_value": _round(market_value, 2) or 0,
+            "weight_pct": round(weight_pct, 2),
+            "unrealized_pnl": _round(pnl_value, 2) or 0,
+            "unrealized_pnl_pct": _round(pnl_pct, 2),
+            "ai_score": ai_score,
+            "risk_tags": risk_tags,
+            "action": action,
+            "reason": reason,
+            "next_day_watch": next_day_watch,
+            "invalid_condition": self._portfolio_invalid_condition(action, pnl_pct=pnl_pct, avg_cost=_safe_float(position.get("avg_cost"))),
+            "price_source": position.get("price_source"),
+            "price_date": position.get("price_date"),
+            "price_stale": price_stale,
+            "price_available": price_available,
+            "disclaimer": DISCLAIMER,
+        }
+
+    @staticmethod
+    def _portfolio_risk_tags(
+        *,
+        pnl_pct: Optional[float],
+        weight_pct: float,
+        price_available: bool,
+        price_stale: bool,
+    ) -> List[str]:
+        tags: List[str] = []
+        if not price_available:
+            tags.append("价格不可用")
+        elif price_stale:
+            tags.append("数据延迟")
+        if pnl_pct is not None:
+            if pnl_pct <= -8:
+                tags.append("亏损扩大")
+            elif pnl_pct <= -5:
+                tags.append("接近止损线")
+            elif pnl_pct >= 18:
+                tags.append("浮盈保护")
+        if weight_pct >= 35:
+            tags.append("单票仓位过高")
+        elif weight_pct >= 25:
+            tags.append("单票仓位偏高")
+        return tags
+
+    @staticmethod
+    def _portfolio_ai_score(
+        *,
+        pnl_pct: Optional[float],
+        weight_pct: float,
+        price_available: bool,
+        price_stale: bool,
+        risk_tags: List[str],
+    ) -> int:
+        score = 62
+        if pnl_pct is None:
+            score -= 8
+        elif pnl_pct <= -10:
+            score -= 25
+        elif pnl_pct <= -5:
+            score -= 14
+        elif pnl_pct < 0:
+            score -= 4
+        elif pnl_pct <= 8:
+            score += 10
+        elif pnl_pct <= 20:
+            score += 8
+        else:
+            score += 3
+        if weight_pct >= 35:
+            score -= 14
+        elif weight_pct >= 25:
+            score -= 8
+        elif 4 <= weight_pct <= 15:
+            score += 5
+        if not price_available:
+            score -= 24
+        elif price_stale:
+            score -= 6
+        score -= min(18, max(0, len([tag for tag in risk_tags if tag not in {"浮盈保护"}])) * 5)
+        return int(max(0, min(100, score)))
+
+    @staticmethod
+    def _portfolio_action_label(
+        *,
+        pnl_pct: Optional[float],
+        weight_pct: float,
+        ai_score: int,
+        price_available: bool,
+        risk_tags: List[str],
+    ) -> str:
+        if not price_available or (pnl_pct is not None and pnl_pct <= -8):
+            return "止损观察"
+        if weight_pct >= 30 or ai_score < 45 or "接近止损线" in risk_tags:
+            return "减仓"
+        if ai_score >= 68 and weight_pct < 15 and (pnl_pct is None or pnl_pct >= -3):
+            return "加仓等待"
+        return "持有"
+
+    @staticmethod
+    def _portfolio_action_reason(
+        *,
+        action: str,
+        pnl_pct: Optional[float],
+        weight_pct: float,
+        ai_score: int,
+        price_available: bool,
+        price_stale: bool,
+        risk_tags: List[str],
+    ) -> str:
+        pnl_text = "盈亏未知" if pnl_pct is None else f"当前盈亏约 {pnl_pct:.2f}%"
+        weight_text = f"仓位约 {weight_pct:.2f}%"
+        risk_text = "，风险点是" + "、".join(risk_tags[:3]) if risk_tags else "，暂未触发明显风险标签"
+        if not price_available:
+            return f"价格拿不到，{pnl_text}，先不要加仓，明天优先确认行情是否恢复。"
+        if action == "止损观察":
+            return f"{pnl_text}，{weight_text}{risk_text}。明天先看能否止跌，不能修复就把风险放在第一位。"
+        if action == "减仓":
+            return f"{pnl_text}，{weight_text}{risk_text}。仓位或亏损已经需要降温，适合先降低波动对账户的影响。"
+        if action == "加仓等待":
+            stale_text = "不过当前价格有延迟，" if price_stale else ""
+            return f"{stale_text}{pnl_text}，{weight_text}，AI评分 {ai_score}。方向不差，但等回踩不破或资金确认后再考虑加，不追高。"
+        return f"{pnl_text}，{weight_text}，AI评分 {ai_score}{risk_text}。现阶段以按计划持有和观察关键价为主。"
+
+    @staticmethod
+    def _portfolio_next_day_watch(
+        *,
+        action: str,
+        avg_cost: Optional[float],
+        last_price: Optional[float],
+        pnl_pct: Optional[float],
+        weight_pct: float,
+        price_available: bool,
+    ) -> List[str]:
+        watch: List[str] = []
+        if avg_cost and avg_cost > 0:
+            watch.append(f"观察能否站稳成本线 {avg_cost:.2f} 附近")
+        if last_price and last_price > 0:
+            if action == "加仓等待":
+                watch.append(f"不追涨，等价格回踩 {last_price:.2f} 附近仍能企稳")
+            elif action in {"减仓", "止损观察"}:
+                watch.append(f"若跌破 {last_price:.2f} 附近并继续放量，先处理风险")
+            else:
+                watch.append(f"围绕现价 {last_price:.2f} 看承接是否正常")
+        if pnl_pct is not None and pnl_pct <= -5:
+            watch.append("亏损继续扩大时，不做摊低成本动作")
+        if weight_pct >= 25:
+            watch.append("单票仓位偏高，优先看账户整体波动")
+        if not price_available:
+            watch.append("先确认价格源恢复，再判断持仓动作")
+        return watch[:4]
+
+    @staticmethod
+    def _portfolio_invalid_condition(action: str, *, pnl_pct: Optional[float], avg_cost: Optional[float]) -> str:
+        if action == "加仓等待":
+            return "跌破成本线或当日放量下跌时，取消加仓观察。"
+        if action == "持有":
+            return "跌破成本线且亏损扩大到 -5% 以下时，转入减仓/止损观察。"
+        if action == "减仓":
+            return "重新站回成本线并连续两天企稳后，再评估是否停止减仓。"
+        if avg_cost:
+            return f"无法收回成本线 {avg_cost:.2f} 且亏损继续扩大时，保持止损观察。"
+        if pnl_pct is not None:
+            return "亏损继续扩大时，保持止损观察。"
+        return "行情和价格源未恢复前，不做新增动作。"
+
+    @staticmethod
+    def _portfolio_action_summary(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {"持有": 0, "减仓": 0, "加仓等待": 0, "止损观察": 0, "total": len(items)}
+        for item in items:
+            action = str(item.get("action") or "")
+            if action in summary:
+                summary[action] += 1
+        return summary
 
     @staticmethod
     def _call_with_timeout(label: str, getter, timeout_seconds: float) -> Any:

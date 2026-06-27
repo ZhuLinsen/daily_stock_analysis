@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
 import { decisionSignalsApi } from '../api/decisionSignals';
 import { portfolioApi } from '../api/portfolio';
+import { workbenchApi } from '../api/workbench';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
@@ -51,9 +52,11 @@ import type {
   PortfolioSnapshotResponse,
   PortfolioTradeListItem,
 } from '../types/portfolio';
+import type { PortfolioActionCard, WorkbenchPortfolioActions } from '../types/workbench';
 import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
 import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/decisionAction';
+import { cn } from '../utils/cn';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
@@ -128,6 +131,22 @@ function toPositionSignalLookupKey(stockCode: string, market?: DecisionSignalMar
   return `${market || ''}:${normalizeStockCode(stockCode).toUpperCase()}`;
 }
 
+function getPortfolioActionVariant(action: string): 'default' | 'success' | 'warning' | 'danger' | 'info' {
+  if (action === '止损观察') return 'danger';
+  if (action === '减仓') return 'warning';
+  if (action === '加仓等待') return 'info';
+  if (action === '持有') return 'success';
+  return 'default';
+}
+
+function getPortfolioActionTextClass(action: string): string {
+  if (action === '止损观察') return 'text-danger';
+  if (action === '减仓') return 'text-warning';
+  if (action === '加仓等待') return 'text-cyan';
+  if (action === '持有') return 'text-success';
+  return 'text-foreground';
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -198,6 +217,9 @@ const PortfolioPage: React.FC = () => {
   const portfolioSignalsRequestRef = useRef(0);
   const [positionAnalysisLoadingKey, setPositionAnalysisLoadingKey] = useState<string | null>(null);
   const [positionAnalysisMessage, setPositionAnalysisMessage] = useState<string | null>(null);
+  const [portfolioActions, setPortfolioActions] = useState<WorkbenchPortfolioActions | null>(null);
+  const [portfolioActionsLoading, setPortfolioActionsLoading] = useState(false);
+  const [portfolioActionsWarning, setPortfolioActionsWarning] = useState<string | null>(null);
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
   const [selectedBroker, setSelectedBroker] = useState('huatai');
@@ -356,6 +378,24 @@ const PortfolioPage: React.FC = () => {
     }
   }, [queryAccountId, costMethod]);
 
+  const loadPortfolioActions = useCallback(async () => {
+    setPortfolioActionsLoading(true);
+    setPortfolioActionsWarning(null);
+    try {
+      const response = await workbenchApi.getPortfolioActions({
+        accountId: queryAccountId,
+        costMethod,
+      });
+      setPortfolioActions(response);
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setPortfolioActions(null);
+      setPortfolioActionsWarning(parsed.message || '持仓操作建议暂时不可用，持仓快照仍可正常查看。');
+    } finally {
+      setPortfolioActionsLoading(false);
+    }
+  }, [costMethod, queryAccountId]);
+
   const loadEventsPage = useCallback(async (page: number) => {
     setEventLoading(true);
     try {
@@ -417,7 +457,8 @@ const PortfolioPage: React.FC = () => {
 
   const refreshPortfolioData = useCallback(async (page = eventPage) => {
     await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page)]);
-  }, [eventPage, loadEventsPage, loadSnapshotAndRisk]);
+    await loadPortfolioActions();
+  }, [eventPage, loadEventsPage, loadPortfolioActions, loadSnapshotAndRisk]);
 
   useEffect(() => {
     void loadAccounts();
@@ -475,6 +516,11 @@ const PortfolioPage: React.FC = () => {
     }
     return accounts.length === 0 || Number(snapshot.accountCount || 0) === accounts.length;
   }, [accounts.length, queryAccountId, snapshot]);
+
+  useEffect(() => {
+    if (!snapshot || !snapshotMatchesAccountScope) return;
+    void loadPortfolioActions();
+  }, [loadPortfolioActions, snapshot, snapshotMatchesAccountScope]);
 
   const positionSignalLookups = useMemo(() => {
     const lookups = new Map<string, PortfolioSignalLookup>();
@@ -557,6 +603,19 @@ const PortfolioPage: React.FC = () => {
     }
     return mapped;
   }, [portfolioSignals, positionRows]);
+
+  const portfolioActionByPositionKey = useMemo(() => {
+    const mapped = new Map<string, PortfolioActionCard>();
+    for (const action of portfolioActions?.items || []) {
+      const symbol = String(action.symbol || '').trim();
+      const market = String(action.market || '').toLowerCase();
+      const accountId = action.accountId ?? 'all';
+      if (!symbol) continue;
+      mapped.set(`${accountId}-${symbol}-${market}`, action);
+      mapped.set(`${accountId}-${symbol}`, action);
+    }
+    return mapped;
+  }, [portfolioActions]);
 
   const handleAnalyzePosition = async (row: FlatPosition) => {
     const key = `${row.accountId}-${row.symbol}-${row.market}`;
@@ -885,6 +944,7 @@ const PortfolioPage: React.FC = () => {
 
   const handleRefresh = async () => {
     await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers()]);
+    await loadPortfolioActions();
     setPortfolioSignalsRefreshKey((current) => current + 1);
   };
 
@@ -973,6 +1033,7 @@ const PortfolioPage: React.FC = () => {
       if (!reloaded || !isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
         return;
       }
+      await loadPortfolioActions();
       setFxRefreshFeedback(buildFxRefreshFeedback(result));
     } catch (err) {
       if (!isActiveRefreshContext(requestedViewKey, requestedRequestId)) {
@@ -987,6 +1048,8 @@ const PortfolioPage: React.FC = () => {
   };
 
   const decisionSignalRiskPreviewItems = (risk?.decisionSignalRisk?.items ?? []).slice(0, 3);
+  const portfolioActionItems = portfolioActions?.items || [];
+  const portfolioActionSummary = portfolioActions?.summary;
   const formatDecisionSignalRiskAction = (signal: Partial<DecisionSignalItem>): string => (
     getDecisionActionLabel(
       signal.action,
@@ -1209,6 +1272,86 @@ const PortfolioPage: React.FC = () => {
         </Card>
       </section>
 
+      <Card padding="md">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">持仓操作建议卡</h2>
+            <p className="mt-1 text-xs leading-5 text-secondary">按当前盈亏、仓位占比、AI评分和风险标签生成普通话处理建议。</p>
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <Badge variant="success">持有 {portfolioActionSummary?.持有 ?? 0}</Badge>
+            <Badge variant="warning">减仓 {portfolioActionSummary?.减仓 ?? 0}</Badge>
+            <Badge variant="info">加仓等待 {portfolioActionSummary?.加仓等待 ?? 0}</Badge>
+            <Badge variant="danger">止损观察 {portfolioActionSummary?.止损观察 ?? 0}</Badge>
+          </div>
+        </div>
+        {portfolioActionsWarning ? (
+          <InlineAlert
+            variant="warning"
+            title="持仓建议降级"
+            message={portfolioActionsWarning}
+            className="mb-3 rounded-xl px-3 py-2 text-xs shadow-none"
+          />
+        ) : null}
+        {portfolioActions?.stale || portfolioActions?.error ? (
+          <InlineAlert
+            variant="warning"
+            title="数据延迟/接口异常"
+            message={portfolioActions.error || '部分持仓价格可能使用最近收盘价，建议明日开盘后再刷新确认。'}
+            className="mb-3 rounded-xl px-3 py-2 text-xs shadow-none"
+          />
+        ) : null}
+        {portfolioActionsLoading && !portfolioActions ? (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-4 text-sm text-secondary">正在生成持仓操作建议...</div>
+        ) : portfolioActionItems.length === 0 ? (
+          <EmptyState
+            title="暂无持仓操作建议"
+            description="导入或录入持仓后，这里会生成明日处理清单。"
+            className="border-none bg-transparent px-4 py-8 shadow-none"
+          />
+        ) : (
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+            {portfolioActionItems.slice(0, 9).map((item) => (
+              <div key={`${item.accountId ?? 'all'}-${item.symbol}-${item.market ?? ''}`} className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-foreground">{item.name || item.symbol}</div>
+                    <div className="mt-1 font-mono text-xs text-secondary">{item.symbol} · {item.accountName || '全部账户'}</div>
+                  </div>
+                  <Badge variant={getPortfolioActionVariant(item.action)}>{item.action}</Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <div className="rounded-lg border border-white/10 bg-black/5 p-2">
+                    <div className="text-secondary">盈亏</div>
+                    <div className={item.unrealizedPnlPct !== null && item.unrealizedPnlPct !== undefined && item.unrealizedPnlPct < 0 ? 'mt-1 font-semibold text-danger' : 'mt-1 font-semibold text-success'}>{formatSignedPct(item.unrealizedPnlPct)}</div>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/5 p-2">
+                    <div className="text-secondary">仓位</div>
+                    <div className="mt-1 font-semibold text-foreground">{formatPct(item.weightPct)}</div>
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-black/5 p-2">
+                    <div className="text-secondary">评分</div>
+                    <div className={cn('mt-1 font-semibold', getPortfolioActionTextClass(item.action))}>{item.aiScore}</div>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-secondary">{item.reason}</p>
+                {item.riskTags.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {item.riskTags.slice(0, 3).map((tag) => <Badge key={`${item.symbol}-${tag}`} variant="danger">{tag}</Badge>)}
+                  </div>
+                ) : null}
+                {item.nextDayWatch.length > 0 ? (
+                  <div className="mt-3 space-y-1 text-xs leading-5 text-secondary">
+                    {item.nextDayWatch.slice(0, 2).map((watch) => <div key={`${item.symbol}-${watch}`}>- {watch}</div>)}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+        {portfolioActions?.disclaimer ? <p className="mt-3 text-xs text-secondary">{portfolioActions.disclaimer}</p> : null}
+      </Card>
+
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <Card className="xl:col-span-2" padding="md">
           <div className="flex items-center justify-between mb-3">
@@ -1231,7 +1374,7 @@ const PortfolioPage: React.FC = () => {
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-[860px] w-full text-sm">
+              <table className="min-w-[1040px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
                     <th className="text-left py-2 pr-2">{text.account}</th>
@@ -1242,6 +1385,7 @@ const PortfolioPage: React.FC = () => {
                     <th className="text-right py-2 pr-2">{text.marketValue}</th>
                     <th className="text-right py-2 pr-3">{text.unrealizedPnl}</th>
                     <th className="text-right py-2 pr-3">{text.returnPct}</th>
+                    <th className="min-w-[10rem] text-left py-2 pr-3">操作建议</th>
                     <th className="min-w-[9rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
                     <th className="w-20 text-right py-2">{text.action}</th>
                   </tr>
@@ -1251,6 +1395,8 @@ const PortfolioPage: React.FC = () => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
                     const analyzing = positionAnalysisLoadingKey === rowKey;
                     const signal = signalByPositionKey.get(rowKey);
+                    const actionCard = portfolioActionByPositionKey.get(`${row.accountId}-${row.symbol}-${String(row.market || '').toLowerCase()}`)
+                      || portfolioActionByPositionKey.get(`${row.accountId}-${row.symbol}`);
                     return (
                     <tr key={rowKey} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
@@ -1285,6 +1431,18 @@ const PortfolioPage: React.FC = () => {
                         }`}
                       >
                         {formatSignedPct(row.unrealizedPnlPct)}
+                      </td>
+                      <td className="py-2 pr-3 align-top">
+                        {actionCard ? (
+                          <div className="space-y-1">
+                            <Badge variant={getPortfolioActionVariant(actionCard.action)}>{actionCard.action}</Badge>
+                            <div className="line-clamp-2 text-xs leading-5 text-secondary">{actionCard.reason}</div>
+                          </div>
+                        ) : portfolioActionsLoading ? (
+                          <span className="text-xs text-secondary">生成中</span>
+                        ) : (
+                          <span className="text-xs text-secondary">--</span>
+                        )}
                       </td>
                       <td className="py-2 pr-3 text-right align-top">
                         <PortfolioSignalSummary item={signal} loading={portfolioSignalsLoading} />
