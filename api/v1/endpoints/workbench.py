@@ -35,10 +35,13 @@ class MiaoxiangQueryRequest(BaseModel):
 
 
 class MiaoxiangZixuanRequest(BaseModel):
+    readonly: bool = Field(True, description="只读模式（默认true）设为false需确认风险后才允许写操作")
     command: str = Field("query", min_length=1, max_length=120, description="query/add/delete 或自然语言指令")
     stock: Optional[str] = Field(None, max_length=80, description="可选股票名称或代码")
     timeout_seconds: int = Field(30, ge=5, le=60, description="查询超时秒数")
 
+
+_MIANXIANG_ZIXUAN_DISCLAIMER = "注意：自选股写操作(add/delete)将修改东方财富第三方账户的自选股列表，请确认操作意图。本工具仅供学习复盘，不构成投资建议。"
 
 def _service() -> WorkbenchService:
     return WorkbenchService()
@@ -372,6 +375,23 @@ def miaoxiang_zixuan_query(request: MiaoxiangZixuanRequest) -> dict:
     try:
         from src.agent.tools.mx_tools import _handle_mx_zixuan_query
 
-        return _handle_mx_zixuan_query(request.command, stock=request.stock, timeout_seconds=request.timeout_seconds)
+        _write_commands = {"add", "delete"}
+        if request.command.lower() in _write_commands:
+            if request.readonly:
+                return {
+                    "source": "miaoxiang_zixuan",
+                    "stale": False,
+                    "error": "只读模式拒绝写操作：/providers/miaoxiang/zixuan-query?readonly=false 可开启写入",
+                    "data": None,
+                    "disclaimer": _MIANXIANG_ZIXUAN_DISCLAIMER,
+                }
+            logger.warning(
+                "妙想自选股写操作执行: command=%s stock=%s - %s",
+                request.command, request.stock, _MIANXIANG_ZIXUAN_DISCLAIMER,
+            )
+        result = _handle_mx_zixuan_query(request.command, stock=request.stock, timeout_seconds=request.timeout_seconds)
+        if isinstance(result, dict) and "disclaimer" not in result:
+            result["disclaimer"] = _MIANXIANG_ZIXUAN_DISCLAIMER
+        return result
     except Exception as exc:
         raise _internal_error("妙想自选股查询失败", exc)
