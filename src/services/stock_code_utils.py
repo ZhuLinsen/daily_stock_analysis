@@ -104,6 +104,9 @@ def is_code_like(value: str) -> bool:
     # Support exchange-prefixed codes: SH600519, SZ000001, BJ920493, HK00700
     if _strip_exchange_prefix(text) is not None:
         return True
+    # Suffix-only offshore markets (incl. Canada `.TO`/`.V`) via the shared registry.
+    if normalize_suffix_market_symbol(text) is not None:
+        return True
     return False
 
 

@@ -1537,7 +1537,7 @@ class StockAnalysisPipeline:
             return context
 
         market = get_market_for_stock(normalize_stock_code(code))
-        if market not in {"jp", "kr", "tw"}:
+        if market not in {"jp", "kr", "tw", "ca"}:
             return context
 
         try:

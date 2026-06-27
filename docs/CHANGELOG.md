@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增加拿大（TSX `.TO` / TSX-V `.V`）suffix-only 个股分析 MVP，对齐 #1718/#1772：给共享 `SuffixMarketSpec` 增加可选 `base_pattern`（字母 base）并注册 `ca`；市场识别、YFinance 路由、offshore 基本面、XTSE/America-Toronto 交易日历、中英文 Prompt，以及 DecisionSignal/Portfolio/Intelligence 服务层与 API 市场枚举、前端市场类型/筛选/标签均放行 `ca`。`get_market_for_stock` 调整为 suffix 检测前置以避免 `.V` 与美股单字母后缀冲突。加拿大索引/自动补全、大盘复盘、告警放行、Portfolio CAD 口径与 `.UN` 简写归一化作为后续。
 - [修复] API 异步批量分析共享概念板块排行缓存，避免同批多股重复拉取全市场概念排行。
 - [文档] 补齐概念板块排行字段契约与通知报告行业/概念类型列展示说明。
 - [新功能] #1742 新增信号归因分析功能（dashboard.signal_attribution），解释推荐理由的构成（技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号）。支持默认通知报告和 Jinja2 模板渲染，包含中英文国际化标签。归一化函数在 _parse_response() 和 parse_dashboard_json() 中显式调用，确保有效非零贡献度归一化到 100，all-zero 保留为 0（表示无有效信号）。

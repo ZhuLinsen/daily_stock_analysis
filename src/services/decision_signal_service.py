@@ -867,7 +867,7 @@ class DecisionSignalService:
     def _normalize_market(value: Any) -> str:
         market = str(value or "").strip().lower()
         if market not in VALID_MARKETS:
-            raise ValueError("market must be one of cn, hk, us, jp, kr, tw")
+            raise ValueError("market must be one of cn, hk, us, jp, kr, tw, ca")
         return market
 
     @classmethod

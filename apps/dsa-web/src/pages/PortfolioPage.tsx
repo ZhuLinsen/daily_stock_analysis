@@ -112,8 +112,8 @@ function isNewerSignal(left: DecisionSignalItem | undefined, right: DecisionSign
   return getSignalTime(right) > getSignalTime(left);
 }
 
-const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr', 'tw']);
-type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
+const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr', 'tw', 'ca']);
+type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw' | 'ca';
 
 function toDecisionSignalMarket(value: string | null | undefined): DecisionSignalMarket | undefined {
   const normalized = String(value || '').toLowerCase();
@@ -1093,6 +1093,7 @@ const PortfolioPage: React.FC = () => {
               <option value="jp">市场：日股（jp）</option>
               <option value="kr">市场：韩股（kr）</option>
               <option value="tw">市场：台股（tw）</option>
+              <option value="ca">市场：加拿大（ca）</option>
             </select>
             <button type="submit" className="btn-secondary text-sm" disabled={accountCreating}>
               {accountCreating ? '创建中...' : '创建账户'}

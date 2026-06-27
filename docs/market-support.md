@@ -62,3 +62,30 @@
 - 不补齐 Portfolio 的 TWD 汇率、成本、市值完整口径（属上述后续 PR 范围）。
 
 回滚方式：移除 `tw` 市场识别、交易日历注册、YFinance 路由扩展与服务层/API 市场枚举及前端市场类型放行，并删除本文档中的能力声明。
+
+## 加拿大个股 suffix-only MVP
+
+当前阶段支持手动输入加拿大股票的 Yahoo Finance 后缀代码，进入既有个股分析、历史保存和基础报告展示链路。多伦多证券交易所（TSX）上市股票使用 `.TO` 后缀，TSX Venture 使用 `.V` 后缀，二者折叠为同一 `ca` 市场标签。**本次覆盖市场识别、数据路由层、offshore 基本面分流、DecisionSignal/Portfolio/Intelligence 服务层与 API 市场枚举，以及前端市场类型/筛选/标签**；加拿大股票索引/种子、Web 自动补全、加拿大大盘复盘与告警（大盘红绿灯）市场放行仍作为后续 PR。对齐 #1718 日韩 / #1772 台股 MVP 模式。
+
+支持格式：
+
+- 上市（TSX）：`TD.TO`、`SHOP.TO`、`ENB.TO`
+- 创业板（TSX Venture）：`ABC.V`
+- 代码 base 为**字母/数字**（可含连字符，如 `BAM-A.TO`、`REI-UN.TO`），不超过 12 个字符；仅显式 `.TO`/`.V` 后缀 opt-in。
+
+约束与边界：
+
+- **接入共享 `SuffixMarketSpec` 注册表**（`src/services/market_symbol_utils.py`）：因加拿大是字母 base（区别于 jp/kr/tw 的数字 base），给 `SuffixMarketSpec` 增加可选 `base_pattern` 正则校验，`ca` 注册为 `SuffixMarketSpec("ca", ("TO","V"), base_pattern=...)`。`detect_market` 与 `get_market_for_stock` 经 `get_suffix_market` 自动识别。
+- `.V` 与美股单字母后缀冲突，故 `get_market_for_stock` 中 suffix 检测前置于美股检测；`detect_market` 本就 suffix 优先。
+- 加拿大日线/近实时行情只走 `YfinanceFetcher`，不尝试 AkShare、Tushare、Efinance、Pytdx、Baostock 等 A 股专属数据源；基本面复用 offshore yfinance 轻量路径；A 股专属资金流/龙虎榜/板块按 `not_supported` 降级。
+- 报告 Prompt 已增加加拿大语境（加元 CAD、BoC 政策、TSX/TSX-V 无涨跌停、T+0），不套用 A 股涨跌停/北向/龙虎榜等概念。
+- 交易日历注册 `ca: XTSE / America/Toronto`。
+
+不承诺项：
+
+- 不承诺实时行情；Yahoo Finance 数据可能延迟或字段缺失。
+- 不承诺完整基本面、行业/板块、市场宽度、涨跌家数或加拿大大盘复盘。
+- 加拿大股票索引/种子、Web 自动补全、加拿大大盘复盘（`^GSPTSE`）、告警市场放行仍作为后续 PR；告警 MarketRegion 与后端 market_light 仍为 cn/hk/us，未含 ca。
+- 信托/REIT 单位简写 `BASE.UN`→`BASE-UN.TO` 归一化作为后续；当前用 Yahoo 规范 `-UN.TO` 形式（连字符 base 已支持）。不补齐 Portfolio 的 CAD 汇率/成本/市值完整口径。
+
+回滚方式：从 `SuffixMarketSpec` 移除 `ca` 注册与 `base_pattern` 字段、`get_market_for_stock` 的顺序调整、交易日历注册、路由/yfinance 放行与服务层/API/前端市场枚举，并删除本文档中的能力声明。

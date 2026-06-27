@@ -142,7 +142,7 @@ def rebuild_market_phase_summary_for_stock_code(
         return None
 
     market = get_market_for_stock(str(stock_code or "").strip())
-    if market not in {"jp", "kr", "tw"}:
+    if market not in {"jp", "kr", "tw", "ca"}:
         return dict(summary)
 
     phase = str(summary.get("phase", "")).strip()

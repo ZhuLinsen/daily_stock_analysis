@@ -138,6 +138,8 @@ def normalize_stock_code(stock_code: str) -> str:
             return f"{base}.{suffix.upper()}"
         if suffix.upper() in ('TW', 'TWO') and base.isdigit() and 4 <= len(base) <= 6:
             return f"{base}.{suffix.upper()}"
+        if suffix.upper() in ('TO', 'V') and is_suffix_market_symbol(f"{base.upper()}.{suffix.upper()}", "ca"):
+            return f"{base.upper()}.{suffix.upper()}"
         if suffix.upper() == 'HK' and base.isdigit() and 1 <= len(base) <= 5:
             return f"HK{base.zfill(5)}"
         if base.upper() in ('SH', 'SS', 'SZ', 'BJ') and suffix.isdigit():
@@ -196,6 +198,11 @@ def _is_tw_market(code: str) -> bool:
     return is_suffix_market_symbol(code, "tw")
 
 
+def _is_ca_market(code: str) -> bool:
+    """判定是否为加拿大 Yahoo Finance suffix 代码（TSX `.TO` / TSX-V `.V`）。"""
+    return is_suffix_market_symbol(code, "ca")
+
+
 def _is_etf_code(code: str) -> bool:
     """判定 A 股 ETF 基金代码（保守规则）。"""
     normalized = normalize_stock_code(code)
@@ -236,7 +243,10 @@ def _is_meaningful_chip_distribution(chip: Any) -> bool:
 
 
 def _market_tag(code: str) -> str:
-    """返回市场标签: cn/us/hk/jp/kr/tw."""
+    """返回市场标签: cn/us/hk/jp/kr/tw/ca."""
+    # Canada `.TO`/`.V` first: `.V` collides with the US single-letter-suffix rule.
+    if _is_ca_market(code):
+        return "ca"
     if _is_us_market(code):
         return "us"
     if _is_hk_market(code):
@@ -618,7 +628,7 @@ class DataFetcherManager:
         "TushareFetcher": {"cn", "hk"},
         "PytdxFetcher": {"cn"},
         "BaostockFetcher": {"cn"},
-        "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw"},
+        "YfinanceFetcher": {"cn", "hk", "us", "jp", "kr", "tw", "ca"},
         "LongbridgeFetcher": {"hk", "us"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
@@ -1255,19 +1265,20 @@ class DataFetcherManager:
         #   - 未配置长桥:     YFinance 为首选（美股）, 通用 fetcher 循环（港股）
         #   - 美股指数:       始终 YFinance 为首选（Longbridge 不提供指数K线）
         is_us_index = is_us_index_code(stock_code)
-        is_us = is_us_index or is_us_stock_code(stock_code)
-        is_hk = (not is_us) and _is_hk_market(stock_code)
-        is_jp = (not is_us) and (not is_hk) and _is_jp_market(stock_code)
-        is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
-        is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
-        market = "us" if is_us else "hk" if is_hk else "jp" if is_jp else "kr" if is_kr else "tw" if is_tw else "cn"
+        is_ca = _is_ca_market(stock_code)
+        is_us = is_us_index or ((not is_ca) and is_us_stock_code(stock_code))
+        is_hk = (not is_us) and (not is_ca) and _is_hk_market(stock_code)
+        is_jp = (not is_us) and (not is_hk) and (not is_ca) and _is_jp_market(stock_code)
+        is_kr = (not is_us) and (not is_hk) and (not is_ca) and _is_kr_market(stock_code)
+        is_tw = (not is_us) and (not is_hk) and (not is_ca) and _is_tw_market(stock_code)
+        market = "us" if is_us else "hk" if is_hk else "jp" if is_jp else "kr" if is_kr else "tw" if is_tw else "ca" if is_ca else "cn"
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:
-            market_label = "美股指数" if is_us_index else "美股" if is_us else "港股" if is_hk else "台股" if is_tw else "A股"
+            market_label = "美股指数" if is_us_index else "美股" if is_us else "港股" if is_hk else "台股" if is_tw else "加拿大股" if is_ca else "A股"
             error_summary = f"{market_label} {stock_code} 获取失败:\n暂无可用数据源"
             logger.error(f"[数据源终止] {stock_code} 获取失败: {error_summary}")
             raise DataFetchError(error_summary)
@@ -1692,14 +1703,15 @@ class DataFetcherManager:
         #   美股指数:   始终 YFinance 首选（Longbridge 不提供指数行情）
         # ----------------------------------------------------------
         is_us_index = is_us_index_code(stock_code)
-        is_us = is_us_index or _is_us_code(stock_code)
-        is_hk = (not is_us) and _is_hk_market(stock_code)
-        is_jp = (not is_us) and (not is_hk) and _is_jp_market(stock_code)
-        is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
-        is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
+        is_ca = _is_ca_market(stock_code)
+        is_us = is_us_index or ((not is_ca) and _is_us_code(stock_code))
+        is_hk = (not is_us) and (not is_ca) and _is_hk_market(stock_code)
+        is_jp = (not is_us) and (not is_hk) and (not is_ca) and _is_jp_market(stock_code)
+        is_kr = (not is_us) and (not is_hk) and (not is_ca) and _is_kr_market(stock_code)
+        is_tw = (not is_us) and (not is_hk) and (not is_ca) and _is_tw_market(stock_code)
 
-        if is_jp or is_kr or is_tw:
-            market_label = "日股" if is_jp else "韩股" if is_kr else "台股"
+        if is_jp or is_kr or is_tw or is_ca:
+            market_label = "日股" if is_jp else "韩股" if is_kr else "台股" if is_tw else "加股"
             quote = self._try_fetcher_quote(stock_code, "YfinanceFetcher")
             if quote is not None:
                 logger.info(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: YfinanceFetcher)")
@@ -2971,7 +2983,7 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
         market = _market_tag(stock_code)
         is_etf = _is_etf_code(stock_code)
-        if market in {"us", "hk", "jp", "kr", "tw"}:
+        if market in {"us", "hk", "jp", "kr", "tw", "ca"}:
             return self._build_offshore_fundamental_context(
                 stock_code,
                 market=market,
