@@ -47,7 +47,7 @@
 - `model_used` 只在报告渲染末尾展示，不参与 provider/model/base_url 的 runtime 选择、保存、清理或迁移。若某次 CI 扫描到“provider/API 兼容迁移”类关键词，命中范围应优先回归到测试夹具中的 `model_used` 示例与报告快照 fixture（`tests/fixtures/notification_reports/*.md`），以及 `src/notification.py` 对 `report_show_llm_model` 的仅展示开关逻辑。
 - `REPORT_SHOW_LLM_MODEL` 与 `report_renderer_enabled` 均为展示/降级策略开关：关闭仅影响报告可见结构，不会触发配置迁移或运行时参数回退；回退方式为恢复 `true`（或移除该项）或恢复默认配置。
 
-关联板块渲染保持报告正文生成阶段处理：当板块表现数据不可用且所有板块类型均缺失时，只输出一行板块名称；有板块类型或板块涨跌榜信号时继续使用表格。
+关联板块渲染保持报告正文生成阶段处理：没有行业/概念涨跌榜信号时，推送报告沿用原有单行样式，例如 `通信线缆及配套 / 通信设备 / 通信 / 江苏板块 / 科技风格`，不额外展示“类型”列。只有命中 `fundamental_context.boards.data` / `sector_rankings` 或 `fundamental_context.concept_boards.data` / `concept_rankings` 的领涨/领跌信号时，才使用表格展示“板块 / 类型 / 板块表现 / 板块涨跌幅”，其中“类型”列用于标明“行业板块”或“概念板块”。该逻辑仅影响报告展示，不改变 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理逻辑。
 
 ## GitHub Actions 映射
 

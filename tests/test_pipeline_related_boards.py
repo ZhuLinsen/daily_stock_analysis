@@ -1,13 +1,39 @@
 # -*- coding: utf-8 -*-
 """Regression tests for pipeline-level related board enrichment."""
 
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
+from api.v1.schemas.history import ReportDetails
+from data_provider.base import DataFetcherManager
 from src.core.pipeline import StockAnalysisPipeline
+from src.utils.data_processing import extract_board_detail_fields
+
+
+class _SlowConceptRankingFetcher:
+    name = "SlowConceptRankingFetcher"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def get_concept_rankings(self, n: int = 5):
+        with self._lock:
+            self.calls += 1
+        time.sleep(0.05)
+        return (
+            [{"name": f"top-{n}", "change_pct": 1.2}],
+            [{"name": f"bottom-{n}", "change_pct": -0.8}],
+        )
 
 
 class PipelineRelatedBoardsTestCase(unittest.TestCase):
+    def tearDown(self) -> None:
+        DataFetcherManager.clear_concept_rankings_cache_for_tests()
+
     def test_attach_belong_boards_shallow_copies_context_before_injecting(self) -> None:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetcher_manager = MagicMock()
@@ -25,6 +51,99 @@ class PipelineRelatedBoardsTestCase(unittest.TestCase):
         self.assertIsNot(enriched, cached_context)
         self.assertNotIn("belong_boards", cached_context)
         self.assertEqual(enriched["belong_boards"], [{"name": "白酒", "type": "行业"}])
+
+    def test_attach_belong_boards_adds_concept_rankings_for_cn(self) -> None:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetcher_manager = MagicMock()
+        pipeline.fetcher_manager.get_belong_boards.return_value = [{"name": "机器人概念", "type": "概念"}]
+        pipeline.fetcher_manager.get_concept_rankings.return_value = (
+            [{"name": "机器人概念", "change_pct": 4.2}],
+            [{"name": "转基因", "change_pct": -2.05}],
+        )
+
+        context = {
+            "market": "cn",
+            "status": "ok",
+            "coverage": {"boards": "ok"},
+            "boards": {"status": "ok", "data": {"top": [], "bottom": []}},
+        }
+
+        enriched = pipeline._attach_belong_boards_to_fundamental_context("600519", context)
+
+        self.assertEqual(enriched["concept_boards"]["data"]["top"][0]["name"], "机器人概念")
+        self.assertEqual(enriched["concept_boards"]["data"]["bottom"][0]["change_pct"], -2.05)
+
+    def test_attach_belong_boards_reuses_concept_rankings_per_pipeline_run(self) -> None:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetcher_manager = MagicMock()
+        pipeline.fetcher_manager.get_belong_boards.side_effect = [
+            [{"name": "Robot Theme", "type": "concept"}],
+            [{"name": "AI Theme", "type": "concept"}],
+        ]
+        pipeline.fetcher_manager.get_concept_rankings.return_value = (
+            [{"name": "Robot Theme", "change_pct": 4.2}],
+            [{"name": "Chip Theme", "change_pct": -2.05}],
+        )
+
+        context = {
+            "market": "cn",
+            "status": "ok",
+            "coverage": {"boards": "ok"},
+            "boards": {"status": "ok", "data": {"top": [], "bottom": []}},
+        }
+
+        first = pipeline._attach_belong_boards_to_fundamental_context("600519", context)
+        second = pipeline._attach_belong_boards_to_fundamental_context("000001", context)
+
+        pipeline.fetcher_manager.get_concept_rankings.assert_called_once_with(5)
+        self.assertEqual(first["concept_boards"]["data"]["top"][0]["name"], "Robot Theme")
+        self.assertEqual(second["concept_boards"]["data"]["top"][0]["name"], "Robot Theme")
+
+    def test_concept_rankings_cache_is_shared_across_manager_instances(self) -> None:
+        fetcher = _SlowConceptRankingFetcher()
+        first_manager = DataFetcherManager.__new__(DataFetcherManager)
+        first_manager._fetchers = [fetcher]
+        second_manager = DataFetcherManager.__new__(DataFetcherManager)
+        second_manager._fetchers = [fetcher]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_result, second_result = list(
+                executor.map(
+                    lambda manager: manager.get_concept_rankings(5),
+                    [first_manager, second_manager],
+                )
+            )
+
+        self.assertEqual(fetcher.calls, 1)
+        self.assertEqual(first_result, second_result)
+
+        first_result[0][0]["name"] = "mutated"
+        fresh_result = second_manager.get_concept_rankings(5)
+
+        self.assertEqual(fetcher.calls, 1)
+        self.assertEqual(fresh_result[0][0]["name"], "top-5")
+
+    def test_extract_board_details_exposes_concept_rankings(self) -> None:
+        snapshot = {
+            "fundamental_context": {
+                "belong_boards": [{"name": "机器人概念", "type": "概念"}],
+                "concept_boards": {
+                    "status": "ok",
+                    "data": {
+                        "top": [{"name": "机器人概念", "change_pct": "4.2%", "source": "akshare"}],
+                        "bottom": [],
+                    },
+                },
+            },
+        }
+
+        extracted = extract_board_detail_fields(snapshot)
+        details = ReportDetails(context_snapshot=snapshot)
+
+        self.assertEqual(extracted["concept_rankings"]["top"][0]["name"], "机器人概念")
+        self.assertEqual(extracted["concept_rankings"]["top"][0]["change_pct"], 4.2)
+        self.assertEqual(extracted["concept_rankings"]["top"][0]["source"], "akshare")
+        self.assertEqual(details.concept_rankings["top"][0]["name"], "机器人概念")
 
     def test_attach_belong_boards_copies_existing_board_list(self) -> None:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)

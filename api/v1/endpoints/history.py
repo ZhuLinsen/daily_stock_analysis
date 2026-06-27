@@ -479,6 +479,7 @@ def get_history_detail(
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            concept_rankings=extracted_boards.get("concept_rankings"),
         )
         
         return AnalysisReport(

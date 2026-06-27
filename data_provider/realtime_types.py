@@ -125,6 +125,10 @@ class UnifiedRealtimeQuote:
     is_stale: Optional[bool] = None              # provider_timestamp 超过最小 TTL 阈值时为 True
     stale_seconds: Optional[int] = None          # provider_timestamp 距 fetched_at 的秒数
     fallback_from: Optional[str] = None          # 整源 fallback 的失败首选源 token
+    market: Optional[str] = None                 # 市场标签（cn/hk/us/jp/kr/tw）
+    currency: Optional[str] = None               # 报价币种（JPY/KRW/TWD/USD/HKD/CNY 等）
+    data_quality: Optional[str] = None           # ok/partial/unavailable
+    missing_fields: Optional[list[str]] = None   # provider 缺失的关键字段
     
     # === 核心价格数据（几乎所有源都有）===
     price: Optional[float] = None           # 最新价
@@ -165,7 +169,7 @@ class UnifiedRealtimeQuote:
         # 只添加非 None 的字段
         optional_fields = [
             'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds',
-            'fallback_from',
+            'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',

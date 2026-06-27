@@ -117,6 +117,18 @@ non-trading, or unknown phases, do not invent today's intraday movement. If
 quote, daily bars, or technical data is stale, fallback, missing, fetch_failed,
 partial, or estimated, ``confidence_level`` must not be High/高 and the
 limitation must be reflected in ``confidence_reason`` or ``data_limitations``.
+
+The nested ``dashboard`` object should include optional ``signal_attribution`` when
+the available evidence supports attribution, with these keys: ``technical_indicators``, ``news_sentiment``, ``fundamentals``,
+``market_conditions``, ``strongest_bullish_signal``, ``strongest_bearish_signal``.
+The first four keys are contribution weights (0-100). Non-zero valid weights
+should sum to 100; all-zero means no effective signal and must not be faked.
+``technical_indicators`` explains the impact of technical signals on the recommendation.
+``news_sentiment`` explains the impact of news/sentiment on the recommendation.
+``fundamentals`` explains the impact of fundamental factors (valuation, earnings, financials) on the recommendation.
+``market_conditions`` explains the impact of overall market environment on the recommendation.
+``strongest_bullish_signal`` is the name of the strongest bullish signal (e.g., MACD golden cross, earnings surprise, low valuation).
+``strongest_bearish_signal`` is the name of the strongest bearish signal (e.g., MA death cross, earnings warning, high valuation).
 """
         if report_language == "en":
             return prompt + """

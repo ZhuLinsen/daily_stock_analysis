@@ -42,6 +42,8 @@ from src.utils.data_processing import (
     extract_realtime_detail_fields,
     normalize_model_used,
     parse_json_field,
+    signal_attribution_has_content,
+    signal_attribution_weight_items,
 )
 
 if TYPE_CHECKING:
@@ -1103,6 +1105,34 @@ class HistoryService:
                 for item in checklist:
                     report_lines.append(f"- {item}")
                 report_lines.append("")
+
+        # ========== 信号归因分析 ==========
+        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        if signal_attribution_has_content(signal_attr):
+            report_lines.extend([
+                f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                "",
+            ])
+            weight_items = signal_attribution_weight_items(signal_attr)
+            if weight_items:
+                report_lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
+                weight_labels = {
+                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
+                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
+                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
+                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
+                }
+                for key, value in weight_items:
+                    icon, label = weight_labels[key]
+                    report_lines.append(f"- {icon} {label}: {value}%")
+                report_lines.append("")
+            bullish = signal_attr.get('strongest_bullish_signal')
+            bearish = signal_attr.get('strongest_bearish_signal')
+            if bullish:
+                report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+            if bearish:
+                report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+            report_lines.append("")
 
         # ========== 如果没有 dashboard，显示传统格式 ==========
         if not dashboard:

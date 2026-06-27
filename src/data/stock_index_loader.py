@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Dict, Iterable, Optional
 
 from src.data.stock_mapping import is_meaningful_stock_name
+from src.services.market_symbol_utils import get_suffix_market, suffix_base_lookup_allowed
 from src.services.stock_index_remote_service import (
     get_remote_stock_index_cache_path,
     is_valid_remote_stock_index_file,
@@ -113,15 +114,8 @@ def _add_code_lookup(
 
 
 def _is_jp_kr_index_code(code: str) -> bool:
-    normalized = str(code or "").strip().upper()
-    if "." not in normalized:
-        return False
-    base, suffix = normalized.rsplit(".", 1)
-    if suffix == "T":
-        return base.isdigit() and len(base) in (4, 5)
-    if suffix in {"KS", "KQ"}:
-        return base.isdigit() and len(base) == 6
-    return False
+    """Return True for index-backed JP/KR suffix symbols eligible for lookup."""
+    return get_suffix_market(code) in {"jp", "kr"}
 
 
 def _build_stock_code_lookup(raw_items: list) -> Dict[str, str]:
@@ -145,9 +139,9 @@ def _build_stock_code_lookup(raw_items: list) -> Dict[str, str]:
         _add_code_lookup(exact_lookup, display_code, canonical_code)
 
         canonical_upper = canonical_code.upper()
-        if "." in canonical_upper:
-            base, suffix = canonical_upper.rsplit(".", 1)
-            if suffix in {"T", "KS", "KQ"} and base.isdigit():
+        if "." in canonical_upper and suffix_base_lookup_allowed(canonical_upper):
+            base, _suffix = canonical_upper.rsplit(".", 1)
+            if base.isdigit():
                 _add_code_lookup(suffix_base_lookup, base, canonical_code)
 
     result: Dict[str, str] = {}

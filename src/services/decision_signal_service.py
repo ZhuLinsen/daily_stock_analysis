@@ -382,6 +382,7 @@ class DecisionSignalService:
                 trace_id=str(getattr(record, "query_id", "") or source_report_id),
                 query_source="history",
                 report_type=str(getattr(record, "report_type", "") or "simple"),
+                profile_source="backfill_defaulted",
             )
             if payload is None:
                 return

@@ -123,7 +123,10 @@ export interface RelatedBoard {
 
 export interface SectorRankingItem {
   name: string;
+  code?: string;
   changePct?: number;
+  source?: string;
+  updatedAt?: string;
 }
 
 export interface SectorRankings {
@@ -175,6 +178,7 @@ export interface MarketReviewPayload {
   breadth?: MarketReviewBreadth;
   indices?: MarketReviewIndex[];
   sectors?: SectorRankings;
+  concepts?: SectorRankings;
   news?: Array<Record<string, unknown>>;
   sections?: MarketReviewPayloadSection[];
   markets?: Record<string, MarketReviewPayload>;
@@ -252,6 +256,7 @@ export interface ReportDetails {
   dividendMetrics?: Record<string, unknown>;
   belongBoards?: RelatedBoard[];
   sectorRankings?: SectorRankings;
+  conceptRankings?: SectorRankings;
 }
 
 /** Full analysis report */

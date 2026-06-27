@@ -337,6 +337,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - **Field contracts**:
 >   - `fundamental_context.belong_boards` = related board list for the stock; A-shares are sourced from AkShare board membership, US/HK from yfinance `info.sector`/`info.industry`, `[]` when unavailable;
 >   - `fundamental_context.boards.data` = `sector_rankings` (sector rise/fall leaderboard, structure `{top, bottom}`; not provided for US/HK today);
+>   - `fundamental_context.concept_boards.data` = `concept_rankings` (concept/theme rise/fall leaderboard, structure `{top, bottom}`; currently A-share only and omitted or empty on fail-open);
 >   - `fundamental_context.earnings.data.financial_report.currency` = financial statement currency (`info.financialCurrency`; HK ADRs commonly report CNY here);
 >   - `fundamental_context.earnings.data.dividend.currency` = trading / dividend currency (`info.currency`; HK ADRs use HKD here even when the statement currency is CNY). The renderer reads each block's own currency rather than assuming a single global currency;
 >   - `fundamental_context.earnings.data.dividend.ttm_dividend_yield_pct` = `ttm_cash_dividend_per_share / latest_price * 100`, both sides in the trading currency. Falls back to `info.trailingAnnualDividendYield` (decimal) or `info.dividendYield` (already-percent passthrough) only when TTM cash or latest price is unavailable;
@@ -345,6 +346,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 >   - `get_stock_info.sector_rankings` stays consistent with `fundamental_context.boards.data`.
 >   - `AnalysisReport.details.belong_boards` = related board list in structured report details;
 >   - `AnalysisReport.details.sector_rankings` = sector leaderboard in structured report details for board-linkage display.
+>   - `AnalysisReport.details.concept_rankings` = concept/theme leaderboard in structured report details for Web related-board signal matching and notification table type labels.
 > - **Sector leaderboard** uses a fixed fallback order: consistent with global priority.
 > - **Timeout control** is a `best-effort` soft timeout: the stage will quickly degrade and continue execution based on the budget, but does not guarantee a hard interrupt of underlying third-party network calls.
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` indicates the target budget for the newly added fundamental stage, not a strict hard SLA; Windows, Docker, or rate-limited free data sources can raise it to `12-15s`.
@@ -738,6 +740,25 @@ There is no runtime pack master switch. Disabling the P3-P5 pack prompt summary,
 P5 adds a phase-aware decision block under `dashboard.phase_decision` for individual stock analysis reports: `phase_context`, `action_window`, `immediate_action`, `watch_conditions`, `next_check_time`, `confidence_reason`, and `data_limitations`. This is a backward-compatible report JSON addition stored in historical `raw_result`; it does not add an `analysis_phase` API parameter, change Web phase entrypoints, add configuration, or change the default post-market daily review behavior.
 
 Regular analysis and Agent analysis now apply lightweight guardrails before history is saved, using the current `market_phase_summary` and `analysis_context_pack_overview.data_quality`. If core quote / daily_bars / technical data is stale, fallback, missing, fetch_failed, partial, or estimated, high-confidence conclusions are capped. Pre-market, non-trading, or unknown phases must not emit high-confidence intraday buy/sell actions. Intraday, lunch-break, and near-close outputs are scanned for post-market recap wording such as "after today's close" or "focus tomorrow" in the main conclusion and action fields, and obvious violations are replaced with phase-safe wait/watch wording. The guardrail only fills low-sensitivity `phase_context` and data limitations; it does not invent watch conditions or next-check times. Notification summaries, alerts, holdings, and backtest linkage remain later P6 work.
+
+### Signal Attribution Analysis (Issue #1742)
+
+Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values; valid non-zero values are normalized to 100; all-zero means no effective signal), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+
+Signal attribution analysis is rendered in all report paths:
+- `generate_dashboard_report()` (default notification report)
+- `generate_single_stock_report()` (single-stock push report)
+- `templates/report_markdown.j2` (Jinja2 template)
+- `HistoryService._generate_single_stock_markdown()` (Web history drawer)
+
+Normalization functions are explicitly called in `_parse_response()` and `parse_dashboard_json()` to ensure:
+- String percentages are converted to int (e.g., `"35%"` → `35`)
+- Negative numbers are clamped to 0
+- Non-zero valid values with sum ≠ 100 are normalized to sum = 100
+- All-zero values are preserved as 0 to mean no effective signal
+- Values are clamped to [0, 100]
+
+`signal_attribution` is an optional display field, not a required integrity field. Missing it does not fail integrity checks, is not recorded in the `missing` list, and does not trigger a completion prompt; when present, it is normalized and rendered by supported report paths.
 
 ### Alerts, Portfolio, and History Linkage (Issue #1386 P6)
 
@@ -1343,7 +1364,7 @@ For this feature, the product behavior is:
 > Note: `POST /api/v1/analysis/market-review` is the explicit Web/desktop trigger and submits a market-review task directly. It does not short-circuit because `TRADING_DAY_CHECK_ENABLED=true` or the configured markets are closed that day; scheduled jobs, GitHub Actions manual runs, and CLI defaults still follow the trading-day gate unless `--force-run` or workflow `force_run` is used.
 > Audit note: priority and fallback are defined by `Config._load_from_env()` in `src/config.py` (`LITELLM_CONFIG` > `LLM_CHANNELS` > legacy). Regression coverage is in `tests/test_llm_channel_config.py` (configuration source parsing) and `tests/test_market_review_runtime.py` (shared runtime assembly). The endpoint lock is process/host-level only; multi-instance deployments still need external distributed idempotency controls.
 > Note: Once `/api/v1/analysis/market-review` completes, the report is persisted with `report_type=market_review`; open `/api/v1/history` and `/api/v1/history/{record_id}` (or Markdown history endpoints) to view it directly without re-running analysis.
-> Note: `/api/v1/analysis/market-review` responses and persisted history include a structured `market_review_payload` with fields like `market_scope`, `sections`, `sectors`, `news`, `market_light`, `indices`, etc. Web rendering and history detail use the same structure and fall back to raw `markdown_report` only if the structure is unavailable.
+> Note: `/api/v1/analysis/market-review` responses and persisted history include a structured `market_review_payload` with fields like `market_scope`, `sections`, `sectors`, `concepts`, `news`, `market_light`, `indices`, etc. Web rendering and history detail use the same structure and fall back to raw `markdown_report` only if the structure is unavailable.
 > Note: `market_review_payload.breadth` is emitted only when breadth data is truly available. For markets/feeds without usable breadth, the field is omitted and UI should display `No data` (not a misleading zero value).
 > Note: when `/api/v1/analysis/market-review` returns a `task_id`, the WebUI polls `GET /api/v1/analysis/status/{task_id}`. The UI renders clear `pending/processing` progress, shows completion feedback when status becomes `completed`, and surfaces `error` content on `failed`.
 > Note: filter market-review-only history via `GET /api/v1/history` with `stock_code=MARKET&report_type=market_review` to avoid mixing with regular stock history.

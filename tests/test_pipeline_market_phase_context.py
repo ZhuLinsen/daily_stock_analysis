@@ -802,6 +802,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertEqual(kwargs["trace_id"], "trace-helper")
         self.assertEqual(kwargs["query_source"], "api")
         self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+        self.assertEqual(kwargs["profile_source"], "auto_default")
 
     def test_decision_signal_helper_failure_does_not_raise(self):
         pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
@@ -843,6 +844,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         self.assertEqual(kwargs["trace_id"], "trace-runtime")
         self.assertEqual(kwargs["query_source"], "api")
         self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+        self.assertEqual(kwargs["profile_source"], "auto_default")
 
     def test_legacy_pipeline_does_not_extract_when_history_save_fails(self):
         pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
@@ -933,6 +935,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         kwargs = mock_extract.call_args.kwargs
         self.assertEqual(kwargs["source_report_id"], 84)
         self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+        self.assertEqual(kwargs["profile_source"], "auto_default")
         self.assertIs(kwargs["context_snapshot"], pipeline.db.save_analysis_history.call_args.kwargs["context_snapshot"])
 
 

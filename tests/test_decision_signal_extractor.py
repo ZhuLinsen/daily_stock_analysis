@@ -17,6 +17,9 @@ from src.services.decision_signal_service import DecisionSignalService
 from src.storage import DatabaseManager
 
 
+BUILD_PROFILE_SOURCE = "legacy_unknown"
+
+
 @pytest.fixture()
 def isolated_db(tmp_path):
     old_database_path = os.environ.get("DATABASE_PATH")
@@ -72,6 +75,17 @@ def _result(**overrides) -> AnalysisResult:
     return result
 
 
+def test_build_payload_rejects_invalid_profile_source() -> None:
+    with pytest.raises(ValueError, match="profile_source"):
+        build_decision_signal_payload_from_report(
+            _result(),
+            trace_id="trace-invalid-profile-source",
+            query_source="api",
+            report_type="simple",
+            profile_source="typo",
+        )
+
+
 def test_build_payload_includes_tw_market() -> None:
     """A Taiwan (`tw`) stock is now first-class on the DecisionSignal write path
     (service VALID_MARKETS accepts tw, matching jp/kr).
@@ -91,6 +105,7 @@ def test_build_payload_includes_tw_market() -> None:
         trace_id="trace-tw",
         query_source="api",
         report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
 
     assert payload is not None
@@ -122,6 +137,7 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
         trace_id="trace-88",
         query_source="api",
         report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
 
     assert payload is not None
@@ -145,6 +161,13 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     assert payload["risk_summary"] == ["跌破支撑需止损", "估值偏高"]
     assert payload["catalyst_summary"] == ["业绩超预期"]
     assert payload["metadata"]["report_confidence_level"] == "高"
+    assert payload["metadata"]["decision_profile"] == "balanced"
+    assert payload["metadata"]["profile_source"] == BUILD_PROFILE_SOURCE
+    assert payload["metadata"]["profile_policy_version"] == "decision-profile-v1"
+    assert payload["metadata"]["signal_generation_version"] == "legacy-report-extractor-v1"
+    assert payload["metadata"]["decision_signal_metadata_version"] == "decision-signal-metadata-v1"
+    assert "scoring_version" not in payload["metadata"]
+    assert "scoring_breakdown" not in payload["metadata"]
     assert payload["metadata"]["market_phase_summary"] == {
         "phase": "intraday",
         "session_date": "2026-06-15",
@@ -172,6 +195,7 @@ def test_build_payload_uses_result_fallbacks_and_optional_catalysts() -> None:
         trace_id="trace-fallback",
         query_source="",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
 
     assert payload is not None
@@ -193,6 +217,7 @@ def test_build_payload_records_empty_holding_state_from_explicit_portfolio_conte
         trace_id="trace-empty-holding",
         query_source="api",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
 
     assert payload is not None
@@ -219,6 +244,7 @@ def test_build_payload_maps_secondary_only_entry_to_entry_high() -> None:
         trace_id="trace-secondary-only",
         query_source="api",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
 
     assert payload is not None
@@ -247,6 +273,7 @@ def test_build_payload_reuses_shared_sniper_fallback_paths(isolated_db) -> None:
         trace_id="trace-raw-sniper",
         query_source="api",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     )
     stored_points = isolated_db._extract_sniper_points(result)
 
@@ -270,6 +297,7 @@ def test_build_payload_skips_ambiguous_action_non_stock_and_unknown_market() -> 
         trace_id="trace-1",
         query_source="api",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     ) is None
 
     market_review = _result(operation_advice="买入", action="buy")
@@ -278,6 +306,7 @@ def test_build_payload_skips_ambiguous_action_non_stock_and_unknown_market() -> 
         trace_id="trace-2",
         query_source="api",
         report_type="market_review",
+        profile_source=BUILD_PROFILE_SOURCE,
     ) is None
 
     unknown_market = _result(code="UNKNOWN", operation_advice="买入", action="buy")
@@ -286,6 +315,7 @@ def test_build_payload_skips_ambiguous_action_non_stock_and_unknown_market() -> 
         trace_id="trace-3",
         query_source="api",
         report_type="simple",
+        profile_source=BUILD_PROFILE_SOURCE,
     ) is None
 
 
@@ -303,6 +333,7 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
         trace_id="trace-901",
         query_source="api",
         report_type="full",
+        profile_source="auto_default",
         service=service,
     )
     second = extract_and_persist_from_analysis_result(
@@ -313,6 +344,7 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
         trace_id="trace-901",
         query_source="api",
         report_type="full",
+        profile_source="auto_default",
         service=service,
     )
 
@@ -330,6 +362,13 @@ def test_extract_and_persist_reuses_service_dedup_and_sanitization(isolated_db) 
     persisted = listed["items"][0]
     assert persisted["source_report_id"] == 901
     assert persisted["metadata"]["holding_state"] == "holding"
+    assert persisted["metadata"]["decision_profile"] == "balanced"
+    assert persisted["metadata"]["profile_source"] == "auto_default"
+    assert persisted["metadata"]["profile_policy_version"] == "decision-profile-v1"
+    assert persisted["metadata"]["signal_generation_version"] == "legacy-report-extractor-v1"
+    assert persisted["metadata"]["decision_signal_metadata_version"] == "decision-signal-metadata-v1"
+    assert "scoring_version" not in persisted["metadata"]
+    assert "scoring_breakdown" not in persisted["metadata"]
     assert persisted["reason"] == "趋势确认 token=[REDACTED]"
     assert persisted["entry_low"] == 1690.0
     assert persisted["entry_high"] == 1700.0
@@ -354,6 +393,7 @@ def test_extract_and_persist_writes_tw_signal(isolated_db) -> None:
         trace_id="trace-tw-persist",
         query_source="api",
         report_type="full",
+        profile_source="auto_default",
         service=service,
     )
 
@@ -378,6 +418,7 @@ def test_extract_and_persist_missing_price_plan_does_not_fabricate_fields(isolat
         trace_id="trace-902",
         query_source="schedule",
         report_type="simple",
+        profile_source="auto_default",
         service=service,
     )
 

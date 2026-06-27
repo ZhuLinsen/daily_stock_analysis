@@ -145,6 +145,30 @@
 
 {% endif %}
 
+{% set signal_attr = dashboard.get('signal_attribution') or {} %}
+{% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
+{% if signal_attribution_has_content(signal_attr) %}
+### 🎯 {{ labels.signal_attribution_heading }}
+
+{% if signal_attr_weights %}
+**{{ labels.attribution_weights_label }}**:
+{% for key, value in signal_attr_weights %}
+{% if key == 'technical_indicators' %}- 📈 {{ labels.technical_indicators_label }}: {{ value }}%{% endif %}
+{% if key == 'news_sentiment' %}- 📰 {{ labels.news_sentiment_label }}: {{ value }}%{% endif %}
+{% if key == 'fundamentals' %}- 💼 {{ labels.fundamentals_label }}: {{ value }}%{% endif %}
+{% if key == 'market_conditions' %}- 🌐 {{ labels.market_conditions_label }}: {{ value }}%{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if signal_attr.get('strongest_bullish_signal') %}
+**🟢 {{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
+{% endif %}
+{% if signal_attr.get('strongest_bearish_signal') %}
+**🔴 {{ labels.strongest_bearish_signal_label }}**: {{ signal_attr.get('strongest_bearish_signal') }}
+{% endif %}
+
+{% endif %}
+
 {% if battle %}
 ### 🎯 {{ labels.battle_plan_heading }}
 

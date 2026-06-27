@@ -11,7 +11,7 @@
 
 from typing import Optional, List, Any, Dict, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.v1.schemas.market_phase import MarketPhaseSummary
 from src.schemas.decision_action import DecisionAction
@@ -260,6 +260,20 @@ class ReportDetails(BaseModel):
     dividend_metrics: Optional[Any] = Field(None, description="结构化分红指标（含 TTM 口径）")
     belong_boards: Optional[Any] = Field(None, description="关联板块列表")
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
+    concept_rankings: Optional[Any] = Field(None, description="概念板块涨跌榜（结构 {top, bottom}）")
+
+    @model_validator(mode="after")
+    def populate_concept_rankings_from_context(self) -> "ReportDetails":
+        if self.concept_rankings is not None or self.context_snapshot is None:
+            return self
+        try:
+            from src.utils.data_processing import extract_board_detail_fields
+
+            extracted = extract_board_detail_fields(self.context_snapshot)
+            self.concept_rankings = extracted.get("concept_rankings")
+        except Exception:
+            self.concept_rankings = None
+        return self
 
 
 class AnalysisReport(BaseModel):

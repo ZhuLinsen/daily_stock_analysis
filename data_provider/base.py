@@ -26,6 +26,7 @@ import pandas as pd
 import numpy as np
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
@@ -178,20 +179,12 @@ def _is_hk_market(code: str) -> bool:
 
 def _is_jp_market(code: str) -> bool:
     """判定是否为日本 Yahoo Finance suffix 代码（如 7203.T）。"""
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith(".T"):
-        return False
-    base = normalized[:-2]
-    return base.isdigit() and len(base) in (4, 5)
+    return is_suffix_market_symbol(code, "jp")
 
 
 def _is_kr_market(code: str) -> bool:
     """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 035720.KQ）。"""
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith((".KS", ".KQ")):
-        return False
-    base = normalized.rsplit(".", 1)[0]
-    return base.isdigit() and len(base) == 6
+    return is_suffix_market_symbol(code, "kr")
 
 
 def _is_tw_market(code: str) -> bool:
@@ -200,11 +193,7 @@ def _is_tw_market(code: str) -> bool:
     台股 base 为 4-6 位（普通股 4 位，ETF/其他至 6 位，如 00878 / 006208）。
     仅带 .TW/.TWO 后缀的代码才识别为台股，裸 6 位代码仍按 A 股语义处理。
     """
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith((".TW", ".TWO")):
-        return False
-    base = normalized.rsplit(".", 1)[0]
-    return base.isdigit() and 4 <= len(base) <= 6
+    return is_suffix_market_symbol(code, "tw")
 
 
 def _is_etf_code(code: str) -> bool:
@@ -635,6 +624,10 @@ class DataFetcherManager:
         "AlphaVantageFetcher": {"us"},
     }
     _daily_source_health = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
+    _CONCEPT_RANKINGS_CACHE_TTL_SECONDS = 300.0
+    _CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS = 30.0
+    _concept_rankings_cache_lock = RLock()
+    _concept_rankings_cache: Dict[int, Tuple[float, List[Dict], List[Dict]]] = {}
 
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
         """
@@ -2782,6 +2775,10 @@ class DataFetcherManager:
 
         result_ctx: Dict[str, Any] = {
             "market": market,
+            "provider": "yfinance",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "data_quality": "unavailable",
+            "missing_fields": [],
             "valuation": {},
             "growth": {},
             "earnings": {},
@@ -2903,10 +2900,16 @@ class DataFetcherManager:
         active_statuses = {"valuation": valuation_status, "growth": growth_status, "earnings": earnings_status}
         if all(value == "not_supported" for value in active_statuses.values()):
             result_ctx["status"] = "not_supported"
+            result_ctx["data_quality"] = "unavailable"
         elif "failed" in active_statuses.values() or "partial" in active_statuses.values():
             result_ctx["status"] = "partial"
+            result_ctx["data_quality"] = "partial"
         else:
             result_ctx["status"] = "ok"
+            result_ctx["data_quality"] = "ok"
+        result_ctx["missing_fields"] = [
+            block for block, status in active_statuses.items() if status != "ok"
+        ]
 
         result_ctx["elapsed_ms"] = int((time.time() - start_ts) * 1000)
         if cache_ttl > 0 and self._should_cache_fundamental_context(result_ctx):
@@ -3486,23 +3489,65 @@ class DataFetcherManager:
         logger.warning(f"[板块排行] 所有数据源均失败，最终错误: {last_error}")
         return [], []
 
+    @staticmethod
+    def _copy_ranking_rows(rows: List[Dict]) -> List[Dict]:
+        return [dict(row) if isinstance(row, dict) else row for row in rows or []]
+
+    @classmethod
+    def clear_concept_rankings_cache_for_tests(cls) -> None:
+        with cls._concept_rankings_cache_lock:
+            cls._concept_rankings_cache.clear()
+
     def get_concept_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
         """获取概念/题材涨跌榜（自动切换数据源）。"""
+        try:
+            normalized_n = int(n)
+        except (TypeError, ValueError):
+            normalized_n = 5
+        if normalized_n <= 0:
+            normalized_n = 5
+
         last_error = ""
-        for fetcher in self._fetchers:
-            try:
-                data = fetcher.get_concept_rankings(n)
-                if data and (data[0] or data[1]):
-                    logger.info(f"[{fetcher.name}] 获取概念排行成功")
-                    return data[0] or [], data[1] or []
-                last_error = f"{fetcher.name}返回空结果"
-            except Exception as e:
-                error_type, error_reason = summarize_exception(e)
-                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
-                logger.warning(f"[{fetcher.name}] 获取概念排行失败: {error_reason}")
-        if last_error:
-            logger.warning(f"[概念排行] 所有数据源均失败，最终错误: {last_error}")
-        return [], []
+        now = time.monotonic()
+
+        with self.__class__._concept_rankings_cache_lock:
+            cached = self.__class__._concept_rankings_cache.get(normalized_n)
+            if cached and cached[0] > now:
+                logger.debug("[概念排行] 命中共享缓存 n=%s", normalized_n)
+                return self._copy_ranking_rows(cached[1]), self._copy_ranking_rows(cached[2])
+
+            top: List[Dict] = []
+            bottom: List[Dict] = []
+            for fetcher in self._get_fetchers_snapshot():
+                try:
+                    data = fetcher.get_concept_rankings(normalized_n)
+                    if data and (data[0] or data[1]):
+                        top = data[0] or []
+                        bottom = data[1] or []
+                        logger.info(f"[{fetcher.name}] 获取概念排行成功")
+                        break
+                    last_error = f"{fetcher.name}返回空结果"
+                except Exception as e:
+                    error_type, error_reason = summarize_exception(e)
+                    last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                    logger.warning(f"[{fetcher.name}] 获取概念排行失败: {error_reason}")
+
+            if not top and not bottom and last_error:
+                logger.warning(f"[概念排行] 所有数据源均失败，最终错误: {last_error}")
+
+            ttl = (
+                self.__class__._CONCEPT_RANKINGS_CACHE_TTL_SECONDS
+                if top or bottom
+                else self.__class__._CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS
+            )
+            cached_top = self._copy_ranking_rows(top)
+            cached_bottom = self._copy_ranking_rows(bottom)
+            self.__class__._concept_rankings_cache[normalized_n] = (
+                time.monotonic() + ttl,
+                cached_top,
+                cached_bottom,
+            )
+            return self._copy_ranking_rows(cached_top), self._copy_ranking_rows(cached_bottom)
 
     def get_hot_stocks(self, n: int = 10) -> List[Dict[str, Any]]:
         """获取市场人气股榜（自动切换数据源）。"""

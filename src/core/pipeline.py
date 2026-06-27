@@ -222,6 +222,8 @@ class StockAnalysisPipeline:
         self.notifier = NotificationService(source_message=source_message)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
+        self._concept_rankings_cache_lock = threading.Lock()
+        self._concept_rankings_cache: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
         
         # 初始化搜索服务（可选，初始化失败不应阻断主分析流程）
         try:
@@ -1069,6 +1071,10 @@ class StockAnalysisPipeline:
         existing_boards = enriched_context.get("belong_boards")
         if isinstance(existing_boards, list):
             enriched_context["belong_boards"] = list(existing_boards)
+            market = enriched_context.get("market")
+            if not isinstance(market, str) or not market.strip():
+                market = get_market_for_stock(normalize_stock_code(code))
+            self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
             return enriched_context
 
         boards_block = enriched_context.get("boards")
@@ -1100,7 +1106,70 @@ class StockAnalysisPipeline:
             logger.debug("%s attach belong_boards failed (fail-open): %s", code, e)
 
         enriched_context["belong_boards"] = boards
+        self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
         return enriched_context
+
+    def _attach_concept_rankings_to_fundamental_context(
+        self,
+        code: str,
+        enriched_context: Dict[str, Any],
+        market: str,
+    ) -> None:
+        """Attach concept/theme rankings for A-share related-board signals."""
+        if market != "cn" or isinstance(enriched_context.get("concept_boards"), dict):
+            return
+
+        top_concepts, bottom_concepts = self._get_concept_rankings_for_market(market)
+
+        if top_concepts or bottom_concepts:
+            enriched_context["concept_boards"] = {
+                "status": "ok" if top_concepts and bottom_concepts else "partial",
+                "data": {
+                    "top": top_concepts,
+                    "bottom": bottom_concepts,
+                },
+            }
+
+    def _get_concept_rankings_for_market(
+        self,
+        market: str,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fetch market-wide concept rankings once per pipeline run."""
+        if market != "cn":
+            return [], []
+
+        cache = getattr(self, "_concept_rankings_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._concept_rankings_cache = cache
+
+        lock = getattr(self, "_concept_rankings_cache_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._concept_rankings_cache_lock = lock
+
+        with lock:
+            if market in cache:
+                top_concepts, bottom_concepts = cache[market]
+                return list(top_concepts), list(bottom_concepts)
+
+            top_concepts: List[Dict[str, Any]] = []
+            bottom_concepts: List[Dict[str, Any]] = []
+            try:
+                fetch_rankings = getattr(self.fetcher_manager, "get_concept_rankings", None)
+                if callable(fetch_rankings):
+                    rankings = fetch_rankings(5)
+                    if isinstance(rankings, tuple) and len(rankings) == 2:
+                        raw_top, raw_bottom = rankings
+                        if isinstance(raw_top, list):
+                            top_concepts = list(raw_top)
+                        if isinstance(raw_bottom, list):
+                            bottom_concepts = list(raw_bottom)
+            except Exception as e:
+                logger.debug("attach concept_rankings failed (fail-open): %s", e)
+
+            cache[market] = (top_concepts, bottom_concepts)
+            return list(top_concepts), list(bottom_concepts)
 
     def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
         """Ensure at least *min_days* of K-line history is in DB for agent tools."""
@@ -2306,6 +2375,7 @@ class StockAnalysisPipeline:
                 query_source=getattr(self, "query_source", None) or "system",
                 report_type=report_type,
                 portfolio_context=portfolio_context,
+                profile_source="auto_default",
             )
             if isinstance(signal_result, dict):
                 summary = summarize_decision_signal(signal_result.get("item"))

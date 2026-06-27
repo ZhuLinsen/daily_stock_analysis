@@ -1140,6 +1140,12 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                         "bottom": [],
                     }
                 },
+                "concept_boards": {
+                    "data": {
+                        "top": [{"name": "机器人概念", "change_pct": 4.2}],
+                        "bottom": [],
+                    }
+                },
                 "earnings": {
                     "data": {
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
@@ -1161,6 +1167,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.concept_rankings["top"][0]["name"], "机器人概念")
 
     def test_history_detail_uses_raw_code_for_legacy_jp_kr_fundamental_snapshot(self) -> None:
         """Legacy bare JP/KR history rows should display suffixes but read snapshots by stored code."""
