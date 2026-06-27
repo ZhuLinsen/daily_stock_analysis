@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Web 回测运行未传分析日期范围、股票代码未归一化导致后端成功返回但结果为空的问题，并为空候选和行情不足返回诊断信息。
 - [文档] 补充回测请求链路说明：`analysis_date_from/analysis_date_to` 与 `code` 的输入边界、归一化与筛选顺序，以及历史行情不足或候选集为空时回测返回成功响应，在 `message` 与 `diagnostics`（含 `empty_reason`）中提供可诊断信息，并同步更新 `docs/full-guide.md`、`docs/full-guide_EN.md` 示例。
 - [修复] 回测代码匹配新增非法市场后缀/长度兜底：如 `600519.HK`、`600519.SZ`、`SH000001` 不再静默回落到其它有效代码，并在日期筛选重跑时对齐旧回测结果的分析日期，避免历史快照日期命中但结果列表仍为空。
+- [文档] Add DESIGN.md report design contract and pinned designmd tooling.
 
 ## [3.23.0] - 2026-06-20
 

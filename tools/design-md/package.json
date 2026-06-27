@@ -1,0 +1,15 @@
+{
+  "name": "dsa-design-md-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned DESIGN.md CLI tooling for DSA report design contracts.",
+  "scripts": {
+    "lint": "designmd lint ../../DESIGN.md",
+    "export:dtcg": "designmd export --format dtcg ../../DESIGN.md",
+    "export:css-tailwind": "designmd export --format css-tailwind ../../DESIGN.md",
+    "generate": "designmd export --format dtcg ../../DESIGN.md > ../../design-tokens.json && designmd export --format css-tailwind ../../DESIGN.md | node trim-trailing-blank-lines.mjs > ../../design-theme.css"
+  },
+  "dependencies": {
+    "@google/design.md": "0.3.0"
+  }
+}
