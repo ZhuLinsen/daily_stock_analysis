@@ -65,6 +65,10 @@ Web 入口位于 `/decision-signals`：
 
 - 默认查询 `status=active`。
 - 支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选。
+- 新增单支股票信号时间线，复用现有 `GET /api/v1/decision-signals` list API，不新增 timeline endpoint。时间线必须输入非空 `stockCode` 后才会查询；空 `stockCode` 只显示引导态，不拉取 market-only 或 global timeline。
+- 时间线只支持 `30d`、`90d`、`180d` 三个时间范围，默认 `90d`；每次最多请求 100 条。若返回 `total > items.length`，Web 会显示“仅展示最近 100 条信号，请缩小时间范围”，避免静默展示不完整轨迹。
+- 时间线 status filter 只支持 `all` 与 `active`：`all` 不传 `status`，`active` 传 `status=active`。P1 不提供 terminal status filter，也不做前端 terminal 过滤。
+- P1 不提供 profile filter；`decision_profile` 仍只存在于 metadata 中，不能可靠 server-side 过滤。历史缺失或非法 profile 的信号在 Web 中显示为 `unknown`，不会误标为 `balanced`。
 - market filter 在 API / 服务层与 Web 前端均已支持 `cn/hk/us/jp/kr/tw`；`jp/kr/tw` 的前端本地化标签均已补齐，`tw` 信号可经 API 正常写入、按 `market=tw` 查询，并可在 Web DecisionSignal 页面通过市场筛选项选择台股（tw）；告警（大盘红绿灯）市场仍为 cn/hk/us。
 - 详情抽屉展示动作、状态、评分、置信度、周期、计划质量、市场阶段、价格计划、风险、观察条件、证据、数据质量和 metadata。
 - Web 只能把信号标记为 `closed`、`invalidated` 或 `archived`，不提供 terminal 状态恢复为 active。
@@ -72,6 +76,19 @@ Web 入口位于 `/decision-signals`：
 - 持仓页异步查询每个唯一持仓的 latest active 信号，单只查询失败只显示降级提示，不阻断组合快照或其他持仓信号。
 
 所有用户可见枚举必须使用 i18n 标签；技术 ID、股票代码、API 字段名、env key、URL 示例可以保留英文。
+
+## Decision profile metadata
+
+P1 自动生成的 `source_type=analysis` 信号会在 metadata 中写入默认决策风格元数据：
+
+- `decision_profile=balanced`
+- `profile_source=auto_default`：普通新分析生成路径。
+- `profile_source=backfill_defaulted`：历史报告 lazy backfill 路径。
+- `profile_policy_version=decision-profile-v1`
+- `signal_generation_version=legacy-report-extractor-v1`
+- `decision_signal_metadata_version=decision-signal-metadata-v1`
+
+`profile_policy_version` 只表示默认 profile metadata contract version，不代表已经实现独立 profile policy engine、scoring engine 或多 profile 生成。P1/P2 不写入 `scoring_version` 或 `scoring_breakdown`；这些字段如需引入，应由后续 reassess / scoring issue 定义。
 
 ## 告警、通知与组合风险
 

@@ -2375,6 +2375,7 @@ class StockAnalysisPipeline:
                 query_source=getattr(self, "query_source", None) or "system",
                 report_type=report_type,
                 portfolio_context=portfolio_context,
+                profile_source="auto_default",
             )
             if isinstance(signal_result, dict):
                 summary = summarize_decision_signal(signal_result.get("item"))

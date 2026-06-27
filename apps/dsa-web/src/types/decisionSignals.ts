@@ -15,6 +15,8 @@ export type DecisionSignalOutcomeEvalStatus = 'completed' | 'unable';
 export type DecisionSignalOutcomeValue = 'hit' | 'miss' | 'neutral';
 export type DecisionSignalFeedbackValue = 'useful' | 'not_useful';
 export type DecisionSignalFeedbackSource = 'web' | 'api';
+export type DecisionProfile = 'conservative' | 'balanced' | 'aggressive';
+export type DecisionProfileDisplay = DecisionProfile | 'unknown';
 
 export interface DecisionSignalItem {
   id: number;
