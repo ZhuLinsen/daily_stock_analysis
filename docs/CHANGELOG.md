@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [改进] TickFlow 扩展为可选 A 股日 K、实时行情、股票列表/名称数据源，并为日 K 请求增加 count、完整性校验和批量预取缓存保护。
 - [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
+- [修复] 修复通知 Markdown 表格转换在空单元格后将后续内容错配到错误表头的问题。
+- [修复] 默认通知报告补充展示 `dashboard.phase_decision` 盘中决策护栏字段，避免与模板渲染路径展示不一致。
+- [修复] 修复 Windows 环境下 Web/Desktop 静态 JS 资源可能被识别为 `text/plain` 导致前端黑屏的问题。
 - [改进] Web 设置页新增首次启动配置检查卡，串联基础配置状态、自选股入口、模型配置入口和一次简短试跑。
 - [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
