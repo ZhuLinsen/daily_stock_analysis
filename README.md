@@ -1,287 +1,263 @@
 <div align="center">
 
-# 📈 股票智能分析系统
+# AI 股票复盘工作台
 
-[![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/daily_stock_analysis?style=social)](https://github.com/ZhuLinsen/daily_stock_analysis/stargazers)
-[![CI](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/daily_stock_analysis/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Ready-2088FF?logo=github-actions&logoColor=white)](https://github.com/features/actions)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/zhulinsen/daily_stock_analysis)
+**一个面向普通 A 股用户的 AI 复盘、行情、持仓与基金分析工作台。**
 
-<p align="center">
-  <img src="https://trendshift.io/api/badge/trendshift/repositories/18527/daily?language=Python" alt="#1 Python Repository Of The Day | Trendshift" width="250" height="55"/>&nbsp;<a href="https://hellogithub.com/repository/ZhuLinsen/daily_stock_analysis" target="_blank"><img src="https://api.hellogithub.com/v1/widgets/recommend.svg?rid=6daa16e405ce46ed97b4a57706aeb29f&claim_uid=pfiJMqhR9uvDGlT&theme=neutral" alt="Featured｜HelloGitHub" width="230" /></a>
-</p>
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111)](https://react.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Ready-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker/)
 
-> 🤖 基于 AI 大模型的 A股/港股/美股/日股/韩股自选股智能分析系统，每日自动分析并推送「决策仪表盘」到企业微信/飞书/Telegram/Discord/Slack/邮箱
+市场总览 · 自选股 · 个股详情 · 每日复盘 · 持仓建议 · ETF · 场外基金
 
-[**产品预览**](#-产品预览) · [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md)
-
-简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
+> 本仓库基于开源项目 [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) 做最小改造增强，并参考 [ArvinLovegood/go-stock](https://github.com/ArvinLovegood/go-stock) 的工作台体验，面向“看得懂、用得上、可复盘”的普通投资者场景。
 
 </div>
 
-## 💖 赞助商 (Sponsors)
-<div align="center">
-  <p align="center">
-    <a href="https://open.anspire.cn/?share_code=QFBC0FYC" target="_blank"><img src="./docs/assets/anspire.png" alt="Anspire Open 一站式模型和搜索服务" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-    <a href="https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis" target="_blank"><img src="./docs/assets/serpapi_banner_zh.png" alt="轻松抓取搜索引擎上的实时金融新闻数据 - SerpApi" width="300" height="141" style="width: 300px; height: 141px; object-fit: contain;"></a>
-  </p>
-</div>
+---
 
+## 这是什么
 
-## 🖥️ 产品预览
+AI 股票复盘工作台不是量化交易终端，也不是荐股软件。它更像一个每天收盘后打开的“复盘桌面”：把指数、板块、自选股、个股 K 线、资金流、AI 分析、持仓风险和场外基金数据放到一个界面里，用普通话给出可读的观察清单。
 
-<p align="center">
-  <img src="docs/assets/readme_workspace_tour_20260510.gif" alt="DSA Web 工作台演示" width="720">
-</p>
+项目尽量复用 `daily_stock_analysis` 原有能力：多数据源行情、LLM 分析、Markdown 报告、FastAPI、WebUI、Docker、定时任务和企业微信/飞书/邮件等推送能力。在此基础上补齐更适合 A 股用户的四个核心页面，并新增东方财富、同花顺 Fuyao、东方财富妙想 Skill、ETF 和场外基金分析支持。
 
-## ✨ 功能特性
+![工作台预览](docs/assets/readme_workspace_tour_20260510.gif)
 
-| 能力 | 覆盖内容 |
-|------|------|
-| AI 决策报告 | 核心结论、评分、趋势、买卖点位、风险警报、催化因素、操作检查清单 |
-| 多市场数据聚合 | A股、港股、美股、ETF：行情、K 线、技术指标、资金流、筹码、新闻、公告和基本面；日股/韩股（`.T` / `.KS` / `.KQ`）：YFinance 日线与基础行情、技术指标可用，`capital_flow`、`dragon_tiger`、`boards` 与部分高阶区块会按市场边界降级为 `not_supported`（见 [市场支持边界](docs/market-support.md)） |
-| Web / 桌面工作台 | 手动分析、任务进度、历史报告、完整 Markdown、回测、持仓、配置管理、浅色 / 深色主题 |
-| Agent 策略问股 | 多轮追问，支持均线、缠论、波浪、趋势、热点、事件、成长、预期等 15 种内置策略，覆盖 Web/Bot/API |
-| 智能导入与补全 | 图片、CSV/Excel、剪贴板导入；股票代码/名称/拼音/别名补全 |
-| 自动化与推送 | GitHub Actions、Docker、本地定时任务、FastAPI 服务和企业微信/飞书/Telegram/Discord/Slack/邮件推送 |
+## 核心亮点
 
-> 功能细节、字段契约、基本面 P0 超时语义、交易纪律、数据源优先级、Web/API 行为请看 [完整配置与部署指南](docs/full-guide.md)。
+| 能力 | 说明 |
+| --- | --- |
+| 市场总览 Dashboard | 展示上证指数、深证成指、创业板指、成交额、涨跌家数、涨跌停、强势行业、强势概念和 AI 市场情绪总结。 |
+| 自选股 Watchlist | 展示股票代码、名称、最新价、涨跌幅、成交额、换手率、主力净流入、行业/概念、AI 评分和状态标签。 |
+| 个股详情 StockDetail | 集成顶部行情卡、ECharts K 线、成交量、MA/MACD/KDJ/RSI/BOLL、资金流、AI 评分卡、风险提示和 AI 报告。 |
+| 每日复盘 DailyReview | 输出今日市场一句话、最强板块、风险板块、自选股表现、明日观察清单和可导出的 Markdown 复盘。 |
+| 持仓操作建议卡 | 按当前盈亏、仓位占比、AI 评分和风险标签，为每个持仓生成“持有/减仓/加仓等待/止损观察”的普通话解释。 |
+| 建仓参考 | 按预算估算观察价、挂单参考价、手数、触发条件和失效条件，只做复盘参考，不做自动交易。 |
+| ETF 支持 | 将 ETF 纳入行情、K 线、建仓参考和工作台展示，按 ETF 交易单位做更贴近实际的估算。 |
+| 场外基金分析 | 支持净值走势、阶段收益、最大回撤、盘中估值、同类排名、前十大持仓和持仓行业。 |
+| 多数据源容错 | 新增数据源统一返回 `source / stale / error`，单个接口失败不会导致页面崩溃。 |
+| AI 免责声明 | 所有 AI 分析、建仓参考、持仓处理和基金申购参考均带“不构成投资建议”声明。 |
 
-### 技术栈与数据来源
+## 页面一览
 
-| 类型 | 支持 |
-|------|------|
-| AI 模型 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[AIHubMix](https://aihubmix.com/?aff=CfMq)、Gemini、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama 本地模型等 |
-| 行情数据 | [TickFlow](https://tickflow.org/auth/register?ref=WDSGSPS5XC)、AkShare、Tushare、Pytdx、Baostock、YFinance、Longbridge |
-| 新闻搜索 | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC)、[SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)、[Tavily](https://tavily.com/)、[Bocha](https://open.bocha.cn/)、[Brave](https://brave.com/search/api/)、[MiniMax](https://platform.minimaxi.com/)、SearXNG |
-| 社交舆情 | [Stock Sentiment API](https://api.adanos.org/docs)（Reddit / X / Polymarket，仅美股，可选） |
+### 1. 市场总览
 
-> 完整规则见 [数据源配置](docs/full-guide.md#数据源配置)。
+用一屏了解今天市场温度：指数是否共振、成交额是否放大、涨跌家数是否健康、强势方向集中在哪些行业和概念。
 
-## 🚀 快速开始
+### 2. 自选股
 
-### 方式一：[GitHub Actions（推荐）](https://www.bilibili.com/video/BV11FEb66EXG/)
+面向日常跟踪的自选股表格。除了基础行情，还会给出 AI 评分、状态标签和一万元预算下的建仓参考。
 
-> 5 分钟完成部署，零成本，无需服务器。
+状态标签包括：`强势突破`、`趋势持有`、`缩量等待`、`高位风险`、`破位减仓`、`资金流出`、`等待确认`。
 
+### 3. 个股详情
 
-#### 1. Fork 本仓库
+以普通投资者能理解的方式组织 K 线、成交量、均线、MACD、KDJ、RSI、BOLL、资金流、行业概念、风险提示和明日观察位。
 
-点击右上角 `Fork` 按钮（顺便点个 Star⭐ 支持一下）
+### 4. 每日复盘
 
-#### 2. 配置 Secrets
+将市场、板块、自选股和真实持仓汇总成一份复盘报告，支持导出 Markdown，方便沉淀到笔记或知识库。
 
-`Settings` → `Secrets and variables` → `Actions` → `New repository secret`
+### 5. 持仓与基金
 
-**AI 模型配置（至少配置一个）**
+持仓页提供更简单的持仓导入、实时盈亏、仓位集中度和持仓操作建议卡。基金页支持场外基金净值、估值、回撤、排名、持仓行业和前十大持仓。
 
-默认先选一个模型服务商并填写 API Key；需要多模型、图片识别、本地模型或高级路由时，再参考 [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md)。
+## 技术架构
 
-| Secret 名称 | 说明 | 必填 |
-|------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/?share_code=QFBC0FYC) API Key，一Key同时启用全球热门大模型和联网搜索，无需科学上网，含免费额度 | **推荐** |
-| `AIHUBMIX_KEY` | [AIHubMix](https://aihubmix.com/?aff=CfMq) API Key，一Key切换使用全系模型，无需科学上网，本项目可享 10% 优惠 | **推荐** |
-| `GEMINI_API_KEY` | Google Gemini API Key | 可选 |
-| `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可选 |
-| `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
-| `OPENAI_BASE_URL` / `OPENAI_MODEL` | 使用 OpenAI 兼容服务时填写 | 可选 |
+```mermaid
+flowchart LR
+  subgraph UI[WebUI]
+    D[市场总览]
+    W[自选股]
+    S[个股详情]
+    R[每日复盘]
+    P[持仓]
+    F[场外基金]
+  end
 
-> Ollama 更适合本地 / Docker 部署，GitHub Actions 推荐使用云端 API。
+  subgraph API[FastAPI]
+    WR[workbench router]
+    PR[provider router]
+    PS[portfolio service]
+    AS[analysis service]
+  end
 
-**通知渠道配置（至少配置一个）**
+  subgraph Providers[数据源]
+    EM[东方财富 / AkShare / efinance]
+    THS[同花顺 Fuyao]
+    MX[东方财富妙想 Skill]
+    YF[YFinance / 其他兜底]
+  end
 
-| Secret 名称 | 说明 |
-|------------|------|
-| `WECHAT_WEBHOOK_URL` | 企业微信机器人 |
-| `FEISHU_WEBHOOK_URL` | 飞书机器人 |
-| `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Telegram |
-| `DISCORD_WEBHOOK_URL` | Discord Webhook |
-| `SLACK_BOT_TOKEN` + `SLACK_CHANNEL_ID` | Slack Bot |
-| `EMAIL_SENDER` + `EMAIL_PASSWORD` | 邮件推送 |
+  UI --> WR
+  WR --> PR
+  WR --> PS
+  WR --> AS
+  PR --> EM
+  PR --> THS
+  PR --> MX
+  PR --> YF
+```
 
-更多渠道、签名校验、分组邮件、Markdown 转图片等配置见 [通知渠道详细配置](docs/full-guide.md#通知渠道详细配置)。
+后端以 FastAPI 为服务入口，`ProviderRouter` 负责统一调度东方财富、同花顺、妙想、AkShare、efinance、YFinance 等数据源；前端基于 React + TypeScript + ECharts，尽量用卡片、表格和标签表达复杂信息。
 
-**自选股配置（必填）**
+## 快速开始
 
-| Secret 名称 | 说明 | 必填 |
-|------------|------|:----:|
-| `STOCK_LIST` | 自选股代码，如 `600519,hk00700,AAPL,7203.T,005930.KS` | ✅ |
-
-**新闻源配置（推荐）**
-
-新闻源会显著影响舆情、公告、事件和催化因素质量，建议至少配置一个搜索服务。
-
-| Secret 名称 | 说明 | 必填 |
-|------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/)：中文内容特别优化，适合 A 股新闻和舆情检索；同一 Key 可复用为 Anspire 大模型 | **推荐** |
-| `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis)：搜索引擎结果补强，适合实时金融新闻 | **推荐** |
-| `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新闻搜索 API | 可选 |
-| `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/)：中文搜索优化，支持 AI 摘要 | 可选 |
-| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/)：隐私优先，美股资讯补强 | 可选 |
-| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/)：结构化搜索结果 | 可选 |
-| `SEARXNG_BASE_URLS` | SearXNG 自建实例：无配额兜底，适合私有部署 | 可选 |
-
-更多搜索源、社交舆情和降级规则见 [搜索服务配置](docs/full-guide.md#搜索服务配置)。
-
-#### 3. 启用 Actions
-
-`Actions` 标签 → `I understand my workflows, go ahead and enable them`
-
-#### 4. 手动测试
-
-`Actions` → `每日股票分析` → `Run workflow` → `Run workflow`
-
-#### 完成
-
-默认每个**工作日 18:00（北京时间）**自动执行，也可手动触发。默认非交易日（含 A/H/US 节假日）不执行；强制运行、交易日检查、断点续传等规则见 [完整指南](docs/full-guide.md#定时任务配置)。
-
-### 方式二：[客户端配置教程](https://www.bilibili.com/video/BV11FEb66Eyr/) / 本地运行 / Docker 部署
+### Docker 运行
 
 ```bash
-# 克隆项目
-git clone https://github.com/ZhuLinsen/daily_stock_analysis.git && cd daily_stock_analysis
+git clone https://github.com/zqj372-ops/daily_stock_analysis_workbench.git
+cd daily_stock_analysis_workbench
+cp .env.example .env
 
-# 安装依赖
+# 编辑 .env，至少配置 STOCK_LIST 和一个可用 LLM Key
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.local.yml up -d --build server
+```
+
+启动后访问：`http://127.0.0.1:8000`
+
+### 本地开发
+
+```bash
+git clone https://github.com/zqj372-ops/daily_stock_analysis_workbench.git
+cd daily_stock_analysis_workbench
+
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 
-# 配置环境变量
-cp .env.example .env && vim .env
+# 后端
+python main.py --webui
 
-# 运行分析
-python main.py
+# 前端开发模式，可选
+cd apps/dsa-web
+npm install
+npm run dev
 ```
 
 常用命令：
 
 ```bash
-python main.py --debug
-python main.py --dry-run
-python main.py --stocks 600519,hk00700,AAPL
-python main.py --market-review
-python main.py --schedule
-python main.py --serve-only
+python main.py --serve-only       # 只启动 API / Web 服务
+python main.py --webui            # 启动 WebUI
+python main.py --stocks 600519    # 手动分析单只股票
+python main.py --market-review    # 大盘复盘
+python main.py --schedule         # 定时任务
 ```
 
-> Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
+## 关键环境变量
 
-## 📱 推送效果
+| 变量 | 用途 | 必填 |
+| --- | --- | :---: |
+| `STOCK_LIST` | 自选股列表，如 `600519,300750,510300` | 是 |
+| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `GEMINI_API_KEY` 等 | LLM 分析 | 任选其一 |
+| `FUYAO_API_KEY` | 同花顺 Fuyao 金融 API，用于行情快照、指数、板块等 | 可选 |
+| `MX_APIKEY` | 东方财富妙想 Skill API，用于妙想数据查询、资讯搜索、智能选股等 | 可选 |
+| `TUSHARE_TOKEN` | Tushare 数据源 | 可选 |
+| `WECHAT_WEBHOOK_URL` / `FEISHU_WEBHOOK_URL` / `EMAIL_*` | 推送渠道 | 可选 |
 
-### 决策仪表盘
-```
-🎯 2026-02-08 决策仪表盘
-共分析3只股票 | 🟢买入:0 🟡观望:2 🔴卖出:1
+更多配置请看 [.env.example](.env.example) 和 [完整配置指南](docs/full-guide.md)。请勿将真实 API Key、Webhook、数据库文件、持仓明细或 `.env` 提交到公开仓库。
 
-📊 分析结果摘要
-⚪ 中钨高新(000657): 观望 | 评分 65 | 看多
-⚪ 永鼎股份(600105): 观望 | 评分 48 | 震荡
-🟡 新莱应材(300260): 卖出 | 评分 35 | 看空
-
-⚪ 中钨高新 (000657)
-📰 重要信息速览
-💭 舆情情绪: 市场关注其AI属性与业绩高增长，情绪偏积极，但需消化短期获利盘和主力流出压力。
-📊 业绩预期: 基于舆情信息，公司2025年前三季度业绩同比大幅增长，基本面强劲，为股价提供支撑。
-
-🚨 风险警报:
-
-风险点1：2月5日主力资金大幅净卖出3.63亿元，需警惕短期抛压。
-风险点2：筹码集中度高达35.15%，表明筹码分散，拉升阻力可能较大。
-风险点3：舆情中提及公司历史违规记录及重组相关风险提示，需保持关注。
-✨ 利好催化:
-
-利好1：公司被市场定位为AI服务器HDI核心供应商，受益于AI产业发展。
-利好2：2025年前三季度扣非净利润同比暴涨407.52%，业绩表现强劲。
-📢 最新动态: 【最新消息】舆情显示公司是AI PCB微钻领域龙头，深度绑定全球头部PCB/载板厂。2月5日主力资金净卖出3.63亿元，需关注后续资金流向。
-
----
-生成时间: 18:00
-```
-
-### 大盘复盘
-```
-🎯 2026-01-10 大盘复盘
-
-📊 主要指数
-- 上证指数: 3250.12 (🟢+0.85%)
-- 深证成指: 10521.36 (🟢+1.02%)
-- 创业板指: 2156.78 (🟢+1.35%)
-
-📈 市场概况
-上涨: 3920 | 下跌: 1349 | 涨停: 155 | 跌停: 3
-
-🔥 板块表现
-领涨: 互联网服务、文化传媒、小金属
-领跌: 保险、航空机场、光伏设备
-```
-
-## ⚙️ 配置说明
-
-完整环境变量、模型渠道、通知渠道、数据源优先级、交易纪律、基本面 P0 语义和部署说明请参考 [完整配置指南](docs/full-guide.md)。
-
-## 🖥️ Web 界面
-
-Web 工作台提供配置管理、任务监控、手动分析、历史报告、完整 Markdown 报告、Agent 问股、回测、持仓管理、智能导入和浅色 / 深色主题。启动方式：
+## API 示例
 
 ```bash
-python main.py --webui
-python main.py --webui-only
+# 市场总览
+curl http://127.0.0.1:8000/api/v1/workbench/dashboard
+
+# 自选股，按 10000 元预算生成建仓参考
+curl 'http://127.0.0.1:8000/api/v1/workbench/watchlist?entry_budget=10000'
+
+# 个股详情
+curl http://127.0.0.1:8000/api/v1/workbench/stocks/600519
+
+# 持仓操作建议卡
+curl http://127.0.0.1:8000/api/v1/workbench/portfolio-actions
+
+# 场外基金分析
+curl http://127.0.0.1:8000/api/v1/workbench/funds/000001?budget=10000
 ```
 
-访问 `http://127.0.0.1:8000` 即可使用。认证、智能导入、搜索补全、历史报告复制、云服务器访问等细节见 [本地 WebUI 管理界面](docs/full-guide.md#本地-webui-管理界面)。
+如果开启了 Web 登录认证，浏览器页面会走登录态；直接请求 API 需要按项目认证配置提供凭据。
 
-## 🤖 Agent 策略问股
+## 模块来源与开源说明
 
-配置任意可用 AI API Key 后，Web `/chat` 页面即可使用策略问股；如需显式关闭可设置 `AGENT_MODE=false`。
+本仓库是面向 AI 股票复盘工作台场景的二次开发版本，主要模块来源如下：
 
-- 支持均线金叉、缠论、波浪理论、多头趋势、热点题材、事件驱动、成长质量、预期重估等内置策略
-- 支持实时行情、K 线、技术指标、新闻和风险信息调用
-- 支持多轮追问、会话导出、发送到通知渠道和后台执行
-- 支持自定义策略文件与多 Agent 编排（实验性）
+| 模块 | 来源 / 参考 | 说明 |
+| --- | --- | --- |
+| 基础后端、调度、推送、LLM 分析、原 WebUI | [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) | 本项目的主体基础，保留 MIT License。 |
+| 工作台 UI 体验参考 | [ArvinLovegood/go-stock](https://github.com/ArvinLovegood/go-stock) | 参考其卡片式工作台、行情/自选/设置等产品体验，未直接复制代码。 |
+| 东方财富 Provider | `data_provider/eastmoney_provider.py`、`data_provider/fund_provider.py` | 基于 AkShare、efinance 和东方财富公开页面/接口做封装，统一 fail-open 返回。 |
+| 同花顺 Provider | `data_provider/ths_provider.py`、`skills/ths_skill/` | 通过 Fuyao API 和本地缓存补充指数、快照、行业、概念、题材归因。 |
+| 东方财富妙想 Skill | `skills/mx-skills/` | 来自东方财富妙想 Skill 包，需用户自行配置 `MX_APIKEY`，仅用于数据查询、资讯搜索、智能选股和自选股管理复盘。 |
+| 前端工作台 | `apps/dsa-web/src/pages/Workbench*.tsx`、`components/workbench/` | React + TypeScript + ECharts 实现市场总览、自选股、个股详情、每日复盘、基金页等。 |
+| 持仓操作建议卡 | `src/services/workbench_service.py`、`PortfolioPage.tsx` | 基于已有持仓快照、盈亏、仓位和风险标签的规则化解释，不调用券商、不自动交易。 |
+| 第三方开源依赖 | `requirements.txt`、`apps/dsa-web/package.json` | 包括 FastAPI、SQLAlchemy、AkShare、efinance、pandas、LiteLLM、React、ECharts、Vite 等。 |
 
-> Agent 具体参数、`skill` 命名兼容、多 Agent 模式和预算护栏见 [完整指南](docs/full-guide.md#本地-webui-管理界面) 与 [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md)。
+所有第三方库版权归原作者所有，请遵守其各自许可证、服务条款和数据使用限制。本仓库只做学习、研究和个人复盘用途，不提供证券交易服务。
 
-## 🧩 相关项目 (Related Projects)
+## 项目结构
 
-> DSA 聚焦日常分析报告；下面两个同系列项目分别覆盖选股、策略验证与策略进化，适合按需延伸使用。它们当前独立维护，后续会优先探索与 DSA 的候选股导入、回测验证和报告联动。
+```text
+daily_stock_analysis/
+├── api/                    # FastAPI 路由与 Pydantic schema
+├── apps/dsa-web/           # React + TypeScript Web 工作台
+├── data_provider/          # 东方财富、同花顺、基金、ETF 等数据源封装
+├── skills/                 # eastmoney_skill / ths_skill / mx-skills
+├── src/services/           # 分析、工作台、持仓、风险等业务服务
+├── docker/                 # Dockerfile 与 compose 配置
+├── docs/                   # 使用文档、部署文档和发布说明
+└── tests/                  # Python 测试
+```
 
-| 项目 | 定位 |
-|------|------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | 多因子选股与全市场扫描，用于从股票池中提取候选标的 |
-| [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | 策略回测与自我进化，用于验证策略规则，并通过迭代探索策略参数与组合 |
+## 设计原则
 
-## 📬 联系与合作
+- 不做自动交易，不接券商接口，不承诺收益。
+- 优先展示普通用户能看懂的信息，而不是复杂专业量化终端。
+- 数据源失败要降级，单个接口异常不能拖垮整个页面。
+- AI 输出必须有免责声明，建仓/持仓/基金建议都只作为复盘参考。
+- 默认浅色模式，保留深色模式扩展点。
 
-<table>
-  <tr>
-    <td width="92" valign="top"><strong>合作邮箱</strong></td>
-    <td valign="top">
-      <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a><br>
-      项目咨询、部署支持与功能扩展
-    </td>
-    <td align="center" rowspan="3" valign="middle" width="148">
-      <a href="http://xhslink.com/m/tU520DWCKT" target="_blank"><img src="./docs/assets/xiaohongshu_tick.jpg" width="112" alt="小红书二维码"></a><br>
-      <sub>扫码关注小红书</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="92" valign="top"><strong>小红书</strong></td>
-    <td valign="top"><a href="http://xhslink.com/m/tU520DWCKT">欢迎关注小红书</a></td>
-  </tr>
-  <tr>
-    <td width="92" valign="top"><strong>问题反馈</strong></td>
-    <td valign="top"><a href="https://github.com/ZhuLinsen/daily_stock_analysis/issues">提交 Issue</a></td>
-  </tr>
-</table>
+## 路线图
 
-## 📄 License
+- [x] AI 股票复盘工作台四页面 MVP
+- [x] 东方财富 / 同花顺 Provider 接入
+- [x] ECharts K 线与资金流图表
+- [x] ETF 数据支持
+- [x] 持仓操作建议卡
+- [x] 场外基金净值、估值、排名、持仓行业
+- [ ] 更完整的异常监控与数据源健康面板
+- [ ] 更细的自选股分组、标签和导入体验
+- [ ] 更丰富的基金同类对比和指数基准
+- [ ] 移动端布局进一步打磨
 
-[MIT License](LICENSE) © 2026 ZhuLinsen
+## 文档
 
-欢迎在二次开发或引用时注明本仓库来源，感谢支持项目持续维护。
+- [完整配置与部署指南](docs/full-guide.md)
+- [AI 股票复盘工作台 MVP 发布说明](docs/releases/ai-stock-workbench-mvp.md)
+- [市场支持边界](docs/market-support.md)
+- [LLM 配置指南](docs/LLM_CONFIG_GUIDE.md)
+- [桌面端打包说明](docs/desktop-package.md)
 
-## ⚠️ 免责声明
+## 贡献
 
-本项目仅供学习和研究使用，不构成任何投资建议。股市有风险，投资需谨慎。作者不对使用本项目产生的任何损失负责。
+欢迎提交 Issue 和 PR。比较适合贡献的方向包括：数据源适配、前端交互、报表模板、持仓导入格式、基金数据质量、文档和部署脚本。
 
----
+提交前建议至少运行：
+
+```bash
+python -m compileall api data_provider src
+cd apps/dsa-web && npm run build
+```
+
+## License
+
+本项目沿用 [MIT License](LICENSE)。原始项目、参考项目、第三方依赖和外部数据服务均归其各自作者或权利方所有。
+
+## 免责声明
+
+本项目仅供学习、研究和个人复盘使用，不构成任何投资建议、收益承诺或交易指令。股票、ETF、基金等金融产品均存在风险，投资需谨慎。使用者应自行核验数据来源、接口时效和分析结论，并独立承担投资决策责任。
