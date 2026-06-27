@@ -359,7 +359,15 @@ class SkillManager:
 
         skills: List[Skill] = []
         for skills_dir in skill_dirs:
-            skills.extend(load_skills_from_directory(skills_dir))
+            if skills_dir.name == "skills":
+                # Only load vetted skill bundles, skip mx-skills with write capabilities
+                _VETTED = {"eastmoney_skill", "ths_skill"}
+                for sub in skills_dir.iterdir():
+                    if sub.is_dir() and sub.name in _VETTED:
+                        skills.extend(load_skills_from_directory(sub))
+            else:
+                skills.extend(load_skills_from_directory(skills_dir))
+
         for skill in skills:
             skill.source = "builtin"
             self.register(skill)

@@ -279,7 +279,7 @@ class WorkbenchService:
         code = normalize_stock_code(symbol)
         blocks = self._collect_provider_blocks(
             {
-                "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=False),
+                "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=True),
                 "kline": lambda: self.router.get_ths_stock_daily_kline(code),
                 "money_flow": lambda: self.router.get_money_flow(code, allow_remote=False),
                 "themes": lambda: self.router.infer_stock_themes(code, allow_remote=False),
@@ -293,7 +293,7 @@ class WorkbenchService:
         if not _unwrap(kline, []):
             kline = self._safe_provider_block(
                 "daily_kline_cache",
-                lambda: self.router.get_daily_kline(code, allow_remote=False),
+                lambda: self.router.get_daily_kline(code, allow_remote=True),
                 timeout_seconds=2.0,
             )
         money_flow = blocks["money_flow"]
@@ -901,14 +901,14 @@ class WorkbenchService:
     def _build_watchlist_row(self, raw_code: str, fast: bool = False, entry_budget: float = 10000.0) -> Dict[str, Any]:
         code = normalize_stock_code(raw_code)
         if fast:
-            quote = self._normalize_provider_block("quote", self.router.get_realtime_quote(code, allow_legacy_remote=False))
+            quote = self._normalize_provider_block("quote", self.router.get_realtime_quote(code, allow_legacy_remote=True))
             money_flow = _data_block("workbench.fast", data={}, stale=True, error="remote_fetch_skipped_for_fast_view")
             themes = self._normalize_provider_block("themes", self.router.infer_stock_themes(code, allow_remote=False))
-            kline = self._normalize_provider_block("kline", self.router.get_daily_kline(code, allow_remote=False))
+            kline = self._normalize_provider_block("kline", self.router.get_daily_kline(code, allow_remote=True))
         else:
             blocks = self._collect_provider_blocks(
                 {
-                    "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=False),
+                    "quote": lambda: self.router.get_realtime_quote(code, allow_legacy_remote=True),
                     "money_flow": lambda: self.router.get_money_flow(code, allow_remote=True),
                     "themes": lambda: self.router.infer_stock_themes(code, allow_remote=False),
                     "kline": lambda: self.router.get_daily_kline(code, allow_remote=True),

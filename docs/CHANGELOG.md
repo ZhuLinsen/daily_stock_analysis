@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] #1815 补充 JP/KR/TW suffix-only MVP 在外部 API、provider/model/base URL 与运行时配置上的边界说明：当前为结构化字段兼容验证且可回退到旧链路。
 - [修复] 修复通知 Markdown 表格转换在空单元格后将后续内容错配到错误表头的问题。
 - [新功能] 新增 AI 股票复盘工作台 MVP，接入东方财富/同花顺 Provider、四个 Web 页面、ECharts K线图、AI评分卡、风险标签和每日复盘 Markdown 导出。
-- [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.74，避免包索引缺少更新版本时导致 docker-build 失败。
 - [修复] 将 Docker 可安装的 Longbridge SDK 版本固定为 0.2.75，避免 `longbridge>=0.2.77` 从包索引消失后导致 docker-build 失败。
 - [修复] 持仓快照今日估值改为受限并发预取多只持仓实时价，减少持仓较多时 Web 组合页面刷新超时。
 - [修复] Web 首页重新分析完成后自动切换到同一股票最新生成的报告，避免仍停留在旧报告内容。

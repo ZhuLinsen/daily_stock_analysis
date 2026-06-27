@@ -786,7 +786,7 @@ const PortfolioPage: React.FC = () => {
         text: textValue,
         tradeDate: simpleImportTradeDate || undefined,
         market: writableAccount?.market,
-        currency: writableAccount?.baseCurrency,
+        currency: undefined // let backend derive from market,
       });
       setSimpleImportParseResult(result);
     } catch (err) {
@@ -814,7 +814,7 @@ const PortfolioPage: React.FC = () => {
         text: textValue,
         tradeDate: simpleImportTradeDate || undefined,
         market: writableAccount?.market,
-        currency: writableAccount?.baseCurrency,
+        currency: undefined // let backend derive from market,
         dryRun: simpleImportDryRun,
       });
       setSimpleImportCommitResult(result);
