@@ -26,6 +26,7 @@ import pandas as pd
 import numpy as np
 from src.data.stock_index_loader import get_index_stock_name
 from src.data.stock_mapping import STOCK_NAME_MAP, is_meaningful_stock_name
+from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 from .fundamental_adapter import AkshareFundamentalAdapter
 from .yfinance_fundamental_adapter import YfinanceFundamentalAdapter
@@ -178,20 +179,12 @@ def _is_hk_market(code: str) -> bool:
 
 def _is_jp_market(code: str) -> bool:
     """判定是否为日本 Yahoo Finance suffix 代码（如 7203.T）。"""
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith(".T"):
-        return False
-    base = normalized[:-2]
-    return base.isdigit() and len(base) in (4, 5)
+    return is_suffix_market_symbol(code, "jp")
 
 
 def _is_kr_market(code: str) -> bool:
     """判定是否为韩国 Yahoo Finance suffix 代码（如 005930.KS / 035720.KQ）。"""
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith((".KS", ".KQ")):
-        return False
-    base = normalized.rsplit(".", 1)[0]
-    return base.isdigit() and len(base) == 6
+    return is_suffix_market_symbol(code, "kr")
 
 
 def _is_tw_market(code: str) -> bool:
@@ -200,11 +193,7 @@ def _is_tw_market(code: str) -> bool:
     台股 base 为 4-6 位（普通股 4 位，ETF/其他至 6 位，如 00878 / 006208）。
     仅带 .TW/.TWO 后缀的代码才识别为台股，裸 6 位代码仍按 A 股语义处理。
     """
-    normalized = (code or "").strip().upper()
-    if not normalized.endswith((".TW", ".TWO")):
-        return False
-    base = normalized.rsplit(".", 1)[0]
-    return base.isdigit() and 4 <= len(base) <= 6
+    return is_suffix_market_symbol(code, "tw")
 
 
 def _is_etf_code(code: str) -> bool:
@@ -2782,6 +2771,10 @@ class DataFetcherManager:
 
         result_ctx: Dict[str, Any] = {
             "market": market,
+            "provider": "yfinance",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "data_quality": "unavailable",
+            "missing_fields": [],
             "valuation": {},
             "growth": {},
             "earnings": {},
@@ -2903,10 +2896,16 @@ class DataFetcherManager:
         active_statuses = {"valuation": valuation_status, "growth": growth_status, "earnings": earnings_status}
         if all(value == "not_supported" for value in active_statuses.values()):
             result_ctx["status"] = "not_supported"
+            result_ctx["data_quality"] = "unavailable"
         elif "failed" in active_statuses.values() or "partial" in active_statuses.values():
             result_ctx["status"] = "partial"
+            result_ctx["data_quality"] = "partial"
         else:
             result_ctx["status"] = "ok"
+            result_ctx["data_quality"] = "ok"
+        result_ctx["missing_fields"] = [
+            block for block, status in active_statuses.items() if status != "ok"
+        ]
 
         result_ctx["elapsed_ms"] = int((time.time() - start_ts) * 1000)
         if cache_ttl > 0 and self._should_cache_fundamental_context(result_ctx):

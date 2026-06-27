@@ -34,6 +34,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
 try:
@@ -81,14 +82,7 @@ class YfinanceFetcher(BaseFetcher):
     @staticmethod
     def _is_jp_kr_suffix_stock(stock_code: str) -> bool:
         """Return True for supported JP/KR suffix-only Yahoo symbols."""
-        code = (stock_code or "").strip().upper()
-        if code.endswith(".T"):
-            base = code[:-2]
-            return base.isdigit() and len(base) in (4, 5)
-        if code.endswith((".KS", ".KQ")):
-            base = code.rsplit(".", 1)[0]
-            return base.isdigit() and len(base) == 6
-        return False
+        return is_suffix_market_symbol(stock_code, "jp") or is_suffix_market_symbol(stock_code, "kr")
 
     @staticmethod
     def _is_tw_suffix_stock(stock_code: str) -> bool:
@@ -97,11 +91,7 @@ class YfinanceFetcher(BaseFetcher):
         Taiwan base codes are 4-6 digits (common stocks 4, ETFs/others up to 6,
         e.g. 00878 / 006208), wider than the JP `.T` range.
         """
-        code = (stock_code or "").strip().upper()
-        if code.endswith((".TW", ".TWO")):
-            base = code.rsplit(".", 1)[0]
-            return base.isdigit() and 4 <= len(base) <= 6
-        return False
+        return is_suffix_market_symbol(stock_code, "tw")
 
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -741,10 +731,31 @@ class YfinanceFetcher(BaseFetcher):
             if high is not None and low is not None and prev_close is not None and prev_close > 0:
                 amplitude = ((high - low) / prev_close) * 100
 
+            try:
+                ticker_info = ticker.info or {}
+            except Exception:
+                ticker_info = {}
+            missing_fields = [
+                field
+                for field, value in {
+                    "price": price,
+                    "prev_close": prev_close,
+                    "volume": volume,
+                    "amount": None,
+                    "pe_ratio": None,
+                    "pb_ratio": None,
+                }.items()
+                if value is None
+            ]
+
             quote = UnifiedRealtimeQuote(
                 code=user_code,
                 name=index_name or user_code,
                 source=RealtimeSource.FALLBACK,
+                market="us",
+                currency=str(ticker_info.get("currency") or "").upper() or None,
+                data_quality="partial" if missing_fields else "ok",
+                missing_fields=missing_fields or None,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
                 change_amount=round(change_amount, 4) if change_amount is not None else None,
@@ -804,6 +815,7 @@ class YfinanceFetcher(BaseFetcher):
         try:
             symbol = self._convert_stock_code(stock_code)
             is_us_symbol = self._is_us_stock(symbol)
+            suffix_market = get_suffix_market(symbol)
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
@@ -856,17 +868,37 @@ class YfinanceFetcher(BaseFetcher):
             if high is not None and low is not None and prev_close is not None and prev_close > 0:
                 amplitude = ((high - low) / prev_close) * 100
 
-            # 获取股票名称
+            # 获取股票名称与 provider 元数据
             try:
-                info_name = ticker.info.get('shortName', '') or ticker.info.get('longName', '') or ''
+                ticker_info = ticker.info or {}
+            except Exception:
+                ticker_info = {}
+            try:
+                info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
                 name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
             except Exception:
                 name = STOCK_NAME_MAP.get(symbol, '')
 
+            missing_fields = [
+                field
+                for field, value in {
+                    "price": price,
+                    "prev_close": prev_close,
+                    "volume": volume,
+                    "amount": None,
+                    "pe_ratio": None,
+                    "pb_ratio": None,
+                }.items()
+                if value is None
+            ]
             quote = UnifiedRealtimeQuote(
                 code=symbol,
                 name=name,
                 source=RealtimeSource.FALLBACK,
+                market=suffix_market or ("us" if is_us_symbol else None),
+                currency=str(ticker_info.get("currency") or "").upper() or None,
+                data_quality="partial" if missing_fields else "ok",
+                missing_fields=missing_fields or None,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
                 change_amount=round(change_amount, 4) if change_amount is not None else None,

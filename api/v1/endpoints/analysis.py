@@ -205,6 +205,11 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
     if is_code_like(text):
         return resolve_index_stock_code_for_analysis(text)
 
+    if text.isdigit() and len(text) == 4:
+        resolved_index_code = resolve_index_stock_code_for_analysis(text)
+        if resolved_index_code != canonical_stock_code(text):
+            return resolved_index_code
+
     if _is_obviously_invalid_analysis_input(text):
         raise _invalid_analysis_input_error()
 

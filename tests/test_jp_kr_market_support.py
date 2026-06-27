@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager, normalize_stock_code
 from data_provider.yfinance_fetcher import YfinanceFetcher
+from data_provider.realtime_types import UnifiedRealtimeQuote
 from src.core.trading_calendar import MARKET_EXCHANGE, MARKET_TIMEZONE, get_market_for_stock
 from src.market_context import detect_market, get_market_guidelines
 from src.services.stock_code_utils import is_code_like, normalize_code
@@ -116,6 +117,24 @@ def test_data_fetcher_manager_routes_jp_kr_daily_only_to_yfinance() -> None:
     assert efinance.calls == []
     assert akshare.calls == []
     assert yfinance.calls == ["7203.T", "005930.KS"]
+
+
+def test_realtime_quote_serializes_jp_kr_data_quality_metadata() -> None:
+    quote = UnifiedRealtimeQuote(
+        code="005930.KS",
+        market="kr",
+        currency="KRW",
+        price=70000.0,
+        data_quality="partial",
+        missing_fields=["amount", "pe_ratio"],
+    )
+
+    payload = quote.to_dict()
+
+    assert payload["market"] == "kr"
+    assert payload["currency"] == "KRW"
+    assert payload["data_quality"] == "partial"
+    assert payload["missing_fields"] == ["amount", "pe_ratio"]
 
 
 def test_trading_calendar_registers_jp_kr_exchanges_and_timezones() -> None:

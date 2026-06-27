@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from src.services.market_symbol_utils import get_suffix_market
+
 logger = logging.getLogger(__name__)
 
 # Exchange-calendars availability
@@ -126,24 +128,9 @@ def get_market_for_stock(code: str) -> Optional[str]:
         return "us"
     if is_hk_stock_code(code):
         return "hk"
-    if code.endswith(".T"):
-        base = code[:-2]
-        if base.isdigit() and len(base) in (4, 5):
-            return "jp"
-    if code.endswith((".KS", ".KQ")):
-        base = code.rsplit(".", 1)[0]
-        if base.isdigit() and len(base) == 6:
-            return "kr"
-    # Taiwan: TWSE `.TW` / TPEx `.TWO`, base 4-6 digits. Checked before the
-    # bare 6-digit A-share fallback so only the explicit suffix opts into TW.
-    if code.endswith(".TWO"):
-        base = code[:-4]
-        if base.isdigit() and len(base) in (4, 5, 6):
-            return "tw"
-    if code.endswith(".TW"):
-        base = code[:-3]
-        if base.isdigit() and len(base) in (4, 5, 6):
-            return "tw"
+    suffix_market = get_suffix_market(code)
+    if suffix_market:
+        return suffix_market
     # A-share: 6-digit numeric
     if code.isdigit() and len(code) == 6:
         return "cn"
