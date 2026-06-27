@@ -967,6 +967,10 @@ class PortfolioService:
         else:
             keys = list(avg_state.keys())
 
+        # We'll store the computed data for each key in a list of dicts, in the same order as sorted(keys)
+        computed: List[Dict[str, Any]] = []
+        symbols_to_price: List[str] = []
+
         for key in sorted(keys):
             symbol, market, currency = key
 
@@ -985,6 +989,7 @@ class PortfolioService:
                 if qty <= EPS:
                     continue
                 avg_cost = total_cost / qty
+                # For average cost, we create a synthetic lot
                 lot_rows.append(
                     {
                         "symbol": symbol,
@@ -997,46 +1002,103 @@ class PortfolioService:
                     }
                 )
 
-            price_info = self._resolve_position_price(symbol=symbol, as_of_date=as_of_date)
+            # Store the computed data for this key
+            computed.append({
+                "key": key,
+                "symbol": symbol,
+                "market": market,
+                "currency": currency,
+                "qty": qty,
+                "total_cost": total_cost,
+                "avg_cost": avg_cost,
+            })
+
+            if qty > EPS:
+                symbols_to_price.append(symbol)
+
+        # Now, fetch the prices for the symbols in parallel if we are today
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # We'll create a dictionary to store the price info for each symbol
+        price_map: Dict[str, _ResolvedPositionPrice] = {}
+
+        # Only fetch in parallel if we are computing for today and there are prices to fetch
+        if as_of_date == date.today() and symbols_to_price:
+            # We'll use a thread pool to fetch the prices concurrently
+            max_workers = min(10, len(symbols_to_price))  # Limit the number of threads
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks
+                future_to_symbol = {
+                    executor.submit(self._resolve_position_price, symbol=symbol, as_of_date=as_of_date): symbol
+                    for symbol in symbols_to_price
+                }
+                for future in as_completed(future_to_symbol):
+                    symbol = future_to_symbol[future]
+                    try:
+                        price_info = future.result()
+                        price_map[symbol] = price_info
+                    except Exception as exc:
+                        # If there's an error, we'll treat it as unavailable
+                        logger.warning("Failed to fetch price for %s: %s", symbol, exc)
+                        price_map[symbol] = _ResolvedPositionPrice(
+                            price=0.0,
+                            source="error",
+                            price_date=None,
+                            is_stale=True,
+                            is_available=False,
+                        )
+
+        # Now, build the position rows and accumulate the totals
+        for comp in computed:
+            symbol = comp["symbol"]
+            price_info = price_map.get(symbol)
+            if price_info is None:
+                # This can happen if we are not today and we didn't fetch in parallel,
+                # or if there was an error and we didn't store it (should not happen, but safe)
+                price_info = self._resolve_position_price(symbol=symbol, as_of_date=as_of_date)
+
+            qty = comp["qty"]
+            total_cost = comp["total_cost"]
+            avg_cost = comp["avg_cost"]
             last_price = price_info.price
 
             if price_info.is_available:
                 local_market_value = qty * float(last_price)
                 market_base, stale_market, _ = self._convert_amount(
                     amount=local_market_value,
-                    from_currency=currency,
+                    from_currency=comp["currency"],
                     to_currency=account.base_currency,
                     as_of_date=as_of_date,
                 )
                 cost_base, stale_cost, _ = self._convert_amount(
                     amount=total_cost,
-                    from_currency=currency,
+                    from_currency=comp["currency"],
                     to_currency=account.base_currency,
                     as_of_date=as_of_date,
                 )
                 unrealized_base = market_base - cost_base
-                fx_stale = fx_stale or stale_market or stale_cost
+                fx_stale = fx_stale or stale_marker or stale_cost
             else:
                 market_base = 0.0
                 cost_base = 0.0
-                unrealized_base = 0.0
+                unresearched_base = 0.0
 
             unrealized_pct = None
             if abs(cost_base) > EPS:
-                unrealized_pct = unrealized_base / cost_base * 100.0
+                unrealized_pct = (float(unrealized_base) / float(cost_base)) * 100.0
 
             position_rows.append(
                 {
-                    "symbol": symbol,
-                    "market": market,
-                    "currency": currency,
-                    "quantity": round(qty, 8),
-                    "avg_cost": round(avg_cost, 8),
-                    "total_cost": round(total_cost, 8),
+                    "symbol": comp["symbol"],
+                    "market": comp["market"],
+                    "currency": comp["currency"],
+                    "quantity": round(comp["qty"], 8),
+                    "avg_cost": round(comp["avg_cost"], 8),
+                    "total_cost": round(comp["total_cost"], 8),
                     "last_price": round(float(last_price), 8),
                     "market_value_base": round(market_base, 8),
                     "unrealized_pnl_base": round(unrealized_base, 8),
-                    "unrealized_pnl_pct": round(unrealized_pct, 8) if unrealized_pct is not None else None,
+                    "unrealized_pnl_pct": round(float(unrealized_pct), 8) if unrealized_pct is not None else None,
                     "valuation_currency": account.base_currency,
                     "price_source": price_info.source,
                     "price_provider": price_info.provider,
