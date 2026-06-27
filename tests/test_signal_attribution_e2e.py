@@ -227,6 +227,36 @@ class TestSignalAttributionE2E:
             assert "None%" not in output
             assert "35%" in output
 
+    def test_all_zero_signal_attribution_is_hidden_without_signals(self):
+        """All-zero weights without strongest signals should not render attribution."""
+        from src.notification import NotificationService
+        from src.services.history_service import HistoryService
+
+        dashboard = self._make_dashboard_with_signal_attr({
+            "technical_indicators": 0,
+            "news_sentiment": 0,
+            "fundamentals": 0,
+            "market_conditions": 0,
+            "strongest_bullish_signal": None,
+            "strongest_bearish_signal": None,
+        })
+        result = self._make_result(dashboard)
+        notification = NotificationService()
+
+        dashboard_report = notification.generate_dashboard_report([result], [dashboard])
+        single_report = notification.generate_single_stock_report(result)
+
+        class MockRecord:
+            created_at = None
+
+        history_report = HistoryService.__new__(HistoryService)._generate_single_stock_markdown(result, MockRecord())
+        template_report = render("markdown", [result], summary_only=False, extra_context={"report_language": "zh"})
+
+        for output in [dashboard_report, single_report, history_report, template_report]:
+            assert output is not None
+            assert "信号归因" not in output
+            assert "Signal Attribution" not in output
+
     # ========== 测试 4: HistoryService markdown 渲染 ==========
     def test_history_service_renders_signal_attribution(self):
         """

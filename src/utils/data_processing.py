@@ -380,6 +380,6 @@ def signal_attribution_has_content(signal_attr: Any) -> bool:
     """Whether a signal_attribution payload has anything meaningful to render."""
     if not isinstance(signal_attr, dict):
         return False
-    if signal_attribution_weight_items(signal_attr):
+    if any(value != 0 for _, value in signal_attribution_weight_items(signal_attr)):
         return True
     return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)
