@@ -27,6 +27,7 @@ const WorkbenchDashboardPage = lazy(() => import('./pages/WorkbenchDashboardPage
 const WorkbenchWatchlistPage = lazy(() => import('./pages/WorkbenchWatchlistPage'));
 const WorkbenchStockDetailPage = lazy(() => import('./pages/WorkbenchStockDetailPage'));
 const WorkbenchDailyReviewPage = lazy(() => import('./pages/WorkbenchDailyReviewPage'));
+const WorkbenchFundsPage = lazy(() => import('./pages/WorkbenchFundsPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -88,6 +89,7 @@ const AppContent: React.FC = () => {
         <Route path="/workbench/watchlist" element={<WorkbenchWatchlistPage />} />
         <Route path="/workbench/stocks/:symbol" element={<WorkbenchStockDetailPage />} />
         <Route path="/workbench/daily-review" element={<WorkbenchDailyReviewPage />} />
+        <Route path="/workbench/funds" element={<WorkbenchFundsPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />

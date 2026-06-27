@@ -1,5 +1,6 @@
 export * from './AiScoreCard';
 export * from './BoardHeatList';
+export * from './FundNavChart';
 export * from './KLineChart';
 export * from './MoneyFlowChart';
 export * from './RiskTags';

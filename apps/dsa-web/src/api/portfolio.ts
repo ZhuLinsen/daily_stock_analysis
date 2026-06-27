@@ -16,6 +16,10 @@ import type {
   PortfolioImportBrokerListResponse,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
+  PortfolioSimplePositionImportCommitPayload,
+  PortfolioSimplePositionImportCommitResponse,
+  PortfolioSimplePositionImportParseResponse,
+  PortfolioSimplePositionImportPayload,
   PortfolioPositionAnalysisRequest,
   PortfolioRiskResponse,
   PortfolioSnapshotResponse,
@@ -254,6 +258,28 @@ export const portfolioApi = {
   async listImportBrokers(): Promise<PortfolioImportBrokerListResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/portfolio/imports/csv/brokers');
     return toCamelCase<PortfolioImportBrokerListResponse>(response.data);
+  },
+
+  async parseSimplePositions(payload: PortfolioSimplePositionImportPayload): Promise<PortfolioSimplePositionImportParseResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/simple-positions/parse', {
+      text: payload.text,
+      trade_date: payload.tradeDate,
+      market: payload.market,
+      currency: payload.currency,
+    });
+    return toCamelCase<PortfolioSimplePositionImportParseResponse>(response.data);
+  },
+
+  async commitSimplePositions(payload: PortfolioSimplePositionImportCommitPayload): Promise<PortfolioSimplePositionImportCommitResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/simple-positions/commit', {
+      account_id: payload.accountId,
+      text: payload.text,
+      trade_date: payload.tradeDate,
+      market: payload.market,
+      currency: payload.currency,
+      dry_run: payload.dryRun ?? true,
+    });
+    return toCamelCase<PortfolioSimplePositionImportCommitResponse>(response.data);
   },
 
   async parseCsvImport(broker: string, file: File): Promise<PortfolioImportParseResponse> {

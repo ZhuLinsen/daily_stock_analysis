@@ -311,6 +311,46 @@ export interface PortfolioImportCommitResponse {
   errors: string[];
 }
 
+export interface PortfolioSimplePositionImportItem {
+  lineNo: number;
+  symbol: string;
+  name?: string | null;
+  quantity: number;
+  avgCost: number;
+  market?: string | null;
+  currency?: string | null;
+}
+
+export interface PortfolioSimplePositionImportPayload {
+  text: string;
+  tradeDate?: string;
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
+  currency?: string;
+}
+
+export interface PortfolioSimplePositionImportParseResponse {
+  recordCount: number;
+  errorCount: number;
+  records: PortfolioSimplePositionImportItem[];
+  errors: string[];
+}
+
+export interface PortfolioSimplePositionImportCommitPayload extends PortfolioSimplePositionImportPayload {
+  accountId: number;
+  dryRun?: boolean;
+}
+
+export interface PortfolioSimplePositionImportCommitResponse {
+  accountId: number;
+  recordCount: number;
+  insertedCount: number;
+  duplicateCount: number;
+  failedCount: number;
+  dryRun: boolean;
+  records: PortfolioSimplePositionImportItem[];
+  errors: string[];
+}
+
 export interface PortfolioImportBrokerItem {
   broker: string;
   aliases: string[];

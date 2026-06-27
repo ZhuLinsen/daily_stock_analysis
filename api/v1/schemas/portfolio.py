@@ -242,6 +242,46 @@ class PortfolioImportCommitResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
+class PortfolioSimplePositionImportItem(BaseModel):
+    line_no: int
+    symbol: str
+    name: Optional[str] = None
+    quantity: float
+    avg_cost: float
+    market: Optional[str] = None
+    currency: Optional[str] = None
+
+
+class PortfolioSimplePositionImportRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="粘贴的持仓文本、表格或 CSV 内容")
+    trade_date: Optional[date] = Field(None, description="导入为初始买入流水的日期，默认今天")
+    market: Optional[str] = Field(None, max_length=16, description="默认市场，支持 cn/hk/us 或 A股/沪深等别名")
+    currency: Optional[str] = Field(None, max_length=16, description="默认币种，支持 CNY/人民币/元 等写法")
+
+
+class PortfolioSimplePositionImportParseResponse(BaseModel):
+    record_count: int
+    error_count: int
+    records: List[PortfolioSimplePositionImportItem] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+
+
+class PortfolioSimplePositionImportCommitRequest(PortfolioSimplePositionImportRequest):
+    account_id: int
+    dry_run: bool = Field(True, description="是否仅预演不写入")
+
+
+class PortfolioSimplePositionImportCommitResponse(BaseModel):
+    account_id: int
+    record_count: int
+    inserted_count: int
+    duplicate_count: int
+    failed_count: int
+    dry_run: bool
+    records: List[PortfolioSimplePositionImportItem] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+
+
 class PortfolioImportBrokerItem(BaseModel):
     broker: str
     aliases: List[str] = Field(default_factory=list)

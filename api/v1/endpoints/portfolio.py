@@ -31,6 +31,10 @@ from api.v1.schemas.portfolio import (
     PortfolioImportTradeItem,
     PortfolioPositionAnalysisRequest,
     PortfolioRiskResponse,
+    PortfolioSimplePositionImportCommitRequest,
+    PortfolioSimplePositionImportCommitResponse,
+    PortfolioSimplePositionImportParseResponse,
+    PortfolioSimplePositionImportRequest,
     PortfolioSnapshotResponse,
     PortfolioTradeListResponse,
     PortfolioTradeCreateRequest,
@@ -590,6 +594,57 @@ def list_csv_brokers() -> PortfolioImportBrokerListResponse:
         return PortfolioImportBrokerListResponse(brokers=importer.list_supported_brokers())
     except Exception as exc:
         raise _internal_error("List CSV brokers failed", exc)
+
+
+@router.post(
+    "/imports/simple-positions/parse",
+    response_model=PortfolioSimplePositionImportParseResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Parse pasted simple position rows",
+)
+def parse_simple_position_import(
+    request: PortfolioSimplePositionImportRequest,
+) -> PortfolioSimplePositionImportParseResponse:
+    service = PortfolioService()
+    try:
+        data = service.parse_simple_position_import(
+            text=request.text,
+            market=request.market,
+            currency=request.currency,
+        )
+        return PortfolioSimplePositionImportParseResponse(**data)
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Parse simple position import failed", exc)
+
+
+@router.post(
+    "/imports/simple-positions/commit",
+    response_model=PortfolioSimplePositionImportCommitResponse,
+    responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Commit pasted simple position rows as initial buy trades",
+)
+def commit_simple_position_import(
+    request: PortfolioSimplePositionImportCommitRequest,
+) -> PortfolioSimplePositionImportCommitResponse:
+    service = PortfolioService()
+    try:
+        data = service.commit_simple_position_import(
+            account_id=request.account_id,
+            text=request.text,
+            trade_date=request.trade_date,
+            market=request.market,
+            currency=request.currency,
+            dry_run=request.dry_run,
+        )
+        return PortfolioSimplePositionImportCommitResponse(**data)
+    except PortfolioBusyError as exc:
+        raise _conflict_error(error="portfolio_busy", message=str(exc))
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Commit simple position import failed", exc)
 
 
 @router.post(

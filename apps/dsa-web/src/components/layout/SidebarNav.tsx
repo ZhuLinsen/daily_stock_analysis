@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, ClipboardList, Gauge, Home, LayoutDashboard, ListChecks, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, ClipboardList, Gauge, Home, LayoutDashboard, ListChecks, LogOut, MessageSquareQuote, Search, Settings2, WalletCards } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { ALPHASIFT_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, alphasiftApi } from '../../api/alphasift';
 import { useAuth } from '../../contexts/AuthContext';
@@ -32,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'workbench', labelKey: 'layout.nav.workbench', to: '/workbench', icon: LayoutDashboard, exact: true },
   { key: 'watchlist', labelKey: 'layout.nav.watchlist', to: '/workbench/watchlist', icon: ListChecks },
   { key: 'daily-review', labelKey: 'layout.nav.dailyReview', to: '/workbench/daily-review', icon: ClipboardList },
+  { key: 'funds', labelKey: 'layout.nav.funds', to: '/workbench/funds', icon: WalletCards },
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },

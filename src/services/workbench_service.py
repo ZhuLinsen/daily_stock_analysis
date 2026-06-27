@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from data_provider.base import normalize_stock_code
+from data_provider.base import normalize_stock_code, _is_etf_code
 from data_provider.provider_router import ProviderRouter, get_provider_router
 from src.config import get_config
 from src.data.stock_index_loader import get_index_stock_name
@@ -200,9 +200,9 @@ class WorkbenchService:
             "ai_market_summary": summary,
         }
 
-    def get_watchlist(self) -> Dict[str, Any]:
+    def get_watchlist(self, *, entry_budget: float = 10000.0) -> Dict[str, Any]:
         codes = self._read_watchlist_codes()
-        rows = self._build_watchlist_rows(codes)
+        rows = self._build_watchlist_rows(codes, entry_budget=entry_budget)
         errors: List[str] = []
         for row in rows:
             errors.extend(_non_benign_errors(row.get("error")))
@@ -211,6 +211,7 @@ class WorkbenchService:
             "stale": any(bool(row.get("stale")) for row in rows),
             "error": "; ".join(errors) if errors else None,
             "disclaimer": DISCLAIMER,
+            "entry_budget": _round(entry_budget) or 10000.0,
             "items": rows,
         }
 
@@ -456,13 +457,13 @@ class WorkbenchService:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _build_watchlist_rows(self, codes: List[str]) -> List[Dict[str, Any]]:
+    def _build_watchlist_rows(self, codes: List[str], *, entry_budget: float = 10000.0) -> List[Dict[str, Any]]:
         if not codes:
             return []
         max_workers = min(WATCHLIST_MAX_WORKERS, max(1, len(codes)))
         executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="workbench-watchlist")
         futures = {
-            executor.submit(self._build_watchlist_row, code, True): (index, code)
+            executor.submit(self._build_watchlist_row, code, True, entry_budget): (index, code)
             for index, code in enumerate(codes)
         }
         results: Dict[int, Dict[str, Any]] = {}
@@ -477,19 +478,24 @@ class WorkbenchService:
                         results[index] = future.result()
                     except Exception as exc:
                         logger.warning("Workbench watchlist row failed for %s: %s", raw_code, exc, exc_info=True)
-                        results[index] = self._fallback_watchlist_row(raw_code, error=str(exc) or type(exc).__name__)
+                        results[index] = self._fallback_watchlist_row(
+                            raw_code,
+                            error=str(exc) or type(exc).__name__,
+                            entry_budget=entry_budget,
+                        )
             for future in pending:
                 index, raw_code = futures[future]
                 future.cancel()
                 results[index] = self._fallback_watchlist_row(
                     raw_code,
                     error=f"timeout_after_{WATCHLIST_TOTAL_TIMEOUT_SECONDS:.0f}s",
+                    entry_budget=entry_budget,
                 )
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         return [results[index] for index in sorted(results)]
 
-    def _fallback_watchlist_row(self, raw_code: str, *, error: str) -> Dict[str, Any]:
+    def _fallback_watchlist_row(self, raw_code: str, *, error: str, entry_budget: float = 10000.0) -> Dict[str, Any]:
         code = normalize_stock_code(raw_code)
         name = _local_stock_name(code) or raw_code
         analysis = self._build_ai_analysis(
@@ -499,6 +505,7 @@ class WorkbenchService:
             _data_block("workbench.fast", data={}),
             _data_block("workbench.fast", data={"symbol": code, "industry": [], "concepts": [], "boards": []}),
             include_history_summary=False,
+            entry_budget=entry_budget,
         )
         return {
             "symbol": code,
@@ -516,6 +523,7 @@ class WorkbenchService:
             "opportunity_tags": analysis.opportunity_tags,
             "watch_tags": analysis.watch_tags,
             "next_day_watch": analysis.payload.get("next_day_watch", []),
+            "entry_advice": analysis.payload.get("entry_advice", {}),
             "source": "workbench.fast_timeout",
             "stale": True,
             "error": error,
@@ -537,7 +545,7 @@ class WorkbenchService:
             except Exception:
                 return []
 
-    def _build_watchlist_row(self, raw_code: str, fast: bool = False) -> Dict[str, Any]:
+    def _build_watchlist_row(self, raw_code: str, fast: bool = False, entry_budget: float = 10000.0) -> Dict[str, Any]:
         code = normalize_stock_code(raw_code)
         if fast:
             quote = self._normalize_provider_block("quote", self.router.get_realtime_quote(code, allow_legacy_remote=False))
@@ -560,7 +568,15 @@ class WorkbenchService:
             kline = blocks["kline"]
         quote_data = _unwrap(quote, {}) or {}
         bars = _unwrap(kline, []) or []
-        analysis = self._build_ai_analysis(code, quote_data, bars, money_flow, themes, include_history_summary=not fast)
+        analysis = self._build_ai_analysis(
+            code,
+            quote_data,
+            bars,
+            money_flow,
+            themes,
+            include_history_summary=not fast,
+            entry_budget=entry_budget,
+        )
         themes_data = _unwrap(themes, {}) or {}
         capital = _unwrap(money_flow, {}) or {}
         stock_flow = capital.get("stock_flow") if isinstance(capital, dict) else {}
@@ -581,6 +597,7 @@ class WorkbenchService:
             "opportunity_tags": analysis.opportunity_tags,
             "watch_tags": analysis.watch_tags,
             "next_day_watch": analysis.payload.get("next_day_watch", []),
+            "entry_advice": analysis.payload.get("entry_advice", {}),
             **status,
         }
 
@@ -660,6 +677,7 @@ class WorkbenchService:
         themes: Dict[str, Any],
         *,
         include_history_summary: bool = True,
+        entry_budget: float = 10000.0,
     ) -> WorkbenchAnalysis:
         latest = bars[-1] if bars else {}
         close = _safe_float(quote.get("price"), _safe_float(latest.get("close")))
@@ -763,6 +781,16 @@ class WorkbenchService:
             },
             "risks": risk_tags or ["暂无明显风险标签，但仍需控制仓位。"],
             "next_day_watch": self._next_day_watch(status_tag, support, resistance, main_inflow),
+            "entry_advice": self._entry_advice(
+                code=code,
+                budget=entry_budget,
+                price=close,
+                support=support,
+                resistance=resistance,
+                status_tag=status_tag,
+                ai_score=ai_score,
+                main_inflow=main_inflow,
+            ),
             "operation_reference": {
                 "action": self._operation_action(status_tag),
                 "confidence": min(95, max(20, ai_score)),
@@ -771,6 +799,108 @@ class WorkbenchService:
             "disclaimer": DISCLAIMER,
         }
         return WorkbenchAnalysis(payload=payload, risk_tags=risk_tags, opportunity_tags=opportunity_tags, watch_tags=watch_tags)
+
+    @staticmethod
+    def _entry_advice(
+        *,
+        code: str,
+        budget: float,
+        price: Optional[float],
+        support: str,
+        resistance: str,
+        status_tag: str,
+        ai_score: int,
+        main_inflow: float,
+    ) -> Dict[str, Any]:
+        budget_value = _safe_float(budget, 10000.0) or 10000.0
+        tick = 0.001 if _is_etf_code(code) else 0.01
+
+        def parse_level(value: str) -> Optional[float]:
+            return _safe_float(value)
+
+        def round_to_tick(value: Optional[float]) -> Optional[float]:
+            if value is None or value <= 0:
+                return None
+            digits = 3 if tick < 0.01 else 2
+            return round(round(value / tick) * tick, digits)
+
+        support_price = parse_level(support)
+        resistance_price = parse_level(resistance)
+        current_price = _safe_float(price)
+        action = "等待确认"
+        timing = "等价格靠近观察位且资金不再流出时，再考虑限价挂单。"
+        basis = "支撑/均线附近"
+        planned_budget_ratio = 0.3
+        reference_price = support_price or current_price
+
+        if status_tag in {STATUS_TAGS["high_risk"], STATUS_TAGS["reduce"], STATUS_TAGS["outflow"]}:
+            action = "暂不建仓"
+            timing = "先不挂买单，等风险标签消失、价格重新站回关键均线后再看。"
+            basis = "风险优先"
+            planned_budget_ratio = 0.0
+            reference_price = support_price or current_price
+        elif status_tag == STATUS_TAGS["breakout"]:
+            action = "突破确认后试仓"
+            timing = "只在放量站稳压力位后考虑，缩量冲高不追。"
+            basis = "突破压力位"
+            planned_budget_ratio = 0.4 if ai_score < 80 else 0.5
+            reference_price = resistance_price or current_price
+        elif status_tag == STATUS_TAGS["hold"]:
+            action = "回踩不破试仓"
+            timing = "等回踩支撑附近不破、资金继续回流时挂单。"
+            basis = "回踩支撑位"
+            planned_budget_ratio = 0.5
+            reference_price = support_price or current_price
+        elif status_tag in {STATUS_TAGS["wait_volume"], STATUS_TAGS["confirm"]}:
+            action = "小仓观察"
+            timing = "等量能放大或价格站上短期均线后再小单确认。"
+            basis = "观察位附近"
+            planned_budget_ratio = 0.3
+            reference_price = support_price or current_price
+
+        order_price = round_to_tick(reference_price)
+        planned_budget = budget_value * planned_budget_ratio
+        lots = 0
+        shares = 0
+        estimated_amount = 0.0
+        if order_price and planned_budget_ratio > 0:
+            lots = int(planned_budget // (order_price * 100))
+            if lots <= 0 and budget_value >= order_price * 100 and ai_score >= 65:
+                lots = 1
+            shares = lots * 100
+            estimated_amount = round(order_price * shares, 2)
+        max_lots = int(budget_value // ((order_price or current_price or 0) * 100)) if (order_price or current_price or 0) > 0 else 0
+
+        if lots <= 0 and planned_budget_ratio > 0:
+            action = "资金不足或等待"
+            timing = "当前预算按一手单位不足以形成参考挂单，先观察或调低价格区间。"
+
+        invalid_condition = f"有效跌破 {support}" if support else "放量下跌且资金继续流出"
+        trigger_condition = f"价格靠近 {order_price:.3f}" if order_price is not None and tick < 0.01 else f"价格靠近 {order_price:.2f}" if order_price is not None else "等待关键价位出现"
+        if status_tag == STATUS_TAGS["breakout"] and resistance:
+            trigger_condition = f"放量站稳 {resistance} 上方"
+        if main_inflow < 0:
+            trigger_condition += "，并观察资金由流出转回流"
+
+        return {
+            "budget": round(budget_value, 2),
+            "planned_budget": round(planned_budget, 2),
+            "action": action,
+            "timing": timing,
+            "order_type": "限价挂单参考",
+            "reference_price": order_price,
+            "price_basis": basis,
+            "lots": lots,
+            "shares": shares,
+            "estimated_amount": estimated_amount,
+            "remaining_cash": round(max(0.0, budget_value - estimated_amount), 2),
+            "max_lots": max_lots,
+            "trigger_condition": trigger_condition,
+            "invalid_condition": invalid_condition,
+            "risk_note": "只按首笔试仓估算，普通A股/ETF按100股或100份为1手。",
+            "confidence": min(95, max(20, ai_score)),
+            "disclaimer": DISCLAIMER,
+        }
 
     @staticmethod
     def _price_level(values: Iterable[Any], *, prefer: str, price: Optional[float]) -> str:

@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.v1.errors import api_error
@@ -15,6 +15,7 @@ from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.workbench import (
     WorkbenchDailyReviewResponse,
     WorkbenchDashboardResponse,
+    WorkbenchFundResponse,
     WorkbenchMarkdownResponse,
     WorkbenchStockDetailResponse,
     WorkbenchWatchlistResponse,
@@ -66,9 +67,11 @@ def get_dashboard() -> WorkbenchDashboardResponse:
     responses={500: {"model": ErrorResponse}},
     summary="AI 股票复盘工作台 - 自选股",
 )
-def get_watchlist() -> WorkbenchWatchlistResponse:
+def get_watchlist(
+    entry_budget: float = Query(10000.0, ge=100.0, le=10000000.0, description="建仓建议预算，默认 10000 元"),
+) -> WorkbenchWatchlistResponse:
     try:
-        return WorkbenchWatchlistResponse(**_service().get_watchlist())
+        return WorkbenchWatchlistResponse(**_service().get_watchlist(entry_budget=entry_budget))
     except Exception as exc:
         raise _internal_error("获取自选股工作台失败", exc)
 
@@ -119,6 +122,30 @@ def export_daily_review_markdown() -> WorkbenchMarkdownResponse:
         )
     except Exception as exc:
         raise _internal_error("导出每日复盘 Markdown 失败", exc)
+
+
+@router.get(
+    "/funds/{fund_code}",
+    response_model=WorkbenchFundResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="AI 股票复盘工作台 - 场外基金净值分析",
+)
+def get_fund_analysis(
+    fund_code: str,
+    budget: float = Query(10000.0, ge=100.0, le=10000000.0, description="申购参考预算，默认 10000 元"),
+) -> WorkbenchFundResponse:
+    try:
+        payload = get_provider_router().analyze_mutual_fund(fund_code, budget=budget)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return WorkbenchFundResponse(
+            source=str(payload.get("source") or "eastmoney.fund") if isinstance(payload, dict) else "eastmoney.fund",
+            stale=bool(payload.get("stale")) if isinstance(payload, dict) else True,
+            error=payload.get("error") if isinstance(payload, dict) else "invalid_fund_payload",
+            disclaimer=(data or {}).get("disclaimer") if isinstance(data, dict) else "仅供学习和复盘，不构成投资建议。",
+            fund=data,
+        )
+    except Exception as exc:
+        raise _internal_error(f"获取场外基金分析失败: {fund_code}", exc)
 
 
 @router.get(

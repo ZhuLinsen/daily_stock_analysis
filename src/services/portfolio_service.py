@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import io
 import json
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -610,9 +614,286 @@ class PortfolioService:
             summary["error_count"] += item["error_count"]
         return summary
 
+    def parse_simple_position_import(
+        self,
+        *,
+        text: str,
+        market: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Parse pasted holding rows such as: code name quantity avg_cost."""
+        return self._parse_simple_position_text(text=text, market=market, currency=currency)
+
+    def commit_simple_position_import(
+        self,
+        *,
+        account_id: int,
+        text: str,
+        trade_date: Optional[date] = None,
+        market: Optional[str] = None,
+        currency: Optional[str] = None,
+        dry_run: bool = True,
+    ) -> Dict[str, Any]:
+        account = self._require_active_account(account_id)
+        parsed = self._parse_simple_position_text(text=text, market=market, currency=currency)
+        records = list(parsed.get("records") or [])
+        errors = list(parsed.get("errors") or [])
+        trade_day = trade_date or date.today()
+        result = {
+            "account_id": account_id,
+            "record_count": len(records),
+            "inserted_count": 0,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "dry_run": bool(dry_run),
+            "records": records,
+            "errors": errors,
+        }
+        if dry_run or not records:
+            return result
+
+        cash_adjustments: Dict[str, float] = defaultdict(float)
+        for item in records:
+            effective_market = self._normalize_market(item.get("market") or market or account.market)
+            effective_currency = self._normalize_currency(
+                item.get("currency") or currency or self._default_currency_for_market(effective_market)
+            )
+            symbol = str(item.get("symbol") or "").strip()
+            quantity = float(item.get("quantity") or 0)
+            avg_cost = float(item.get("avg_cost") or 0)
+            dedup_hash = self._simple_position_dedup_hash(
+                account_id=account_id,
+                trade_date=trade_day,
+                symbol=symbol,
+                market=effective_market,
+                currency=effective_currency,
+                quantity=quantity,
+                price=avg_cost,
+            )
+            try:
+                self.record_trade(
+                    account_id=account_id,
+                    symbol=symbol,
+                    trade_date=trade_day,
+                    side="buy",
+                    quantity=quantity,
+                    price=avg_cost,
+                    fee=0.0,
+                    tax=0.0,
+                    market=effective_market,
+                    currency=effective_currency,
+                    dedup_hash=dedup_hash,
+                    note=f"simple_position_import:{item.get('name') or ''}".strip(":"),
+                )
+                result["inserted_count"] += 1
+                cash_adjustments[effective_currency] += quantity * avg_cost
+            except PortfolioConflictError:
+                result["duplicate_count"] += 1
+            except Exception as exc:
+                result["failed_count"] += 1
+                result["errors"].append(f"line {item.get('line_no')}: {exc}")
+
+        for cash_currency, amount in cash_adjustments.items():
+            if amount <= EPS:
+                continue
+            try:
+                self.record_cash_ledger(
+                    account_id=account_id,
+                    event_date=trade_day,
+                    direction="in",
+                    amount=round(amount, 6),
+                    currency=cash_currency,
+                    note="simple_position_import_initial_cash",
+                )
+            except Exception as exc:
+                result["errors"].append(f"cash adjustment {cash_currency}: {exc}")
+        return result
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _parse_simple_position_text(
+        self,
+        *,
+        text: str,
+        market: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        default_market = self._normalize_market(market) if market else None
+        default_currency = self._normalize_currency(currency) if currency else None
+        records: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        header: Optional[Dict[str, int]] = None
+        lines = [line.strip().lstrip("\ufeff") for line in (text or "").splitlines()]
+
+        for line_no, line in enumerate(lines, start=1):
+            if not line or line.startswith("#"):
+                continue
+            cells = self._split_simple_position_line(line)
+            if not cells:
+                continue
+            detected_header = self._detect_simple_position_header(cells)
+            if detected_header:
+                header = detected_header
+                continue
+            try:
+                item = self._parse_simple_position_cells(
+                    cells=cells,
+                    line_no=line_no,
+                    header=header,
+                    default_market=default_market,
+                    default_currency=default_currency,
+                )
+                records.append(item)
+            except ValueError as exc:
+                errors.append(f"line {line_no}: {exc}")
+
+        return {
+            "record_count": len(records),
+            "error_count": len(errors),
+            "records": records,
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _split_simple_position_line(line: str) -> List[str]:
+        if "," in line:
+            try:
+                return [cell.strip() for cell in next(csv.reader(io.StringIO(line))) if cell.strip()]
+            except Exception:
+                pass
+        if "\t" in line:
+            return [cell.strip() for cell in line.split("\t") if cell.strip()]
+        normalized = re.sub(r"\s+", " ", line.strip())
+        return [cell.strip() for cell in normalized.split(" ") if cell.strip()]
+
+    @staticmethod
+    def _detect_simple_position_header(cells: List[str]) -> Optional[Dict[str, int]]:
+        aliases = {
+            "symbol": {"代码", "证券代码", "股票代码", "基金代码", "symbol", "code"},
+            "name": {"名称", "证券名称", "股票名称", "基金名称", "name"},
+            "quantity": {"数量", "持仓", "持仓数量", "当前持仓", "可用数量", "份额", "quantity", "qty", "shares"},
+            "avg_cost": {"成本", "成本价", "持仓成本", "平均成本", "avg_cost", "cost", "price"},
+            "market": {"市场", "market"},
+            "currency": {"币种", "currency"},
+        }
+        normalized = [re.sub(r"[\s_()（）/\\-]", "", cell.strip().lower()) for cell in cells]
+        mapping: Dict[str, int] = {}
+        for field, names in aliases.items():
+            normalized_names = {re.sub(r"[\s_()（）/\\-]", "", name.lower()) for name in names}
+            for index, cell in enumerate(normalized):
+                if cell in normalized_names:
+                    mapping[field] = index
+                    break
+        if "symbol" in mapping and ("quantity" in mapping or "avg_cost" in mapping):
+            return mapping
+        return None
+
+    def _parse_simple_position_cells(
+        self,
+        *,
+        cells: List[str],
+        line_no: int,
+        header: Optional[Dict[str, int]],
+        default_market: Optional[str],
+        default_currency: Optional[str],
+    ) -> Dict[str, Any]:
+        def by_header(field: str) -> str:
+            if not header or field not in header:
+                return ""
+            index = header[field]
+            return cells[index].strip() if index < len(cells) else ""
+
+        if header:
+            raw_symbol = by_header("symbol")
+            name = by_header("name") or None
+            raw_qty = by_header("quantity")
+            raw_cost = by_header("avg_cost")
+            raw_market = by_header("market")
+            raw_currency = by_header("currency")
+        else:
+            if len(cells) < 3:
+                raise ValueError("至少需要 代码 数量 成本价，或 代码 名称 数量 成本价")
+            raw_symbol = cells[0]
+            if len(cells) >= 4 and self._parse_simple_float(cells[1]) is None:
+                name = cells[1]
+                raw_qty = cells[2]
+                raw_cost = cells[3]
+                raw_market = cells[4] if len(cells) >= 5 else ""
+                raw_currency = cells[5] if len(cells) >= 6 else ""
+            else:
+                name = None
+                raw_qty = cells[1]
+                raw_cost = cells[2]
+                raw_market = cells[3] if len(cells) >= 4 else ""
+                raw_currency = cells[4] if len(cells) >= 5 else ""
+
+        symbol = self._normalize_symbol_for_storage(raw_symbol)
+        if not symbol:
+            raise ValueError("股票代码为空或无法识别")
+        quantity = self._parse_simple_float(raw_qty)
+        avg_cost = self._parse_simple_float(raw_cost)
+        if quantity is None or quantity <= 0:
+            raise ValueError("持仓数量必须大于 0")
+        if avg_cost is None or avg_cost <= 0:
+            raise ValueError("成本价必须大于 0")
+        market_value = (raw_market or "").strip().lower() or default_market
+        currency_value = (raw_currency or "").strip().upper() or default_currency
+        if market_value:
+            market_value = self._normalize_market(market_value)
+        if currency_value:
+            currency_value = self._normalize_currency(currency_value)
+        return {
+            "line_no": line_no,
+            "symbol": symbol,
+            "name": (name or "").strip() or None,
+            "quantity": round(float(quantity), 8),
+            "avg_cost": round(float(avg_cost), 8),
+            "market": market_value,
+            "currency": currency_value,
+        }
+
+    @staticmethod
+    def _parse_simple_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text in {"-", "--", "N/A"}:
+            return None
+        text = text.replace(",", "").replace("￥", "").replace("元", "")
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _simple_position_dedup_hash(
+        *,
+        account_id: int,
+        trade_date: date,
+        symbol: str,
+        market: str,
+        currency: str,
+        quantity: float,
+        price: float,
+    ) -> str:
+        raw = "|".join(
+            [
+                "simple_position_import",
+                str(account_id),
+                trade_date.isoformat(),
+                symbol,
+                market,
+                currency,
+                f"{float(quantity):.8f}",
+                f"{float(price):.8f}",
+            ]
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
     def _validate_trade_identity(
         self,
         *,
@@ -1583,6 +1864,22 @@ class PortfolioService:
     @staticmethod
     def _normalize_market(value: str) -> str:
         market = (value or "").strip().lower()
+        aliases = {
+            "a": "cn",
+            "a股": "cn",
+            "ashare": "cn",
+            "a-share": "cn",
+            "沪深": "cn",
+            "沪a": "cn",
+            "深a": "cn",
+            "中国": "cn",
+            "港股": "hk",
+            "美股": "us",
+            "日本": "jp",
+            "韩国": "kr",
+            "台湾": "tw",
+        }
+        market = aliases.get(market, market)
         if market not in VALID_MARKETS:
             raise ValueError("market must be one of: cn, hk, us, jp, kr, tw")
         return market
@@ -1590,6 +1887,8 @@ class PortfolioService:
     @staticmethod
     def _normalize_currency(value: str) -> str:
         currency = (value or "").strip().upper()
+        aliases = {"人民币": "CNY", "元": "CNY", "港币": "HKD", "美元": "USD", "日元": "JPY", "韩元": "KRW", "台币": "TWD"}
+        currency = aliases.get(currency, aliases.get(currency.lower(), currency))
         if not currency:
             raise ValueError("currency is required")
         return currency

@@ -46,6 +46,8 @@ import type {
   PortfolioPositionItem,
   PortfolioRiskResponse,
   PortfolioSide,
+  PortfolioSimplePositionImportCommitResponse,
+  PortfolioSimplePositionImportParseResponse,
   PortfolioSnapshotResponse,
   PortfolioTradeListItem,
 } from '../types/portfolio';
@@ -206,6 +208,13 @@ const PortfolioPage: React.FC = () => {
   const [csvParseResult, setCsvParseResult] = useState<PortfolioImportParseResponse | null>(null);
   const [csvCommitResult, setCsvCommitResult] = useState<PortfolioImportCommitResponse | null>(null);
   const [brokerLoadWarning, setBrokerLoadWarning] = useState<string | null>(null);
+  const [simpleImportText, setSimpleImportText] = useState('');
+  const [simpleImportTradeDate, setSimpleImportTradeDate] = useState(getTodayIso());
+  const [simpleImportDryRun, setSimpleImportDryRun] = useState(true);
+  const [simpleImportParsing, setSimpleImportParsing] = useState(false);
+  const [simpleImportCommitting, setSimpleImportCommitting] = useState(false);
+  const [simpleImportParseResult, setSimpleImportParseResult] = useState<PortfolioSimplePositionImportParseResponse | null>(null);
+  const [simpleImportCommitResult, setSimpleImportCommitResult] = useState<PortfolioSimplePositionImportCommitResponse | null>(null);
 
   const [eventType, setEventType] = useState<EventType>('trade');
   const [eventDateFrom, setEventDateFrom] = useState('');
@@ -701,6 +710,68 @@ const PortfolioPage: React.FC = () => {
       setError(getParsedApiError(err));
     } finally {
       setCsvCommitting(false);
+    }
+  };
+
+  const handleParseSimpleImport = async () => {
+    const textValue = simpleImportText.trim();
+    if (!textValue) {
+      setWriteWarning('请先粘贴持仓文本。');
+      return;
+    }
+    try {
+      setSimpleImportParsing(true);
+      setWriteWarning(null);
+      setSimpleImportCommitResult(null);
+      const result = await portfolioApi.parseSimplePositions({
+        text: textValue,
+        tradeDate: simpleImportTradeDate || undefined,
+        market: writableAccount?.market,
+        currency: writableAccount?.baseCurrency,
+      });
+      setSimpleImportParseResult(result);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setSimpleImportParsing(false);
+    }
+  };
+
+  const handleCommitSimpleImport = async () => {
+    const textValue = simpleImportText.trim();
+    if (!writableAccountId) {
+      setWriteWarning('请先在右上角选择具体账户，再导入持仓。');
+      return;
+    }
+    if (!textValue) {
+      setWriteWarning('请先粘贴持仓文本。');
+      return;
+    }
+    try {
+      setSimpleImportCommitting(true);
+      setWriteWarning(null);
+      const result = await portfolioApi.commitSimplePositions({
+        accountId: writableAccountId,
+        text: textValue,
+        tradeDate: simpleImportTradeDate || undefined,
+        market: writableAccount?.market,
+        currency: writableAccount?.baseCurrency,
+        dryRun: simpleImportDryRun,
+      });
+      setSimpleImportCommitResult(result);
+      setSimpleImportParseResult({
+        recordCount: result.recordCount,
+        errorCount: result.errors.length,
+        records: result.records,
+        errors: result.errors,
+      });
+      if (!simpleImportDryRun && result.insertedCount > 0) {
+        await refreshPortfolioData();
+      }
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setSimpleImportCommitting(false);
     }
   };
 
@@ -1412,6 +1483,62 @@ const PortfolioPage: React.FC = () => {
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <Card padding="md">
+          <h3 className="text-sm font-semibold text-foreground mb-3">粘贴持仓导入</h3>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                className={PORTFOLIO_INPUT_CLASS}
+                type="date"
+                value={simpleImportTradeDate}
+                onChange={(e) => setSimpleImportTradeDate(e.target.value)}
+              />
+              <label className="flex items-center gap-2 rounded-xl border border-border/60 px-3 text-xs text-secondary">
+                <input type="checkbox" checked={simpleImportDryRun} onChange={(e) => setSimpleImportDryRun(e.target.checked)} />
+                仅预演
+              </label>
+            </div>
+            <textarea
+              className="input-surface input-focus-glow min-h-[132px] w-full rounded-xl border bg-transparent px-4 py-3 text-sm leading-6 transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              value={simpleImportText}
+              onChange={(e) => setSimpleImportText(e.target.value)}
+              placeholder={'代码 名称 数量 成本价\n600519 贵州茅台 100 1500'}
+            />
+            <p className="text-xs leading-5 text-secondary">
+              支持直接粘贴表格/CSV，例如：600519 贵州茅台 100 1500。确认导入会写为初始买入流水，并自动补一笔初始资金流入用于抵消成本。
+            </p>
+            <div className="flex gap-2">
+              <button type="button" className="btn-secondary flex-1" onClick={() => void handleParseSimpleImport()} disabled={simpleImportParsing}>
+                {simpleImportParsing ? '解析中...' : '解析预览'}
+              </button>
+              <button type="button" className="btn-secondary flex-1" onClick={() => void handleCommitSimpleImport()} disabled={!writableAccountId || simpleImportCommitting}>
+                {simpleImportCommitting ? '提交中...' : simpleImportDryRun ? '预演导入' : '确认导入'}
+              </button>
+            </div>
+            {simpleImportParseResult ? (
+              <InlineAlert
+                variant={simpleImportParseResult.errorCount > 0 ? 'warning' : 'success'}
+                title="持仓解析结果"
+                message={`识别 ${simpleImportParseResult.recordCount} 条，错误 ${simpleImportParseResult.errorCount} 条。${simpleImportParseResult.records.slice(0, 3).map((item) => `${item.symbol} ${item.quantity}股@${item.avgCost}`).join('；')}`}
+                className="rounded-lg px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+            {simpleImportCommitResult ? (
+              <InlineAlert
+                variant={simpleImportCommitResult.failedCount > 0 ? 'warning' : 'success'}
+                title={simpleImportCommitResult.dryRun ? '持仓预演结果' : '持仓导入结果'}
+                message={`${simpleImportCommitResult.dryRun ? '预演' : '写入'}：成功 ${simpleImportCommitResult.insertedCount} 条，重复 ${simpleImportCommitResult.duplicateCount} 条，失败 ${simpleImportCommitResult.failedCount} 条。`}
+                className="rounded-lg px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+            {(simpleImportParseResult?.errors?.length || simpleImportCommitResult?.errors?.length) ? (
+              <div className="max-h-24 overflow-auto rounded-lg border border-warning/30 bg-warning/10 p-2 text-xs leading-5 text-warning">
+                {(simpleImportCommitResult?.errors?.length ? simpleImportCommitResult.errors : simpleImportParseResult?.errors || []).slice(0, 5).map((item) => <div key={item}>{item}</div>)}
+              </div>
+            ) : null}
+          </div>
+        </Card>
+
         <Card padding="md">
           <h3 className="text-sm font-semibold text-foreground mb-3">券商 CSV 导入</h3>
           <div className="space-y-2">

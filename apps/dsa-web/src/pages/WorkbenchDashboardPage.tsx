@@ -41,6 +41,7 @@ const WorkbenchDashboardPage: React.FC = () => {
         actions={(
           <div className="flex flex-wrap gap-2">
             <Link to="/workbench/watchlist" className="btn-secondary inline-flex items-center gap-2">自选股 <ArrowRight className="h-4 w-4" /></Link>
+            <Link to="/workbench/funds" className="btn-secondary inline-flex items-center gap-2">场外基金 <ArrowRight className="h-4 w-4" /></Link>
             <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={cn('h-4 w-4', loading ? 'animate-spin' : '')} /> 刷新
             </button>

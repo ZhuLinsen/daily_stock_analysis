@@ -66,6 +66,26 @@ export type OperationReference = {
   invalidCondition?: string | null;
 };
 
+export type EntryAdvice = {
+  budget: number;
+  plannedBudget?: number | null;
+  action: string;
+  timing: string;
+  orderType: string;
+  referencePrice?: number | null;
+  priceBasis?: string | null;
+  lots: number;
+  shares: number;
+  estimatedAmount?: number | null;
+  remainingCash?: number | null;
+  maxLots?: number | null;
+  triggerCondition?: string | null;
+  invalidCondition?: string | null;
+  riskNote?: string | null;
+  confidence: number;
+  disclaimer: string;
+};
+
 export type AiScorePayload = {
   symbol: string;
   name: string;
@@ -94,6 +114,7 @@ export type AiScorePayload = {
   };
   risks: string[];
   nextDayWatch: string[];
+  entryAdvice?: EntryAdvice;
   operationReference: OperationReference;
   disclaimer: string;
 };
@@ -114,12 +135,14 @@ export type WatchlistItem = {
   opportunityTags: string[];
   watchTags: string[];
   nextDayWatch: string[];
+  entryAdvice?: EntryAdvice;
   source: string;
   stale: boolean;
   error?: string | null;
 };
 
 export type WorkbenchWatchlist = ProviderEnvelope & {
+  entryBudget?: number;
   items: WatchlistItem[];
 };
 
@@ -231,4 +254,44 @@ export type WorkbenchMarkdown = {
   stale: boolean;
   error?: string | null;
   meta: Record<string, unknown>;
+};
+
+export type FundNavPoint = {
+  date: string;
+  nav?: number | null;
+  accNav?: number | null;
+  growthPct?: number | null;
+};
+
+export type FundSubscriptionReference = {
+  budget: number;
+  action: string;
+  firstAmount?: number | null;
+  batchPlan: Array<{ label: string; amount: number }>;
+  timing: string;
+  invalidCondition: string;
+  disclaimer: string;
+};
+
+export type FundAnalysis = {
+  code: string;
+  name: string;
+  type: string;
+  manager?: string | null;
+  scale?: string | null;
+  latestNav?: number | null;
+  latestDate?: string | null;
+  latestGrowthPct?: number | null;
+  returns: Record<'1w' | '1m' | '3m' | '6m' | '1y', number | null>;
+  maxDrawdownPct?: number | null;
+  riskLevel: string;
+  aiScore: number;
+  summary: string;
+  subscriptionReference: FundSubscriptionReference;
+  navHistory: FundNavPoint[];
+  disclaimer: string;
+};
+
+export type WorkbenchFundResponse = ProviderEnvelope & {
+  fund?: FundAnalysis | null;
 };

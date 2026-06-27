@@ -40,6 +40,10 @@ class WorkbenchDailyReviewResponse(WorkbenchBaseResponse):
     pass
 
 
+class WorkbenchFundResponse(WorkbenchBaseResponse):
+    pass
+
+
 class WorkbenchMarkdownResponse(BaseModel):
     markdown: str = Field(..., description="Markdown 复盘内容")
     filename: str = Field(..., description="建议文件名")

@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from data_provider.base import DataFetcherManager, normalize_stock_code, _is_etf_code
 from data_provider.eastmoney_provider import EastMoneyProvider
+from data_provider.fund_provider import FundProvider
 from data_provider.ths_provider import THSProvider
 
 
@@ -22,6 +23,7 @@ class ProviderRouter:
         self.manager = manager or DataFetcherManager()
         self.eastmoney = EastMoneyProvider(manager=self.manager)
         self.ths = THSProvider(manager=self.manager)
+        self.fund = FundProvider()
         self._cache: Dict[str, tuple[datetime, Dict[str, Any]]] = {}
 
     def _cached(self, key: str, ttl_seconds: int, getter) -> Dict[str, Any]:
@@ -190,6 +192,15 @@ class ProviderRouter:
             f"themes:{mode}:{symbol}",
             ttl,
             lambda: self.ths.infer_stock_themes(symbol, allow_remote=allow_remote),
+        )
+
+    def analyze_mutual_fund(self, fund_code: str, *, budget: float = 10000.0) -> Dict[str, Any]:
+        digits = "".join(ch for ch in str(fund_code or "") if ch.isdigit())
+        code = digits.zfill(6) if digits else ""
+        return self._cached(
+            f"fund_analysis:{code}:{round(float(budget or 10000.0), 2)}",
+            600,
+            lambda: self.fund.analyze_fund(code, budget=budget),
         )
 
 
