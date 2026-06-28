@@ -326,8 +326,26 @@ class NotificationService(
         """Generate the aggregate report content used by merge/save/push paths."""
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
-            return self.generate_brief_report(results, report_date=report_date)
-        return self.generate_dashboard_report(results, report_date=report_date)
+            content = self.generate_brief_report(results, report_date=report_date)
+        else:
+            content = self.generate_dashboard_report(results, report_date=report_date)
+        return self._append_data_source_health_warning(content, results)
+
+    def _append_data_source_health_warning(
+        self,
+        content: str,
+        results: List[AnalysisResult],
+    ) -> str:
+        """整市场数据源集体失效时，在聚合报告末尾附加一行健康告警。fail-open。"""
+        try:
+            from src.services.data_source_health import format_health_warning
+
+            warning = format_health_warning(self._get_report_language(results))
+            if warning:
+                return f"{content}\n\n{warning}" if content else warning
+        except Exception as exc:  # pragma: no cover - defensive fail-open guard
+            logger.debug("附加数据源健康告警失败: %s", exc)
+        return content
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         if not self._should_show_llm_model():

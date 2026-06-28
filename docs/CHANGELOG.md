@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 回测代码匹配新增非法市场后缀/长度兜底：如 `600519.HK`、`600519.SZ`、`SH000001` 不再静默回落到其它有效代码，并在日期筛选重跑时对齐旧回测结果的分析日期，避免历史快照日期命中但结果列表仍为空。
 - [chore] 清理 scheduler 中被多时间调度版本覆盖的单时间 `_refresh_daily_schedule_if_needed`/`_configure_daily_task` 死代码，并移除全仓源码目录的未用导入（`notification_sender` 包补充 `__all__` 显式声明对外接口）。
 - [改进] 为多处最易掩盖真实失败的静默 `except`（股票名解析、CSV 解析回退、交易日历查询、利润表报告期解析、历史评估统计、板块异动预检查、Longbridge 日志路径设置）补充 `logger.debug` 诊断日志，控制流不变。
+- [新功能] 新增进程级数据源健康追踪：批量分析按市场聚合日线抓取结果，当某市场全部数据源集体失效（有尝试、零成功）时在聚合报告/通知末尾附加一行健康告警，并提示配置 token 兜底源；判定区分"全市场源失效"与"个别代码无效"，全程 fail-open 不影响主流程。
+- [文档] `.env.example` 明确 `TUSHARE_TOKEN`/`FINNHUB_API_KEY`/`ALPHAVANTAGE_API_KEY` 为各市场"稳定兜底源"，配置后自动注册以降低对免费爬取源的单点依赖。
 
 ## [3.23.0] - 2026-06-20
 

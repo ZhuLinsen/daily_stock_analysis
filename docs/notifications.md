@@ -230,6 +230,14 @@ P5 强化聚合报告通知路径的失败边界：`_send_notifications()` 在 r
 
 DecisionSignal 通知摘要字段、敏感信息边界、迁移与回滚说明见 [DecisionSignal 决策信号专题](decision-signals.md)。
 
+### 数据源健康告警
+
+聚合报告（dashboard / brief）在生成时会附加一行数据源健康告警，触发口径为"整市场集体失效"：某市场在本批次内有日线抓取尝试、但成功次数为 0（且至少一次失败）。该口径用于把"全市场数据源同时失效"与"个别股票代码无效/退市"区分开——后者因为市场仍有其它成功抓取，不会告警。
+
+- 计数为进程级、线程安全，批次开始（`StockAnalysisPipeline.run`）时重置；记录点在 `data_provider.base.get_daily_data` 的成功返回与全源耗尽抛错处。
+- 告警仅追加到聚合报告文末，不新增通知渠道；全程 fail-open，追踪或格式化异常只记 `debug` 日志，绝不影响分析与通知主流程。
+- 告警文案会提示配置带 token 的兜底源（`TUSHARE_TOKEN` / `FINNHUB_API_KEY` / `ALPHAVANTAGE_API_KEY`），与 `.env.example` 的"稳定兜底源"说明一致。实现见 `src/services/data_source_health.py`。
+
 ## 通知降噪机制
 
 P4 新增进程内降噪，只影响静态配置渠道，不影响 `send_to_context()` 的机器人触发会话回执。默认所有配置关闭，未设置时保持旧行为。

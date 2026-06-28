@@ -2788,7 +2788,11 @@ class StockAnalysisPipeline:
             分析结果列表
         """
         start_time = time.time()
-        
+
+        # 批次开始：重置数据源健康计数，用于收尾时识别整市场数据源集体失效
+        from src.services.data_source_health import reset as reset_data_source_health
+        reset_data_source_health()
+
         # 使用配置中的股票列表
         if stock_codes is None:
             self.config.refresh_stock_list()
