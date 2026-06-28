@@ -241,6 +241,36 @@ async def delete_chat_session(session_id: str):
     return {"deleted": count}
 
 
+class ContextStoreResponse(BaseModel):
+    """Response model for ToolResultKeyStore debug data."""
+    session_id: str
+    has_data: bool
+    tool_count: int = 0
+    tools: List[Dict[str, Any]] = []
+    context_preview: str = ""
+
+
+@router.get("/context-store/{session_id}", response_model=ContextStoreResponse)
+async def get_context_store(session_id: str):
+    """Return current ToolResultKeyStore data for a session (debug/monitoring)."""
+    from src.agent.tool_data_store import ToolResultKeyStore
+    has_data = ToolResultKeyStore.has_data(session_id)
+    block = ToolResultKeyStore.build_context_block(session_id)
+    context_preview = block[:500] if block else ""
+    tools: List[Dict[str, Any]] = []
+    if has_data:
+        try:
+            for entry in ToolResultKeyStore._store.get(session_id, []):
+                tools.append({k: v for k, v in entry.items() if not k.startswith("_")})
+        except Exception:
+            pass
+    return ContextStoreResponse(
+        session_id=session_id, has_data=has_data,
+        tool_count=len(tools), tools=tools,
+        context_preview=context_preview,
+    )
+
+
 class SendChatRequest(BaseModel):
     """Request body for sending chat content to notification channels."""
 

@@ -662,6 +662,18 @@ class AgentExecutor:
             stock_scope=scope_resolution.stock_scope,
         )
 
+                # 提取工具调用关键数据并存储（供后续轮次上下文压缩后恢复）
+        if result.tool_calls_log:
+            try:
+                from src.agent.tool_data_store import ToolResultKeyStore, extract_tool_result_summary
+                for entry in result.tool_calls_log:
+                    tool_name = entry.get("tool")
+                    result_summary = entry.get("result_summary")
+                    if tool_name and result_summary:
+                        ToolResultKeyStore.store(session_id, tool_name, result_summary)
+            except Exception:
+                pass
+
         # Persist assistant reply (or error note) for context continuity
         if result.success:
             assistant_message_id = conversation_manager.add_message(session_id, "assistant", result.content)

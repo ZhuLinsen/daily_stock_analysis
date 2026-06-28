@@ -773,6 +773,15 @@ def _execute_tools(
                 "requested_stock_code": guard_result.get("requested_stock_code"),
                 "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
             })
+        # 提取工具结果关键数据摘要（用于上下文压缩后重注入）
+        if success and result_str:
+            try:
+                from src.agent.tool_data_store import extract_tool_result_summary
+                summary = extract_tool_result_summary(tc.name, result_str)
+                if summary:
+                    log_entry["result_summary"] = summary
+            except Exception:
+                pass
         tool_calls_log.append(log_entry)
         results.append({"tc": tc, "result_str": result_str})
     else:
@@ -806,6 +815,15 @@ def _execute_tools(
                         "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
                     })
                 tool_calls_log.append(log_entry)
+                # 提取工具结果关键数据摘要
+                if success and result_str:
+                    try:
+                        from src.agent.tool_data_store import extract_tool_result_summary
+                        summary = extract_tool_result_summary(tc_item.name, result_str)
+                        if summary:
+                            log_entry["result_summary"] = summary
+                    except Exception:
+                        pass
                 results.append({"tc": tc_item, "result_str": result_str})
         except FuturesTimeoutError:
             timeout_triggered = True
@@ -845,3 +863,4 @@ def _execute_tools(
             pool.shutdown(wait=not timeout_triggered, cancel_futures=timeout_triggered)
 
     return results
+

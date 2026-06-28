@@ -212,6 +212,12 @@ def build_agent_chat_context_bundle(
             merged.extend(traces_by_anchor[msg_id])
         merged.append(msg)
 
+
+    # 注入工具调用关键数据（保护其不被上下文压缩丢弃）
+    tool_context = _build_tool_data_context_block(session_id)
+    if tool_context:
+        merged.append({"role": "user", "content": tool_context})
+
     return AgentChatContextBundle(
         context_messages=_strip_internal_message_ids(merged),
         diagnostics=diagnostics.to_dict(),
@@ -481,6 +487,17 @@ def _render_messages(messages: Sequence[Dict[str, Any]]) -> str:
 
 def _render_visible_messages(messages: Sequence[VisibleMessage]) -> str:
     return "\n\n".join(f"{msg.role}:\n{msg.content}" for msg in messages)
+
+
+
+
+def _build_tool_data_context_block(session_id: str) -> str:
+    """构建工具结果关键数据上下文块，用于压缩后注入。"""
+    try:
+        from src.agent.tool_data_store import ToolResultKeyStore
+        return ToolResultKeyStore.build_context_block(session_id)
+    except Exception:
+        return ""
 
 
 def _coerce_int(value: Any, *, default: int) -> int:

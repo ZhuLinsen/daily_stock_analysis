@@ -42,6 +42,14 @@ export interface ChatSessionItem {
   last_active: string | null;
 }
 
+export interface ContextStoreData {
+  session_id: string;
+  has_data: boolean;
+  tool_count: number;
+  tools: Record<string, unknown>[];
+  context_preview: string;
+}
+
 export interface ChatSessionMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -83,6 +91,11 @@ export const agentApi = {
     }
     return { success: true };
   },
+    async getContextStore(sessionId: string): Promise<ContextStoreData> {
+    const response = await apiClient.get<ContextStoreData>(`/api/v1/agent/context-store/${sessionId}`);
+    return response.data;
+  },
+
   async chatStream(
     payload: ChatStreamRequest,
     options?: ChatStreamOptions,
