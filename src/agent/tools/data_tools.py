@@ -470,8 +470,8 @@ def _handle_get_stock_info(stock_code: str) -> dict:
     stock_name = stock_code.upper()
     try:
         stock_name = manager.get_stock_name(stock_code) or stock_name
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("获取股票名称失败，回退使用代码 %s: %s", stock_code, exc)
 
     return {
         "code": stock_code.upper(),

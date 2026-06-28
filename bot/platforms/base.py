@@ -49,7 +49,6 @@ class BotPlatform(ABC):
         
         用于路由匹配和日志标识，如 "feishu", "dingtalk"
         """
-        pass
     
     @abstractmethod
     def verify_request(self, headers: Dict[str, str], body: bytes) -> bool:
@@ -65,7 +64,6 @@ class BotPlatform(ABC):
         Returns:
             签名是否有效
         """
-        pass
     
     @abstractmethod
     def parse_message(self, data: Dict[str, Any]) -> Optional[BotMessage]:
@@ -81,7 +79,6 @@ class BotPlatform(ABC):
         Returns:
             BotMessage 对象，或 None（不需要处理）
         """
-        pass
     
     @abstractmethod
     def format_response(
@@ -99,7 +96,6 @@ class BotPlatform(ABC):
         Returns:
             WebhookResponse 对象
         """
-        pass
     
     def send_followup(
         self,

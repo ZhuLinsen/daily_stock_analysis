@@ -2375,8 +2375,8 @@ class DsaEastMoneyHotspotProvider:
             concept_frame = self._fetch_board_changes_with_fallback()
             if self._board_frame_contains_topic(concept_frame, topic):
                 return False
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("板块异动预检查失败，继续行业判断 topic=%s: %s", topic, exc)
         try:
             frame = self.stock_board_industry_name_em()
         except Exception as exc:

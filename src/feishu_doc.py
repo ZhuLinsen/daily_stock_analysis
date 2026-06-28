@@ -1,10 +1,9 @@
 # feishu_doc.py
 # -*- coding: utf-8 -*-
 import logging
-import json
 import lark_oapi as lark
 from lark_oapi.api.docx.v1 import *
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from src.config import get_config
 
 logger = logging.getLogger(__name__)

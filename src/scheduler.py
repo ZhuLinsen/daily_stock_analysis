@@ -167,49 +167,6 @@ class Scheduler:
         self._daily_job = None
         self._daily_jobs = []
 
-    def _configure_daily_task(self, schedule_time: str) -> bool:
-        """(Re)register the daily job at the requested time."""
-        candidate = (schedule_time or "").strip()
-        if not self._is_valid_schedule_time(candidate):
-            logger.warning(
-                "检测到无效的定时执行时间 %r，继续沿用当前时间 %s",
-                schedule_time,
-                self.schedule_time,
-            )
-            return False
-
-        previous_time = self.schedule_time
-        self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
-        self.schedule_time = candidate
-
-        if previous_time == candidate:
-            logger.info("已设置每日定时任务，执行时间: %s", self.schedule_time)
-        else:
-            logger.info(
-                "检测到 SCHEDULE_TIME 变更，已将每日定时任务从 %s 更新为 %s",
-                previous_time,
-                self.schedule_time,
-            )
-        return True
-
-    def _refresh_daily_schedule_if_needed(self) -> None:
-        """Reload daily schedule time from the latest runtime config if needed."""
-        if self._task_callback is None or self._schedule_time_provider is None:
-            return
-
-        try:
-            latest_schedule_time = (self._schedule_time_provider() or "").strip()
-        except Exception as exc:  # pragma: no cover - defensive branch
-            logger.warning("读取最新 SCHEDULE_TIME 失败，继续沿用 %s: %s", self.schedule_time, exc)
-            return
-
-        if not latest_schedule_time or latest_schedule_time == self.schedule_time:
-            return
-
-        if self._configure_daily_task(latest_schedule_time):
-            logger.info("更新后的下次执行时间: %s", self._get_next_run_time())
-
     def _configure_daily_tasks(self, schedule_times: Union[Sequence[str], str]) -> bool:
         """(Re)register daily jobs at the requested times."""
         raw_items = (

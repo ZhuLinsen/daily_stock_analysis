@@ -76,7 +76,6 @@ class YfinanceFetcher(BaseFetcher):
 
     def __init__(self):
         """初始化 YfinanceFetcher"""
-        pass
 
     @staticmethod
     def _is_jp_kr_suffix_stock(stock_code: str) -> bool:

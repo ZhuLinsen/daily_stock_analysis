@@ -27,7 +27,7 @@ from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal, Cal
 if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
 
-from data_provider.base import canonical_stock_code, normalize_stock_code
+from data_provider.base import normalize_stock_code
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     get_current_diagnostic_context,

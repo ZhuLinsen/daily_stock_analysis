@@ -215,8 +215,8 @@ def parse_import_from_bytes(data: bytes, filename: Optional[str] = None) -> List
             f"CSV 解析失败：请检查分隔符是否一致、列数是否匹配。"
             f"常见原因：引号未闭合、某行列数与其他行不一致。原始错误: {e}"
         ) from e
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("pandas CSV 解析失败，回退到纯文本分割: %s", exc)
 
     # Fallback: plain text, split by comma/tab/space
     lines = text.strip().splitlines()

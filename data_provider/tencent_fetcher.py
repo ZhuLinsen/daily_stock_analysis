@@ -156,8 +156,8 @@ def _first_trading_date_on_or_after(start_date: datetime) -> datetime:
             cal = xcals.get_calendar("XSHG")
             session = cal.date_to_session(start_date.date(), direction="next")
             return datetime.combine(session.date(), datetime.min.time())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("交易日历查询失败，回退到周末跳过逻辑: %s", exc)
 
     current = start_date
     while current.weekday() >= 5:

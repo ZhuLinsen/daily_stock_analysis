@@ -200,7 +200,6 @@ class StockTrendAnalyzer:
     
     def __init__(self):
         """初始化分析器"""
-        pass
     
     def analyze(self, df: pd.DataFrame, code: str) -> TrendAnalysisResult:
         """
@@ -822,8 +821,6 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     # 模拟数据测试
-    import numpy as np
-    
     dates = pd.date_range(start='2025-01-01', periods=60, freq='D')
     np.random.seed(42)
     

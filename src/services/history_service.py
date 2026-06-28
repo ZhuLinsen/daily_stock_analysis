@@ -33,7 +33,6 @@ from src.report_language import (
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.market_phase_summary import (
-    extract_market_phase_summary,
     rebuild_market_phase_summary_for_stock_code,
 )
 from src.schemas.decision_action import build_action_fields

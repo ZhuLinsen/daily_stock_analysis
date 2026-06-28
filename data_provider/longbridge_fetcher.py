@@ -27,7 +27,7 @@ import logging
 import os
 import time
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -121,8 +121,8 @@ def _sanitize_longbridge_env() -> None:
             os.environ["LONGBRIDGE_LOG_PATH"] = str(p / "longbridge_sdk.log")
             logger.debug("[Longbridge] 设置 LONGBRIDGE_LOG_PATH=%s",
                          os.environ["LONGBRIDGE_LOG_PATH"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[Longbridge] 设置 LONGBRIDGE_LOG_PATH 失败: %s", exc)
 
     region = (os.getenv("LONGBRIDGE_REGION") or "").strip().lower()
     if region:

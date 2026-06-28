@@ -17,8 +17,8 @@
 import logging
 import time
 from threading import RLock
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
 from enum import Enum
 
 logger = logging.getLogger(__name__)

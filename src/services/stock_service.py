@@ -10,8 +10,8 @@
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, Dict, Any
 
 from src.repositories.stock_repo import StockRepository
 

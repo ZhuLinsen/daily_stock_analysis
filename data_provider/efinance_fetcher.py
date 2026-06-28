@@ -26,8 +26,7 @@ import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd

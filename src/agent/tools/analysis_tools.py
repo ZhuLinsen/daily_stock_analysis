@@ -224,7 +224,6 @@ def _handle_get_volume_analysis(stock_code: str, days: int = 30) -> dict:
 
     # Volume-price correlation (last N days)
     try:
-        import numpy as np
         vp_corr = float(pd.Series(volume.values, dtype=float).corr(pd.Series(close.values, dtype=float)))
         vp_corr = round(vp_corr, 3)
     except Exception:

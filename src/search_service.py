@@ -221,7 +221,6 @@ class BaseSearchProvider(ABC):
     @abstractmethod
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行搜索（子类实现）"""
-        pass
     
     def _execute_search(
         self,

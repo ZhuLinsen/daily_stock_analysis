@@ -321,17 +321,14 @@ def canonical_stock_code(code: str) -> str:
 
 class DataFetchError(Exception):
     """数据获取异常基类"""
-    pass
 
 
 class RateLimitError(DataFetchError):
     """API 速率限制异常"""
-    pass
 
 
 class DataSourceUnavailableError(DataFetchError):
     """数据源不可用异常"""
-    pass
 
 
 class BaseFetcher(ABC):
@@ -365,7 +362,6 @@ class BaseFetcher(ABC):
         Returns:
             原始数据 DataFrame（列名因数据源而异）
         """
-        pass
     
     @abstractmethod
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -375,7 +371,6 @@ class BaseFetcher(ABC):
         将不同数据源的列名统一为：
         ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
         """
-        pass
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """

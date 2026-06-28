@@ -307,6 +307,6 @@ class AgentMemory:
                     "direction_accuracy": summary.get("direction_accuracy", 0.5),
                     "avg_confidence": 0.6,  # approximate from historical data
                 }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("读取历史评估统计失败，使用默认值: %s", exc)
         return {"total": 0, "accuracy": 0.5, "direction_accuracy": 0.5, "avg_confidence": 0.5}

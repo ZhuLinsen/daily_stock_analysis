@@ -28,7 +28,7 @@ mark the block as ``partial`` when only some fields are populated.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -215,8 +215,8 @@ class YfinanceFundamentalAdapter:
                 ts = pd.to_datetime(first_col, errors="coerce")
                 if pd.notna(ts):
                     report_date = ts.date().isoformat()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("解析利润表报告期失败，report_date 留空: %s", exc)
             revenue_row = _pick_row(income_df, _INCOME_REVENUE_KEYS)
             net_profit_row = _pick_row(income_df, _INCOME_NET_PROFIT_KEYS)
             revenue_latest = _latest_value(revenue_row)

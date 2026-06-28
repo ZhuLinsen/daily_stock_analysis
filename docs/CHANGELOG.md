@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Web 回测运行未传分析日期范围、股票代码未归一化导致后端成功返回但结果为空的问题，并为空候选和行情不足返回诊断信息。
 - [文档] 补充回测请求链路说明：`analysis_date_from/analysis_date_to` 与 `code` 的输入边界、归一化与筛选顺序，以及历史行情不足或候选集为空时回测返回成功响应，在 `message` 与 `diagnostics`（含 `empty_reason`）中提供可诊断信息，并同步更新 `docs/full-guide.md`、`docs/full-guide_EN.md` 示例。
 - [修复] 回测代码匹配新增非法市场后缀/长度兜底：如 `600519.HK`、`600519.SZ`、`SH000001` 不再静默回落到其它有效代码，并在日期筛选重跑时对齐旧回测结果的分析日期，避免历史快照日期命中但结果列表仍为空。
+- [chore] 清理 scheduler 中被多时间调度版本覆盖的单时间 `_refresh_daily_schedule_if_needed`/`_configure_daily_task` 死代码，并移除全仓源码目录的未用导入（`notification_sender` 包补充 `__all__` 显式声明对外接口）。
+- [改进] 为多处最易掩盖真实失败的静默 `except`（股票名解析、CSV 解析回退、交易日历查询、利润表报告期解析、历史评估统计、板块异动预检查、Longbridge 日志路径设置）补充 `logger.debug` 诊断日志，控制流不变。
 
 ## [3.23.0] - 2026-06-20
 

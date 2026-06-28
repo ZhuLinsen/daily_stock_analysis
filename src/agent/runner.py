@@ -396,7 +396,8 @@ def _build_budget_guard_result(
         models_used=models_used,
         error=(
             "Agent step skipped due to insufficient budget: "
-            f"{remaining_timeout_s:.2f}s remaining, minimum {min_step_budget_s:.1f}s required"
+            f"{remaining_timeout_s:.2f}s remaining, minimum {min_step_budget_s:.1f}s required "
+            f"(elapsed {elapsed:.2f}s)"
         ),
         messages=messages,
     )

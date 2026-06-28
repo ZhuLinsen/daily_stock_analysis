@@ -7,7 +7,7 @@ starts with their own ``{platform}_{user_id}`` prefix.
 """
 
 import logging
-from typing import List, Optional
+from typing import List
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse, ChatType

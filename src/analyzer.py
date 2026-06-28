@@ -35,8 +35,6 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
-    normalize_litellm_temperature,
-    resolve_litellm_wire_model,
     resolve_news_window_days,
 )
 from src.llm.generation_params import apply_litellm_generation_params

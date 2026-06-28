@@ -50,7 +50,6 @@ class BotCommand(ABC):
 
         例如 "analyze"，用户输入 "/analyze" 触发
         """
-        pass
 
     @property
     @abstractmethod
@@ -60,13 +59,11 @@ class BotCommand(ABC):
 
         例如 ["a", "分析"]，用户输入 "/a" 或 "分析" 也能触发
         """
-        pass
 
     @property
     @abstractmethod
     def description(self) -> str:
         """命令描述（用于帮助信息）"""
-        pass
 
     @property
     @abstractmethod
@@ -76,7 +73,6 @@ class BotCommand(ABC):
 
         例如 "/analyze <股票代码>"
         """
-        pass
 
     @property
     def hidden(self) -> bool:
@@ -108,7 +104,6 @@ class BotCommand(ABC):
         Returns:
             BotResponse 响应对象
         """
-        pass
 
     async def execute_async(self, message: BotMessage, args: List[str]) -> BotResponse:
         """异步执行命令。

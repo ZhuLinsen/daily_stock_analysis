@@ -18,7 +18,6 @@ from datetime import datetime
 from inspect import getattr_static
 from typing import Optional, Dict, Any, List
 
-import pandas as pd
 
 from src.config import get_config
 from src.report_language import normalize_report_language
