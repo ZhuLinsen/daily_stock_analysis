@@ -128,6 +128,68 @@ def test_ca_realtime_does_not_fall_back_to_us_stooq(monkeypatch) -> None:
     assert len(stooq_calls) == 1
 
 
+class _RaisingTicker:
+    """A yfinance Ticker stub that raises everywhere (forces the OUTER except guard)."""
+
+    @property
+    def fast_info(self):
+        raise RuntimeError("fast_info boom")
+
+    def history(self, *args, **kwargs):
+        raise RuntimeError("history boom")
+
+
+def test_ca_realtime_outer_exception_does_not_fall_back_to_us_stooq(monkeypatch) -> None:
+    """When Yahoo *raises* (not just empty), the outer-except guard must also block Stooq for ca."""
+    import yfinance
+    fetcher = YfinanceFetcher()
+    monkeypatch.setattr(yfinance, "Ticker", lambda *a, **k: _RaisingTicker())
+    stooq_calls = []
+    monkeypatch.setattr(fetcher, "_get_us_stock_quote_from_stooq",
+                        lambda *a, **k: stooq_calls.append(a) or None)
+
+    for ca_code in ("ABC.V", "TD.TO"):
+        assert fetcher.get_realtime_quote(ca_code) is None
+    assert stooq_calls == []  # ca never reaches Stooq via the outer except path
+
+    assert fetcher.get_realtime_quote("AAPL") is None  # US still falls back
+    assert len(stooq_calls) == 1
+
+
+class _CaTicker:
+    """A yfinance Ticker stub returning a valid CAD quote for a `.TO` symbol."""
+
+    @property
+    def fast_info(self):
+        class _FI:
+            last_price = 170.0
+            previous_close = 169.0
+            open = 169.5
+            day_high = 171.0
+            day_low = 168.0
+            last_volume = 1000
+            market_cap = None
+        return _FI()
+
+    @property
+    def info(self):
+        return {"currency": "CAD", "shortName": "Toronto-Dominion Bank"}
+
+    def history(self, *args, **kwargs):
+        return pd.DataFrame()
+
+
+def test_ca_realtime_quote_is_labeled_ca_not_us(monkeypatch) -> None:
+    """A successful ca quote must carry market='ca' and a non-USD currency (never silently us/USD)."""
+    import yfinance
+    fetcher = YfinanceFetcher()
+    monkeypatch.setattr(yfinance, "Ticker", lambda *a, **k: _CaTicker())
+    quote = fetcher.get_realtime_quote("TD.TO")
+    assert quote is not None
+    assert quote.market == "ca"
+    assert (quote.currency or "").upper() != "USD"
+
+
 def test_market_tag_classifies_ca() -> None:
     from data_provider.base import _market_tag
     assert _market_tag("TD.TO") == "ca"

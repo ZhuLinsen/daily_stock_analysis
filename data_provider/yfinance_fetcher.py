@@ -818,12 +818,15 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩 suffix 代码，跳过")
             return None
 
+        # Suffix-only offshore markets (jp/kr/tw/ca) must never use the US Stooq
+        # fallback — e.g. Canada `.V` also matches the US single-letter-suffix rule.
+        # Computed from the raw input before the try so BOTH the history-empty guard
+        # and the outer-except guard read the same value (no raw-vs-converted divergence).
+        is_offshore_suffix = is_suffix_market_symbol(stock_code)
         try:
             symbol = self._convert_stock_code(stock_code)
             suffix_market = get_suffix_market(symbol)
-            # Suffix-only offshore markets (jp/kr/tw/ca) must never use the US Stooq
-            # fallback — e.g. Canada `.V` also matches the US single-letter-suffix rule.
-            is_us_symbol = self._is_us_stock(symbol) and not suffix_market
+            is_us_symbol = self._is_us_stock(symbol) and not is_offshore_suffix
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
@@ -931,7 +934,7 @@ class YfinanceFetcher(BaseFetcher):
         except Exception as e:
             # Suffix-only offshore markets (incl. Canada `.V`) must not fall back to
             # the US Stooq provider even though `.V` matches the US single-letter rule.
-            if self._is_us_stock(stock_code) and not is_suffix_market_symbol(stock_code):
+            if self._is_us_stock(stock_code) and not is_offshore_suffix:
                 logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
                 return self._get_us_stock_quote_from_stooq(stock_code)
             logger.warning(f"[Yfinance] 获取 {stock_code} 实时行情失败: {e}")
