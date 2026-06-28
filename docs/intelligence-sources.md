@@ -10,7 +10,7 @@ Issue #1707 的首版能力聚焦“合规资讯源采集、本地沉淀、可�
 - 保存资讯源配置、启用状态、作用域和最近一次拉取状态。
 - 拉取条目落库到 `intelligence_items`，保存标题、摘要、URL、来源、发布时间、拉取时间、市场与作用域。
 - 按 URL 去重；无 URL 条目使用 `no-url:intel:<hash>` 兜底键。
-- 支持 `symbol` / `market` / `sector` 作用域，以及 `cn` / `hk` / `us` / `jp` / `kr` / `tw` / `global` 市场标记。
+- 支持 `symbol` / `market` / `sector` 作用域，以及 `cn` / `hk` / `us` / `jp` / `kr` / `tw` / `ca` / `global` 市场标记。
 - 拉取批处理采用 fail-open：单个源失败不会阻塞其他源或主分析链路。
 - 支持 retention 清理，避免资讯池无限增长。
 

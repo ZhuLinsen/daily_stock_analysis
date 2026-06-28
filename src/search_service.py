@@ -33,7 +33,7 @@ from tenacity import (
 )
 
 from data_provider.us_index_mapping import is_us_index_code
-from src.services.market_symbol_utils import is_suffix_market_symbol
+from src.services.market_symbol_utils import get_suffix_market, is_us_market_symbol
 from src.config import (
     NEWS_STRATEGY_WINDOWS,
     normalize_news_strategy_profile,
@@ -2363,10 +2363,18 @@ class SearchService:
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
-        """判断是否为港股或美股"""
+        """判断是否为外股（美股 / 港股 / 加拿大）。
+
+        必须一致识别所有加拿大代码（`.TO`/`.V`/`-UN.TO`）为外股，否则 TSX 与 TSX-V
+        会走不同的新闻语言/关键词/搜索策略。JP/KR/TW（数字 base）此前为本土，本次不变。
+        """
         code = stock_code.strip()
-        # 美股：1-5个大写字母，可能包含点（如 BRK.B）
-        if SearchService._US_STOCK_RE.match(code):
+        # 美股股票（suffix-aware，排除与美股单字母后缀冲突的 `.V`）或美股指数。
+        if is_us_market_symbol(code) or is_us_index_code(code):
+            return True
+        # 加拿大（`.TO`/`.V`/`-UN.TO`）。仅放行 `ca`：JP/KR/TW（数字 base）此前为本土，
+        # 本任务不改变其行为。
+        if get_suffix_market(code) == "ca":
             return True
         # 港股：带 hk 前缀或 5位纯数字
         lower = code.lower()
@@ -2385,13 +2393,11 @@ class SearchService:
     def _is_us_stock(cls, stock_code: str) -> bool:
         """判断是否为美股/美股指数代码。
 
-        排除 suffix-only 离岸市场（jp/kr/tw/ca），否则加拿大 `.V` 会命中美股单字母
-        后缀规则、令新闻搜索 locale 误判为美国。
+        通过共享的 suffix-aware helper 排除离岸市场（jp/kr/tw/ca），否则加拿大 `.V`
+        会命中美股单字母后缀规则、令新闻搜索 locale/相关性误判为美国。
         """
         code = (stock_code or "").strip().upper()
-        if is_suffix_market_symbol(code):
-            return False
-        return bool(cls._US_STOCK_RE.match(code) or is_us_index_code(code))
+        return bool(is_us_market_symbol(code) or is_us_index_code(code))
 
     @classmethod
     def _should_prefer_chinese_news(
@@ -2615,7 +2621,7 @@ class SearchService:
             elif suffix == "US" and re.fullmatch(r"[A-Z]{1,5}", base):
                 code_for_variants = base
 
-        is_us_ticker = bool(cls._US_STOCK_RE.match(code_for_variants))
+        is_us_ticker = is_us_market_symbol(code_for_variants)
         if not is_us_ticker:
             cls._append_unique(terms, raw)
             cls._append_unique(terms, upper)
@@ -2644,7 +2650,7 @@ class SearchService:
             cls._append_unique(terms, f"{code_for_variants}{suffix}")
             return terms
 
-        if cls._US_STOCK_RE.match(code_for_variants):
+        if is_us_ticker:
             cls._append_unique(terms, f"${code_for_variants}")
             cls._append_unique(terms, f"NASDAQ:{code_for_variants}")
             cls._append_unique(terms, f"NYSE:{code_for_variants}")

@@ -190,6 +190,18 @@ def test_ca_realtime_quote_is_labeled_ca_not_us(monkeypatch) -> None:
     assert (quote.currency or "").upper() == "CAD"
 
 
+def test_is_us_market_symbol_shared_helper() -> None:
+    """The shared suffix-aware US helper excludes offshore suffix markets."""
+    from src.services.market_symbol_utils import is_us_market_symbol
+    assert is_us_market_symbol("AAPL") is True
+    assert is_us_market_symbol("BRK.B") is True
+    assert is_us_market_symbol("ABC.V") is False   # Canada TSX-V collides with US single-letter
+    assert is_us_market_symbol("TD.TO") is False
+    assert is_us_market_symbol("REI-UN.TO") is False
+    assert is_us_market_symbol("7203.T") is False  # jp
+    assert is_us_market_symbol("600519") is False  # cn
+
+
 def test_ca_not_treated_as_us_by_search_service() -> None:
     """SearchService must not flag Canadian `.V`/`.TO` as US (else news search gets US locale)."""
     from src.search_service import SearchService
@@ -197,6 +209,30 @@ def test_ca_not_treated_as_us_by_search_service() -> None:
     assert SearchService._is_us_stock("TD.TO") is False
     assert SearchService._is_us_stock("REI-UN.TO") is False
     assert SearchService._is_us_stock("AAPL") is True  # real US unaffected
+
+
+def test_ca_search_identity_terms_not_us_tickerized() -> None:
+    """Canadian `.V` must not generate US-ticker identity terms ($/NASDAQ:/NYSE:)."""
+    from src.search_service import SearchService
+    ca_terms = SearchService._stock_code_identity_terms("ABC.V")
+    assert not any(t.startswith("$") or t.startswith("NASDAQ:") or t.startswith("NYSE:") for t in ca_terms)
+    # Control: a real US ticker still gets the US identity variants.
+    us_terms = SearchService._stock_code_identity_terms("AAPL")
+    assert "$AAPL" in us_terms
+
+
+def test_ca_is_foreign_stock_consistent() -> None:
+    """All Canadian codes must classify as foreign (drives news language/keywords/search strategy)."""
+    from src.search_service import SearchService
+    assert SearchService._is_foreign_stock("ABC.V") is True
+    assert SearchService._is_foreign_stock("TD.TO") is True       # previously mis-classified domestic
+    assert SearchService._is_foreign_stock("REI-UN.TO") is True   # previously mis-classified domestic
+    assert SearchService._is_foreign_stock("AAPL") is True        # US still foreign
+    assert SearchService._is_foreign_stock("600519") is False     # A-share stays domestic
+    # Scope guard: JP/KR/TW (numeric base) were NOT foreign before and must stay unchanged.
+    assert SearchService._is_foreign_stock("7203.T") is False
+    assert SearchService._is_foreign_stock("005930.KS") is False
+    assert SearchService._is_foreign_stock("2330.TW") is False
 
 
 def test_ca_not_treated_as_us_by_finnhub_alphavantage() -> None:

@@ -83,7 +83,7 @@ from src.core.trading_calendar import (
     get_market_now,
     is_market_open,
 )
-from data_provider.us_index_mapping import is_us_stock_code
+from src.services.market_symbol_utils import is_us_market_symbol
 from bot.models import BotMessage
 
 
@@ -592,7 +592,7 @@ class StockAnalysisPipeline:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_market_symbol(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -1252,7 +1252,7 @@ class StockAnalysisPipeline:
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
             # can consume it through the existing news_context channel
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_market_symbol(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:

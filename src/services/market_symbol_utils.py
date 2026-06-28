@@ -124,3 +124,20 @@ def suffix_base_lookup_allowed(canonical_code: str) -> bool:
 def market_suffixes(market: str) -> tuple[str, ...]:
     spec = _MARKET_TO_SPEC.get((market or "").strip().lower())
     return spec.suffixes if spec else ()
+
+
+def is_us_market_symbol(stock_code: str) -> bool:
+    """Return True for a US stock symbol, EXCLUDING suffix-only offshore markets.
+
+    Some offshore suffixes collide with the US single-letter-suffix rule — notably
+    Canada `.V` (and hyphenated unit codes like `REI-UN.TO`). Use this — not bare
+    ``is_us_stock_code`` —
+    at any US-vs-offshore decision point so a Canadian/JP/KR/TW symbol is never
+    treated as US (search locale/identity, social-sentiment routing, fetchers...).
+    """
+    if is_suffix_market_symbol(stock_code):
+        return False
+    # Lazy import keeps this module dependency-light / cycle-free.
+    from data_provider.us_index_mapping import is_us_stock_code
+
+    return is_us_stock_code(stock_code)
