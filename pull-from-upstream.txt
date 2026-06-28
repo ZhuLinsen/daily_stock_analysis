@@ -1,0 +1,13 @@
+1. 添加上游仓库
+git remote add upstream https://github.com/original-owner/repo.git
+
+2. 拉取上游仓库的更新
+git fetch upstream
+
+3. 合并上游的更改到你的分支
+git checkout main  # 或者 git switch main，取决于你的 Git 版本
+git merge upstream/main
+
+4. 推送更改到你的fork
+git push origin main  # 替换 main 为你的默认分支名，比如 master 或其他自定义分支名
+
