@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - [改进] TickFlow 扩展为可选 A 股日 K、实时行情、股票列表/名称数据源，并为日 K 请求增加 count、完整性校验和批量预取缓存保护。
+- [新功能] #1777 新增台股三大法人（institutional flows）资料层 fetcher `TwInstitutionalFetcher`：上市走 TWSE T86 legacy `rwd` 端点、上柜走 TPEx OpenAPI，正规化外资/投信/自营商/三大法人每日买卖超（单位股数，民国↔西元日期转换有单测），按日期+市场单日缓存，失败/限流/空响应一律 fail-open；仅 `.TW`/`.TWO` 生效、严格 additive，不改动现有市场流程、不接报告/Web/评分/`capital_flow_signal`。资料来源为政府开放资料（OGDL v1）。
 - [修复] API 异步批量分析共享概念板块排行缓存，避免同批多股重复拉取全市场概念排行。
 - [文档] 补齐概念板块排行字段契约与通知报告行业/概念类型列展示说明。
 - [新功能] #1742 新增信号归因分析功能（dashboard.signal_attribution），解释推荐理由的构成（技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号）。支持默认通知报告和 Jinja2 模板渲染，包含中英文国际化标签。归一化函数在 _parse_response() 和 parse_dashboard_json() 中显式调用，确保有效非零贡献度归一化到 100，all-zero 保留为 0（表示无有效信号）。
