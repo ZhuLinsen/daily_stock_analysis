@@ -4,7 +4,8 @@ interface ValidationResult {
   normalized: string;
 }
 
-const SUPPORTED_QUERY_CHARACTERS = /^[A-Z0-9.\u3400-\u9FFF\s]+$/;
+// Hyphen is allowed for Canadian class/unit codes (for example BAM-A.TO, REI-UN.TO).
+const SUPPORTED_QUERY_CHARACTERS = /^[A-Z0-9.\-\u3400-\u9FFF\s]+$/;
 
 const STOCK_CODE_PATTERNS = [
   /^\d{6}$/, // A-share 6-digit code
@@ -15,6 +16,7 @@ const STOCK_CODE_PATTERNS = [
   /^\d{1,5}\.HK$/, // HK suffix format, for example 00700.HK
   /^\d{4,5}\.T$/, // Japan Yahoo suffix format, for example 7203.T
   /^\d{6}\.(KS|KQ)$/, // Korea Yahoo suffix format, for example 005930.KS or 035720.KQ
+  /^[A-Z0-9][A-Z0-9-]{0,11}\.(TO|V)$/, // Canada Yahoo suffix format, for example TD.TO, ABC.V, BAM-A.TO, REI-UN.TO
   /^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$/, // Common US ticker format
 ];
 
