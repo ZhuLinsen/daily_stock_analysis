@@ -95,6 +95,39 @@ def test_yfinance_keeps_ca_suffix_codes() -> None:
     assert fetcher._convert_stock_code("ABC.V") == "ABC.V"
 
 
+class _EmptyTicker:
+    """A yfinance Ticker stub whose data is unavailable (forces the fallback branch)."""
+
+    @property
+    def fast_info(self):
+        raise RuntimeError("no fast_info")
+
+    def history(self, *args, **kwargs):
+        return pd.DataFrame()
+
+
+def test_ca_realtime_does_not_fall_back_to_us_stooq(monkeypatch) -> None:
+    """Canada `.V`/`.TO` whose Yahoo data is empty must NOT use the US Stooq fallback.
+
+    `.V` also matches the US single-letter-suffix rule, so without the suffix guard
+    a failed Yahoo lookup would silently query Stooq for a US symbol/currency.
+    """
+    import yfinance
+    fetcher = YfinanceFetcher()
+    monkeypatch.setattr(yfinance, "Ticker", lambda *a, **k: _EmptyTicker())
+    stooq_calls = []
+    monkeypatch.setattr(fetcher, "_get_us_stock_quote_from_stooq",
+                        lambda *a, **k: stooq_calls.append(a) or None)
+
+    for ca_code in ("ABC.V", "TD.TO"):
+        assert fetcher.get_realtime_quote(ca_code) is None
+    assert stooq_calls == []  # Canada never falls back to US Stooq
+
+    # Regression guard: a real US symbol still uses the Stooq fallback.
+    assert fetcher.get_realtime_quote("AAPL") is None
+    assert len(stooq_calls) == 1
+
+
 def test_market_tag_classifies_ca() -> None:
     from data_provider.base import _market_tag
     assert _market_tag("TD.TO") == "ca"
