@@ -33,6 +33,7 @@ from tenacity import (
 )
 
 from data_provider.us_index_mapping import is_us_index_code
+from src.services.market_symbol_utils import is_suffix_market_symbol
 from src.config import (
     NEWS_STRATEGY_WINDOWS,
     normalize_news_strategy_profile,
@@ -2382,8 +2383,14 @@ class SearchService:
 
     @classmethod
     def _is_us_stock(cls, stock_code: str) -> bool:
-        """判断是否为美股/美股指数代码。"""
+        """判断是否为美股/美股指数代码。
+
+        排除 suffix-only 离岸市场（jp/kr/tw/ca），否则加拿大 `.V` 会命中美股单字母
+        后缀规则、令新闻搜索 locale 误判为美国。
+        """
         code = (stock_code or "").strip().upper()
+        if is_suffix_market_symbol(code):
+            return False
         return bool(cls._US_STOCK_RE.match(code) or is_us_index_code(code))
 
     @classmethod

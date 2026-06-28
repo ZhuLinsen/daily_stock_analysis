@@ -18,6 +18,7 @@ import requests
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import is_us_stock_code
+from src.services.market_symbol_utils import is_suffix_market_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,9 @@ class FinnhubFetcher(BaseFetcher):
             logger.debug("[Finnhub] API key not configured, fetcher disabled")
 
     def _is_us_stock(self, stock_code: str) -> bool:
-        return is_us_stock_code(stock_code)
+        # Exclude suffix-only offshore markets (e.g. Canada `.V`) that collide with
+        # the US single-letter-suffix rule, so a direct call never fetches US data.
+        return is_us_stock_code(stock_code) and not is_suffix_market_symbol(stock_code)
 
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         if not self._api_key:

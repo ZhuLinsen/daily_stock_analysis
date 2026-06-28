@@ -187,7 +187,26 @@ def test_ca_realtime_quote_is_labeled_ca_not_us(monkeypatch) -> None:
     quote = fetcher.get_realtime_quote("TD.TO")
     assert quote is not None
     assert quote.market == "ca"
-    assert (quote.currency or "").upper() != "USD"
+    assert (quote.currency or "").upper() == "CAD"
+
+
+def test_ca_not_treated_as_us_by_search_service() -> None:
+    """SearchService must not flag Canadian `.V`/`.TO` as US (else news search gets US locale)."""
+    from src.search_service import SearchService
+    assert SearchService._is_us_stock("ABC.V") is False
+    assert SearchService._is_us_stock("TD.TO") is False
+    assert SearchService._is_us_stock("REI-UN.TO") is False
+    assert SearchService._is_us_stock("AAPL") is True  # real US unaffected
+
+
+def test_ca_not_treated_as_us_by_finnhub_alphavantage() -> None:
+    """Finnhub/AlphaVantage must reject Canadian suffix codes as non-US (defensive)."""
+    from data_provider.finnhub_fetcher import FinnhubFetcher
+    from data_provider.alphavantage_fetcher import AlphaVantageFetcher
+    for fetcher in (FinnhubFetcher(), AlphaVantageFetcher()):
+        assert fetcher._is_us_stock("ABC.V") is False
+        assert fetcher._is_us_stock("TD.TO") is False
+        assert fetcher._is_us_stock("AAPL") is True
 
 
 def test_market_tag_classifies_ca() -> None:
