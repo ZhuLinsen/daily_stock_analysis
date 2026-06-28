@@ -260,7 +260,7 @@ async def get_context_store(session_id: str):
     tools: List[Dict[str, Any]] = []
     if has_data:
         try:
-            for entry in ToolResultKeyStore._store.get(session_id, []):
+            for entry in ToolResultKeyStore.get_stored_entries(session_id):
                 tools.append({k: v for k, v in entry.items() if not k.startswith("_")})
         except Exception:
             pass
