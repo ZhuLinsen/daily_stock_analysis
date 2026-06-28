@@ -3,20 +3,23 @@ import { useState, useEffect } from 'react';
 import { motion, useMotionValue, useTransform, useSpring } from "motion/react";
 import { Lock, Loader2, Cpu, TrendingUp, Network, ShieldCheck } from "lucide-react";
 import { Button, Input, ParticleBackground } from '../components/common';
+import { UiLanguageToggle } from '../components/i18n/UiLanguageToggle';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ParsedApiError } from '../api/error';
 import { isParsedApiError } from '../api/error';
 import { useAuth } from '../hooks';
+import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { SettingsAlert } from '../components/settings';
 
 const LoginPage: React.FC = () => {
   const { login, passwordSet, setupState } = useAuth();
+  const { t } = useUiLanguage();
   const navigate = useNavigate();
 
   // Set page title
   useEffect(() => {
-    document.title = '登录 - DSA';
-  }, []);
+    document.title = t('login.pageTitle');
+  }, [t]);
   const [searchParams] = useSearchParams();
   const rawRedirect = searchParams.get('redirect') ?? '';
   const redirect =
@@ -52,7 +55,7 @@ const LoginPage: React.FC = () => {
     e.preventDefault();
     setError(null);
     if (isFirstTime && password !== passwordConfirm) {
-      setError('两次输入的密码不一致');
+      setError(t('login.passwordMismatch'));
       return;
     }
     setIsSubmitting(true);
@@ -61,7 +64,7 @@ const LoginPage: React.FC = () => {
       if (result.success) {
         navigate(redirect, { replace: true });
       } else {
-        setError(result.error ?? '登录失败');
+        setError(result.error ?? t('login.loginFailed'));
       }
     } finally {
       setIsSubmitting(false);
@@ -72,6 +75,10 @@ const LoginPage: React.FC = () => {
     <div className="relative flex min-h-screen flex-col justify-center overflow-hidden bg-[var(--login-bg-main)] py-12 font-sans selection:bg-[var(--login-accent-soft)] sm:px-6 lg:px-8 [perspective:1500px]">
       {/* Dynamic Background */}
       <ParticleBackground />
+
+      <div className="absolute right-4 top-4 z-30">
+        <UiLanguageToggle />
+      </div>
 
       {/* Cyber Grid */}
       <div className="absolute inset-0 z-0 bg-[linear-gradient(to_right,var(--login-grid-line)_1px,transparent_1px),linear-gradient(to_bottom,var(--login-grid-line)_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:var(--login-grid-mask)]" />
@@ -154,19 +161,19 @@ const LoginPage: React.FC = () => {
                 {isFirstTime ? (
                   <>
                     <ShieldCheck className="h-6 w-6 text-emerald-400" />
-                    <span>设置初始密码</span>
+                    <span>{t('login.setupTitle')}</span>
                   </>
                 ) : (
                   <>
                     <Lock className="h-5 w-5 text-[var(--login-accent-text)]" />
-                    <span>管理员登录</span>
+                    <span>{t('login.adminLogin')}</span>
                   </>
                 )}
               </h1>
               <p className="mt-2 text-sm text-[var(--login-text-secondary)]">
                 {isFirstTime
-                  ? '首次启用认证，请为系统工作台设置管理员密码。'
-                  : '访问 DSA 量化决策引擎需要有效的身份凭证。'}
+                  ? t('login.setupDescription')
+                  : t('login.loginDescription')}
               </p>
             </div>
 
@@ -178,8 +185,8 @@ const LoginPage: React.FC = () => {
                   appearance="login"
                   allowTogglePassword
                   iconType="password"
-                  label={isFirstTime ? '管理员密码' : '登录密码'}
-                  placeholder={isFirstTime ? '请设置 6 位以上密码' : '请输入密码'}
+                  label={isFirstTime ? t('login.adminPassword') : t('login.loginPassword')}
+                  placeholder={isFirstTime ? t('login.setupPasswordPlaceholder') : t('login.loginPasswordPlaceholder')}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isSubmitting}
@@ -194,8 +201,8 @@ const LoginPage: React.FC = () => {
                     appearance="login"
                     allowTogglePassword
                     iconType="password"
-                    label="确认密码"
-                    placeholder="再次确认管理员密码"
+                    label={t('login.confirmPassword')}
+                    placeholder={t('login.confirmPasswordPlaceholder')}
                     value={passwordConfirm}
                     onChange={(e) => setPasswordConfirm(e.target.value)}
                     disabled={isSubmitting}
@@ -211,7 +218,7 @@ const LoginPage: React.FC = () => {
                   className="overflow-hidden"
                 >
                   <SettingsAlert
-                    title={isFirstTime ? '配置失败' : '验证未通过'}
+                    title={isFirstTime ? t('login.setupFailed') : t('login.validationFailed')}
                     message={isParsedApiError(error) ? error.message : error}
                     variant="error"
                     className="!border-[var(--login-error-border)] !bg-[var(--login-error-bg)] !text-[var(--login-error-text)]"
@@ -230,10 +237,10 @@ const LoginPage: React.FC = () => {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>{isFirstTime ? '初始化中...' : '正在建立连接...'}</span>
+                      <span>{isFirstTime ? t('login.setupSubmitting') : t('login.loginSubmitting')}</span>
                     </>
                   ) : (
-                    <span>{isFirstTime ? '完成设置并登录' : '授权进入工作台'}</span>
+                    <span>{isFirstTime ? t('login.setupSubmit') : t('login.loginSubmit')}</span>
                   )}
                 </div>
                 <div className="absolute inset-0 z-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] pointer-events-none" />

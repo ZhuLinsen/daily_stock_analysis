@@ -45,23 +45,35 @@ def _make_sina_payload() -> str:
     return f'var hq_str_sh601006="{",".join(fields)}";'
 
 
-def _make_tencent_payload() -> str:
+def _make_tencent_payload(
+    *,
+    price: str = "5.19",
+    volume: str = "1234",
+    amount_triplet: str = "",
+    amount_wan: str = "640.45",
+    turnover_rate: str = "0.69",
+    circ_mv_yi: str = "0.93",
+    total_mv_yi: str = "1.20",
+) -> str:
     fields = ["0"] * 50
     fields[1] = "大秦铁路"
     fields[2] = "601006"
-    fields[3] = "5.19"
+    fields[3] = price
     fields[4] = "5.00"
     fields[5] = "5.10"
-    fields[6] = "1234"
+    fields[6] = volume
     fields[31] = "0.19"
     fields[32] = "3.80"
-    fields[34] = "5.20"
-    fields[35] = "5.05"
-    fields[38] = "0.69"
+    fields[33] = "5.20"
+    fields[34] = "5.05"
+    if amount_triplet:
+        fields[35] = amount_triplet
+    fields[37] = amount_wan
+    fields[38] = turnover_rate
     fields[39] = "12.3"
     fields[43] = "2.00"
-    fields[44] = "1000"
-    fields[45] = "1200"
+    fields[44] = circ_mv_yi
+    fields[45] = total_mv_yi
     fields[46] = "1.20"
     fields[49] = "0.63"
     return f'v_sh601006="{"~".join(fields)}";'
@@ -148,9 +160,60 @@ def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fet
     assert quote is not None
     assert quote.name == "大秦铁路"
     assert quote.price == 5.19
+    assert quote.volume == 123400
+    assert quote.amount == 6404500
     assert breaker.successes == ["akshare_tencent"]
     assert f"endpoint={TENCENT_REALTIME_ENDPOINT}" in caplog.text
     assert "[实时行情-腾讯] 601006 大秦铁路:" in caplog.text
+
+
+def test_tencent_realtime_volume_keeps_share_unit_when_turnover_matches(monkeypatch, akshare_fetcher):
+    breaker = _DummyCircuitBreaker()
+    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr(
+        "data_provider.akshare_fetcher.requests.get",
+        lambda *args, **kwargs: _DummyResponse(
+            200,
+            _make_tencent_payload(
+                price="122.70",
+                volume="10931723",
+                amount_triplet="122.70/10931723/1327404280",
+                amount_wan="168369.8131",
+                turnover_rate="14.98",
+                circ_mv_yi="89.53",
+                total_mv_yi="147.24",
+            ),
+        ),
+    )
+
+    quote = akshare_fetcher._get_stock_realtime_quote_tencent("688691")
+
+    assert quote is not None
+    assert quote.volume == 10931723
+    assert quote.amount == 1327404280
+
+
+def test_tencent_realtime_volume_falls_back_to_legacy_hand_unit_when_not_cross_checkable(
+    monkeypatch, akshare_fetcher
+):
+    breaker = _DummyCircuitBreaker()
+    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr(
+        "data_provider.akshare_fetcher.requests.get",
+        lambda *args, **kwargs: _DummyResponse(
+            200,
+            _make_tencent_payload(
+                volume="1234",
+                turnover_rate="",
+                circ_mv_yi="",
+            ),
+        ),
+    )
+
+    quote = akshare_fetcher._get_stock_realtime_quote_tencent("601006")
+
+    assert quote is not None
+    assert quote.volume == 123400
 
 
 def test_hot_stocks_uses_eastmoney_hot_ranking_when_available(monkeypatch, akshare_fetcher):

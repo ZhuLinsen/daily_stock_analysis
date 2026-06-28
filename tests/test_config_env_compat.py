@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.config import Config, setup_env
+from src.config import Config, DEFAULT_ALPHASIFT_INSTALL_SPEC, setup_env
 
 
 class ConfigEnvCompatibilityTestCase(unittest.TestCase):
@@ -53,6 +53,120 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_defaults_to_litellm_contract(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "litellm")
+        self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_generation_backend, "auto")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_accepts_phase2_values(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "GENERATION_BACKEND": " codex_CLI ",
+                "GENERATION_FALLBACK_BACKEND": "",
+                "GENERATION_BACKEND_TIMEOUT_SECONDS": "300",
+                "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "1048576",
+                "GENERATION_BACKEND_MAX_CONCURRENCY": "2",
+                "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "1",
+                "AGENT_GENERATION_BACKEND": " codex_cli ",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "codex_cli")
+        self.assertEqual(config.generation_fallback_backend, "")
+        self.assertEqual(config.generation_backend_timeout_seconds, 300)
+        self.assertEqual(config.generation_backend_max_output_bytes, 1048576)
+        self.assertEqual(config.generation_backend_max_concurrency, 2)
+        self.assertEqual(config.local_cli_backend_max_concurrency, 1)
+        self.assertEqual(config.agent_generation_backend, "codex_cli")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_env_clamps_phase2_numeric_maxima(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "GENERATION_BACKEND_TIMEOUT_SECONDS": "999999",
+                "GENERATION_BACKEND_MAX_OUTPUT_BYTES": "999999999",
+                "GENERATION_BACKEND_MAX_CONCURRENCY": "999",
+                "LOCAL_CLI_BACKEND_MAX_CONCURRENCY": "999",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend_timeout_seconds, 3600)
+        self.assertEqual(config.generation_backend_max_output_bytes, 33554432)
+        self.assertEqual(config.generation_backend_max_concurrency, 16)
+        self.assertEqual(config.local_cli_backend_max_concurrency, 4)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_config_defaults_are_safe(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_prompt_cache_telemetry_enabled)
+        self.assertFalse(config.llm_prompt_cache_hints_enabled)
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_config_parses_env_values(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LLM_PROMPT_CACHE_TELEMETRY_ENABLED": "false",
+                "LLM_PROMPT_CACHE_HINTS_ENABLED": "true",
+                "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL": " DEBUG ",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.llm_prompt_cache_telemetry_enabled)
+        self.assertTrue(config.llm_prompt_cache_hints_enabled)
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "debug")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_prompt_cache_invalid_diagnostics_level_falls_back_to_off(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL": "verbose",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_prompt_cache_diagnostics_level, "off")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_load_from_env_uses_stable_fundamental_timeout_defaults(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
@@ -67,6 +181,113 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
         self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_schedule_times_parse_dedupe_and_fallback(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "SCHEDULE_TIME": "18:00",
+                "SCHEDULE_TIMES": "15:10,09:20,15:10",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.schedule_time, "18:00")
+        self.assertEqual(config.schedule_times, ["09:20", "15:10"])
+
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "SCHEDULE_TIME": "09:30",
+                "SCHEDULE_TIMES": "",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.schedule_times, [config.schedule_time])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_alphasift_install_spec_defaults_only_when_env_missing(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.alphasift_install_spec, DEFAULT_ALPHASIFT_INSTALL_SPEC)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_news_intel_envs_do_not_change_llm_runtime_contract(
+        self,
+        _mock_parse_litellm_yaml,
+        _mock_setup_env,
+    ) -> None:
+        base_env = {
+            "STOCK_LIST": "600519",
+            "OPENAI_API_KEYS": "base-key-12345",
+            "OPENAI_BASE_URL": "https://openai.example.com/v1",
+            "LITELLM_MODEL": "openai/gpt-4.1",
+            "OPENAI_MODEL": "gpt-4.1",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            Config._instance = None
+            baseline = Config._load_from_env()
+
+        news_intel_env = dict(base_env)
+        news_intel_env.update({
+            "NEWS_INTEL_RETENTION_DAYS": "45",
+            "NEWS_INTEL_FETCH_TIMEOUT_SEC": "5.5",
+            "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "25",
+            "NEWSNOW_BASE_URL": "https://newsnow.example.com/",
+        })
+        with patch.dict(os.environ, news_intel_env, clear=True):
+            Config._instance = None
+            with_news_intel = Config._load_from_env()
+
+        self.assertEqual(with_news_intel.litellm_model, baseline.litellm_model)
+        self.assertEqual(with_news_intel.litellm_fallback_models, baseline.litellm_fallback_models)
+        self.assertEqual(with_news_intel.openai_api_key, baseline.openai_api_key)
+        self.assertEqual(with_news_intel.openai_base_url, baseline.openai_base_url)
+        self.assertEqual(with_news_intel.news_intel_fetch_timeout_sec, 5.5)
+        self.assertEqual(with_news_intel.news_intel_max_items_per_source, 25)
+        self.assertEqual(with_news_intel.news_intel_retention_days, 45)
+        self.assertEqual(with_news_intel.newsnow_base_url, "https://newsnow.example.com")
+
+    def test_env_example_alphasift_install_spec_matches_trusted_default(self):
+        env_example = Path(__file__).resolve().parents[1] / ".env.example"
+
+        for line in env_example.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ALPHASIFT_INSTALL_SPEC="):
+                self.assertEqual(
+                    line,
+                    f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+                )
+                break
+        else:
+            self.fail("ALPHASIFT_INSTALL_SPEC missing from .env.example")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_alphasift_install_spec_honors_explicit_empty(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {"STOCK_LIST": "600519", "ALPHASIFT_INSTALL_SPEC": ""},
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.alphasift_install_spec, "")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -201,6 +422,38 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_news_intel_env_vars_do_not_affect_llm_layer(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LITELLM_MODEL": "openai/gpt-5.5",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_API_KEY": "sk-openai-test",
+                "OPENAI_BASE_URL": "https://openai.example/v1",
+                "NEWS_INTEL_RETENTION_DAYS": "14",
+                "NEWS_INTEL_FETCH_TIMEOUT_SEC": "12",
+                "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "75",
+                "NEWSNOW_BASE_URL": "https://newsnow.example.com/base/",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.openai_base_url, "https://openai.example/v1")
+        self.assertEqual(config.news_intel_retention_days, 14)
+        self.assertEqual(config.news_intel_fetch_timeout_sec, 12.0)
+        self.assertEqual(config.news_intel_max_items_per_source, 75)
+        self.assertEqual(config.newsnow_base_url, "https://newsnow.example.com/base")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_report_language_prefers_preexisting_process_env_over_env_file(
         self,
         _mock_parse_yaml,
@@ -277,6 +530,21 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         with patch.dict(os.environ, {"MARKET_REVIEW_COLOR_SCHEME": "red-up"}, clear=True):
             config = Config._load_from_env()
         self.assertEqual(config.market_review_color_scheme, "red_up")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_daily_market_context_enabled_defaults_on_and_can_disable(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertTrue(config.daily_market_context_enabled)
+
+        with patch.dict(os.environ, {"DAILY_MARKET_CONTEXT_ENABLED": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.daily_market_context_enabled)
 
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_runtime_mutable_keys_reload_from_updated_env_file_after_runtime_refresh(
@@ -406,6 +674,112 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 config = Config._load_from_env()
 
         self.assertEqual(config.stock_list, ["600519", "000001"])
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_unescapes_compose_saved_placeholders(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$$title_json,"content":$$content_json}\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                    "CUSTOM_WEBHOOK_BODY_TEMPLATE": '{"title":$$title_json,"content":$$content_json}',
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"title":$title_json,"content":$content_json}',
+        )
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_unescapes_compose_saved_braced_placeholders(
+        self,
+        _mock_parse_yaml,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                'CUSTOM_WEBHOOK_BODY_TEMPLATE={"content":$${content_json}}\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"ENV_FILE": str(env_path)},
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"content":${content_json}}',
+        )
+
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_webhook_template_does_not_affect_llm_contract(
+        self,
+        _mock_parse_litellm_yaml: object,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "STOCK_LIST=600519",
+                        "LITELLM_MODEL=openai/gpt-5.5",
+                        "OPENAI_MODEL=gpt-5.5",
+                        "OPENAI_API_KEY=runtime-openai-key",
+                        "OPENAI_BASE_URL=https://openai.example/v1",
+                        "CUSTOM_WEBHOOK_BODY_TEMPLATE={\"title\":$$title_json,\"content\":$$content_json}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(env_path),
+                },
+                clear=True,
+            ):
+                config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.openai_api_key, "runtime-openai-key")
+        self.assertEqual(config.openai_base_url, "https://openai.example/v1")
+        self.assertEqual(
+            config.custom_webhook_body_template,
+            '{"title":$title_json,"content":$content_json}',
+        )
+
+    def test_refresh_stock_list_preserves_empty_required_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text("STOCK_LIST=\n", encoding="utf-8")
+
+            config = Config(stock_list=["600519"])
+            with patch.dict(os.environ, {"ENV_FILE": str(env_path)}, clear=True):
+                config.refresh_stock_list()
+
+        self.assertEqual(config.stock_list, [])
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(issue.severity == "error" and issue.field == "STOCK_LIST" for issue in issues)
+        )
 
     def test_parse_report_language_accepts_known_alias_without_warning(self) -> None:
         with self.assertNoLogs("src.config", level="WARNING"):

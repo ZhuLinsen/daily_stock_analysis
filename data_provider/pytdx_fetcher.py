@@ -35,6 +35,7 @@ from .base import (
     DataSourceUnavailableError,
     STANDARD_COLUMNS,
     is_bse_code,
+    normalize_stock_code,
     _is_hk_market,
 )
 import os
@@ -250,12 +251,26 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             (market, code) 元组
         """
-        code = stock_code.strip()
-        
-        # 去除可能的前缀后缀
-        code = code.replace('.SH', '').replace('.SZ', '')
-        code = code.replace('.sh', '').replace('.sz', '')
-        code = code.replace('sh', '').replace('sz', '')
+        raw_code = stock_code.strip()
+        upper = raw_code.upper()
+        prefix, separator, suffix = raw_code.partition(".")
+        if separator and prefix:
+            prefix_upper = prefix.strip().upper()
+            if prefix_upper in ('SH', 'SS'):
+                normalized = normalize_stock_code(suffix.strip())
+                if normalized.isdigit() and len(normalized) == 6:
+                    return 1, normalized
+            if prefix_upper == 'SZ':
+                normalized = normalize_stock_code(suffix.strip())
+                if normalized.isdigit() and len(normalized) == 6:
+                    return 0, normalized
+
+        code = normalize_stock_code(raw_code)
+
+        if upper.startswith(('SH', 'SS')) or upper.endswith(('.SH', '.SS')):
+            return 1, code
+        if upper.startswith('SZ') or upper.endswith('.SZ'):
+            return 0, code
         
         # 根据代码前缀判断市场
         # 上海：60xxxx, 68xxxx（科创板）

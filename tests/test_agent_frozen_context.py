@@ -6,6 +6,7 @@ import json
 import threading
 import unittest
 from datetime import date
+from pathlib import Path
 
 from src.agent.tools.registry import ToolDefinition, ToolRegistry
 from src.services.history_loader import (
@@ -107,6 +108,35 @@ class ExecuteToolsFrozenContextTestCase(unittest.TestCase):
 
         self.assertEqual(len(observed), num_tools)
         self.assertTrue(all(d == frozen_date for d in observed))
+
+
+class DesktopBackendPackagingAssetsTestCase(unittest.TestCase):
+    """Guard desktop PyInstaller packaging inputs for built-in Agent skills."""
+
+    repo_root = Path(__file__).resolve().parent.parent
+
+    def test_builtin_strategy_yaml_inventory_matches_expected_desktop_bundle(self):
+        strategies_dir = self.repo_root / "strategies"
+        strategy_names = sorted(path.stem for path in strategies_dir.glob("*.yaml"))
+
+        self.assertEqual(len(strategy_names), 15)
+        self.assertIn("bottom_volume", strategy_names)
+        self.assertIn("chan_theory", strategy_names)
+        self.assertIn("ma_golden_cross", strategy_names)
+        self.assertIn("wave_theory", strategy_names)
+
+    def test_backend_pyinstaller_scripts_include_strategies_data_directory(self):
+        macos_script = (self.repo_root / "scripts" / "build-backend-macos.sh").read_text(
+            encoding="utf-8"
+        )
+        windows_script = (self.repo_root / "scripts" / "build-backend.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('--add-data "strategies:strategies"', macos_script)
+        self.assertIn("--add-data', 'strategies;strategies'", windows_script)
+        self.assertIn("_internal/strategies", macos_script)
+        self.assertIn("_internal\\strategies", windows_script)
 
 
 if __name__ == "__main__":

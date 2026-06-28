@@ -6,6 +6,8 @@ import type {
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
   ImportSystemConfigRequest,
+  SchedulerRunNowResponse,
+  SchedulerStatusResponse,
   SetupStatusResponse,
   SystemConfigConflictResponse,
   SystemConfigResponse,
@@ -154,6 +156,16 @@ export const systemConfigApi = {
     return toCamelCase<SetupStatusResponse>(response.data);
   },
 
+  async getSchedulerStatus(): Promise<SchedulerStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/scheduler/status');
+    return toCamelCase<SchedulerStatusResponse>(response.data);
+  },
+
+  async runSchedulerNow(): Promise<SchedulerRunNowResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/system/scheduler/run-now');
+    return toCamelCase<SchedulerRunNowResponse>(response.data);
+  },
+
   async validate(payload: ValidateSystemConfigRequest): Promise<ValidateSystemConfigResponse> {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/system/config/validate',
@@ -234,5 +246,36 @@ export const systemConfigApi = {
 
       throw error;
     }
+  },
+
+  /**
+   * 获取自选队列股票代码列表
+   */
+  getWatchlist: async (): Promise<string[]> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/stocks/watchlist');
+    const data = toCamelCase<{ stockCodes: string[] }>(response.data);
+    return data.stockCodes || [];
+  },
+
+  /**
+   * 添加股票到自选队列
+   */
+  addToWatchlist: async (stockCode: string): Promise<string[]> => {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/stocks/watchlist/add', {
+      stock_code: stockCode,
+    });
+    const data = toCamelCase<{ stockCodes: string[] }>(response.data);
+    return data.stockCodes || [];
+  },
+
+  /**
+   * 从自选队列移除股票
+   */
+  removeFromWatchlist: async (stockCode: string): Promise<string[]> => {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/stocks/watchlist/remove', {
+      stock_code: stockCode,
+    });
+    const data = toCamelCase<{ stockCodes: string[] }>(response.data);
+    return data.stockCodes || [];
   },
 };

@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse
-from data_provider.base import canonical_stock_code
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class AnalyzeCommand(BotCommand):
     
     def execute(self, message: BotMessage, args: List[str]) -> BotResponse:
         """执行分析命令"""
-        code = canonical_stock_code(args[0])
+        code = resolve_index_stock_code_for_analysis(args[0])
         
         # 检查是否需要完整报告（默认精简，传 full/完整/详细 切换）
         report_type = "simple"

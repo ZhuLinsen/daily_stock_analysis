@@ -39,6 +39,18 @@ def _read_debug_log(log_dir) -> str:
     return debug_log.read_text(encoding="utf-8")
 
 
+def test_log_format_includes_logger_name(tmp_path, monkeypatch):
+    monkeypatch.delenv("LITELLM_LOG_LEVEL", raising=False)
+
+    setup_logging(log_prefix="stock_analysis", log_dir=str(tmp_path), debug=False)
+
+    logging.getLogger("src.sample").info("logger context smoke")
+
+    debug_log_text = _read_debug_log(tmp_path)
+    assert " | src.sample | " in debug_log_text
+    assert "logger context smoke" in debug_log_text
+
+
 @pytest.mark.parametrize("env_value", [None, "", "  "])
 def test_litellm_debug_is_quiet_by_default_and_empty_env(tmp_path, monkeypatch, env_value):
     if env_value is None:

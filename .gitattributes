@@ -19,3 +19,25 @@ docs/assets/**/*.jpg binary
 docs/assets/**/*.jpeg binary
 docs/assets/**/*.png binary
 docs/assets/**/*.psd binary
+
+# === 强制 LF 的文件类型（内核/系统解释器直接消费） ===
+# Shell 脚本（entrypoint.sh、任何 .sh）
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Dockerfile（包括多阶段或变体）
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+
+# Makefile
+Makefile text eol=lf
+
+# 环境变量文件（如果被 shell 直接 source 使用）
+.env text eol=lf
+
+# === 新增：二进制文件（禁止 Git 修改换行/编码） ===
+# 证书、密钥等（如果有）
+*.pem binary
+*.crt binary
+*.key binary
+*.p12 binary

@@ -303,10 +303,11 @@ class StockTrendAnalyzer:
 
     def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算 RSI 指标
+        计算 RSI 指标（Wilder's EMA / SMMA 口径）
 
         公式：
-        - RS = 平均上涨幅度 / 平均下跌幅度
+        - avg_gain / avg_loss 使用 ewm(alpha=1/period, adjust=False)
+        - RS = avg_gain / avg_loss
         - RSI = 100 - (100 / (1 + RS))
         """
         df = df.copy()
@@ -319,9 +320,9 @@ class StockTrendAnalyzer:
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
 
-            # 计算平均涨跌幅
-            avg_gain = gain.rolling(window=period).mean()
-            avg_loss = loss.rolling(window=period).mean()
+            # 使用 Wilder's EMA / SMMA 口径，与常见 RSI 图表工具保持一致。
+            avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
 
             # 计算 RS 和 RSI
             rs = avg_gain / avg_loss

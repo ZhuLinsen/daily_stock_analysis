@@ -43,6 +43,26 @@ class TestCheckContentIntegrity(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(missing, [])
 
+    def test_pass_when_signal_attribution_missing(self) -> None:
+        """Signal attribution is optional and does not enter missing_fields."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=70,
+            operation_advice="持有",
+            analysis_summary="稳健",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "110元"}},
+            },
+        )
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
     def test_fail_when_analysis_summary_empty(self) -> None:
         """Integrity fails when analysis_summary is empty."""
         result = AnalysisResult(
@@ -162,6 +182,33 @@ class TestCheckContentIntegrity(unittest.TestCase):
         ok, missing = check_content_integrity(result)
         self.assertFalse(ok)
         self.assertIn("dashboard.intelligence.risk_alerts", missing)
+
+    def test_phase_decision_missing_only_when_required(self) -> None:
+        """Phase decision fields are required only for phase-aware analysis."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="看多",
+            sentiment_score=70,
+            operation_advice="持有",
+            analysis_summary="稳健",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "110"}},
+            },
+        )
+
+        ok, missing = check_content_integrity(result)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
+        ok, missing = check_content_integrity(result, require_phase_decision=True)
+        self.assertFalse(ok)
+        self.assertIn("dashboard.phase_decision.phase_context", missing)
+        self.assertIn("dashboard.phase_decision.watch_conditions", missing)
+        self.assertIn("dashboard.phase_decision.data_limitations", missing)
 
     def test_fail_when_risk_alerts_is_none(self) -> None:
         """Integrity fails when risk_alerts is None."""
@@ -423,6 +470,45 @@ class TestApplyPlaceholderFill(unittest.TestCase):
         self.assertEqual(result.dashboard["core_conclusion"]["one_sentence"], "已有趋势摘要")
         self.assertEqual(result.dashboard["intelligence"]["risk_alerts"], ["跌破支撑需减仓"])
         self.assertEqual(result.dashboard["battle_plan"]["sniper_points"]["stop_loss"], "待补充")
+
+    def test_phase_decision_placeholder_fill_satisfies_integrity_contract(self) -> None:
+        """Phase placeholders close the retry-exhausted integrity contract without fake conditions."""
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            trend_prediction="震荡",
+            sentiment_score=50,
+            operation_advice="持有",
+            analysis_summary="已有摘要",
+            decision_type="hold",
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {"sniper_points": {"stop_loss": "100"}},
+                "phase_decision": {
+                    "phase_context": "invalid",
+                    "watch_conditions": "invalid",
+                    "data_limitations": None,
+                },
+            },
+        )
+
+        ok, missing = check_content_integrity(result, require_phase_decision=True)
+        self.assertFalse(ok)
+
+        apply_placeholder_fill(result, missing)
+
+        ok, missing = check_content_integrity(result, require_phase_decision=True)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+        phase_decision = result.dashboard["phase_decision"]
+        self.assertEqual(phase_decision["phase_context"], {})
+        self.assertEqual(phase_decision["watch_conditions"], [])
+        self.assertEqual(phase_decision["data_limitations"], [])
+        self.assertEqual(phase_decision["action_window"], "模型未提供阶段化行动窗口")
+        self.assertEqual(phase_decision["immediate_action"], "模型未提供阶段化即时动作")
+        self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
+        self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
 
 
 class TestIntegrityRetryPrompt(unittest.TestCase):

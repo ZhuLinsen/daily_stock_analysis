@@ -122,6 +122,7 @@ class MarketCommandRegionFilterTestCase(unittest.TestCase):
             search_service=runtime_search,
             send_notification=True,
             override_region="cn,us",
+            trigger_source="bot",
         )
         kwargs = market_review_module.run_market_review.call_args.kwargs
         self.assertEqual(kwargs.get("override_region"), "cn,us")
@@ -147,6 +148,7 @@ class MarketCommandRegionFilterTestCase(unittest.TestCase):
             search_service=runtime_search,
             send_notification=True,
             override_region="cn,hk",
+            trigger_source="bot",
         )
         market_review_module.run_market_review.assert_called_once()
         kwargs = market_review_module.run_market_review.call_args.kwargs
@@ -192,6 +194,7 @@ class MarketCommandRegionFilterTestCase(unittest.TestCase):
             search_service=runtime_search,
             send_notification=True,
             override_region=None,
+            trigger_source="bot",
         )
         market_review_module.run_market_review.assert_called_once()
         kwargs = market_review_module.run_market_review.call_args.kwargs

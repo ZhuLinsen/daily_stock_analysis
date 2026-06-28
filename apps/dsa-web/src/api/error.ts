@@ -343,6 +343,76 @@ export function parseApiError(error: unknown): ParsedApiError {
     });
   }
 
+  if (errorCode === 'alphasift_install_failed') {
+    return createParsedApiError({
+      title: 'AlphaSift 修复安装失败',
+      message: 'DSA 已尝试修复安装 AlphaSift，但 pip 安装未成功。请检查 ALPHASIFT_INSTALL_SPEC、网络代理或后端 Python 环境。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_spec_missing') {
+    return createParsedApiError({
+      title: 'AlphaSift 安装来源未配置',
+      message: '请先确认后端依赖已安装；如需使用修复安装入口，请配置受信任的 ALPHASIFT_INSTALL_SPEC。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_install_spec_not_allowed') {
+    return createParsedApiError({
+      title: 'AlphaSift 安装来源受限',
+      message: '修复安装仅允许使用受信任的 AlphaSift GitHub 来源；如需本地路径或 wheel，请先手动安装到当前 Python 环境。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_unavailable' || includesAny(matchText, ['cannot import alphasift', 'alphasift.screen'])) {
+    return createParsedApiError({
+      title: 'AlphaSift 未就绪',
+      message: rawMessage,
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_adapter_unavailable') {
+    return createParsedApiError({
+      title: 'AlphaSift 适配层不可用',
+      message: '当前 AlphaSift 版本缺少 DSA 稳定适配层。请重新安装或升级 AlphaSift 后再试。',
+      category: 'http_error',
+      rawMessage,
+      status,
+    });
+  }
+
+  if (errorCode === 'alphasift_screen_task_not_found') {
+    return createParsedApiError({
+      title: '选股任务不可恢复',
+      message: '服务端没有找到这次选股任务，可能后端已重启或任务记录已清理，请重新运行选股。',
+      rawMessage,
+      status,
+      category: 'http_error',
+    });
+  }
+
+  if (errorCode === 'alphasift_screen_failed') {
+    return createParsedApiError({
+      title: 'AlphaSift 选股失败',
+      message: 'AlphaSift 运行时访问外部行情、快照或模型服务失败，请稍后重试，或检查网络与代理设置。',
+      rawMessage,
+      status,
+      category: 'upstream_network',
+    });
+  }
+
   const noConfiguredLlm = (
     includesAny(matchText, ['all llm models failed']) && includesAny(matchText, ['last error: none'])
   ) || includesAny(matchText, [

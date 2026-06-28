@@ -3,12 +3,14 @@ import { useState } from 'react';
 import type { ParsedApiError } from '../../api/error';
 import { isParsedApiError } from '../../api/error';
 import { useAuth } from '../../hooks';
+import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { Button, Input } from '../common';
 import { SettingsAlert } from './SettingsAlert';
 import { SettingsSectionCard } from './SettingsSectionCard';
 
 export const ChangePasswordCard: React.FC = () => {
   const { changePassword } = useAuth();
+  const { t } = useUiLanguage();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
@@ -23,19 +25,19 @@ export const ChangePasswordCard: React.FC = () => {
     setSuccess(false);
 
     if (!currentPassword.trim()) {
-      setError('请输入当前密码');
+      setError(t('settings.changePasswordRequiredCurrent'));
       return;
     }
     if (!newPassword.trim()) {
-      setError('请输入新密码');
+      setError(t('settings.changePasswordRequiredNew'));
       return;
     }
     if (newPassword.length < 6) {
-      setError('新密码至少 6 位');
+      setError(t('settings.changePasswordShort'));
       return;
     }
     if (newPassword !== newPasswordConfirm) {
-      setError('两次输入的新密码不一致');
+      setError(t('login.passwordMismatch'));
       return;
     }
 
@@ -49,7 +51,7 @@ export const ChangePasswordCard: React.FC = () => {
         setNewPasswordConfirm('');
         setTimeout(() => setSuccess(false), 4000);
       } else {
-        setError(result.error ?? '修改失败');
+        setError(result.error ?? t('settings.changePasswordFailure'));
       }
     } finally {
       setIsSubmitting(false);
@@ -58,8 +60,8 @@ export const ChangePasswordCard: React.FC = () => {
 
   return (
     <SettingsSectionCard
-      title="修改密码"
-      description="更新当前管理员登录密码。修改成功后，后续登录请使用新密码。"
+      title={t('settings.changePasswordTitle')}
+      description={t('settings.changePasswordDescription')}
     >
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid gap-4 md:grid-cols-2">
@@ -69,8 +71,8 @@ export const ChangePasswordCard: React.FC = () => {
               type="password"
               allowTogglePassword
               iconType="password"
-              label="当前密码"
-              placeholder="输入当前密码"
+              label={t('settings.changePasswordCurrent')}
+              placeholder={t('settings.changePasswordCurrentPlaceholder')}
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               disabled={isSubmitting}
@@ -84,9 +86,9 @@ export const ChangePasswordCard: React.FC = () => {
               type="password"
               allowTogglePassword
               iconType="password"
-              label="新密码"
-              hint="至少 6 位。"
-              placeholder="输入新密码"
+              label={t('settings.changePasswordNew')}
+              hint={t('settings.changePasswordNewHint')}
+              placeholder={t('settings.changePasswordNewPlaceholder')}
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               disabled={isSubmitting}
@@ -101,8 +103,8 @@ export const ChangePasswordCard: React.FC = () => {
             type="password"
             allowTogglePassword
             iconType="password"
-            label="确认新密码"
-            placeholder="再次输入新密码"
+            label={t('settings.changePasswordConfirm')}
+            placeholder={t('settings.changePasswordConfirmPlaceholder')}
             value={newPasswordConfirm}
             onChange={(e) => setNewPasswordConfirm(e.target.value)}
             disabled={isSubmitting}
@@ -112,15 +114,15 @@ export const ChangePasswordCard: React.FC = () => {
 
         {error
           ? isParsedApiError(error)
-            ? <SettingsAlert title="修改失败" message={error.message} variant="error" className="!mt-3" />
-            : <SettingsAlert title="修改失败" message={error} variant="error" className="!mt-3" />
+            ? <SettingsAlert title={t('settings.changePasswordFailure')} message={error.message} variant="error" className="!mt-3" />
+            : <SettingsAlert title={t('settings.changePasswordFailure')} message={error} variant="error" className="!mt-3" />
           : null}
         {success ? (
-          <SettingsAlert title="修改成功" message="管理员密码已更新。" variant="success" />
+          <SettingsAlert title={t('settings.changePasswordSuccess')} message={t('settings.changePasswordSuccessMessage')} variant="success" />
         ) : null}
 
         <Button type="submit" variant="primary" isLoading={isSubmitting}>
-          保存新密码
+          {t('settings.changePasswordSave')}
         </Button>
       </form>
     </SettingsSectionCard>

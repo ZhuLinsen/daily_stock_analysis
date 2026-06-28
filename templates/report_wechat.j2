@@ -1,6 +1,9 @@
 ## 🎯 {{ report_date }} {{ labels.dashboard_title }}
 
 > {{ results|length }} {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+{% if market_status_line %}
+{{ market_status_line }}
+{% endif %}
 
 {% if summary_only %}
 **📊 {{ labels.summary_heading }}**
@@ -20,6 +23,10 @@
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
 {% if one_sentence %}
 📌 **{{ one_sentence[:80] }}**
+{% endif %}
+{% set signal_excerpt = decision_signal_excerpt(result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
 {% endif %}
 
 {% if intel.get('earnings_outlook') %}

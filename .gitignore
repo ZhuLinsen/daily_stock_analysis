@@ -54,6 +54,8 @@ env/
 
 # 数据和日志
 /data/
+/.llm_usage_hmac_secret
+**/.llm_usage_hmac_secret
 logs/
 reports/
 *.db
@@ -84,3 +86,4 @@ verify_*.py
 static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
+docs/specs/

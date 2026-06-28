@@ -59,6 +59,16 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 > 不知道怎么访问？→ [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
 
+### 3.1 资源建议
+
+默认 `docker/docker-compose.yml` 为每个服务设置 `limits.memory: 1G`、`reservations.memory: 512M`，这是完整分析场景的推荐起点。
+
+- 最低可尝试：`512M`，仅适合轻量 Web/API、单股、低并发场景，建议设置 `MAX_WORKERS=1`。
+- 推荐：`1G`，适合单独运行 `server` 或 `analyzer` 的常规分析。
+- 高负载：`2G+`，适合同时启动 `server + analyzer`、多股票、默认 `MAX_WORKERS=3`、大盘复盘、新闻扩展、图片报告或 AlphaSift。
+
+如果只能使用 `512M`，请避免同时启动 `server` 和 `analyzer`，并关闭非必要的大盘复盘、新闻扩展和图片报告能力。
+
 ### 4. 常用管理命令
 
 ```bash
@@ -300,13 +310,17 @@ rm /opt/stock-analyzer/data/*.lock
 
 ### 4. 内存不足
 
-调整 `docker-compose.yml` 中的内存限制：
+默认 Compose 已推荐 `1G`。如果仍出现 OOM 或平台杀掉容器，请提高 `docker-compose.yml` 中的内存限制；同时跑 `server + analyzer`、多股票、大盘复盘、图片报告或 AlphaSift 时建议 `2G+`：
 ```yaml
 deploy:
   resources:
     limits:
       memory: 1G
+    reservations:
+      memory: 512M
 ```
+
+低配环境只能使用 `512M` 时，建议设置 `MAX_WORKERS=1`，只启动 `server` 或 `analyzer` 其中一个服务，并减少非必要的大盘复盘、新闻扩展和图片报告任务。
 
 ### 5. WebUI 打开后 UI 元素异常变大 / 布局错乱
 
@@ -429,10 +443,10 @@ git push -u origin main
 
 #### 3. 验证 Workflow 文件
 
-确保 `.github/workflows/daily_analysis.yml` 文件存在且已提交：
+确保 `.github/workflows/00-daily-analysis.yml` 文件存在且已提交：
 
 ```bash
-git add .github/workflows/daily_analysis.yml
+git add .github/workflows/00-daily-analysis.yml
 git commit -m "Add GitHub Actions workflow"
 git push
 ```
@@ -458,7 +472,7 @@ git push
 
 默认配置：**周一到周五，北京时间 18:00** 自动执行
 
-修改时间：编辑 `.github/workflows/daily_analysis.yml` 中的 cron 表达式：
+修改时间：编辑 `.github/workflows/00-daily-analysis.yml` 中的 cron 表达式：
 
 ```yaml
 schedule:

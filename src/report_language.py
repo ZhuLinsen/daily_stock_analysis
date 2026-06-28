@@ -158,6 +158,42 @@ _NO_DATA_BY_LANGUAGE = {
     "en": "Data unavailable",
 }
 
+_CHIP_UNAVAILABLE_BY_LANGUAGE = {
+    "zh": "筹码分布未启用或数据源暂不可用，未纳入筹码判断。",
+    "en": "Chip distribution is disabled or temporarily unavailable; chip signals were not used.",
+}
+
+_CHIP_PLACEHOLDER_EXACT = {
+    "",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "unknown",
+    "tbd",
+    "数据缺失",
+    "未知",
+    "暂无",
+    "待补充",
+}
+
+_CHIP_PLACEHOLDER_HINTS = (
+    "数据缺失",
+    "无法判断",
+    "data unavailable",
+    "unavailable",
+    "not available",
+    "missing",
+    "not supported",
+)
+
+_CHIP_METRIC_KEYS = ("profit_ratio", "avg_cost", "concentration")
+_CHIP_UNAVAILABLE_REASON_KEYS = (
+    "chip_unavailable_reason",
+    "unavailable_reason",
+    "chip_unavailable",
+)
+
 _GENERIC_STOCK_NAME_BY_LANGUAGE = {
     "zh": "待确认股票",
     "en": "Unnamed Stock",
@@ -218,6 +254,13 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "support_level_label": "支撑位",
         "resistance_level_label": "压力位",
         "chip_label": "筹码",
+        "phase_decision_heading": "盘中决策护栏",
+        "action_window_label": "行动窗口",
+        "immediate_action_label": "当前动作",
+        "watch_conditions_label": "观察条件",
+        "next_check_time_label": "下次检查",
+        "confidence_reason_label": "置信度理由",
+        "data_limitations_label": "数据限制",
         "battle_plan_heading": "作战计划",
         "ideal_buy_label": "理想买入点",
         "secondary_buy_label": "次优买入点",
@@ -243,6 +286,37 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "analysis_model_label": "分析模型",
         "not_investment_advice": "AI生成，仅供参考，不构成投资建议",
         "details_report_hint": "详细报告见",
+        "financial_summary_heading": "财务摘要",
+        "report_date_label": "报告期",
+        "revenue_label": "营业收入",
+        "net_profit_label": "归母净利润",
+        "operating_cash_flow_label": "经营现金流",
+        "roe_label": "ROE",
+        "revenue_yoy_label": "营收同比",
+        "net_profit_yoy_label": "净利同比",
+        "gross_margin_label": "毛利率",
+        "shareholder_return_heading": "股东回报",
+        "ttm_cash_dividend_label": "近12月每股现金分红(税前)",
+        "ttm_event_count_label": "近12月分红次数",
+        "ttm_dividend_yield_label": "TTM 股息率",
+        "latest_ex_dividend_label": "最近除息日",
+        "related_boards_heading": "关联板块",
+        "industry_boards_heading": "行业板块",
+        "concept_boards_heading": "概念板块",
+        "board_name_label": "板块",
+        "board_type_label": "类型",
+        "board_status_label": "板块表现",
+        "board_change_pct_label": "板块涨跌幅",
+        "leading_board_label": "领涨",
+        "lagging_board_label": "领跌",
+        "signal_attribution_heading": "信号归因分析",
+        "attribution_weights_label": "归因权重",
+        "technical_indicators_label": "技术指标",
+        "news_sentiment_label": "新闻舆情",
+        "fundamentals_label": "基本面",
+        "market_conditions_label": "市场环境",
+        "strongest_bullish_signal_label": "最强看多信号",
+        "strongest_bearish_signal_label": "最强看空信号",
     },
     "en": {
         "dashboard_title": "Decision Dashboard",
@@ -298,6 +372,13 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "support_level_label": "Support",
         "resistance_level_label": "Resistance",
         "chip_label": "Chip Structure",
+        "phase_decision_heading": "Phase Decision Guardrail",
+        "action_window_label": "Action Window",
+        "immediate_action_label": "Current Action",
+        "watch_conditions_label": "Watch Conditions",
+        "next_check_time_label": "Next Check",
+        "confidence_reason_label": "Confidence Reason",
+        "data_limitations_label": "Data Limitations",
         "battle_plan_heading": "Battle Plan",
         "ideal_buy_label": "Ideal Entry",
         "secondary_buy_label": "Secondary Entry",
@@ -323,6 +404,37 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "analysis_model_label": "Model",
         "not_investment_advice": "AI-generated content for reference only. Not investment advice.",
         "details_report_hint": "See detailed report:",
+        "financial_summary_heading": "Financial Summary",
+        "report_date_label": "Report Date",
+        "revenue_label": "Revenue",
+        "net_profit_label": "Net Profit (Parent)",
+        "operating_cash_flow_label": "Operating Cash Flow",
+        "roe_label": "ROE",
+        "revenue_yoy_label": "Revenue YoY",
+        "net_profit_yoy_label": "Net Profit YoY",
+        "gross_margin_label": "Gross Margin",
+        "shareholder_return_heading": "Shareholder Return",
+        "ttm_cash_dividend_label": "TTM Cash Dividend / Share (Pre-tax)",
+        "ttm_event_count_label": "TTM Dividend Events",
+        "ttm_dividend_yield_label": "TTM Dividend Yield",
+        "latest_ex_dividend_label": "Latest Ex-dividend Date",
+        "related_boards_heading": "Related Boards",
+        "industry_boards_heading": "Industry Sectors",
+        "concept_boards_heading": "Concept Themes",
+        "board_name_label": "Board",
+        "board_type_label": "Type",
+        "board_status_label": "Status",
+        "board_change_pct_label": "Change %",
+        "leading_board_label": "Leading",
+        "lagging_board_label": "Lagging",
+        "signal_attribution_heading": "Signal Attribution",
+        "attribution_weights_label": "Attribution Weights",
+        "technical_indicators_label": "Technical Indicators",
+        "news_sentiment_label": "News Sentiment",
+        "fundamentals_label": "Fundamentals",
+        "market_conditions_label": "Market Conditions",
+        "strongest_bullish_signal_label": "Strongest Bullish Signal",
+        "strongest_bearish_signal_label": "Strongest Bearish Signal",
     },
 }
 
@@ -407,6 +519,11 @@ def get_unknown_text(language: Optional[str]) -> str:
 def get_no_data_text(language: Optional[str]) -> str:
     """Return localized data unavailable text."""
     return _NO_DATA_BY_LANGUAGE[normalize_report_language(language)]
+
+
+def get_chip_unavailable_text(language: Optional[str]) -> str:
+    """Return the localized one-line chip distribution fallback text."""
+    return _CHIP_UNAVAILABLE_BY_LANGUAGE[normalize_report_language(language)]
 
 
 def _normalize_lookup_key(value: Any) -> str:
@@ -561,6 +678,54 @@ def localize_chip_health(value: Any, language: Optional[str]) -> str:
         canonical_map=_CHIP_HEALTH_CANONICAL_MAP,
         translations=_CHIP_HEALTH_TRANSLATIONS,
     )
+
+
+def is_chip_placeholder_value(value: Any) -> bool:
+    """Return True for chip fields filled with empty or no-data placeholders."""
+    if value is None:
+        return True
+    if isinstance(value, (int, float)) and value == 0:
+        return True
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered in _CHIP_PLACEHOLDER_EXACT:
+        return True
+    return any(hint in lowered for hint in _CHIP_PLACEHOLDER_HINTS)
+
+
+def is_chip_structure_unavailable(chip_data: Any) -> bool:
+    """Detect chip_structure blocks that contain only unavailable placeholders."""
+    if not isinstance(chip_data, dict) or not chip_data:
+        return False
+    for key in _CHIP_UNAVAILABLE_REASON_KEYS:
+        raw = chip_data.get(key)
+        if isinstance(raw, bool):
+            if raw:
+                return True
+            continue
+        if str(raw or "").strip():
+            return True
+    if any(key in chip_data for key in _CHIP_METRIC_KEYS):
+        return all(is_chip_placeholder_value(chip_data.get(key)) for key in _CHIP_METRIC_KEYS)
+    return all(is_chip_placeholder_value(value) for value in chip_data.values())
+
+
+def get_chip_unavailable_reason(value: Any, language: Optional[str]) -> str:
+    """Return the explicit or default chip unavailable reason for rendering."""
+    if not isinstance(value, dict) or not value:
+        return ""
+    for key in _CHIP_UNAVAILABLE_REASON_KEYS:
+        raw = value.get(key)
+        if isinstance(raw, bool):
+            if raw:
+                return get_chip_unavailable_text(language)
+            continue
+        text = str(raw or "").strip()
+        if text:
+            return text
+    if is_chip_structure_unavailable(value):
+        return get_chip_unavailable_text(language)
+    return ""
 
 
 def localize_bias_status(value: Any, language: Optional[str]) -> str:

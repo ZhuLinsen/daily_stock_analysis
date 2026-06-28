@@ -5,7 +5,7 @@ APP_USER="dsa"
 APP_GROUP="dsa"
 APP_UID="1000"
 APP_GID="1000"
-WRITABLE_DIRS="/app/data /app/logs /app/reports"
+WRITABLE_DIRS="/app/data /app/logs /app/reports /home/dsa/.longbridge"
 DATABASE_FILE="${DATABASE_PATH:-/app/data/stock_analysis.db}"
 
 warn() {
@@ -84,6 +84,8 @@ if [ "$(id -u)" = "0" ]; then
         fi
     done
 
+    HOME="/home/dsa"
+    export HOME
     exec gosu "$APP_USER:$APP_GROUP" "$@"
 fi
 

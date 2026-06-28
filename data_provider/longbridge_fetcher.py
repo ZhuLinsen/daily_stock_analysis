@@ -14,11 +14,15 @@ LongbridgeFetcher - 长桥兜底数据源 (Priority 5)
 3. 懒加载 QuoteContext，首次调用时才建立连接
 4. static_info 进程内短缓存，减少重复请求（默认 24h，可调；见 LONGBRIDGE_STATIC_INFO_TTL_SECONDS）
 
-凭证：`LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN`。
+凭证：优先使用 `LONGBRIDGE_OAUTH_CLIENT_ID` + SDK token 缓存（OAuth 2.0）；
+Legacy API Key 三件套（`LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN`）仍兼容。
 可选：`LONGBRIDGE_STATIC_INFO_TTL_SECONDS`；SDK `language` 取自 `REPORT_LANGUAGE`，`log_path` 为 `{LOG_DIR}/longbridge_sdk.log`；
 `LONGBRIDGE_HTTP_URL` / `LONGBRIDGE_QUOTE_WS_URL` / `LONGBRIDGE_TRADE_WS_URL` / `LONGBRIDGE_REGION` （见官方文档默认值）。
 """
 
+import base64
+import binascii
+import json
 import logging
 import os
 import time
@@ -212,6 +216,145 @@ def _longbridge_config_kwargs() -> Dict[str, Any]:
     return kw
 
 
+def _clean_optional(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _oauth_token_cache_path(client_id: str) -> Path:
+    return Path.home() / ".longbridge" / "openapi" / "tokens" / client_id
+
+
+def _restore_oauth_token_cache_from_env(client_id: str) -> bool:
+    """Restore the SDK OAuth token cache from a GitHub Actions/Docker secret.
+
+    The Longbridge SDK expects its OAuth token cache at
+    ``~/.longbridge/openapi/tokens/<client_id>``.  In headless environments the
+    file can be provided as base64 through ``LONGBRIDGE_OAUTH_TOKEN_CACHE_B64``.
+    If an env cache is supplied and differs from the existing file, treat the
+    env value as the operator-provided recovery source for headless runs.
+    """
+    raw = os.getenv("LONGBRIDGE_OAUTH_TOKEN_CACHE_B64")
+    if not raw:
+        return False
+
+    try:
+        payload = base64.b64decode("".join(raw.split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        logger.warning("[Longbridge] OAuth token cache base64 解码失败: %s", exc)
+        return False
+
+    if not payload:
+        logger.warning("[Longbridge] OAuth token cache base64 为空，跳过恢复")
+        return False
+
+    token_cache = _oauth_token_cache_path(client_id)
+    if token_cache.exists():
+        try:
+            if token_cache.read_bytes() == payload:
+                logger.debug("[Longbridge] OAuth token 缓存已与 env secret 一致，跳过恢复: %s", token_cache)
+                return False
+        except OSError as exc:
+            logger.warning("[Longbridge] 读取现有 OAuth token 缓存失败，将尝试用 env secret 覆盖: %s", exc)
+
+    try:
+        token_cache.parent.mkdir(parents=True, exist_ok=True)
+        token_cache.write_bytes(payload)
+        token_cache.chmod(0o600)
+        logger.info("[Longbridge] 已从 LONGBRIDGE_OAUTH_TOKEN_CACHE_B64 恢复 OAuth token 缓存")
+        return True
+    except Exception as exc:
+        logger.warning("[Longbridge] 写入 OAuth token 缓存失败: %s", exc)
+        return False
+
+
+def _is_valid_oauth_cache_file(token_cache: Path) -> bool:
+    """Basic health check for SDK token cache content.
+
+    We avoid attempting interactive OAuth flows when the cache is missing or
+    malformed, so headless jobs fail explicitly instead of hanging for manual
+    re-authorization.
+    """
+    if not token_cache.exists():
+        return False
+
+    try:
+        raw = token_cache.read_bytes()
+    except OSError as exc:
+        logger.warning("[Longbridge] 读取 OAuth token 缓存失败: %s", exc)
+        return False
+
+    if not raw.strip():
+        logger.warning("[Longbridge] OAuth token 缓存为空文件: %s", token_cache)
+        return False
+
+    try:
+        payload = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        logger.warning("[Longbridge] OAuth token 缓存不是 UTF-8 文本: %s", exc)
+        return False
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        logger.warning("[Longbridge] OAuth token 缓存不是合法 JSON: %s", exc)
+        return False
+
+    if not isinstance(data, dict) or not data:
+        logger.warning("[Longbridge] OAuth token 缓存内容为空或格式不符合预期: %s", token_cache)
+        return False
+
+    return True
+
+
+def _oauth_reauth_not_supported(url: str) -> None:
+    raise RuntimeError(
+        f"OAuth token 缓存已失效或缺失，当前为无头运行不支持打开授权页面，请重建 LONGBRIDGE_OAUTH_TOKEN_CACHE_B64: {url}"
+    )
+
+
+def _oauth_sdk_unavailable_error() -> RuntimeError:
+    return RuntimeError(
+        "当前安装的 longbridge SDK 不支持 OAuth 2.0（缺少 OAuthBuilder/Config.from_oauth）。"
+        "请在支持该 SDK 版本的平台安装 longbridge>=4.0.0，或继续使用 Legacy 三件套。"
+    )
+
+
+def _longbridge_credentials(config: Any = None) -> Dict[str, Optional[str]]:
+    """Collect Longbridge auth inputs from Config/env without exposing secrets."""
+    app_key = _clean_optional(getattr(config, "longbridge_app_key", None))
+    app_secret = _clean_optional(getattr(config, "longbridge_app_secret", None))
+    access_token = _clean_optional(getattr(config, "longbridge_access_token", None))
+    oauth_client_id = _clean_optional(getattr(config, "longbridge_oauth_client_id", None))
+
+    app_key = app_key or _clean_optional(os.getenv("LONGBRIDGE_APP_KEY"))
+    app_secret = app_secret or _clean_optional(os.getenv("LONGBRIDGE_APP_SECRET"))
+    access_token = access_token or _clean_optional(os.getenv("LONGBRIDGE_ACCESS_TOKEN"))
+    oauth_client_id = oauth_client_id or _clean_optional(os.getenv("LONGBRIDGE_OAUTH_CLIENT_ID"))
+
+    # Some Longbridge pages label the OAuth public client id as "App Key".
+    # Use it as a compatibility alias only when no Legacy access token exists.
+    if not oauth_client_id and app_key and not access_token:
+        oauth_client_id = app_key
+
+    return {
+        "app_key": app_key,
+        "app_secret": app_secret,
+        "access_token": access_token,
+        "oauth_client_id": oauth_client_id,
+    }
+
+
+def _has_legacy_credentials(creds: Dict[str, Optional[str]]) -> bool:
+    return bool(creds.get("app_key") and creds.get("app_secret") and creds.get("access_token"))
+
+
+def _has_oauth_credentials(creds: Dict[str, Optional[str]]) -> bool:
+    return bool(creds.get("oauth_client_id"))
+
+
 def _is_us_code(stock_code: str) -> bool:
     normalized = stock_code.strip().upper()
     return is_us_stock_code(normalized) or is_us_index_code(normalized)
@@ -326,25 +469,22 @@ class LongbridgeFetcher(BaseFetcher):
         return True
 
     def _is_available(self) -> bool:
-        """Check if Longbridge credentials are configured."""
+        """Check if Longbridge credentials are configured (OAuth or Legacy)."""
         if self._available is not None:
             return self._available
         try:
             from src.config import get_config
-            config = get_config()
-            has_creds = bool(
-                config.longbridge_app_key
-                and config.longbridge_app_secret
-                and config.longbridge_access_token
-            )
+            creds = _longbridge_credentials(get_config())
         except Exception:
-            has_creds = bool(
-                os.getenv("LONGBRIDGE_APP_KEY")
-                and os.getenv("LONGBRIDGE_APP_SECRET")
-                and os.getenv("LONGBRIDGE_ACCESS_TOKEN")
-            )
-        self._available = has_creds
-        return has_creds
+            creds = _longbridge_credentials()
+        self._available = _has_legacy_credentials(creds) or _has_oauth_credentials(creds)
+        return self._available
+
+    @staticmethod
+    def has_configured_credentials(config: Any = None) -> bool:
+        """Return True when runtime config can attempt Longbridge auth."""
+        creds = _longbridge_credentials(config)
+        return _has_legacy_credentials(creds) or _has_oauth_credentials(creds)
 
     def _get_ctx(self):
         """Lazy-init the QuoteContext (thread-safe)."""
@@ -361,17 +501,19 @@ class LongbridgeFetcher(BaseFetcher):
                 # ── 1. Clean up empty URL env vars & apply REGION mapping ──
                 _sanitize_longbridge_env()
 
-                # ── 2. Ensure credentials are available in env ──
+                # ── 2. Collect credentials and mirror Legacy values to env ──
                 try:
                     from src.config import get_config
                     app_config = get_config()
-                    app_key = app_config.longbridge_app_key
-                    app_secret = app_config.longbridge_app_secret
-                    access_token = app_config.longbridge_access_token
                 except Exception:
-                    app_key = os.getenv("LONGBRIDGE_APP_KEY")
-                    app_secret = os.getenv("LONGBRIDGE_APP_SECRET")
-                    access_token = os.getenv("LONGBRIDGE_ACCESS_TOKEN")
+                    app_config = None
+
+                creds = _longbridge_credentials(app_config)
+                app_key = creds["app_key"]
+                app_secret = creds["app_secret"]
+                access_token = creds["access_token"]
+                oauth_client_id = creds["oauth_client_id"]
+                has_legacy = _has_legacy_credentials(creds)
 
                 for k, v in {
                     "LONGBRIDGE_APP_KEY": app_key,
@@ -380,29 +522,68 @@ class LongbridgeFetcher(BaseFetcher):
                 }.items():
                     if v and not os.environ.get(k):
                         os.environ[k] = v
+                if oauth_client_id and not os.environ.get("LONGBRIDGE_OAUTH_CLIENT_ID"):
+                    os.environ["LONGBRIDGE_OAUTH_CLIENT_ID"] = oauth_client_id
 
                 # ── 3. Build Config ──
                 extra_kw = _longbridge_config_kwargs()
                 lb_config = None
+                oauth_error: Optional[Exception] = None
 
-                # Prefer from_apikey_env() — reads all LONGBRIDGE_* env vars
-                # (credentials + URLs + options) including .env files.
-                # Available in longbridge >= 4.x.  from_env() only exists on
-                # the unreleased master branch.
-                for factory_name in ("from_apikey_env", "from_env"):
-                    factory = getattr(Config, factory_name, None)
-                    if factory is None:
-                        continue
-                    try:
-                        lb_config = factory()
-                        logger.info("[Longbridge] Config.%s() 成功", factory_name)
-                        break
-                    except Exception as e:
-                        logger.debug(
-                            "[Longbridge] Config.%s() 失败: %s", factory_name, e
+                if oauth_client_id:
+                    token_cache = _oauth_token_cache_path(oauth_client_id)
+                    _restore_oauth_token_cache_from_env(oauth_client_id)
+
+                    if _is_valid_oauth_cache_file(token_cache):
+                        try:
+                            from longbridge.openapi import OAuthBuilder
+
+                            oauth = OAuthBuilder(oauth_client_id).build(
+                                _oauth_reauth_not_supported,
+                            )
+                            from_oauth = getattr(Config, "from_oauth", None)
+                            if from_oauth is None:
+                                raise AttributeError("Config.from_oauth")
+                            lb_config = from_oauth(oauth)
+                            logger.info("[Longbridge] Config.from_oauth() 创建成功")
+                        except (ImportError, AttributeError):
+                            oauth_error = _oauth_sdk_unavailable_error()
+                            logger.warning("[Longbridge] OAuth SDK 不可用: %s", oauth_error)
+                        except Exception as exc:
+                            oauth_error = exc
+                            logger.warning("[Longbridge] OAuth 初始化失败: %s", exc)
+                    elif token_cache.exists():
+                        logger.warning(
+                            "[Longbridge] OAuth token 缓存内容异常，已拒绝交互式续期: %s。"
+                            "请先执行 scripts/generate_longbridge_oauth_token.py 重建缓存。",
+                            token_cache,
+                        )
+                    else:
+                        logger.warning(
+                            "[Longbridge] OAuth client 已配置，但 token 缓存不存在: %s。"
+                            "请先执行 scripts/generate_longbridge_oauth_token.py 生成缓存；"
+                            "GitHub Actions/Docker 可提供 LONGBRIDGE_OAUTH_TOKEN_CACHE_B64。",
+                            token_cache,
                         )
 
-                if lb_config is None:
+                if lb_config is None and has_legacy:
+                    # Legacy fallback is allowed only when the full non-empty
+                    # three-piece credential exists; this keeps OAuth-only
+                    # failures from being rewritten as API-key failures.
+                    for factory_name in ("from_apikey_env", "from_env"):
+                        factory = getattr(Config, factory_name, None)
+                        if factory is None:
+                            continue
+                        try:
+                            lb_config = factory()
+                            logger.info("[Longbridge] Config.%s() 成功", factory_name)
+                            break
+                        except Exception as e:
+                            logger.debug(
+                                "[Longbridge] Config.%s() 失败: %s", factory_name, e
+                            )
+
+                if lb_config is None and has_legacy:
                     lb_config = Config.from_apikey(
                         app_key,
                         app_secret,
@@ -410,6 +591,15 @@ class LongbridgeFetcher(BaseFetcher):
                         **extra_kw,
                     )
                     logger.info("[Longbridge] Config.from_apikey() 创建成功")
+                elif lb_config is None:
+                    reason = (
+                        f"OAuth 初始化失败: {oauth_error}"
+                        if oauth_error
+                        else "未找到可用 OAuth token 缓存且未配置完整 Legacy 三件套"
+                    )
+                    logger.warning("[Longbridge] 未建立认证配置: %s", reason)
+                    self._available = False
+                    return None
 
                 # Diagnostic logging
                 region = os.getenv("LONGBRIDGE_REGION") or os.getenv("LONGPORT_REGION") or "(auto)"

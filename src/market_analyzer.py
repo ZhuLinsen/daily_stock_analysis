@@ -11,9 +11,11 @@
 """
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from inspect import getattr_static
 from typing import Optional, Dict, Any, List
 
 import pandas as pd
@@ -23,6 +25,14 @@ from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
+from src.llm.backend_registry import (
+    resolve_generation_backend_id,
+    resolve_generation_fallback_backend_id,
+)
+from src.llm.generation_backend import GenerationError
+from src.schemas.market_light import MarketLightSnapshot
+from src.services.run_diagnostics import record_llm_run, record_llm_run_started
+from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -91,6 +101,18 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
+    bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+
+
+@dataclass
+class MarketLightReviewResult:
+    """Internal market-review parts built from one overview fetch."""
+
+    overview: MarketOverview
+    report: str
+    market_light_snapshot: Dict[str, Any]
+    structured_payload: Dict[str, Any] = field(default_factory=dict)
 
 
 class MarketAnalyzer:
@@ -110,6 +132,7 @@ class MarketAnalyzer:
         search_service: Optional[SearchService] = None,
         analyzer=None,
         region: str = "cn",
+        config: Optional[Any] = None,
     ):
         """
         初始化大盘分析器
@@ -118,8 +141,9 @@ class MarketAnalyzer:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
             region: 市场区域 cn=A股 us=美股
+            config: 本次复盘使用的配置；未传时读取全局配置
         """
-        self.config = get_config()
+        self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
@@ -127,13 +151,13 @@ class MarketAnalyzer:
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 
+    def _log_context(self) -> str:
+        return f"component=market_review region={self.region}"
+
     def _get_review_language(self) -> str:
-        configured = normalize_report_language(
+        return normalize_report_language(
             getattr(getattr(self, "config", None), "report_language", "zh")
         )
-        if self.region == "us":
-            return "en"
-        return configured
 
     def _get_template_review_language(self) -> str:
         return normalize_report_language(
@@ -143,7 +167,7 @@ class MarketAnalyzer:
     def _get_market_scope_name(self, review_language: str | None = None) -> str:
         review_language = review_language or self._get_review_language()
         if self.region == "us":
-            return "US market"
+            return "US market" if review_language == "en" else "美股市场"
         if self.region == "hk":
             return "Hong Kong market" if review_language == "en" else "港股市场"
         if review_language == "en":
@@ -220,6 +244,24 @@ Focus on HSI trend, southbound flow dynamics, and sector rotation to define next
 - Risk-on: broad index breakout with expanding southbound participation.
 - Neutral: mixed index signals; focus on selective relative strength.
 - Risk-off: failed breakouts and rising volatility; prioritize capital preservation."""
+        if self.region == "us" and self._get_review_language() == "zh":
+            return """## 美股市场三段式复盘策略
+聚焦指数趋势、宏观叙事与板块轮动，给出次日风控与仓位框架。
+
+### 策略原则
+- 先看标普500、纳斯达克、道琼斯是否同向，确认主线是否一致。
+- 结合宏观与流动性指标，识别风险偏好是修复还是转弱。
+- 将复盘输出映射为“进攻/均衡/防守”动作建议，并给出明确触发失效条件。
+
+### 分析维度
+- 趋势结构：明确市场处于上冲、震荡还是防守转向，判断是否存在关键支撑位背离。
+- 资金与情绪：区分宏观政策、货币面与波动率对权益风险的影响。
+- 主题线索：识别持续性最强的主题与板块轮动是否形成可交易主线。
+
+### 行动框架
+- 进攻：主板块联动上行且量能/风险位同步改善。
+- 均衡：指数分化或量能未明显放大，仓位保守执行。
+- 防守：突破失守且波动率抬升时，优先减码并保留反弹可交易性。"""
         if not (self.region == "cn" and self._get_review_language() == "en"):
             return self.strategy.to_prompt_block()
         return """## Strategy Blueprint: A-share Three-Phase Recap Strategy
@@ -256,6 +298,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - **Trend Regime**: Classify the market as momentum, range, or risk-off based on HSI/HSTECH/HSCEI alignment.
 - **Capital Flows**: Track southbound flow direction and macro narrative for risk appetite signals.
 - **Sector Themes**: Focus on tech/internet platform persistence and financials/property policy sensitivity.
+"""
+        if self.region == "us" and review_language == "zh":
+            return """### 六、策略框架
+- **趋势结构**：判断市场在进攻、震荡与防守中的状态是否一致。
+- **资金与情绪**：结合波动率、宽度和主题轮动评估风险偏好。
+- **主题主线**：识别可延续和可放大的行业主线与防守线索。
 """
         if not (self.region == "cn" and review_language == "en"):
             return self.strategy.to_markdown_block()
@@ -305,6 +353,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 3. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
+            self._get_concept_rankings(overview)
         
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
@@ -317,7 +366,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         indices = []
 
         try:
-            logger.info("[大盘] 获取主要指数实时行情...")
+            logger.info("[大盘] %s action=get_main_indices status=start", self._log_context())
 
             # 使用 DataFetcherManager 获取指数行情（按 region 切换）
             data_list = self.data_manager.get_main_indices(region=self.region)
@@ -341,21 +390,25 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     indices.append(index)
 
             if not indices:
-                logger.warning("[大盘] 所有行情数据源失败，将依赖新闻搜索进行分析")
+                logger.warning("[大盘] %s action=get_main_indices status=empty", self._log_context())
             else:
-                logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
+                logger.info(
+                    "[大盘] %s action=get_main_indices status=success count=%d",
+                    self._log_context(),
+                    len(indices),
+                )
 
         except Exception as e:
-            logger.error(f"[大盘] 获取指数行情失败: {e}")
+            logger.error("[大盘] %s action=get_main_indices status=failed error=%s", self._log_context(), e)
 
         return indices
 
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
         try:
-            logger.info("[大盘] 获取市场涨跌统计...")
+            logger.info("[大盘] %s action=get_market_stats status=start", self._log_context())
 
-            stats = self.data_manager.get_market_stats()
+            stats = self.data_manager.get_market_stats(purpose=f"market_review:{self.region}")
 
             if stats:
                 overview.up_count = stats.get('up_count', 0)
@@ -365,17 +418,27 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.limit_down_count = stats.get('limit_down_count', 0)
                 overview.total_amount = stats.get('total_amount', 0.0)
 
-                logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
-                          f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
-                          f"成交额:{overview.total_amount:.0f}亿")
+                logger.info(
+                    "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
+                    "limit_up=%s limit_down=%s amount=%.0f亿",
+                    self._log_context(),
+                    overview.up_count,
+                    overview.down_count,
+                    overview.flat_count,
+                    overview.limit_up_count,
+                    overview.limit_down_count,
+                    overview.total_amount,
+                )
+            else:
+                logger.warning("[大盘] %s action=get_market_stats status=empty", self._log_context())
 
         except Exception as e:
-            logger.error(f"[大盘] 获取涨跌统计失败: {e}")
+            logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
         try:
-            logger.info("[大盘] 获取板块涨跌榜...")
+            logger.info("[大盘] %s action=get_sector_rankings status=start", self._log_context())
 
             top_sectors, bottom_sectors = self.data_manager.get_sector_rankings(5)
 
@@ -383,11 +446,40 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.top_sectors = top_sectors
                 overview.bottom_sectors = bottom_sectors
 
-                logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
-                logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
+                logger.info(
+                    "[大盘] %s action=get_sector_rankings status=success top=%s bottom=%s",
+                    self._log_context(),
+                    [s['name'] for s in overview.top_sectors],
+                    [s['name'] for s in overview.bottom_sectors],
+                )
+            else:
+                logger.warning("[大盘] %s action=get_sector_rankings status=empty", self._log_context())
 
         except Exception as e:
-            logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
+            logger.error("[大盘] %s action=get_sector_rankings status=failed error=%s", self._log_context(), e)
+
+    def _get_concept_rankings(self, overview: MarketOverview):
+        """获取概念/题材涨跌榜（fail-open）。"""
+        try:
+            logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
+
+            top_concepts, bottom_concepts = self.data_manager.get_concept_rankings(5)
+
+            if top_concepts or bottom_concepts:
+                overview.top_concepts = top_concepts
+                overview.bottom_concepts = bottom_concepts
+
+                logger.info(
+                    "[大盘] %s action=get_concept_rankings status=success top=%s bottom=%s",
+                    self._log_context(),
+                    [s.get('name') for s in overview.top_concepts],
+                    [s.get('name') for s in overview.bottom_concepts],
+                )
+            else:
+                logger.warning("[大盘] %s action=get_concept_rankings status=empty", self._log_context())
+
+        except Exception as e:
+            logger.warning("[大盘] %s action=get_concept_rankings status=failed error=%s", self._log_context(), e)
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
@@ -418,19 +510,27 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             新闻列表
         """
         if not self.search_service:
-            logger.warning("[大盘] 搜索服务未配置，跳过新闻搜索")
+            logger.warning(
+                "[大盘] %s action=search_market_news status=skipped reason=no_search_service",
+                self._log_context(),
+            )
             return []
         
         all_news = []
 
         # 按 region 使用不同的新闻搜索词
         search_queries = self.profile.news_queries
+        review_language = self._get_review_language()
+        market_names = {
+            "cn": "大盘" if review_language == "zh" else "A-share market",
+            "us": "美股市场" if review_language == "zh" else "US market",
+            "hk": "港股市场" if review_language == "zh" else "HK market",
+        }
         
         try:
-            logger.info("[大盘] 开始搜索市场新闻...")
+            logger.info("[大盘] %s action=search_market_news status=start", self._log_context())
             
             # 根据 region 设置搜索上下文名称，避免美股搜索被解读为 A 股语境
-            market_names = {"cn": "大盘", "us": "US market", "hk": "HK market"}
             market_name = market_names.get(self.region, "大盘")
             for query in search_queries:
                 response = self.search_service.search_stock_news(
@@ -441,12 +541,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 )
                 if response and response.results:
                     all_news.extend(response.results)
-                    logger.info(f"[大盘] 搜索 '{query}' 获取 {len(response.results)} 条结果")
+                    logger.info(
+                        "[大盘] %s action=search_market_news status=query_success count=%d",
+                        self._log_context(),
+                        len(response.results),
+                    )
             
-            logger.info(f"[大盘] 共获取 {len(all_news)} 条市场新闻")
+            logger.info(
+                "[大盘] %s action=search_market_news status=success count=%d",
+                self._log_context(),
+                len(all_news),
+            )
             
         except Exception as e:
-            logger.error(f"[大盘] 搜索市场新闻失败: {e}")
+            logger.error("[大盘] %s action=search_market_news status=failed error=%s", self._log_context(), e)
         
         return all_news
     
@@ -461,24 +569,222 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             大盘复盘报告文本
         """
+        backend_error = self._get_analyzer_generation_backend_config_error()
+        if backend_error is not None:
+            logger.error(
+                "[大盘] %s action=generate_review status=failed error_type=%s error=%s",
+                self._log_context(),
+                type(backend_error).__name__,
+                backend_error,
+            )
+            record_llm_run(
+                success=False,
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+                error_type=type(backend_error).__name__,
+                error_message=backend_error,
+            )
+            raise backend_error
+
         if not self.analyzer or not self.analyzer.is_available():
-            logger.warning("[大盘] AI分析器未配置或不可用，使用模板生成报告")
+            logger.warning(
+                "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
+                self._log_context(),
+            )
             return self._generate_template_review(overview, news)
-        
+
         # 构建 Prompt
         prompt = self._build_review_prompt(overview, news)
-        
-        logger.info("[大盘] 调用大模型生成复盘报告...")
-        # Use the public generate_text() entry point — never access private analyzer attributes.
-        review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+
+        logger.info("[大盘] %s action=generate_review status=start", self._log_context())
+        # Use the public generate_text() entry point - never access private analyzer attributes.
+        llm_started_at = time.perf_counter()
+        try:
+            record_llm_run_started(
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+            )
+            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+        except Exception as exc:
+            record_llm_run(
+                success=False,
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+                duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
+                error_type=type(exc).__name__,
+                error_message=exc,
+            )
+            raise
+
+        record_llm_run(
+            success=bool(review),
+            provider="litellm",
+            model=getattr(self.config, "litellm_model", None),
+            call_type="market_review",
+            duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
+            error_type=None if review else "EmptyResponse",
+            error_message=None if review else "empty market review response",
+        )
 
         if review:
-            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+            logger.info(
+                "[大盘] %s action=generate_review status=success length=%d",
+                self._log_context(),
+                len(review),
+            )
             # Inject structured data tables into LLM prose sections
             return self._inject_data_into_review(review, overview, news)
-        else:
-            logger.warning("[大盘] 大模型返回为空，使用模板报告")
-            return self._generate_template_review(overview, news)
+
+        logger.warning(
+            "[大盘] %s action=generate_review status=fallback_template reason=empty_llm_response",
+            self._log_context(),
+        )
+        return self._generate_template_review(overview, news)
+
+    def _get_analyzer_generation_backend_config_error(self) -> Optional[GenerationError]:
+        """Return analyzer backend config errors without relying on dynamic mock attributes."""
+        if self.analyzer is None:
+            try:
+                resolve_generation_backend_id(self.config)
+                resolve_generation_fallback_backend_id(self.config)
+            except GenerationError as exc:
+                return exc
+            return None
+        missing = object()
+        if getattr_static(self.analyzer, "get_generation_backend_config_error", missing) is missing:
+            return None
+        method = getattr(self.analyzer, "get_generation_backend_config_error", None)
+        if not callable(method):
+            return None
+        error = method()
+        return error if isinstance(error, GenerationError) else None
+
+    def build_market_review_payload(
+        self,
+        overview: MarketOverview,
+        news: List,
+        report: str,
+        market_light_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the structured market-review contract consumed by API, Web, and notifications."""
+        language = self._get_review_language()
+        sections = self._split_report_sections(report)
+        title = self._extract_report_title(report) or self._get_review_title(overview.date).lstrip("# ").strip()
+        light = market_light_snapshot or self.build_market_light_snapshot(overview)
+        breadth_dimensions = None
+        if isinstance(light, dict):
+            dimensions = light.get("dimensions")
+            if isinstance(dimensions, dict):
+                breadth_dimensions = dimensions.get("breadth")
+
+        breadth_supported = bool(self.profile.has_market_stats)
+        if breadth_supported and isinstance(breadth_dimensions, dict) and "available" in breadth_dimensions:
+            breadth_supported = bool(breadth_dimensions.get("available"))
+
+        has_breadth_data = False
+        if breadth_supported:
+            if isinstance(breadth_dimensions, dict) and "available" in breadth_dimensions:
+                has_breadth_data = bool(breadth_dimensions.get("available"))
+            else:
+                breadth_available = overview.up_count + overview.down_count + overview.flat_count > 0
+                limit_available = overview.limit_up_count + overview.limit_down_count > 0
+                has_breadth_data = bool(breadth_available or limit_available)
+
+        payload = {
+            "version": 1,
+            "kind": "market_review",
+            "region": self.region,
+            "language": language,
+            "title": title,
+            "generated_at": datetime.now().isoformat(),
+            "date": overview.date,
+            "market_scope": self._get_market_scope_name(language),
+            "market_light": light,
+            "indices": [idx.to_dict() for idx in overview.indices],
+            "sectors": {
+                "top": list(overview.top_sectors or []),
+                "bottom": list(overview.bottom_sectors or []),
+            },
+            "concepts": {
+                "top": list(overview.top_concepts or []),
+                "bottom": list(overview.bottom_concepts or []),
+            },
+            "news": [self._normalize_news_item(item) for item in (news or [])[:8]],
+            "sections": sections,
+            "markdown_report": report,
+        }
+
+        if has_breadth_data:
+            payload["breadth"] = {
+                "up_count": overview.up_count,
+                "down_count": overview.down_count,
+                "flat_count": overview.flat_count,
+                "limit_up_count": overview.limit_up_count,
+                "limit_down_count": overview.limit_down_count,
+                "total_amount": overview.total_amount,
+                "turnover_unit": self._get_turnover_unit_label(),
+            }
+
+        return payload
+
+    @staticmethod
+    def _extract_report_title(report: str) -> str:
+        for line in (report or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                return stripped.lstrip("#").strip()
+        return ""
+
+    @classmethod
+    def _split_report_sections(cls, report: str) -> List[Dict[str, str]]:
+        text = (report or "").strip()
+        if not text:
+            return []
+        matches = list(re.finditer(r"^(#{2,3})\s+(.+?)\s*$", text, flags=re.MULTILINE))
+        if not matches:
+            return [{"key": "full_review", "title": "Review", "markdown": text}]
+
+        sections: List[Dict[str, str]] = []
+        first_match = matches[0]
+        starts_with_report_title = first_match.start() == 0 and first_match.group(1) == "##"
+        content_start_index = 1 if starts_with_report_title else 0
+        intro_start = first_match.end() if starts_with_report_title else 0
+        intro_end = (
+            matches[1].start()
+            if starts_with_report_title and len(matches) > 1
+            else (len(text) if starts_with_report_title else matches[0].start())
+        )
+        intro = text[intro_start:intro_end].strip()
+        if intro:
+            sections.append({"key": "overview", "title": "Overview", "markdown": intro})
+
+        for index, match in enumerate(matches[content_start_index:], start=content_start_index):
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            title = match.group(2).strip()
+            markdown = text[start:end].strip()
+            if not markdown:
+                continue
+            key = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "_", title).strip("_").lower()
+            sections.append({
+                "key": key or f"section_{index + 1}",
+                "title": title,
+                "markdown": markdown,
+            })
+        return sections
+
+    @classmethod
+    def _normalize_news_item(cls, item: Any) -> Dict[str, str]:
+        return {
+            "title": cls._compact_news_text(cls._get_news_field(item, "title"), limit=120),
+            "snippet": cls._compact_news_text(cls._get_news_field(item, "snippet"), limit=260),
+            "source": cls._compact_news_text(cls._get_news_field(item, "source"), limit=80),
+            "published_date": cls._compact_news_text(cls._get_news_field(item, "published_date"), limit=40),
+            "url": cls._compact_news_text(cls._get_news_field(item, "url"), limit=240),
+        }
     
     def _inject_data_into_review(
         self,
@@ -491,7 +797,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview)
-        news_block = self._build_news_block(news or [])
         patterns = (
             _ENGLISH_SECTION_PATTERNS
             if self._get_review_language() == "en"
@@ -517,13 +822,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 review,
                 patterns["sector_highlights"],
                 sector_block,
-            )
-
-        if news_block and "news_catalysts" in patterns:
-            review = self._insert_after_section(
-                review,
-                patterns["news_catalysts"],
-                news_block,
             )
 
         return review
@@ -556,15 +854,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             light = self.build_market_light_snapshot(overview)
             return "\n".join(
                 [
-                    f"> **Market Light**: {light['status']} ({light['label']}) | "
-                    f"**{light['score']}/100** {self._build_temperature_bar(light['score'])}",
-                    f"> **Reasons**: {'; '.join(light['reasons'])}",
-                    f"> **Guidance**: {light['guidance']}",
+                    f"- **Market Signal**: {light['score']}/100 "
+                    f"({light['temperature_label']}, {light['label']})",
+                    f"- **Drivers**: {'; '.join(light['reasons'])}",
+                    f"- **Guidance**: {light['guidance']}",
                     "",
-                    f"> 📈 Advancers **{overview.up_count}** / Decliners **{overview.down_count}** / "
-                    f"Flat **{overview.flat_count}** | "
-                    f"Limit-up **{overview.limit_up_count}** / Limit-down **{overview.limit_down_count}** | "
-                    f"Turnover **{overview.total_amount:.0f}** ({self._get_turnover_unit_label()})",
+                    f"- **Breadth**: Advancers {overview.up_count} / Decliners {overview.down_count} / "
+                    f"Flat {overview.flat_count}; "
+                    f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
+                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})",
                 ]
             )
         light = self.build_market_light_snapshot(overview)
@@ -573,11 +871,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         up_ratio = overview.up_count / participation if participation else 0.0
         limit_spread = overview.limit_up_count - overview.limit_down_count
         lines = [
-            f"> **大盘红绿灯**：{light['status']}（{light['label']}） | **{score}/100** {self._build_temperature_bar(score)}",
-            f"> **核心原因**：{'；'.join(light['reasons'])}",
-            f"> **操作建议**：{light['guidance']}",
-            "",
-            f"> **盘面温度**：{label} **{score}/100** {self._build_temperature_bar(score)}",
+            f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
+            f"- **信号依据**：{'；'.join(light['reasons'])}",
+            f"- **操作建议**：{light['guidance']}",
             "",
             "| 指标 | 数值 | 观察 |",
             "|------|------|------|",
@@ -589,7 +885,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build a deterministic market-light snapshot from structured breadth data."""
-        score, temperature_label = self._build_market_temperature(overview)
+        scores = self._build_market_light_scores(overview)
+        score = int(scores["score"])
+        temperature_label = str(scores["temperature_label"])
         if score >= 60:
             status = "green"
         elif score >= 40:
@@ -599,9 +897,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         if self._get_review_language() == "en":
             label_map = {
-                "green": "constructive",
-                "yellow": "watch",
-                "red": "defensive",
+                "green": "risk-on",
+                "yellow": "balanced",
+                "red": "risk-off",
             }
             guidance_map = {
                 "green": "Risk appetite is acceptable; focus on leading themes and position discipline.",
@@ -622,19 +920,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
             reasons = self._build_market_light_reasons_zh(overview, score)
 
-        return {
-            "status": status,
-            "label": label_map[status],
-            "score": score,
-            "temperature_label": temperature_label,
-            "reasons": reasons,
-            "guidance": guidance_map[status],
-        }
+        snapshot = MarketLightSnapshot(
+            region=self.region,
+            trade_date=overview.date,
+            status=status,
+            label=label_map[status],
+            score=score,
+            temperature_label=temperature_label,
+            reasons=reasons,
+            guidance=guidance_map[status],
+            dimensions=scores["dimensions"],
+            data_quality=str(scores["data_quality"]),
+        )
+        return snapshot.model_dump()
 
     def _build_market_light_reasons_zh(self, overview: MarketOverview, score: int) -> List[str]:
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
-        reasons: List[str] = [f"盘面温度 {score}/100"]
+        reasons: List[str] = []
         if up_ratio is not None:
             if up_ratio >= 0.6:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，赚钱效应扩散")
@@ -642,17 +945,22 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        if overview.indices:
-            avg_change = sum(idx.change_pct for idx in overview.indices) / len(overview.indices)
+        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        if index_changes:
+            avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
+        if not reasons and overview.total_amount:
+            reasons.append(f"成交额 {overview.total_amount:.0f} 亿，{self._describe_turnover(overview.total_amount)}")
+        if not reasons:
+            reasons.append("结构化涨跌数据有限，按可用行情综合判断")
         return reasons[:4]
 
     def _build_market_light_reasons_en(self, overview: MarketOverview, score: int) -> List[str]:
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else None
-        reasons: List[str] = [f"market temperature {score}/100"]
+        reasons: List[str] = []
         if up_ratio is not None:
             if up_ratio >= 0.6:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is expanding")
@@ -660,11 +968,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"advancers ratio {up_ratio:.0%}, downside pressure dominates")
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
-        if overview.indices:
-            avg_change = sum(idx.change_pct for idx in overview.indices) / len(overview.indices)
+        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        if index_changes:
+            avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average major-index change {avg_change:+.2f}%")
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
+        if not reasons and overview.total_amount:
+            reasons.append(f"turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})")
+        if not reasons:
+            reasons.append("limited structured breadth data; using available market inputs")
         return reasons[:4]
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
@@ -693,74 +1006,60 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return "\n".join(lines)
 
     def _build_sector_block(self, overview: MarketOverview) -> str:
-        """Build sector ranking block."""
-        if not overview.top_sectors and not overview.bottom_sectors:
+        """Build industry and concept ranking blocks."""
+        if (
+            not overview.top_sectors
+            and not overview.bottom_sectors
+            and not overview.top_concepts
+            and not overview.bottom_concepts
+        ):
             return ""
         lines = []
-        if overview.top_sectors:
-            if self._get_review_language() == "en":
-                lines.extend([
-                    "#### Leading Sectors",
-                    "| Rank | Sector | Change |",
-                    "|------|--------|--------|",
-                ])
-            else:
-                lines.extend([
-                    "#### 领涨板块 Top 5",
-                    "| 排名 | 板块 | 涨跌幅 |",
-                    "|------|------|--------|",
-                ])
-            for rank, sector in enumerate(overview.top_sectors[:5], 1):
-                lines.append(
-                    f"| {rank} | {sector.get('name', '-')} | {self._format_signed_pct(sector.get('change_pct'))} |"
-                )
-        if overview.bottom_sectors:
+        language = self._get_review_language()
+
+        def append_ranking(title: str, name_label: str, rows: List[Dict]) -> None:
+            if not rows:
+                return
             if lines:
                 lines.append("")
-            if self._get_review_language() == "en":
-                lines.extend([
-                    "#### Lagging Sectors",
-                    "| Rank | Sector | Change |",
-                    "|------|--------|--------|",
-                ])
-            else:
-                lines.extend([
-                    "#### 领跌板块 Top 5",
-                    "| 排名 | 板块 | 涨跌幅 |",
-                    "|------|------|--------|",
-                ])
-            for rank, sector in enumerate(overview.bottom_sectors[:5], 1):
+            lines.extend([
+                title,
+                f"| {'Rank' if language == 'en' else '排名'} | {name_label} | {'Change' if language == 'en' else '涨跌幅'} |",
+                "|------|------|--------|",
+            ])
+            for rank, item in enumerate(rows[:5], 1):
                 lines.append(
-                    f"| {rank} | {sector.get('name', '-')} | {self._format_signed_pct(sector.get('change_pct'))} |"
+                    f"| {rank} | {item.get('name', '-')} | {self._format_signed_pct(item.get('change_pct'))} |"
                 )
+
+        if language == "en":
+            append_ranking("#### Leading Industry Sectors", "Sector", overview.top_sectors)
+            append_ranking("#### Lagging Industry Sectors", "Sector", overview.bottom_sectors)
+            append_ranking("#### Leading Concept Themes", "Concept", overview.top_concepts)
+            append_ranking("#### Lagging Concept Themes", "Concept", overview.bottom_concepts)
+        else:
+            append_ranking("#### 行业板块领涨 Top 5", "行业板块", overview.top_sectors)
+            append_ranking("#### 行业板块领跌 Top 5", "行业板块", overview.bottom_sectors)
+            append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
+            append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)
 
     def _build_news_block(self, news: List) -> str:
-        """Build a source-aware news catalyst table for the rendered report."""
+        """Build a compact source-aware news catalyst list for the rendered report."""
         if not news:
             return ""
-        if self._get_review_language() == "en":
+        language = self._get_review_language()
+        if language == "en":
             lines = [
                 "#### News Catalysts",
-                "| # | Headline | Snippet / Lead | Source |",
-                "|---|----------|----------------|--------|",
             ]
         else:
             lines = [
-                "#### 近三日催化线索",
-                "| 序号 | 事件/标题 | 摘要/线索片段 | 来源 |",
-                "|------|-----------|----------------|------|",
+                "#### 近三日市场线索",
             ]
 
         for idx, item in enumerate(news[:5], 1):
-            title = self._escape_table_cell(
-                self._compact_news_text(self._get_news_field(item, "title"), limit=80) or "-"
-            )
-            snippet = self._escape_table_cell(
-                self._compact_news_text(self._get_news_field(item, "snippet"), limit=180) or "-"
-            )
-            source = self._escape_table_cell(self._format_news_source_cell(item) or "-")
-            lines.append(f"| {idx} | {title} | {snippet} | {source} |")
+            lines.append(self._format_news_catalyst_line(idx, item, language=language))
         return "\n".join(lines)
 
     @staticmethod
@@ -774,15 +1073,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return str(value).strip()
 
     @classmethod
-    def _format_news_source_cell(cls, item: Any) -> str:
+    def _format_news_catalyst_line(cls, idx: int, item: Any, *, language: str = "zh") -> str:
+        fallback_title = "Untitled catalyst" if language == "en" else "未命名线索"
+        title = cls._compact_news_text(cls._get_news_field(item, "title"), limit=90) or fallback_title
         source = cls._compact_news_text(cls._get_news_field(item, "source"), limit=40)
         date_text = cls._compact_news_text(cls._get_news_field(item, "published_date"), limit=24)
         url = cls._compact_news_text(cls._get_news_field(item, "url"), limit=0)
-        label_parts = [part for part in (source, date_text) if part]
-        label = " / ".join(label_parts)
+        title_text = cls._escape_markdown_link_label(title)
         if url:
-            return f"[{label or 'URL'}]({url})"
-        return label
+            title_text = f"[{title_text}]({url})"
+        meta_parts = [part for part in (source, date_text) if part]
+        if language == "en":
+            meta = f" ({' / '.join(meta_parts)})" if meta_parts else ""
+        else:
+            meta = f"（{' / '.join(meta_parts)}）" if meta_parts else ""
+        return f"- {idx}. {title_text}{meta}"
 
     @staticmethod
     def _compact_news_text(value: str, *, limit: int) -> str:
@@ -807,14 +1112,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "N/A"
         return f"{numeric_value:+.2f}%"
 
-    @staticmethod
-    def _escape_table_cell(value: str) -> str:
-        return value.replace("|", "\\|")
+    @classmethod
+    def _format_ranking_summary(cls, rows: List[Dict], limit: int = 3) -> str:
+        parts = []
+        for item in (rows or [])[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            parts.append(f"{name}({cls._format_signed_pct(item.get('change_pct'))})")
+        return ", ".join(parts)
 
     @staticmethod
-    def _build_temperature_bar(score: int) -> str:
-        filled = max(0, min(10, round(score / 10)))
-        return "█" * filled + "░" * (10 - filled)
+    def _escape_markdown_link_label(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
     @staticmethod
     def _describe_turnover(total_amount: float) -> str:
@@ -826,22 +1138,40 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "缩量观望"
         return "暂无数据"
 
-    def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
+    def _build_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Build the canonical Market Light scores used by reports and alerts."""
+
         participants = overview.up_count + overview.down_count
+        breadth_available = bool(self.profile.has_market_stats and participants > 0)
         breadth_score = 50
-        if participants:
+        if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
         index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_available = bool(overview.indices and index_changes)
         index_score = 50
-        if index_changes:
+        if index_available:
             avg_change = sum(index_changes) / len(index_changes)
             index_score = int(max(0, min(100, 50 + avg_change * 12)))
 
         limit_total = overview.limit_up_count + overview.limit_down_count
+        limit_available = bool(self.profile.has_market_stats and limit_total > 0)
         limit_score = 50
-        if limit_total:
+        if limit_available:
             limit_score = int(overview.limit_up_count / limit_total * 100)
+
+        dimensions = {
+            "breadth": {"score": breadth_score, "available": breadth_available},
+            "index": {"score": index_score, "available": index_available},
+            "limit": {"score": limit_score, "available": limit_available},
+        }
+
+        if not index_available:
+            data_quality = "unavailable"
+        elif all(dimension["available"] for dimension in dimensions.values()):
+            data_quality = "ok"
+        else:
+            data_quality = "partial"
 
         score = int(round(breadth_score * 0.45 + index_score * 0.35 + limit_score * 0.20))
         if self._get_review_language() == "en":
@@ -862,6 +1192,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 label = "震荡"
             else:
                 label = "偏弱"
+        return {
+            "score": score,
+            "temperature_label": label,
+            "dimensions": dimensions,
+            "data_quality": data_quality,
+        }
+
+    def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
+        scores = self._build_market_light_scores(overview)
+        score = int(scores["score"])
+        label = str(scores["temperature_label"])
         return score, label
 
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
@@ -875,8 +1216,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
         
         # 板块信息
-        top_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
-        bottom_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
+        top_sectors_text = self._format_ranking_summary(overview.top_sectors)
+        bottom_sectors_text = self._format_ranking_summary(overview.bottom_sectors)
+        top_concepts_text = self._format_ranking_summary(overview.top_concepts)
+        bottom_concepts_text = self._format_ranking_summary(overview.bottom_concepts)
         
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
@@ -905,11 +1248,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 stats_block = "## Market Breadth\n(No equivalent advance/decline statistics are available for this market.)"
 
             if self.profile.has_sector_rankings:
-                sector_block = f"""## Sector Performance
-Leading: {top_sectors_text if top_sectors_text else "N/A"}
-Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
+                sector_block = f"""## Sector / Theme Performance
+Industry leading: {top_sectors_text if top_sectors_text else "N/A"}
+Industry lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
+Concept leading: {top_concepts_text if top_concepts_text else "N/A"}
+Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             else:
-                sector_block = "## Sector Performance\n(Sector data not available for this market.)"
+                sector_block = "## Sector / Theme Performance\n(Sector/theme data not available for this market.)"
         else:
             if self.profile.has_market_stats:
                 stats_block = f"""## 市场概况
@@ -921,8 +1266,10 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## 板块表现
-领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
-领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}"""
+行业领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
+行业领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
+概念领涨: {top_concepts_text if top_concepts_text else "暂无数据"}
+概念领跌: {bottom_concepts_text if bottom_concepts_text else "暂无数据"}"""
             else:
                 sector_block = "## 板块表现\n（该市场暂无板块涨跌数据）"
 
@@ -991,7 +1338,7 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 (Interpret what turnover, participation, and flow signals imply.)
 
 ### 4. Sector Highlights
-(Analyze the drivers behind the leading and lagging sectors or themes.)
+(Distinguish industry-sector moves from concept/theme moves, then analyze drivers and persistence.)
 
 ### 5. Outlook
 (Provide the near-term outlook based on price action and news.)
@@ -1054,7 +1401,7 @@ Output the report content directly, no extra commentary.
 （{self._get_index_hint()}，说明谁在护盘、谁在拖累，以及关键支撑/压力）
 
 ### 三、板块主线
-（分析领涨/领跌板块背后的逻辑、持续性和是否形成主线）
+（区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
 
 ### 四、资金与情绪
 （解读成交额、涨跌停结构、市场宽度和风险偏好）
@@ -1110,6 +1457,8 @@ Output the report content directly, no extra commentary.
         separator = ", " if template_language == "en" else "、"
         top_text = separator.join([s['name'] for s in overview.top_sectors[:3]])
         bottom_text = separator.join([s['name'] for s in overview.bottom_sectors[:3]])
+        top_concept_text = separator.join([s['name'] for s in overview.top_concepts[:3]])
+        bottom_concept_text = separator.join([s['name'] for s in overview.bottom_concepts[:3]])
 
         if template_language == "en":
             stats_section = ""
@@ -1125,11 +1474,13 @@ Output the report content directly, no extra commentary.
 | Turnover ({self._get_turnover_unit_label()}) | {overview.total_amount:.0f} |
 """
             sector_section = ""
-            if self.profile.has_sector_rankings and (top_text or bottom_text):
+            if self.profile.has_sector_rankings and (top_text or bottom_text or top_concept_text or bottom_concept_text):
                 sector_section = f"""
-### 4. Sector Highlights
-- **Leaders**: {top_text or "N/A"}
-- **Laggards**: {bottom_text or "N/A"}
+### 4. Sector / Theme Highlights
+- **Industry Leaders**: {top_text or "N/A"}
+- **Industry Laggards**: {bottom_text or "N/A"}
+- **Concept Leaders**: {top_concept_text or "N/A"}
+- **Concept Laggards**: {bottom_concept_text or "N/A"}
 """
             market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
             market_name = market_names.get(self.region, "A-share Market Recap")
@@ -1176,11 +1527,7 @@ Market conditions can change quickly. The data above is for reference only and d
 ### 五、消息催化
 - 暂无可用新闻时，应降低对题材持续性的确定性判断。
 
-### 六、明日交易计划
-- **结论**：均衡观察。
-- **仓位**：控制在中性区间，等待指数与主线共振。
-- **关注方向**：{top_text or "强于指数的主线板块"}。
-- **回避方向**：{bottom_text or "连续走弱且缺少修复信号的方向"}。
+{self._get_strategy_markdown_block(template_language)}
 
 ### 七、风险提示
 - 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
@@ -1189,27 +1536,94 @@ Market conditions can change quickly. The data above is for reference only and d
 *复盘时间: {datetime.now().strftime('%H:%M')}*
 """
     
+    def _run_daily_review_parts(self) -> MarketLightReviewResult:
+        """Run market review once and keep report/snapshot on the same overview."""
+        logger.info("========== 开始大盘复盘分析 ==========")
+
+        # 1. 获取市场概览
+        overview = self.get_market_overview()
+
+        # 2. 搜索市场新闻
+        news = self.search_market_news()
+        news = self._merge_persisted_market_intelligence(news)
+
+        # 3. 生成复盘报告
+        report = self.generate_market_review(overview, news)
+        snapshot = self.build_market_light_snapshot(overview)
+        structured_payload = self.build_market_review_payload(
+            overview,
+            news,
+            report,
+            snapshot,
+        )
+
+        logger.info("========== 大盘复盘分析完成 ==========")
+
+        return MarketLightReviewResult(
+            overview=overview,
+            report=report,
+            market_light_snapshot=snapshot,
+            structured_payload=structured_payload,
+        )
+
+    def _merge_persisted_market_intelligence(self, news: List) -> List:
+        """Merge local persisted market intelligence and search news with bounded prompt/payload slot preservation."""
+        search_news = list(news or [])
+        merged_local = []
+        seen_urls = {
+            self._get_news_field(item, "url")
+            for item in search_news
+            if self._get_news_field(item, "url")
+        }
+        try:
+            service = IntelligenceService()
+            payload = service.list_items(
+                scope_type="market",
+                market=self.region,
+                published_days=max(1, int(self.config.get_effective_news_window_days() or 1)),
+                page=1,
+                page_size=6,
+            )
+            for item in payload.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "")
+                if url and url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                merged_local.append({
+                    "title": item.get("title") or "未命名资讯",
+                    "snippet": item.get("summary") or "",
+                    "source": item.get("source") or item.get("source_name") or "local-intel",
+                    "published_date": item.get("published_at") or "",
+                    "url": "" if url.startswith("no-url:intel:") else url,
+                })
+        except Exception as exc:
+            logger.debug("[大盘] %s action=load_local_intelligence status=failed error=%s", self._log_context(), exc)
+        merged_news = []
+        merged_local_index = 0
+        merged_search_index = 0
+        while merged_local_index < len(merged_local) or merged_search_index < len(search_news):
+            if merged_local_index < len(merged_local):
+                merged_news.append(merged_local[merged_local_index])
+                merged_local_index += 1
+            if merged_search_index < len(search_news):
+                merged_news.append(search_news[merged_search_index])
+                merged_search_index += 1
+        return merged_news
+
     def run_daily_review(self) -> str:
         """
         执行每日大盘复盘流程
-        
+
         Returns:
             复盘报告文本
         """
-        logger.info("========== 开始大盘复盘分析 ==========")
-        
-        # 1. 获取市场概览
-        overview = self.get_market_overview()
-        
-        # 2. 搜索市场新闻
-        news = self.search_market_news()
-        
-        # 3. 生成复盘报告
-        report = self.generate_market_review(overview, news)
-        
-        logger.info("========== 大盘复盘分析完成 ==========")
-        
-        return report
+        return self.run_daily_review_with_snapshot().report
+
+    def run_daily_review_with_snapshot(self) -> MarketLightReviewResult:
+        """Run daily review and return the report plus its structured Market Light snapshot."""
+        return self._run_daily_review_parts()
 
 
 # 测试入口

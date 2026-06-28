@@ -25,7 +25,7 @@ from src.services.notification_diagnostics import (  # noqa: E402
     P6_CHANNEL_ACTIONS_ENV_KEYS,
 )
 
-WORKFLOW_PATH = ROOT_DIR / ".github/workflows/daily_analysis.yml"
+WORKFLOW_PATH = ROOT_DIR / ".github/workflows/00-daily-analysis.yml"
 DOCS_PATH = ROOT_DIR / "docs/notifications.md"
 TABLE_START = "<!-- notification-actions-env-table:start -->"
 TABLE_END = "<!-- notification-actions-env-table:end -->"
@@ -50,7 +50,7 @@ def load_daily_analysis_env(workflow_path: Path = WORKFLOW_PATH) -> dict[str, st
     available_step_names = [step.get("name", "<unnamed>") for step in steps]
     if analyze_step is None:
         raise ValueError(
-            f"Expected daily_analysis.yml job analyze to include a step named "
+            f"Expected 00-daily-analysis.yml job analyze to include a step named "
             f"{ANALYZE_STEP_NAME!r}; available step names: {available_step_names}"
         )
     return analyze_step["env"]
@@ -192,7 +192,7 @@ def validate_required_mappings(env: dict[str, str]) -> None:
     missing = sorted(required - set(env))
     if missing:
         raise ValueError(
-            "daily_analysis.yml is missing required notification env mappings: "
+            "00-daily-analysis.yml is missing required notification env mappings: "
             + ", ".join(missing)
         )
 

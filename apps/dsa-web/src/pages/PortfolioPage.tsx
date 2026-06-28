@@ -1,11 +1,38 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
+import { decisionSignalsApi } from '../api/decisionSignals';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
-import { toDateInputValue } from '../utils/format';
+import { PortfolioSignalSummary } from '../components/decision-signals/DecisionSignalDisplay';
+import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { formatUiText } from '../i18n/uiText';
+import { PORTFOLIO_TEXT } from '../locales/featureText';
+import type { FxRefreshFeedback } from '../utils/portfolioFormat';
+import {
+  buildFxRefreshFeedback,
+  formatBrokerLabel,
+  formatCashDirectionLabel,
+  formatCorporateActionLabel,
+  formatMoney,
+  formatPct,
+  formatPositionMoney,
+  formatPositionPrice,
+  formatSideLabel,
+  formatSignedPct,
+  getCsvCommitVariant,
+  getCsvParseVariant,
+  getFxRefreshFeedbackVariant,
+  getPositionPriceLabel,
+  getTodayIso,
+  hasPositionPrice,
+} from '../utils/portfolioFormat';
+import type {
+  DecisionSignalItem,
+  DecisionSignalMarket,
+} from '../types/decisionSignals';
 import type {
   PortfolioAccountItem,
   PortfolioCashDirection,
@@ -13,7 +40,6 @@ import type {
   PortfolioCorporateActionListItem,
   PortfolioCorporateActionType,
   PortfolioCostMethod,
-  PortfolioFxRefreshResponse,
   PortfolioImportBrokerItem,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
@@ -23,9 +49,13 @@ import type {
   PortfolioSnapshotResponse,
   PortfolioTradeListItem,
 } from '../types/portfolio';
+import { areStockCodesEquivalent, normalizeStockCode } from '../utils/stockCode';
+import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
+import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../utils/decisionAction';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
+const PORTFOLIO_SIGNAL_LOOKUP_CONCURRENCY = 6;
 const FALLBACK_BROKERS: PortfolioImportBrokerItem[] = [
   { broker: 'huatai', aliases: [], displayName: '华泰' },
   { broker: 'citic', aliases: ['zhongxin'], displayName: '中信' },
@@ -40,14 +70,24 @@ type FlatPosition = PortfolioPositionItem & {
   accountName: string;
 };
 
+type PortfolioSignalLookup = {
+  stockCode: string;
+  market?: DecisionSignalMarket;
+};
+
+type PortfolioSignalLookupResult = {
+  items: DecisionSignalItem[];
+  error: string | null;
+};
+
 type PendingDelete =
   | { eventType: 'trade'; id: number; message: string }
   | { eventType: 'cash'; id: number; message: string }
   | { eventType: 'corporate'; id: number; message: string };
 
-type FxRefreshFeedback = {
-  tone: 'neutral' | 'success' | 'warning';
-  text: string;
+type PendingAccountDelete = {
+  accountId: number;
+  accountName: string;
 };
 
 type FxRefreshContext = {
@@ -55,138 +95,78 @@ type FxRefreshContext = {
   requestId: number;
 };
 
-type PortfolioAlertVariant = 'info' | 'success' | 'warning' | 'danger';
-
 const PORTFOLIO_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 const PORTFOLIO_SELECT_CLASS = `${PORTFOLIO_INPUT_CLASS} appearance-none pr-10`;
 const PORTFOLIO_FILE_PICKER_CLASS =
   'input-surface input-focus-glow flex h-11 w-full cursor-pointer items-center justify-center rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
-function getTodayIso(): string {
-  return toDateInputValue(new Date());
+function getSignalTime(item: DecisionSignalItem): number {
+  return parseDecisionSignalDate(item.createdAt)?.getTime()
+    ?? parseDecisionSignalDate(item.updatedAt)?.getTime()
+    ?? 0;
 }
 
-function formatMoney(value: number | undefined | null, currency = 'CNY'): string {
-  if (value == null || Number.isNaN(value)) return '--';
-  return `${currency} ${Number(value).toLocaleString('zh-CN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+function isNewerSignal(left: DecisionSignalItem | undefined, right: DecisionSignalItem): boolean {
+  if (!left) return true;
+  return getSignalTime(right) > getSignalTime(left);
 }
 
-function formatPct(value: number | undefined | null): string {
-  if (value == null || Number.isNaN(value)) return '--';
-  return `${value.toFixed(2)}%`;
+const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr', 'tw']);
+type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'tw';
+
+function toDecisionSignalMarket(value: string | null | undefined): DecisionSignalMarket | undefined {
+  const normalized = String(value || '').toLowerCase();
+  return DECISION_SIGNAL_MARKETS.has(normalized as DecisionSignalMarket)
+    ? normalized as DecisionSignalMarket
+    : undefined;
 }
 
-function formatSignedPct(value: number | undefined | null): string {
-  if (value == null || Number.isNaN(value)) return '--';
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}%`;
+function toPositionSignalLookupKey(stockCode: string, market?: DecisionSignalMarket): string {
+  return `${market || ''}:${normalizeStockCode(stockCode).toUpperCase()}`;
 }
 
-function hasPositionPrice(row: PortfolioPositionItem): boolean {
-  return row.priceAvailable !== false && row.priceSource !== 'missing';
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]);
+    }
+  }));
+
+  return results;
 }
 
-function formatPositionPrice(row: PortfolioPositionItem): string {
-  if (!hasPositionPrice(row)) return '--';
-  return row.lastPrice.toFixed(4);
-}
-
-function formatPositionMoney(value: number, row: PortfolioPositionItem): string {
-  if (!hasPositionPrice(row)) return '--';
-  return formatMoney(value, row.valuationCurrency);
-}
-
-function getPositionPriceLabel(row: PortfolioPositionItem): string {
-  if (!hasPositionPrice(row)) return '缺价';
-  if (row.priceSource === 'realtime_quote') {
-    return row.priceProvider ? `实时价 · ${row.priceProvider}` : '实时价';
+async function loadPortfolioSignalLookup(lookup: PortfolioSignalLookup): Promise<PortfolioSignalLookupResult> {
+  try {
+    const response = await decisionSignalsApi.getLatest(lookup.stockCode, {
+      market: lookup.market,
+      limit: 1,
+    });
+    return { items: response.items, error: null };
+  } catch (err) {
+    return { items: [], error: getParsedApiError(err).message };
   }
-  if (row.priceSource === 'history_close') {
-    return row.priceStale && row.priceDate ? `收盘价 · ${row.priceDate}` : '收盘价';
-  }
-  return row.priceSource || '未知来源';
-}
-
-function formatSideLabel(value: PortfolioSide): string {
-  return value === 'buy' ? '买入' : '卖出';
-}
-
-function formatCashDirectionLabel(value: PortfolioCashDirection): string {
-  return value === 'in' ? '流入' : '流出';
-}
-
-function formatCorporateActionLabel(value: PortfolioCorporateActionType): string {
-  return value === 'cash_dividend' ? '现金分红' : '拆并股调整';
-}
-
-function formatBrokerLabel(value: string, displayName?: string): string {
-  if (displayName && displayName.trim()) return `${value}（${displayName.trim()}）`;
-  if (value === 'huatai') return 'huatai（华泰）';
-  if (value === 'citic') return 'citic（中信）';
-  if (value === 'cmb') return 'cmb（招商）';
-  return value;
-}
-
-function buildFxRefreshFeedback(data: PortfolioFxRefreshResponse): FxRefreshFeedback {
-  if (data.refreshEnabled === false) {
-    return {
-      tone: 'neutral',
-      text: '汇率在线刷新已被禁用。',
-    };
-  }
-
-  if (data.pairCount === 0) {
-    return {
-      tone: 'neutral',
-      text: '当前范围无可刷新的汇率对。',
-    };
-  }
-
-  if (data.updatedCount > 0 && data.staleCount === 0 && data.errorCount === 0) {
-    return {
-      tone: 'success',
-      text: `汇率已刷新，共更新 ${data.updatedCount} 对。`,
-    };
-  }
-
-  const summary = `更新 ${data.updatedCount} 对，仍过期 ${data.staleCount} 对，失败 ${data.errorCount} 对。`;
-  if (data.staleCount > 0) {
-    return {
-      tone: 'warning',
-      text: `已尝试刷新，但仍有部分货币对使用 stale/fallback 汇率。${summary}`,
-    };
-  }
-
-  return {
-    tone: 'warning',
-    text: `在线刷新未完全成功。${summary}`,
-  };
-}
-
-function getFxRefreshFeedbackVariant(tone: FxRefreshFeedback['tone']): PortfolioAlertVariant {
-  if (tone === 'success') return 'success';
-  if (tone === 'warning') return 'warning';
-  return 'info';
-}
-
-function getCsvParseVariant(result: PortfolioImportParseResponse): PortfolioAlertVariant {
-  return result.errorCount > 0 || result.skippedCount > 0 ? 'warning' : 'info';
-}
-
-function getCsvCommitVariant(result: PortfolioImportCommitResponse, isDryRun: boolean): PortfolioAlertVariant {
-  if (isDryRun) return 'info';
-  return result.failedCount > 0 || result.duplicateCount > 0 ? 'warning' : 'success';
 }
 
 const PortfolioPage: React.FC = () => {
+  const { language, t } = useUiLanguage();
+  const text = PORTFOLIO_TEXT[language];
+  const decisionActionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
+
   // Set page title
   useEffect(() => {
-    document.title = '持仓分析 - DSA';
-  }, []);
+    document.title = text.documentTitle;
+  }, [text.documentTitle]);
 
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<AccountOption>('all');
@@ -197,7 +177,7 @@ const PortfolioPage: React.FC = () => {
   const [accountForm, setAccountForm] = useState({
     name: '',
     broker: 'Demo',
-    market: 'cn' as 'cn' | 'hk' | 'us',
+    market: 'cn' as PortfolioAccountMarket,
     baseCurrency: 'CNY',
   });
   const [costMethod, setCostMethod] = useState<PortfolioCostMethod>('fifo');
@@ -209,6 +189,13 @@ const PortfolioPage: React.FC = () => {
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [riskWarning, setRiskWarning] = useState<string | null>(null);
   const [writeWarning, setWriteWarning] = useState<string | null>(null);
+  const [portfolioSignals, setPortfolioSignals] = useState<DecisionSignalItem[]>([]);
+  const [portfolioSignalsLoading, setPortfolioSignalsLoading] = useState(false);
+  const [portfolioSignalsWarning, setPortfolioSignalsWarning] = useState<string | null>(null);
+  const [portfolioSignalsRefreshKey, setPortfolioSignalsRefreshKey] = useState(0);
+  const portfolioSignalsRequestRef = useRef(0);
+  const [positionAnalysisLoadingKey, setPositionAnalysisLoadingKey] = useState<string | null>(null);
+  const [positionAnalysisMessage, setPositionAnalysisMessage] = useState<string | null>(null);
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
   const [selectedBroker, setSelectedBroker] = useState('huatai');
@@ -235,6 +222,8 @@ const PortfolioPage: React.FC = () => {
   const [corporateEvents, setCorporateEvents] = useState<PortfolioCorporateActionListItem[]>([]);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [pendingAccountDelete, setPendingAccountDelete] = useState<PendingAccountDelete | null>(null);
+  const [accountDeleteLoading, setAccountDeleteLoading] = useState(false);
 
   const [tradeForm, setTradeForm] = useState({
     symbol: '',
@@ -270,6 +259,7 @@ const PortfolioPage: React.FC = () => {
   const writableAccount = selectedAccount === 'all' ? undefined : accounts.find((item) => item.id === selectedAccount);
   const writableAccountId = writableAccount?.id;
   const writeBlocked = !writableAccountId;
+  const canDeleteSelectedAccount = Boolean(writableAccountId) && !isLoading && !fxRefreshing && !accountDeleteLoading;
   const totalEventPages = Math.max(1, Math.ceil(eventTotal / DEFAULT_PAGE_SIZE));
   const currentEventCount = eventType === 'trade'
     ? tradeEvents.length
@@ -468,6 +458,116 @@ const PortfolioPage: React.FC = () => {
     return rows;
   }, [snapshot]);
 
+  const snapshotMatchesAccountScope = useMemo(() => {
+    if (!snapshot) return false;
+    const snapshotAccountIds = new Set((snapshot.accounts || []).map((account) => account.accountId));
+    if (queryAccountId !== undefined) {
+      return snapshotAccountIds.size === 1 && snapshotAccountIds.has(queryAccountId);
+    }
+    return accounts.length === 0 || Number(snapshot.accountCount || 0) === accounts.length;
+  }, [accounts.length, queryAccountId, snapshot]);
+
+  const positionSignalLookups = useMemo(() => {
+    const lookups = new Map<string, PortfolioSignalLookup>();
+    for (const row of positionRows) {
+      const stockCode = String(row.symbol || '').trim();
+      if (!stockCode) continue;
+      const market = toDecisionSignalMarket(row.market);
+      const key = toPositionSignalLookupKey(stockCode, market);
+      if (!lookups.has(key)) {
+        lookups.set(key, { stockCode, market });
+      }
+    }
+    return Array.from(lookups.values());
+  }, [positionRows]);
+
+  useEffect(() => {
+    const requestId = portfolioSignalsRequestRef.current + 1;
+    portfolioSignalsRequestRef.current = requestId;
+
+    if (positionSignalLookups.length === 0 || !snapshotMatchesAccountScope) {
+      setPortfolioSignals([]);
+      setPortfolioSignalsWarning(null);
+      setPortfolioSignalsLoading(false);
+      return;
+    }
+
+    const isActiveRequest = () => portfolioSignalsRequestRef.current === requestId;
+
+    const loadPortfolioSignals = async () => {
+      setPortfolioSignalsLoading(true);
+      setPortfolioSignalsWarning(null);
+      const results = await mapWithConcurrency(
+        positionSignalLookups,
+        PORTFOLIO_SIGNAL_LOOKUP_CONCURRENCY,
+        loadPortfolioSignalLookup,
+      );
+      if (!isActiveRequest()) return;
+      const collected = results.flatMap((result) => result.items);
+      const failures = results.flatMap((result) => (result.error ? [result.error] : []));
+      setPortfolioSignals(collected);
+      setPortfolioSignalsWarning(
+        failures.length > 0
+          ? (
+              collected.length > 0
+                ? formatUiText(t('decisionSignals.portfolioPartialWarning'), { message: failures[0] })
+                : failures[0]
+            )
+          : null,
+      );
+      if (isActiveRequest()) {
+        setPortfolioSignalsLoading(false);
+      }
+    };
+
+    void loadPortfolioSignals();
+
+    return () => {
+      portfolioSignalsRequestRef.current += 1;
+    };
+  }, [portfolioSignalsRefreshKey, positionSignalLookups, snapshotMatchesAccountScope, t]);
+
+  const signalByPositionKey = useMemo(() => {
+    const mapped = new Map<string, DecisionSignalItem>();
+    for (const row of positionRows) {
+      const rowMarket = String(row.market || '').toLowerCase();
+      for (const signal of portfolioSignals) {
+        const signalMarket = String(signal.market || '').toLowerCase();
+        if (rowMarket && signalMarket && rowMarket !== signalMarket) {
+          continue;
+        }
+        if (!areStockCodesEquivalent(row.symbol, signal.stockCode)) {
+          continue;
+        }
+        const key = `${row.accountId}-${row.symbol}-${row.market}`;
+        const existing = mapped.get(key);
+        if (isNewerSignal(existing, signal)) {
+          mapped.set(key, signal);
+        }
+      }
+    }
+    return mapped;
+  }, [portfolioSignals, positionRows]);
+
+  const handleAnalyzePosition = async (row: FlatPosition) => {
+    const key = `${row.accountId}-${row.symbol}-${row.market}`;
+    setPositionAnalysisLoadingKey(key);
+    setPositionAnalysisMessage(null);
+    setError(null);
+    try {
+      const task = await portfolioApi.analyzePosition(row.symbol, {
+        accountId: row.accountId,
+        analysisPhase: 'auto',
+        force: false,
+      });
+      setPositionAnalysisMessage(`已提交 ${row.symbol} 分析任务：${task.taskId}`);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setPositionAnalysisLoadingKey(null);
+    }
+  };
+
   const sectorPieData = useMemo(() => {
     const sectors = risk?.sectorConcentration?.topSectors || [];
     return sectors
@@ -612,6 +712,37 @@ const PortfolioPage: React.FC = () => {
     setPendingDelete(item);
   };
 
+  const openAccountDeleteDialog = () => {
+    if (!writableAccount) {
+      setWriteWarning('请先选择具体账户，再删除持仓账户。');
+      return;
+    }
+    setPendingAccountDelete({
+      accountId: writableAccount.id,
+      accountName: writableAccount.name,
+    });
+  };
+
+  const handleConfirmAccountDelete = async () => {
+    if (!pendingAccountDelete || accountDeleteLoading) return;
+
+    try {
+      setAccountDeleteLoading(true);
+      setWriteWarning(null);
+      await portfolioApi.deleteAccount(pendingAccountDelete.accountId);
+      const nextAccount = accounts.find((item) => item.id !== pendingAccountDelete.accountId);
+      setSelectedAccount(nextAccount?.id ?? 'all');
+      setPendingAccountDelete(null);
+      setShowCreateAccount(!nextAccount);
+      await loadAccounts();
+      setEventPage(1);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setAccountDeleteLoading(false);
+    }
+  };
+
   const handleConfirmDelete = async () => {
     if (!pendingDelete || deleteLoading) return;
     if (!writableAccountId) {
@@ -683,6 +814,7 @@ const PortfolioPage: React.FC = () => {
 
   const handleRefresh = async () => {
     await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers()]);
+    setPortfolioSignalsRefreshKey((current) => current + 1);
   };
 
   const reloadSnapshotAndRiskForScope = useCallback(async (
@@ -783,26 +915,37 @@ const PortfolioPage: React.FC = () => {
     }
   };
 
+  const decisionSignalRiskPreviewItems = (risk?.decisionSignalRisk?.items ?? []).slice(0, 3);
+  const formatDecisionSignalRiskAction = (signal: Partial<DecisionSignalItem>): string => (
+    getDecisionActionLabel(
+      signal.action,
+      signal.actionLabel,
+      null,
+      text.alert,
+      decisionActionLabels,
+    ) ?? text.alert
+  );
+
   return (
     <div className="portfolio-page min-h-screen space-y-4 p-4 md:p-6">
       <section className="space-y-3">
         <div className="space-y-2">
-          <h1 className="text-xl md:text-2xl font-semibold text-foreground">持仓管理</h1>
+          <h1 className="text-xl md:text-2xl font-semibold text-foreground">{text.title}</h1>
           <p className="text-xs md:text-sm text-secondary">
-            组合快照、手工录入、CSV 导入与风险分析（支持全组合 / 单账户切换）
+            {text.description}
           </p>
         </div>
         {hasAccounts ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
             <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_220px_280px] gap-2 items-end">
               <div>
-                <p className="text-xs text-secondary mb-1">账户视图</p>
+                <p className="text-xs text-secondary mb-1">{text.accountView}</p>
                 <select
                   value={String(selectedAccount)}
                   onChange={(e) => setSelectedAccount(e.target.value === 'all' ? 'all' : Number(e.target.value))}
                   className={PORTFOLIO_SELECT_CLASS}
                 >
-                  <option value="all">全部账户</option>
+                  <option value="all">{text.allAccounts}</option>
                   {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name} (#{account.id})
@@ -811,17 +954,17 @@ const PortfolioPage: React.FC = () => {
                 </select>
               </div>
               <div>
-                <p className="text-xs text-secondary mb-1">成本口径</p>
+                <p className="text-xs text-secondary mb-1">{text.costMethod}</p>
                 <select
                   value={costMethod}
                   onChange={(e) => setCostMethod(e.target.value as PortfolioCostMethod)}
                   className={PORTFOLIO_SELECT_CLASS}
                 >
-                  <option value="fifo">先进先出（FIFO）</option>
-                  <option value="avg">均价成本（AVG）</option>
+                  <option value="fifo">{text.fifo}</option>
+                  <option value="avg">{text.avg}</option>
                 </select>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   className="btn-secondary text-sm flex-1"
@@ -831,7 +974,7 @@ const PortfolioPage: React.FC = () => {
                     setAccountCreateSuccess(null);
                   }}
                 >
-                  {showCreateAccount ? '收起新建' : '新建账户'}
+                  {showCreateAccount ? text.collapseCreate : text.createAccount}
                 </button>
                 <button
                   type="button"
@@ -839,7 +982,15 @@ const PortfolioPage: React.FC = () => {
                   disabled={isLoading || fxRefreshing}
                   className="btn-secondary text-sm flex-1"
                 >
-                  {isLoading ? '刷新中...' : '刷新数据'}
+                  {isLoading ? text.refreshing : text.refreshData}
+                </button>
+                <button
+                  type="button"
+                  onClick={openAccountDeleteDialog}
+                  disabled={!canDeleteSelectedAccount}
+                  className="btn-secondary text-sm flex-1 border-red-400/40 text-red-100 hover:bg-red-500/15 disabled:border-white/10 disabled:text-secondary"
+                >
+                  {accountDeleteLoading ? text.deletingAccount : text.deleteAccount}
                 </button>
               </div>
             </div>
@@ -848,7 +999,7 @@ const PortfolioPage: React.FC = () => {
           <InlineAlert
             variant="warning"
             className="inline-block rounded-lg px-3 py-2 text-xs shadow-none"
-            message="还没有可用账户，请先创建账户后再录入交易或导入 CSV。"
+            message={text.noAccounts}
           />
         )}
       </section>
@@ -857,15 +1008,22 @@ const PortfolioPage: React.FC = () => {
       {riskWarning ? (
         <InlineAlert
           variant="warning"
-          title="风险模块降级"
+          title={text.riskDegraded}
           message={riskWarning}
         />
       ) : null}
       {writeWarning ? (
         <InlineAlert
           variant="warning"
-          title="操作提示"
+          title={text.operationHint}
           message={writeWarning}
+        />
+      ) : null}
+      {positionAnalysisMessage ? (
+        <InlineAlert
+          variant="success"
+          title={text.analysisTask}
+          message={positionAnalysisMessage}
         />
       ) : null}
 
@@ -927,11 +1085,14 @@ const PortfolioPage: React.FC = () => {
             <select
               className={PORTFOLIO_SELECT_CLASS}
               value={accountForm.market}
-              onChange={(e) => setAccountForm((prev) => ({ ...prev, market: e.target.value as 'cn' | 'hk' | 'us' }))}
+              onChange={(e) => setAccountForm((prev) => ({ ...prev, market: e.target.value as PortfolioAccountMarket }))}
             >
               <option value="cn">市场：A 股（cn）</option>
               <option value="hk">市场：港股（hk）</option>
               <option value="us">市场：美股（us）</option>
+              <option value="jp">市场：日股（jp）</option>
+              <option value="kr">市场：韩股（kr）</option>
+              <option value="tw">市场：台股（tw）</option>
             </select>
             <button type="submit" className="btn-secondary text-sm" disabled={accountCreating}>
               {accountCreating ? '创建中...' : '创建账户'}
@@ -942,34 +1103,34 @@ const PortfolioPage: React.FC = () => {
 
       <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
         <Card variant="gradient" padding="md">
-          <p className="text-xs text-secondary">总权益</p>
+          <p className="text-xs text-secondary">{text.totalEquity}</p>
           <p className="mt-1 text-xl font-semibold text-foreground">{formatMoney(snapshot?.totalEquity, snapshot?.currency || 'CNY')}</p>
         </Card>
         <Card variant="gradient" padding="md">
-          <p className="text-xs text-secondary">总市值</p>
+          <p className="text-xs text-secondary">{text.totalMarketValue}</p>
           <p className="mt-1 text-xl font-semibold text-foreground">{formatMoney(snapshot?.totalMarketValue, snapshot?.currency || 'CNY')}</p>
         </Card>
         <Card variant="gradient" padding="md">
-          <p className="text-xs text-secondary">总现金</p>
+          <p className="text-xs text-secondary">{text.totalCash}</p>
           <p className="mt-1 text-xl font-semibold text-foreground">{formatMoney(snapshot?.totalCash, snapshot?.currency || 'CNY')}</p>
         </Card>
         <Card variant="gradient" padding="md">
           <div className="flex items-start justify-between gap-3">
-            <p className="text-xs text-secondary">汇率状态</p>
+            <p className="text-xs text-secondary">{text.fxStatus}</p>
             <button
               type="button"
               className="btn-secondary !px-3 !py-1 !text-xs shrink-0"
               onClick={() => void handleRefreshFx()}
               disabled={!hasAccounts || isLoading || fxRefreshing}
             >
-              {fxRefreshing ? '刷新中...' : '刷新汇率'}
+              {fxRefreshing ? text.refreshing : text.refreshFx}
             </button>
           </div>
-          <div className="mt-2">{snapshot?.fxStale ? <Badge variant="warning">过期</Badge> : <Badge variant="success">最新</Badge>}</div>
+          <div className="mt-2">{snapshot?.fxStale ? <Badge variant="warning">{text.stale}</Badge> : <Badge variant="success">{text.latest}</Badge>}</div>
           {fxRefreshFeedback ? (
             <InlineAlert
               variant={getFxRefreshFeedbackVariant(fxRefreshFeedback.tone)}
-              title="汇率刷新结果"
+              title={text.fxRefreshResult}
               message={fxRefreshFeedback.text}
               className="mt-3 rounded-xl px-3 py-2 text-xs shadow-none"
             />
@@ -980,33 +1141,47 @@ const PortfolioPage: React.FC = () => {
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <Card className="xl:col-span-2" padding="md">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-foreground">持仓明细</h2>
-            <span className="text-xs text-secondary">共 {positionRows.length} 项</span>
+            <h2 className="text-sm font-semibold text-foreground">{text.positionsTitle}</h2>
+            <span className="text-xs text-secondary">{formatUiText(text.countItems, { count: positionRows.length })}</span>
           </div>
+          {portfolioSignalsWarning ? (
+            <InlineAlert
+              variant="warning"
+              title={t('decisionSignals.portfolioWarningTitle')}
+              message={portfolioSignalsWarning}
+              className="mb-3 rounded-xl px-3 py-2 text-xs shadow-none"
+            />
+          ) : null}
           {positionRows.length === 0 ? (
             <EmptyState
-              title="当前无持仓数据"
-              description="录入交易或导入 CSV 后，这里会展示按账户汇总的持仓明细。"
+              title={text.noPositionsTitle}
+              description={text.noPositionsDescription}
               className="border-none bg-transparent px-4 py-8 shadow-none"
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-[860px] w-full text-sm">
                 <thead className="text-xs text-secondary border-b border-white/10">
                   <tr>
-                    <th className="text-left py-2 pr-2">账户</th>
-                    <th className="text-left py-2 pr-2">代码</th>
-                    <th className="text-right py-2 pr-2">数量</th>
-                    <th className="text-right py-2 pr-2">均价</th>
-                    <th className="text-right py-2 pr-2">现价</th>
-                    <th className="text-right py-2 pr-2">市值</th>
-                    <th className="text-right py-2">未实现盈亏</th>
-                    <th className="text-right py-2">收益率</th>
+                    <th className="text-left py-2 pr-2">{text.account}</th>
+                    <th className="text-left py-2 pr-2">{text.code}</th>
+                    <th className="text-right py-2 pr-2">{text.quantity}</th>
+                    <th className="text-right py-2 pr-2">{text.avgCost}</th>
+                    <th className="text-right py-2 pr-2">{text.lastPrice}</th>
+                    <th className="text-right py-2 pr-2">{text.marketValue}</th>
+                    <th className="text-right py-2 pr-3">{text.unrealizedPnl}</th>
+                    <th className="text-right py-2 pr-3">{text.returnPct}</th>
+                    <th className="min-w-[9rem] text-right py-2 pr-3">{t('decisionSignals.portfolioColumn')}</th>
+                    <th className="w-20 text-right py-2">{text.action}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {positionRows.map((row) => (
-                    <tr key={`${row.accountId}-${row.symbol}-${row.market}`} className="border-b border-white/5">
+                  {positionRows.map((row) => {
+                    const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
+                    const analyzing = positionAnalysisLoadingKey === rowKey;
+                    const signal = signalByPositionKey.get(rowKey);
+                    return (
+                    <tr key={rowKey} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
@@ -1019,7 +1194,7 @@ const PortfolioPage: React.FC = () => {
                       </td>
                       <td className="py-2 pr-2 text-right">{formatPositionMoney(row.marketValueBase, row)}</td>
                       <td
-                        className={`py-2 text-right ${
+                        className={`py-2 pr-3 text-right ${
                           hasPositionPrice(row)
                             ? row.unrealizedPnlBase >= 0
                               ? 'text-success'
@@ -1030,7 +1205,7 @@ const PortfolioPage: React.FC = () => {
                         {formatPositionMoney(row.unrealizedPnlBase, row)}
                       </td>
                       <td
-                        className={`py-2 text-right ${
+                        className={`py-2 pr-3 text-right ${
                           hasPositionPrice(row) && row.unrealizedPnlPct !== null && row.unrealizedPnlPct !== undefined
                             ? row.unrealizedPnlPct >= 0
                               ? 'text-success'
@@ -1040,8 +1215,22 @@ const PortfolioPage: React.FC = () => {
                       >
                         {formatSignedPct(row.unrealizedPnlPct)}
                       </td>
+                      <td className="py-2 pr-3 text-right align-top">
+                        <PortfolioSignalSummary item={signal} loading={portfolioSignalsLoading} />
+                      </td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => void handleAnalyzePosition(row)}
+                          disabled={analyzing}
+                          className="btn-secondary px-2 py-1 text-xs disabled:cursor-wait disabled:opacity-60"
+                        >
+                          {analyzing ? text.submitting : text.analyze}
+                        </button>
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1049,7 +1238,9 @@ const PortfolioPage: React.FC = () => {
         </Card>
 
         <Card padding="md">
-          <h2 className="text-sm font-semibold text-foreground mb-3">{concentrationMode === 'sector' ? '行业集中度分布' : '行业数据暂不可用，当前展示个股集中度'}</h2>
+          <h2 className="text-sm font-semibold text-foreground mb-3">
+            {concentrationMode === 'sector' ? text.sectorConcentration : text.positionConcentrationFallback}
+          </h2>
           {concentrationPieData.length > 0 ? (
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
@@ -1066,15 +1257,15 @@ const PortfolioPage: React.FC = () => {
             </div>
           ) : (
             <EmptyState
-              title="暂无集中度数据"
-              description="风险模块完成计算后，这里会展示行业或个股维度的集中度分布。"
+              title={text.noConcentrationTitle}
+              description={text.noConcentrationDescription}
               className="border-none bg-transparent px-4 py-10 shadow-none"
             />
           )}
           <div className="mt-3 text-xs text-secondary space-y-1">
-            <div>展示口径: {concentrationMode === 'sector' ? '行业维度' : '个股维度（降级显示）'}</div>
-            <div>板块集中度告警: {risk?.sectorConcentration?.alert ? '是' : '否'}</div>
-            <div>Top1 权重: {formatPct(risk?.sectorConcentration?.topWeightPct ?? risk?.concentration?.topWeightPct)}</div>
+            <div>{text.displayScope}: {concentrationMode === 'sector' ? text.sectorDimension : text.positionDimensionFallback}</div>
+            <div>{text.sectorAlert}: {risk?.sectorConcentration?.alert ? text.yes : text.no}</div>
+            <div>{text.topWeight}: {formatPct(risk?.sectorConcentration?.topWeightPct ?? risk?.concentration?.topWeightPct)}</div>
           </div>
         </Card>
       </section>
@@ -1083,33 +1274,59 @@ const PortfolioPage: React.FC = () => {
         <InlineAlert
           variant="warning"
           className="rounded-lg px-3 py-2 text-xs shadow-none"
-          message="当前处于“全部账户”视图。为避免误写，请先选择一个具体账户后再进行手工录入或 CSV 提交。"
+          message={text.writeBlocked}
         />
       ) : null}
 
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
         <Card padding="md">
-          <h3 className="text-sm font-semibold text-foreground mb-2">回撤监控</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-2">{text.drawdownMonitor}</h3>
           <div className="text-xs text-secondary space-y-1">
-            <div>最大回撤: {formatPct(risk?.drawdown?.maxDrawdownPct)}</div>
-            <div>当前回撤: {formatPct(risk?.drawdown?.currentDrawdownPct)}</div>
-            <div>告警: {risk?.drawdown?.alert ? '是' : '否'}</div>
+            <div>{text.maxDrawdown}: {formatPct(risk?.drawdown?.maxDrawdownPct)}</div>
+            <div>{text.currentDrawdown}: {formatPct(risk?.drawdown?.currentDrawdownPct)}</div>
+            <div>{text.alert}: {risk?.drawdown?.alert ? text.yes : text.no}</div>
           </div>
         </Card>
         <Card padding="md">
-          <h3 className="text-sm font-semibold text-foreground mb-2">止损接近预警</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-2">{text.stopLossWarning}</h3>
           <div className="text-xs text-secondary space-y-1">
-            <div>触发数: {risk?.stopLoss?.triggeredCount ?? 0}</div>
-            <div>接近数: {risk?.stopLoss?.nearCount ?? 0}</div>
-            <div>告警: {risk?.stopLoss?.nearAlert ? '是' : '否'}</div>
+            <div>{text.triggeredCount}: {risk?.stopLoss?.triggeredCount ?? 0}</div>
+            <div>{text.nearCount}: {risk?.stopLoss?.nearCount ?? 0}</div>
+            <div>{text.alert}: {risk?.stopLoss?.nearAlert ? text.yes : text.no}</div>
           </div>
         </Card>
         <Card padding="md">
-          <h3 className="text-sm font-semibold text-foreground mb-2">口径</h3>
+          <h3 className="text-sm font-semibold text-foreground mb-2">{text.scope}</h3>
           <div className="text-xs text-secondary space-y-1">
-            <div>账户数: {snapshot?.accountCount ?? 0}</div>
-            <div>计价币种: {snapshot?.currency || 'CNY'}</div>
-            <div>成本法: {(snapshot?.costMethod || costMethod).toUpperCase()}</div>
+            <div>{text.accountCount}: {snapshot?.accountCount ?? 0}</div>
+            <div>{text.currency}: {snapshot?.currency || 'CNY'}</div>
+            <div>{text.costMethodShort}: {(snapshot?.costMethod || costMethod).toUpperCase()}</div>
+          </div>
+        </Card>
+        <Card padding="md">
+          <h3 className="text-sm font-semibold text-foreground mb-2">{text.aiRiskSignals}</h3>
+          <div className="text-xs text-secondary space-y-1">
+            {risk?.decisionSignalRisk?.available === false ? (
+              <div className="text-warning">{text.aiRiskUnavailable}</div>
+            ) : (
+              <>
+                <div>{text.aiRiskTotal}: {risk?.decisionSignalRisk?.total ?? 0}</div>
+                <div>
+                  {text.sellSignals}: {risk?.decisionSignalRisk?.actions?.sell ?? 0} · {text.reduceSignals}: {risk?.decisionSignalRisk?.actions?.reduce ?? 0} · {text.alertSignals}: {risk?.decisionSignalRisk?.actions?.alert ?? 0}
+                </div>
+                {decisionSignalRiskPreviewItems.length > 0 ? (
+                  <div className="space-y-1 pt-1">
+                    {decisionSignalRiskPreviewItems.map((item) => (
+                      <div key={`${item.accountId ?? 'all'}-${item.market}-${item.symbol}-${item.signal.id ?? item.signal.action}`} className="truncate text-foreground">
+                        {item.symbol} · {formatDecisionSignalRiskAction(item.signal)}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div>{text.noAiRiskSignals}</div>
+                )}
+              </>
+            )}
           </div>
         </Card>
       </section>
@@ -1397,6 +1614,26 @@ const PortfolioPage: React.FC = () => {
         onCancel={() => {
           if (!deleteLoading) {
             setPendingDelete(null);
+          }
+        }}
+      />
+      <ConfirmDialog
+        isOpen={Boolean(pendingAccountDelete)}
+        title={text.deleteAccountTitle}
+        message={
+          pendingAccountDelete
+            ? formatUiText(text.deleteAccountMessage, {
+              name: pendingAccountDelete.accountName,
+              id: pendingAccountDelete.accountId,
+            })
+            : ''
+        }
+        confirmText={accountDeleteLoading ? text.deletingAccount : text.deleteAccountConfirm}
+        isDanger
+        onConfirm={() => void handleConfirmAccountDelete()}
+        onCancel={() => {
+          if (!accountDeleteLoading) {
+            setPendingAccountDelete(null);
           }
         }}
       />

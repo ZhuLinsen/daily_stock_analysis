@@ -2,6 +2,9 @@
 # 🎯 {{ report_date }} {{ labels.dashboard_title }}
 
 > {{ labels.analyzed_prefix }} **{{ results|length }}** {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+{% if market_status_line %}
+{{ market_status_line }}
+{% endif %}
 
 ## 📊 {{ labels.summary_heading }}
 
@@ -20,6 +23,11 @@
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
+
+{% set signal_excerpt = decision_signal_excerpt(result) %}
+{% if signal_excerpt %}
+{{ signal_excerpt }}
+{% endif %}
 
 {% if intel %}
 ### 📰 {{ labels.info_heading }}
@@ -97,9 +105,68 @@
 {% endif %}
 
 {% set chip_data = data_persp.get('chip_structure', {}) %}
-{% if chip_data %}
+{% set chip_unavailable_reason = get_chip_unavailable_reason(chip_data, report_language) if chip_data and is_chip_structure_unavailable(chip_data) else get_chip_unavailable_reason(data_persp, report_language) %}
+{% if chip_data and not is_chip_structure_unavailable(chip_data) %}
 **{{ labels.chip_label }}**: {{ chip_data.get('profit_ratio', 'N/A') }} | {{ chip_data.get('avg_cost', 'N/A') }} | {{ chip_data.get('concentration', 'N/A') }} {{ localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language) }}
+{% elif chip_unavailable_reason %}
+**{{ labels.chip_label }}**: {{ chip_unavailable_reason }}
 {% endif %}
+{% endif %}
+
+{% set phase_decision = dashboard.get('phase_decision') or {} %}
+{% set phase_decision_has_content = phase_decision.get('action_window') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('immediate_action') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('watch_conditions') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('next_check_time') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('confidence_reason') %}
+{% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('data_limitations') %}
+{% if phase_decision_has_content %}
+### 🛡️ {{ labels.phase_decision_heading }}
+
+| {{ labels.action_window_label }} | {{ labels.immediate_action_label }} | {{ labels.next_check_time_label }} |
+|---------|---------|---------|
+| {{ phase_decision.get('action_window') or 'N/A' }} | {{ phase_decision.get('immediate_action') or 'N/A' }} | {{ phase_decision.get('next_check_time') or 'N/A' }} |
+
+{% if phase_decision.get('watch_conditions') %}
+**{{ labels.watch_conditions_label }}**:
+{% for condition in phase_decision.get('watch_conditions') %}
+- {{ condition }}
+{% endfor %}
+{% endif %}
+{% if phase_decision.get('confidence_reason') %}
+**{{ labels.confidence_reason_label }}**: {{ phase_decision.get('confidence_reason') }}
+{% endif %}
+{% if phase_decision.get('data_limitations') %}
+**{{ labels.data_limitations_label }}**:
+{% for limitation in phase_decision.get('data_limitations') %}
+- {{ limitation }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+
+{% set signal_attr = dashboard.get('signal_attribution') or {} %}
+{% set signal_attr_weights = signal_attribution_weight_items(signal_attr) %}
+{% if signal_attribution_has_content(signal_attr) %}
+### 🎯 {{ labels.signal_attribution_heading }}
+
+{% if signal_attr_weights %}
+**{{ labels.attribution_weights_label }}**:
+{% for key, value in signal_attr_weights %}
+{% if key == 'technical_indicators' %}- 📈 {{ labels.technical_indicators_label }}: {{ value }}%{% endif %}
+{% if key == 'news_sentiment' %}- 📰 {{ labels.news_sentiment_label }}: {{ value }}%{% endif %}
+{% if key == 'fundamentals' %}- 💼 {{ labels.fundamentals_label }}: {{ value }}%{% endif %}
+{% if key == 'market_conditions' %}- 🌐 {{ labels.market_conditions_label }}: {{ value }}%{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if signal_attr.get('strongest_bullish_signal') %}
+**🟢 {{ labels.strongest_bullish_signal_label }}**: {{ signal_attr.get('strongest_bullish_signal') }}
+{% endif %}
+{% if signal_attr.get('strongest_bearish_signal') %}
+**🔴 {{ labels.strongest_bearish_signal_label }}**: {{ signal_attr.get('strongest_bearish_signal') }}
+{% endif %}
+
 {% endif %}
 
 {% if battle %}

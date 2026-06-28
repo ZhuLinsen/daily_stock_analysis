@@ -7,6 +7,7 @@ Tushare 股票列表获取脚本
 
 使用方法：
     python3 scripts/fetch_tushare_stock_list.py
+    python3 scripts/fetch_tushare_stock_list.py --a-rk
 
 环境要求：
     - 需要在 .env 中配置 TUSHARE_TOKEN
@@ -16,19 +17,21 @@ Tushare 股票列表获取脚本
         * 美股：120积分试用，5000积分正式权限
 
 输出文件：
-    - data/stock_list_a.csv      A股列表
+    - data/stock_list_a.csv      A股列表（--a-rk 时会覆盖为修正后名称）
     - data/stock_list_hk.csv     港股列表
     - data/stock_list_us.csv     美股列表
     - data/README_stock_list.md  数据说明文档
 """
 
+import argparse
 import os
 import sys
 import time
 import random
+import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -52,6 +55,9 @@ OUTPUT_DIR = Path(__file__).parent.parent / "data"
 PAGE_SIZE = 5000  # 美股每页读取数量（API 最大6000，设置5000留余量）
 SLEEP_MIN = 5     # 最小睡眠时间（秒）
 SLEEP_MAX = 10    # 最大睡眠时间（秒）
+A_RK_BATCH_SIZE = 200
+A_RK_FIELDS = "ts_code,name,close,pre_close,trade_time"
+A_RK_NAME_PREFIX_RE = re.compile(r"^(XD|XR|DR|N|C)")
 
 
 def get_tushare_api() -> Optional[ts.pro_api]:
@@ -129,6 +135,128 @@ def fetch_a_stock_list(api: ts.pro_api) -> Optional[pd.DataFrame]:
     except Exception as e:
         print(f"[错误] 获取 A股列表失败: {e}")
         return None
+
+
+def should_fix_a_stock_name(name: str) -> bool:
+    """
+    判断 A 股名称是否属于需要修正的状态名。
+
+    主要覆盖新股、除权除息等前缀：
+    XD / XR / DR / N / C
+    """
+    if name is None:
+        return False
+
+    text = str(name).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return False
+
+    return bool(A_RK_NAME_PREFIX_RE.match(text))
+
+
+def chunk_list(items: List[str], chunk_size: int) -> List[List[str]]:
+    """将列表按固定大小切片。"""
+    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+
+def fetch_rt_k_names(api: ts.pro_api, ts_codes: List[str]) -> Dict[str, str]:
+    """
+    批量获取 rt_k 返回的股票名称。
+
+    参考官方文档：
+    https://tushare.pro/wctapi/documents/372.md
+
+    rt_k 是 A 股实时日线接口，支持按股票代码和股票代码通配符提取
+    实时日 K 线行情。本脚本只把它用作名称回填的辅助来源，修正
+    stock_basic 中返回的短期交易状态前缀名称。
+    """
+    if not ts_codes:
+        return {}
+
+    name_map: Dict[str, str] = {}
+    batches = chunk_list(ts_codes, A_RK_BATCH_SIZE)
+
+    print(f"\n[rt_k] 待修正股票数：{len(ts_codes)}，分 {len(batches)} 批获取...")
+
+    for index, batch in enumerate(batches, start=1):
+        ts_code_param = ",".join(batch)
+        print(f"  [rt_k] 第 {index}/{len(batches)} 批：{len(batch)} 只股票")
+
+        try:
+            df = api.rt_k(ts_code=ts_code_param, fields=A_RK_FIELDS)
+        except Exception as e:
+            print(f"  [警告] rt_k 批次 {index} 获取失败: {e}")
+            continue
+
+        if df is None or len(df) == 0:
+            print(f"  [警告] rt_k 批次 {index} 无返回数据")
+            continue
+
+        for _, row in df.iterrows():
+            code_value = row.get("ts_code", "")
+            name_value = row.get("name", "")
+
+            if pd.isna(code_value) or pd.isna(name_value):
+                continue
+
+            code = str(code_value).strip()
+            name = str(name_value).strip()
+            if code and name and code.lower() not in {"nan", "none"} and name.lower() not in {"nan", "none"}:
+                name_map[code] = name
+
+        if index < len(batches):
+            random_sleep(1, 2)
+
+    print(f"[rt_k] 成功获取 {len(name_map)} 条名称映射")
+    return name_map
+
+
+def fix_a_stock_names_with_rt_k(api: ts.pro_api, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    使用 rt_k 修正 A 股名称。
+
+    仅对名称带有 XD / XR / DR / N / C 前缀的股票进行校正。
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    if "name" not in df.columns or "ts_code" not in df.columns:
+        print("[警告] A股数据缺少 ts_code/name 列，跳过 rt_k 名称修正")
+        return df
+
+    fix_mask = df["name"].astype(str).map(should_fix_a_stock_name)
+    fix_df = df.loc[fix_mask, ["ts_code", "name"]].copy()
+
+    if fix_df.empty:
+        print("[rt_k] 未发现需要修正的 A 股名称")
+        return df
+
+    ts_codes = fix_df["ts_code"].astype(str).tolist()
+    print(f"[rt_k] 发现 {len(ts_codes)} 只待修正 A 股：")
+    print("  " + ", ".join(ts_codes[:20]) + (" ..." if len(ts_codes) > 20 else ""))
+
+    name_map = fetch_rt_k_names(api, ts_codes)
+    if not name_map:
+        print("[警告] rt_k 未返回可用名称，保留原始 A 股名称")
+        return df
+
+    fixed_df = df.copy()
+    fixed_count = 0
+    for code, new_name in name_map.items():
+        if not new_name:
+            continue
+        match_index = fixed_df.index[fixed_df["ts_code"].astype(str) == code]
+        if len(match_index) == 0:
+            continue
+
+        old_name = str(fixed_df.loc[match_index[0], "name"])
+        if old_name != new_name:
+            fixed_df.loc[match_index[0], "name"] = new_name
+            fixed_count += 1
+            print(f"  ✓ {code}: {old_name} -> {new_name}")
+
+    print(f"[rt_k] A 股名称修正完成，共修正 {fixed_count} 只股票")
+    return fixed_df
 
 
 def fetch_hk_stock_list(api: ts.pro_api) -> Optional[pd.DataFrame]:
@@ -263,7 +391,9 @@ def save_to_csv(df: pd.DataFrame, filename: str, market_name: str) -> bool:
 def generate_data_documentation(
     a_df: Optional[pd.DataFrame],
     hk_df: Optional[pd.DataFrame],
-    us_df: Optional[pd.DataFrame]
+    us_df: Optional[pd.DataFrame],
+    a_filename: str = "stock_list_a.csv",
+    a_title: str = "A股列表"
 ):
     """
     生成数据说明文档
@@ -284,13 +414,13 @@ def generate_data_documentation(
 
 | 文件 | 说明 | 记录数 |
 |------|------|--------|
-| `stock_list_a.csv` | A股列表 | {len(a_df) if a_df is not None else 0} |
+| `{a_filename}` | {a_title} | {len(a_df) if a_df is not None else 0} |
 | `stock_list_hk.csv` | 港股列表 | {len(hk_df) if hk_df is not None else 0} |
 | `stock_list_us.csv` | 美股列表 | {len(us_df) if us_df is not None else 0} |
 
 ---
 
-## A股数据（stock_list_a.csv）
+## A股数据（{a_filename}）
 
 ### 数据接口
 - **接口名称**：`stock_basic`
@@ -402,7 +532,7 @@ BABA,阿里巴巴,Alibaba Group Holding Ltd.,ADR,20140919,
 import pandas as pd
 
 # 读取 A股数据
-a_stocks = pd.read_csv('data/stock_list_a.csv')
+a_stocks = pd.read_csv('data/{a_filename}')
 
 # 读取港股数据
 hk_stocks = pd.read_csv('data/stock_list_hk.csv')
@@ -455,11 +585,26 @@ us_stocks = pd.read_csv('data/stock_list_us.csv')
         print(f"[错误] 生成说明文档失败: {e}")
 
 
-def main():
+def build_arg_parser() -> argparse.ArgumentParser:
+    """构建命令行参数。"""
+    parser = argparse.ArgumentParser(description="Tushare 股票列表获取工具")
+    parser.add_argument(
+        "--a-rk",
+        action="store_true",
+        help="使用 rt_k 修正 A 股中带 XD/XR/DR/N/C 前缀的名称，并覆盖输出到 stock_list_a.csv",
+    )
+    return parser
+
+
+def main(argv: Optional[List[str]] = None):
     """主函数"""
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
     print("=" * 60)
     print("Tushare 股票列表获取工具")
     print("=" * 60)
+    print(f"[信息] A股名称修正模式：{'开启' if args.a_rk else '关闭'}")
 
     # 1. 获取 API 实例
     api = get_tushare_api()
@@ -469,7 +614,15 @@ def main():
     # 2. 获取 A股数据
     a_df = fetch_a_stock_list(api)
     if a_df is not None:
-        save_to_csv(a_df, 'stock_list_a.csv', 'A股')
+        a_filename = 'stock_list_a.csv'
+        a_title = 'A股列表'
+        a_market_name = 'A股'
+
+        if args.a_rk:
+            a_df = fix_a_stock_names_with_rt_k(api, a_df)
+            a_title = 'A股列表（修正后）'
+
+        save_to_csv(a_df, a_filename, a_market_name)
 
     # 3. 获取港股数据
     random_sleep()  # 休息后再获取港股
@@ -485,7 +638,9 @@ def main():
 
     # 5. 生成数据说明文档
     print("\n正在生成数据说明文档...")
-    generate_data_documentation(a_df, hk_df, us_df)
+    a_filename = 'stock_list_a.csv'
+    a_title = 'A股列表（修正后）' if args.a_rk else 'A股列表'
+    generate_data_documentation(a_df, hk_df, us_df, a_filename=a_filename, a_title=a_title)
 
     # 6. 总结
     print("\n" + "=" * 60)

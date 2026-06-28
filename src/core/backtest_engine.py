@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 import re
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
 
@@ -269,6 +270,97 @@ class BacktestEngine:
             "simulated_exit_price": simulated_exit_price,
             "simulated_exit_reason": simulated_exit_reason,
             "simulated_return_pct": simulated_return_pct,
+        }
+
+    @classmethod
+    def evaluate_decision_signal(
+        cls,
+        *,
+        direction_expected: str,
+        anchor_date: date,
+        start_price: float,
+        forward_bars: Sequence[DailyBarLike],
+        config: EvaluationConfig,
+    ) -> Dict[str, Any]:
+        """Evaluate a structured DecisionSignal action without text inference."""
+
+        start_price_value = cls._finite_optional_float(start_price)
+        if start_price_value is None or start_price_value <= 0:
+            return {
+                "anchor_date": anchor_date,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "invalid_anchor_price",
+            }
+
+        eval_days = int(config.eval_window_days)
+        if eval_days <= 0:
+            raise ValueError("eval_window_days must be positive")
+
+        if len(forward_bars) < eval_days:
+            return {
+                "anchor_date": anchor_date,
+                "eval_window_days": eval_days,
+                "engine_version": config.engine_version,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "insufficient_forward_bars",
+            }
+
+        window_bars = list(forward_bars[:eval_days])
+        raw_end_close = window_bars[-1].close
+        end_close = cls._finite_optional_float(raw_end_close)
+        highs: List[float] = []
+        lows: List[float] = []
+        for bar in window_bars:
+            high = cls._finite_optional_float(bar.high)
+            low = cls._finite_optional_float(bar.low)
+            if high is not None:
+                highs.append(high)
+            if low is not None:
+                lows.append(low)
+        max_high = max(highs) if highs else None
+        min_low = min(lows) if lows else None
+
+        stock_return_pct: Optional[float]
+        if end_close is None:
+            stock_return_pct = None
+        else:
+            stock_return_pct = (end_close - start_price_value) / start_price_value * 100
+
+        outcome, direction_correct = cls._classify_signal_outcome(
+            stock_return_pct=stock_return_pct,
+            direction_expected=direction_expected,
+            neutral_band_pct=config.neutral_band_pct,
+        )
+
+        if stock_return_pct is None:
+            return {
+                "anchor_date": anchor_date,
+                "eval_window_days": eval_days,
+                "engine_version": config.engine_version,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "missing_end_close" if raw_end_close is None else "invalid_end_close",
+                "start_price": start_price_value,
+                "end_close": end_close,
+                "max_high": max_high,
+                "min_low": min_low,
+            }
+
+        return {
+            "anchor_date": anchor_date,
+            "eval_window_days": eval_days,
+            "engine_version": config.engine_version,
+            "eval_status": "completed",
+            "direction_expected": direction_expected,
+            "direction_correct": direction_correct,
+            "outcome": outcome,
+            "start_price": start_price_value,
+            "end_close": end_close,
+            "max_high": max_high,
+            "min_low": min_low,
+            "stock_return_pct": stock_return_pct,
         }
 
     @classmethod
@@ -546,6 +638,51 @@ class BacktestEngine:
         if abs(r) <= band:
             return "win", True
         return "loss", False
+
+    @classmethod
+    def _classify_signal_outcome(
+        cls,
+        *,
+        stock_return_pct: Optional[float],
+        direction_expected: str,
+        neutral_band_pct: float,
+    ) -> tuple[Optional[str], Optional[bool]]:
+        if stock_return_pct is None:
+            return None, None
+
+        band = abs(float(neutral_band_pct))
+        r = float(stock_return_pct)
+
+        if direction_expected == "up":
+            if r >= band:
+                return "hit", True
+            if r <= -band:
+                return "miss", False
+            return "neutral", None
+
+        if direction_expected == "not_down":
+            if r >= 0:
+                return "hit", True
+            if r <= -band:
+                return "miss", False
+            return "neutral", None
+
+        if direction_expected == "not_up":
+            if r <= band:
+                return "hit", True
+            return "miss", False
+
+        return None, None
+
+    @staticmethod
+    def _finite_optional_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
 
     @classmethod
     def _evaluate_targets(

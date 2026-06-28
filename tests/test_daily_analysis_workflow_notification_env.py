@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Static checks for notification env mappings in daily_analysis.yml."""
+"""Static checks for notification env mappings in 00-daily-analysis.yml."""
 
 from pathlib import Path
 
@@ -19,7 +19,7 @@ from src.services.notification_diagnostics import (
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-WORKFLOW_PATH = ROOT_DIR / ".github/workflows/daily_analysis.yml"
+WORKFLOW_PATH = ROOT_DIR / ".github/workflows/00-daily-analysis.yml"
 NOTIFICATIONS_DOC_PATH = ROOT_DIR / "docs/notifications.md"
 
 P0_EXCLUDED_BEHAVIOR_SWITCHES = {
@@ -34,7 +34,7 @@ def _load_daily_analysis_env() -> dict[str, str]:
     analyze_step = next((step for step in steps if step.get("name") == "执行股票分析"), None)
     available_step_names = [step.get("name", "<unnamed>") for step in steps]
     assert analyze_step is not None, (
-        "Expected daily_analysis.yml job analyze to include a step named "
+        "Expected 00-daily-analysis.yml job analyze to include a step named "
         f"'执行股票分析'; available step names: {available_step_names}"
     )
     return analyze_step["env"]
@@ -66,6 +66,17 @@ def test_daily_analysis_maps_p6_channel_env_keys() -> None:
 
     for key in P6_CHANNEL_ACTIONS_ENV_KEYS:
         assert key in env
+
+
+def test_daily_analysis_feishu_status_accepts_webhook_or_app_bot_triad() -> None:
+    status_line = next(
+        line
+        for line in WORKFLOW_PATH.read_text(encoding="utf-8").splitlines()
+        if 'echo "  飞书:' in line
+    )
+
+    for key in ("FEISHU_WEBHOOK_URL", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID"):
+        assert key in status_line
 
 
 def test_daily_analysis_keeps_deferred_behavior_switches_unmapped() -> None:

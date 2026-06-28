@@ -1,6 +1,9 @@
 # 🎯 {{ report_date }} {{ labels.brief_title }}
 
 > {{ results|length }} {{ labels.stock_unit_compact }} | 🟢{{ buy_count }} 🟡{{ hold_count }} 🔴{{ sell_count }}
+{% if market_status_line %}
+{{ market_status_line }}
+{% endif %}
 
 {% for e in enriched %}
 {% set dash = e.result.dashboard or {} %}

@@ -6,7 +6,7 @@
 
 - React UI（Vite 构建）由本地 FastAPI 服务托管
 - Electron 启动时自动拉起后端服务，等待 `/api/health` 就绪后加载 UI
-- 用户配置文件 `.env` 和数据库放在 exe 同级目录（便携模式）
+- Windows 便携/安装模式下，用户配置文件 `.env` 和数据库放在 exe 同级目录；macOS 打包版使用 Electron 用户数据目录保存运行时配置
 
 ## 本地开发
 
@@ -69,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - 在 Actions 页面手动触发并指定 `release_tag`
 - 产物：
   - Windows 安装包：Release 附件和本地 `apps/dsa-desktop/dist/` 中统一为 `daily-stock-analysis-windows-installer-<tag>.exe`
-  - Windows 自动更新元数据：Release 附件会额外保留 `latest.yml` 和 `*.blockmap`，供安装版桌面端后台下载与校验更新；普通用户无需手动下载这些元数据
+  - Windows 自动更新元数据：Release 附件会额外保留 `latest.yml` 和 `*.blockmap`，供安装版桌面端后台下载与校验更新；普通用户无需手动下载这些元数据。下载完成后用户确认“重启安装”时，桌面端会先停止内置后端、备份运行时文件，并以静默模式执行安装器。
   - Windows 免安装包：`daily-stock-analysis-windows-noinstall-<tag>.zip`
   - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
   - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
@@ -177,7 +177,7 @@ Windows 平台建议使用 PowerShell 执行：
 Get-FileHash .env,data\\stock_analysis.db,data\\stock_analysis.db-wal,data\\stock_analysis.db-shm,logs\\desktop.log -Algorithm SHA256
 ```
 
-说明：应用已在 Windows NSIS 安装版的“重启安装”前备份安装目录旁上述运行时文件并尝试恢复，目的是降低更新过程中文件丢失风险；若恢复失败，桌面端会显示更新安装错误并保留手动下载路径供回退处理。
+说明：应用已在 Windows NSIS 安装版的“重启安装”前停止内置后端、备份安装目录旁上述运行时文件，并以静默模式运行更新安装器，目的是避免安装向导抢先覆盖仍在运行的桌面端进程，同时降低更新过程中文件丢失风险；若恢复失败，桌面端会显示更新安装错误并保留手动下载路径供回退处理。此次修复仅改动 Windows 更新安装链路与内置后端进程生命周期处理，不涉及设置保存语义、模型运行时清理策略或配置迁移行为。
 
 ### 分步打包
 
@@ -189,20 +189,21 @@ npm install
 npm run build
 ```
 
-2) 打包 Python 后端
+2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 依赖收集）
+
+- Windows：
 
 ```bash
-pip install pyinstaller
-pip install -r requirements.txt
-python -m PyInstaller --name stock_analysis --onefile --noconsole --add-data "static;static" --hidden-import=multipart --hidden-import=multipart.multipart main.py
+powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 ```
 
-将生成的 exe 复制到 `dist/backend/`：
+- macOS：
 
 ```bash
-mkdir dist\backend
-copy dist\stock_analysis.exe dist\backend\stock_analysis.exe
+bash scripts/build-backend-macos.sh
 ```
+
+该脚本会在安装依赖后执行 `--collect-all alphasift`，并校验打包产物中可导入 `alphasift.dsa_adapter`，避免分步命令遗漏内置 AlphaSift 模块。
 
 3) 打包 Electron 桌面应用
 
@@ -238,9 +239,10 @@ win-unpacked/
 
 ## 配置文件说明
 
-- `.env` 放在 exe 同目录下
+- Windows 桌面端的 `.env` 放在 exe 同目录下
+- macOS 打包版的 `.env`、`data/` 和 `logs/` 放在 Electron 用户数据目录，避免替换 `.app` 时丢失
 - 首次启动时自动从 `.env.example` 复制生成
-- macOS 打包态下，`exe` 实际位于 `.app` 包内部，因此 `.env`、`data/`、`logs/` 也会跟着落在应用包内容器里；替换新的 DMG / `.app` 时，旧配置会随旧应用包一起被覆盖
+- 从旧版本升级时，如果旧 `.app` 包内部的 `.env`、`data/stock_analysis.db` 或日志文件仍可访问，新版本会在目标文件不存在时自动迁移到用户数据目录；已有目标文件不会被覆盖
 - 用户需要编辑 `.env` 配置以下内容：
   - `GEMINI_API_KEY` 或 `OPENAI_API_KEY`：AI 分析必需
   - `STOCK_LIST`：自选股列表（逗号分隔）
@@ -256,7 +258,7 @@ win-unpacked/
 - 如果当前页面还有未保存草稿，导入前会先提示确认，避免把本地草稿和已保存配置混在一起
 - Web 端默认 `ADMIN_AUTH_ENABLED=false` 时，设置页会展示按钮为禁用态并提示先启用管理员鉴权；桌面端不受该配置影响，仍可直接使用配置备份/恢复能力。
 
-> 建议：macOS 用户在升级 DMG 前先执行一次 `导出 .env`，这样即使旧 `.app` 被整体替换，也能在新版本里直接恢复配置
+> 建议：从旧版本升级的 macOS 用户仍可在升级前执行一次 `导出 .env` 作为保险；如果旧 `.app` 已经被整体替换，包内旧文件无法凭空恢复，只能通过备份导入。
 
 ### 设置页版本信息
 
@@ -267,7 +269,8 @@ win-unpacked/
 ### 桌面端更新提醒
 
 - 应用在主界面加载完成后会后台检查 GitHub Releases 的最新正式版，并与当前 `app.getVersion()` 做语义化版本比较
-- Windows NSIS 安装版会通过内置 GitHub 更新源自动下载新版本；下载完成后弹出一次性提醒，用户确认后重启并安装
+- Windows NSIS 安装版会通过内置 GitHub 更新源自动下载新版本；下载完成后弹出一次性提醒，用户确认后静默重启并安装
+- 自动更新静默安装会复用当前安装目录；如果用户安装时选择了非默认目录或带空格目录，后续自动更新仍会覆盖同一目录
 - `系统设置 -> 版本信息` 中的“桌面端更新”区域可手动检查更新；若更新已下载，会展示“重启安装”操作
 - Windows 免安装包、开发态和 macOS DMG 仍保持“提醒 + 跳转下载页”的兼容路径，不会因为网络失败而阻断桌面端启动
 - 版本检查失败、GitHub API 超时、更新元数据缺失或下载安装异常时，会记录到 `logs/desktop.log`，设置页手动检查时会展示错误状态
@@ -288,15 +291,11 @@ PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增
 
 确认 `static/index.html` 存在，如不存在需重新构建 React UI。
 
-### macOS 升级后配置看起来“被清空”
+### macOS 升级后配置迁移
 
-这是当前桌面端便携模式的已知行为：`.env` 放在打包后的应用目录旁，而 macOS 中这个目录通常位于 `.app` 包内部。升级或替换新的 DMG / `.app` 后，旧 `.env` 不会自动迁移，所以看起来像“配置丢了”。
+旧版本曾把运行时 `.env`、数据库和日志写在 `.app` 包内部。新版本改为使用 Electron 用户数据目录，并在旧 `.app` 包内文件仍可访问时做一次性迁移。迁移规则是“目标不存在才复制”，避免覆盖用户已经在新版本中保存的配置。
 
-处理方式：
-
-1. 升级前在桌面端设置页执行一次 `导出 .env`
-2. 安装新版本后，在同一位置点击 `导入 .env`
-3. 导入完成后等待设置页重新加载即可
+如果旧 `.app` 已经被整体替换，旧包内 `.env` 无法由新版本自动恢复。此时可使用升级前导出的 `.env` 在 `系统设置 -> 配置备份` 中手动导入；完成一次迁移或重新配置后，后续版本会继续复用用户数据目录，不再随 `.app` 替换丢失。
 
 ## 分发给用户
 

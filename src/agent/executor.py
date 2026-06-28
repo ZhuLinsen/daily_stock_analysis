@@ -16,14 +16,22 @@ same implementation.
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.config import get_config
+from src.agent.chat_context import build_agent_chat_context_bundle
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.provider_trace import extract_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
+from src.agent.stock_scope import StockScope, resolve_stock_scope
+from src.storage import get_db
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
+from src.market_phase_prompt import format_market_phase_prompt_section
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +52,7 @@ class AgentResult:
     provider: str = ""
     model: str = ""                            # comma-separated models used (supports fallback)
     error: Optional[str] = None
+    messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ============================================================
@@ -122,6 +131,23 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        }},
+        "signal_attribution": {{
+            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -185,6 +211,9 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """
@@ -261,6 +290,23 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
             "position_strategy": {{"suggested_position": "", "entry_plan": "", "risk_control": ""}},
             "action_checklist": []
+        }},
+        "phase_decision": {{
+            "phase_context": {{"phase": "premarket/intraday/lunch_break/closing_auction/postmarket/non_trading/unknown"}},
+            "action_window": "盘前计划/盘中跟踪/午间确认/收盘前风控/盘后复盘/非交易日观察",
+            "immediate_action": "立即行动/等待确认/观察/止损止盈预警/禁止追高/无盘中动作",
+            "watch_conditions": ["观察条件1", "观察条件2"],
+            "next_check_time": "下一次检查点或市场本地时间",
+            "confidence_reason": "置信度理由，说明阶段和数据质量限制",
+            "data_limitations": ["阶段或数据质量限制1", "阶段或数据质量限制2"]
+        }},
+        "signal_attribution": {{
+            "technical_indicators": 技术指标贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "news_sentiment": 新闻舆情贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "fundamentals": 基本面贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "market_conditions": 市场环境贡献度(0-100；有效非零贡献度之和应为100；全零表示无有效信号),
+            "strongest_bullish_signal": "最强看多信号名称",
+            "strongest_bearish_signal": "最强看空信号名称"
         }}
     }},
     "analysis_summary": "100字综合分析摘要",
@@ -321,6 +367,9 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
 - 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
+- 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
 {language_section}
 """
@@ -527,6 +576,9 @@ class AgentExecutor:
         """
         from src.agent.conversation import conversation_manager
 
+        scope_resolution = resolve_stock_scope(message, context)
+        context = scope_resolution.effective_context
+
         # Build system prompt with skills
         skills_section = ""
         if self.skill_instructions:
@@ -555,14 +607,15 @@ class AgentExecutor:
         tool_decls = self.tool_registry.to_openai_tools()
 
         # Get conversation history
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
+        conversation_manager.get_or_create(session_id)
+        config = getattr(self.llm_adapter, "_config", None) or get_config()
+        bundle = build_agent_chat_context_bundle(session_id, self.llm_adapter, config)
 
         # Initialize conversation
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ]
-        messages.extend(history)
+        messages.extend(bundle.context_messages)
 
         # Inject previous analysis context if provided (data reuse from report follow-up)
         if context:
@@ -583,28 +636,131 @@ class AgentExecutor:
                 strategy = context["previous_strategy"]
                 strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
                 context_parts.append(f"上次策略分析:\n{strategy_text}")
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                context_parts.append(daily_market_context_section.strip())
             if context_parts:
                 context_msg = "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts)
                 messages.append({"role": "user", "content": context_msg})
                 messages.append({"role": "assistant", "content": "好的，我已了解该股票的历史分析数据。请告诉我你想了解什么？"})
 
         messages.append({"role": "user", "content": message})
+        baseline_len = len(messages)
+        run_id = str(uuid.uuid4())
 
         # Persist the user turn immediately so the session appears in history during processing
-        conversation_manager.add_message(session_id, "user", message)
+        user_message_id = conversation_manager.add_message(session_id, "user", message)
 
-        result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
+        result = self._run_loop(
+            messages,
+            tool_decls,
+            parse_dashboard=False,
+            progress_callback=progress_callback,
+            stock_scope=scope_resolution.stock_scope,
+        )
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
-            conversation_manager.add_message(session_id, "assistant", result.content)
+            assistant_message_id = conversation_manager.add_message(session_id, "assistant", result.content)
+            self._persist_provider_trace(
+                session_id=session_id,
+                run_id=run_id,
+                messages=result.messages,
+                baseline_len=baseline_len,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
         else:
             error_note = f"[分析失败] {result.error or '未知错误'}"
             conversation_manager.add_message(session_id, "assistant", error_note)
 
         return result
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+    def _persist_provider_trace(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        messages: List[Dict[str, Any]],
+        baseline_len: int,
+        user_message_id: int,
+        assistant_message_id: int,
+    ) -> None:
+        try:
+            turns, diagnostics = extract_provider_trace_turns(
+                messages,
+                baseline_len=baseline_len,
+                run_id=run_id,
+                anchor_user_message_id=user_message_id,
+                anchor_assistant_message_id=assistant_message_id,
+            )
+        except Exception:
+            logger.warning(
+                "Provider trace extraction failed for session %s run %s",
+                session_id,
+                run_id,
+                exc_info=True,
+            )
+            return
+
+        if diagnostics.trace_dropped_reason:
+            logger.debug(
+                "Provider trace skipped for session %s run %s: %s",
+                session_id,
+                run_id,
+                diagnostics.trace_dropped_reason,
+            )
+        if not turns:
+            return
+
+        try:
+            db = get_db()
+        except Exception:
+            logger.warning(
+                "Provider trace storage unavailable for session %s run %s",
+                session_id,
+                run_id,
+                exc_info=True,
+            )
+            return
+
+        for turn in turns:
+            try:
+                db.save_agent_provider_turn(
+                    session_id=session_id,
+                    run_id=run_id,
+                    provider=turn.provider,
+                    model=turn.model,
+                    anchor_user_message_id=user_message_id,
+                    anchor_assistant_message_id=assistant_message_id,
+                    messages=turn.messages,
+                    contains_reasoning=turn.contains_reasoning,
+                    contains_tool_calls=turn.contains_tool_calls,
+                    contains_thinking_blocks=turn.contains_thinking_blocks,
+                    must_roundtrip=turn.must_roundtrip,
+                    estimated_tokens=turn.estimated_tokens,
+                )
+            except Exception:
+                logger.warning(
+                    "Provider trace persistence failed for session %s run %s provider=%s model=%s",
+                    session_id,
+                    run_id,
+                    turn.provider,
+                    turn.model,
+                    exc_info=True,
+                )
+
+    def _run_loop(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_decls: List[Dict[str, Any]],
+        parse_dashboard: bool,
+        progress_callback: Optional[Callable] = None,
+        stock_scope: Optional[StockScope] = None,
+    ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
         This preserves the exact same observable behaviour as the original
@@ -618,6 +774,7 @@ class AgentExecutor:
             max_steps=self.max_steps,
             progress_callback=progress_callback,
             max_wall_clock_seconds=self.timeout_seconds,
+            stock_scope=stock_scope,
         )
 
         model_str = loop_result.model
@@ -634,6 +791,7 @@ class AgentExecutor:
                 provider=loop_result.provider,
                 model=model_str,
                 error=None if dashboard else "Failed to parse dashboard JSON from agent response",
+                messages=loop_result.messages,
             )
 
         return AgentResult(
@@ -646,6 +804,7 @@ class AgentExecutor:
             provider=loop_result.provider,
             model=model_str,
             error=loop_result.error,
+            messages=loop_result.messages,
         )
 
     def _build_user_message(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -661,6 +820,24 @@ class AgentExecutor:
                 parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
             else:
                 parts.append("输出语言: 中文（所有 JSON 键名保持不变，所有面向用户的文本值使用中文）")
+
+            market_phase_section = format_market_phase_prompt_section(
+                context.get("market_phase_context"),
+                report_language=report_language,
+            )
+            if market_phase_section:
+                parts.append(market_phase_section)
+
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                parts.append(daily_market_context_section)
+
+            analysis_context_pack_summary = context.get("analysis_context_pack_summary")
+            if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
+                parts.append(analysis_context_pack_summary)
 
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):

@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from data_provider.base import is_bse_code
+from data_provider.base import canonical_stock_code, is_bse_code
+from src.services.market_symbol_utils import normalize_suffix_market_symbol
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
@@ -27,20 +28,50 @@ _SUFFIX_DIGIT_LENS: dict = {
     ".SS": (6,),
     ".BJ": (6,),
     ".HK": (1, 2, 3, 4, 5),
+    ".T": (4, 5),
+    ".KS": (6,),
+    ".KQ": (6,),
+    # Taiwan: TWSE `.TW` and TPEx `.TWO`; base is 4-6 digits (ETFs up to 6).
+    # `.TWO` listed before `.TW` as a defensive ordering convention.
+    ".TWO": (4, 5, 6),
+    ".TW": (4, 5, 6),
 }
+
+_PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
+
+
+def _infer_cn_exchange(base: str) -> str:
+    """Infer CN exchange from a 6-digit A/B-share code."""
+    if not (base.isdigit() and len(base) == 6):
+        return ""
+
+    if is_bse_code(base):
+        return "BJ"
+    if base.startswith(("5", "6", "9")):
+        return "SH"
+    return "SZ"
 
 
 def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) -> bool:
     if not (base.isdigit() and len(base) in digit_lens):
         return False
+    if exchange in {"SH", "SS"}:
+        return _infer_cn_exchange(base) == "SH"
+    if exchange == "SZ":
+        return _infer_cn_exchange(base) == "SZ"
     if exchange == "BJ":
-        return is_bse_code(base)
+        return _infer_cn_exchange(base) == "BJ"
     return True
 
 
 def _strip_exchange_prefix(text: str) -> Optional[str]:
     """Strip leading exchange prefix (SH/SZ/HK etc.) and return the bare digits, or None."""
     for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
+        dotted_prefix = f"{prefix}."
+        if text.startswith(dotted_prefix):
+            base = text[len(dotted_prefix):]
+            if _valid_exchange_code(prefix, base, digit_lens):
+                return base.zfill(5) if prefix == "HK" else base
         if text.startswith(prefix):
             base = text[len(prefix):]
             if _valid_exchange_code(prefix, base, digit_lens):
@@ -82,7 +113,7 @@ def normalize_code(raw: str) -> Optional[str]:
     Supports:
     - Plain digit codes: 600519, 00700
     - Suffix format: 600519.SH, 600519.SZ, 920493.BJ, 00700.HK
-    - Prefix format: SH600519, SZ000001, BJ920493, HK00700 (case-insensitive)
+    - Prefix format: SH600519, SH.600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
     """
     text = raw.strip().upper()
@@ -90,6 +121,11 @@ def normalize_code(raw: str) -> Optional[str]:
         return None
     if text.isdigit() and len(text) in (5, 6):
         return text
+    suffix_symbol = normalize_suffix_market_symbol(text)
+    if suffix_symbol is not None:
+        return suffix_symbol
+    if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
+        return None
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return text
     stripped_suffix = _strip_exchange_suffix(text)
@@ -100,3 +136,28 @@ def normalize_code(raw: str) -> Optional[str]:
     if stripped is not None:
         return stripped
     return None
+
+
+def resolve_index_stock_code_for_analysis(raw: str) -> str:
+    """Resolve bare JP/KR candidates via stock index and keep suffix forms.
+
+    For code-like inputs and indexed 4-digit JP bare bases:
+    - Existing index-backed entries (e.g. ``005930`` -> ``005930.KS``) are
+      preferred.
+    - Non-matching code-like inputs keep the canonicalized input.
+
+    Non-code-like values are still canonicalized only, letting callers keep
+    their own validation policy (e.g. API name resolution path).
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    if is_code_like(text) or (text.isdigit() and len(text) == 4):
+        from src.data.stock_index_loader import resolve_index_stock_code
+
+        resolved = resolve_index_stock_code(text)
+        if resolved:
+            return canonical_stock_code(resolved)
+
+    return canonical_stock_code(text)

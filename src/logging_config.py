@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
-LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(pathname)s:%(lineno)d | %(message)s"
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(pathname)s:%(lineno)d | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _ALLOWED_LOG_LEVELS = {
     'DEBUG': logging.DEBUG,

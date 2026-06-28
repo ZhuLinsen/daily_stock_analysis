@@ -41,6 +41,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+
+def _reconfigure_output_stream(stream):
+    """Avoid UnicodeEncodeError on legacy Windows console code pages."""
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+
+    for kwargs in (
+        {"encoding": "utf-8", "errors": "replace"},
+        {"errors": "replace"},
+    ):
+        try:
+            reconfigure(**kwargs)
+            return
+        except Exception:
+            continue
+
+
+def configure_console_encoding():
+    for stream in (sys.stdout, sys.stderr):
+        _reconfigure_output_stream(stream)
+
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -440,6 +463,8 @@ def query_stock_data(stock_code: str, days: int = 10):
 
 
 def main():
+    configure_console_encoding()
+
     parser = argparse.ArgumentParser(
         description='A股自选股智能分析系统 - 环境验证测试',
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -8,6 +8,7 @@ import logging
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,7 +44,19 @@ from src.core.config_registry import (
     get_registered_field_keys,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.llm.backend_registry import (
+    AUTO_AGENT_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
+    LITELLM_BACKEND_ID,
+    normalize_backend_id,
+)
 from src.llm.generation_params import apply_litellm_generation_params
+from src.notification_contracts import (
+    FEISHU_APP_BOT_ENV_GROUP,
+    FEISHU_WEBHOOK_ENV_GROUP,
+    is_feishu_app_bot_env_configured,
+    is_feishu_static_env_configured,
+)
 from src.notification_noise import validate_notification_timezone
 from src.notification_sender.gotify_sender import resolve_gotify_message_endpoint
 from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
@@ -91,6 +104,9 @@ class SystemConfigService:
 
     _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
     _LLM_STREAM_CHUNK_LIMIT = 8
+    _WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE = re.compile(
+        r"^LLM_([A-Z0-9_]+)_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
+    )
     _LLM_CAPABILITY_PROBE_IMAGE = (
         "data:image/png;base64,"
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -106,6 +122,10 @@ class SystemConfigService:
             "strategy": "specialist",
             "skill": "specialist",
         }
+    }
+    _SERVER_MASKED_CONFIG_KEYS: Set[str] = {
+        "ALPHASIFT_INSTALL_SPEC",
+        "LLM_USAGE_HMAC_SECRET",
     }
     _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
         "wechat",
@@ -130,6 +150,11 @@ class SystemConfigService:
         "FEISHU_WEBHOOK_SECRET": ("feishu_webhook_secret", "string"),
         "FEISHU_WEBHOOK_KEYWORD": ("feishu_webhook_keyword", "string"),
         "FEISHU_MAX_BYTES": ("feishu_max_bytes", "int"),
+        "FEISHU_APP_ID": ("feishu_app_id", "string"),
+        "FEISHU_APP_SECRET": ("feishu_app_secret", "string"),
+        "FEISHU_CHAT_ID": ("feishu_chat_id", "string"),
+        "FEISHU_RECEIVE_ID_TYPE": ("feishu_receive_id_type", "string"),
+        "FEISHU_DOMAIN": ("feishu_domain", "string"),
         "TELEGRAM_BOT_TOKEN": ("telegram_bot_token", "string"),
         "TELEGRAM_CHAT_ID": ("telegram_chat_id", "string"),
         "TELEGRAM_MESSAGE_THREAD_ID": ("telegram_message_thread_id", "string"),
@@ -163,7 +188,7 @@ class SystemConfigService:
     }
     _NOTIFICATION_REQUIRED_KEY_GROUPS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
         "wechat": (("WECHAT_WEBHOOK_URL",),),
-        "feishu": (("FEISHU_WEBHOOK_URL",),),
+        "feishu": (FEISHU_WEBHOOK_ENV_GROUP, FEISHU_APP_BOT_ENV_GROUP),
         "telegram": (("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"),),
         "email": (("EMAIL_SENDER", "EMAIL_PASSWORD"),),
         "pushover": (("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN"),),
@@ -178,7 +203,7 @@ class SystemConfigService:
     }
     _NOTIFICATION_TEST_TARGET_KEYS: Dict[str, Tuple[str, ...]] = {
         "wechat": ("WECHAT_WEBHOOK_URL",),
-        "feishu": ("FEISHU_WEBHOOK_URL",),
+        "feishu": FEISHU_WEBHOOK_ENV_GROUP + FEISHU_APP_BOT_ENV_GROUP,
         "telegram": ("TELEGRAM_BOT_TOKEN",),
         "email": ("EMAIL_RECEIVERS", "EMAIL_SENDER"),
         "pushover": ("PUSHOVER_USER_KEY",),
@@ -192,8 +217,9 @@ class SystemConfigService:
         "astrbot": ("ASTRBOT_URL",),
     }
 
-    def __init__(self, manager: Optional[ConfigManager] = None):
+    def __init__(self, manager: Optional[ConfigManager] = None, runtime_scheduler: Optional[Any] = None):
         self._manager = manager or ConfigManager()
+        self._runtime_scheduler = runtime_scheduler
 
     def get_schema(self) -> Dict[str, Any]:
         """Return grouped schema metadata for UI rendering."""
@@ -269,6 +295,9 @@ class SystemConfigService:
         if raw_value_exists:
             return raw_value
 
+        if field_schema.get("ui_control") == "switch" and raw_value:
+            return raw_value
+
         if field_schema.get("ui_control") == "switch":
             default_value = field_schema.get("default_value")
             if isinstance(default_value, str) and default_value:
@@ -276,11 +305,73 @@ class SystemConfigService:
 
         return raw_value
 
+    @classmethod
+    def _get_schema_config_keys(cls, config_map: Dict[str, str], registered_keys: Set[str]) -> Set[str]:
+        """Return keys needed by the Web schema payload.
+
+        Ordinary settings must be registry-backed. LLM channel detail keys are
+        kept only as editor support data for channels declared in LLM_CHANNELS.
+        """
+        keys = set(registered_keys)
+        channel_names = {
+            segment.strip().upper()
+            for segment in config_map.get("LLM_CHANNELS", "").split(",")
+            if segment.strip()
+        }
+        if not channel_names:
+            return keys
+
+        for key in config_map:
+            match = cls._WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE.match(key)
+            if match and match.group(1) in channel_names:
+                keys.add(key)
+
+        return keys
+
+    @classmethod
+    def _build_runtime_display_config_map(cls, saved_config_map: Dict[str, str]) -> Dict[str, str]:
+        """Return Web settings values injected through the process environment.
+
+        Docker ``env_file`` / ``--env-file`` only populate process environment
+        variables; they do not create an active ``.env`` file inside the
+        container. Use these values as display fallbacks so Settings can show
+        startup-injected config without letting it override later WebUI saves.
+        """
+        registered_keys = {key.upper() for key in get_registered_field_keys()}
+        channel_names = {
+            segment.strip().upper()
+            for raw_channels in (
+                saved_config_map.get("LLM_CHANNELS", ""),
+                os.environ.get("LLM_CHANNELS", ""),
+            )
+            for segment in raw_channels.split(",")
+            if segment.strip()
+        }
+        runtime_map: Dict[str, str] = {}
+
+        for raw_key, raw_value in os.environ.items():
+            key = str(raw_key).upper()
+            llm_channel_match = cls._WEB_SETTINGS_LLM_CHANNEL_SUPPORT_KEY_RE.match(key)
+            if (
+                key in registered_keys
+                or (llm_channel_match and llm_channel_match.group(1) in channel_names)
+            ):
+                runtime_map[key] = "" if raw_value is None else str(raw_value)
+
+        return cls._build_display_config_map(runtime_map)
+
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
-        """Return current config values without server-side secret masking."""
-        config_map = self._build_display_config_map(self._manager.read_config_map())
+        """Return display config values with mask metadata for server-masked fields."""
+        saved_config_map = self._build_display_config_map(self._manager.read_config_map())
+        runtime_config_map = self._build_runtime_display_config_map(saved_config_map)
+        config_map = {
+            **runtime_config_map,
+            **saved_config_map,
+        }
         registered_keys = set(get_registered_field_keys())
         all_keys = set(config_map.keys()) | registered_keys
+        if include_schema:
+            all_keys = self._get_schema_config_keys(config_map, registered_keys)
 
         category_orders = {
             item["category"]: item["display_order"]
@@ -294,15 +385,19 @@ class SystemConfigService:
 
         items: List[Dict[str, Any]] = []
         for key in all_keys:
-            raw_value_exists = key in config_map
+            raw_value_exists = key in saved_config_map
             raw_value = config_map.get(key, "")
             field_schema = schema_by_key[key]
             display_value = self._resolve_display_value(raw_value, field_schema, raw_value_exists)
+            is_masked = False
+            if key in self._SERVER_MASKED_CONFIG_KEYS and display_value:
+                display_value = mask_token
+                is_masked = True
             item: Dict[str, Any] = {
                 "key": key,
                 "value": display_value,
                 "raw_value_exists": raw_value_exists,
-                "is_masked": False,
+                "is_masked": is_masked,
             }
             if include_schema:
                 item["schema"] = field_schema
@@ -559,7 +654,25 @@ class SystemConfigService:
         if selected_api_key:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
 
-        models_url = self._build_llm_models_url(base_url)
+        try:
+            models_url = self._build_llm_models_url(base_url)
+        except ValueError as exc:
+            return self._build_llm_channel_result(
+                success=False,
+                message="LLM channel configuration is invalid",
+                error=str(exc),
+                stage="model_discovery",
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "discover_channel_BASE_URL",
+                    "issue_code": "invalid_url",
+                    "reason": "invalid_url",
+                },
+                resolved_protocol=resolved_protocol or None,
+                models=[],
+                latency_ms=None,
+            )
 
         try:
             started_at = time.perf_counter()
@@ -725,7 +838,7 @@ class SystemConfigService:
         call_kwargs: Dict[str, Any] = {
             "model": resolved_model,
             "messages": [{"role": "user", "content": "Reply with OK"}],
-            "max_tokens": 256,  # Increased to allow MiniMax-M2.7 thinking process + response
+            "max_tokens": 256,  # Increased to allow MiniMax-M3 thinking process + response
             "timeout": max(5.0, float(timeout_seconds)),
         }
         if selected_api_key:
@@ -740,12 +853,21 @@ class SystemConfigService:
 
         try:
             import litellm
-            from src.agent.llm_adapter import LLMToolAdapter
+            from src.agent.llm_adapter import (
+                resolve_fallback_litellm_wire_models,
+                register_fallback_model_pricing,
+            )
 
-            # Register custom model pricing for MiniMax models not in LiteLLM's built-in list
-            # This must be done before litellm.completion() to prevent cost calculation errors
-            # Reuses the registration logic from LLMToolAdapter to avoid code duplication
-            LLMToolAdapter._register_custom_model_pricing()
+            # Register fallback pricing for OpenAI-compatible models to prevent cost calculation errors
+            config_model_list = None
+            if getattr(self, "_config", None) is not None:
+                config_model_list = getattr(self._config, "llm_model_list", None)
+            register_fallback_model_pricing(
+                resolve_fallback_litellm_wire_models(
+                    resolved_model,
+                    config_model_list,
+                )
+            )
 
             started_at = time.perf_counter()
             response = call_litellm_with_param_recovery(
@@ -1347,6 +1469,18 @@ class SystemConfigService:
                 updates=dict(updates),
             )
         )
+        if self._runtime_scheduler is not None and submitted_keys & {
+            "SCHEDULE_ENABLED",
+            "SCHEDULE_TIME",
+            "SCHEDULE_TIMES",
+        }:
+            try:
+                self._runtime_scheduler.reconcile_from_config(
+                    clear_enabled_override="SCHEDULE_ENABLED" in submitted_keys,
+                )
+            except Exception as exc:  # pragma: no cover - defensive branch
+                logger.error("Runtime scheduler reconcile failed: %s", exc, exc_info=True)
+                warnings.append("Configuration updated but runtime scheduler reconcile failed")
 
         return {
             "success": True,
@@ -1425,16 +1559,46 @@ class SystemConfigService:
             )
 
         startup_only_schedule_keys = submitted_keys & {
-            "SCHEDULE_ENABLED",
-            "SCHEDULE_TIME",
             "SCHEDULE_RUN_IMMEDIATELY",
         }
         if startup_only_schedule_keys:
             warnings.append(
                 (
                     f"{', '.join(sorted(startup_only_schedule_keys))} 已写入 .env。"
-                    "这些属于启动期调度配置：当前已运行的 WebUI/API 进程不会因为本次保存立即触发分析，"
-                    "也不会自动重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                    "这些属于启动期调度模式配置：当前已运行的 WebUI/API 进程不会因为本次保存启动、"
+                    "停止或重建 scheduler；请重启当前进程，并以 schedule 模式重新启动后生效。"
+                )
+            )
+
+        if "SCHEDULE_ENABLED" in submitted_keys:
+            schedule_enabled = (current_map.get("SCHEDULE_ENABLED", "false") or "false").strip().lower()
+            warnings.append(
+                (
+                    f"SCHEDULE_ENABLED={schedule_enabled} 已写入 .env。"
+                    "如果当前进程是 WebUI/API/Desktop 长运行进程，runtime scheduler 会按新配置启停；"
+                    "CLI schedule 模式仍按启动参数和配置运行。"
+                )
+            )
+
+        if "SCHEDULE_TIMES" in submitted_keys:
+            schedule_times = (current_map.get("SCHEDULE_TIMES", "") or "").strip()
+            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
+            effective = schedule_times or schedule_time
+            warnings.append(
+                (
+                    f"SCHEDULE_TIMES={effective} 已写入 .env。"
+                    "有效时间点会去重、排序；为空时继续使用 SCHEDULE_TIME。"
+                    "如果当前进程存在 runtime scheduler，会按新时间重建 daily jobs。"
+                )
+            )
+
+        if "SCHEDULE_TIME" in submitted_keys:
+            schedule_time = (current_map.get("SCHEDULE_TIME", "") or "").strip() or "18:00"
+            warnings.append(
+                (
+                    f"SCHEDULE_TIME={schedule_time} 已写入 .env。"
+                    "如果当前进程已经以 schedule 模式运行，scheduler 会在下一轮检查中自动重建 daily job；"
+                    "如果当前进程未以 schedule 模式运行，本次保存不会启动 scheduler。"
                 )
             )
 
@@ -1514,14 +1678,14 @@ class SystemConfigService:
 
     @staticmethod
     def _parse_imported_env_content(content: str) -> List[Dict[str, str]]:
-        """Parse raw `.env` text into update items using current dotenv semantics."""
+        """Parse raw `.env` text into update items without expanding app templates."""
         normalized_content = content.replace("\ufeff", "")
         if not normalized_content.strip():
             raise ConfigImportError("未识别到有效 .env 配置")
 
         from dotenv import dotenv_values
 
-        parsed = dotenv_values(stream=io.StringIO(normalized_content))
+        parsed = dotenv_values(stream=io.StringIO(normalized_content), interpolate=False)
         updates: List[Dict[str, str]] = []
         for key, value in parsed.items():
             if key is None:
@@ -1540,8 +1704,13 @@ class SystemConfigService:
 
     def _collect_issues(self, items: Sequence[Dict[str, str]], mask_token: str) -> List[Dict[str, Any]]:
         """Collect field-level and cross-field validation issues."""
-        current_map = self._manager.read_config_map()
-        effective_map = dict(current_map)
+        saved_config_map = self._manager.read_config_map()
+        display_config_map = self._build_display_config_map(saved_config_map)
+        runtime_config_map = self._build_runtime_display_config_map(display_config_map)
+        effective_map = {
+            **runtime_config_map,
+            **display_config_map,
+        }
         issues: List[Dict[str, Any]] = []
         updated_map: Dict[str, str] = {}
 
@@ -1551,7 +1720,7 @@ class SystemConfigService:
             field_schema = get_field_definition(key, value)
             is_sensitive = bool(field_schema.get("is_sensitive", False))
 
-            if is_sensitive and value == mask_token and current_map.get(key):
+            if is_sensitive and value == mask_token and saved_config_map.get(key):
                 continue
 
             updated_map[key] = value
@@ -1852,6 +2021,66 @@ class SystemConfigService:
         return parsed.scheme in allowed_schemes and bool(parsed.netloc)
 
     @staticmethod
+    def _canonical_ipv4_numeric_host(host: str) -> Optional[str]:
+        """Return canonical IPv4 for libc-style numeric host aliases."""
+        import socket
+
+        candidate = (host or "").lower()
+        if not candidate or ":" in candidate:
+            return None
+
+        try:
+            return socket.inet_ntoa(socket.inet_aton(candidate))
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_noncanonical_ipv4_numeric_host(host: str) -> bool:
+        canonical = SystemConfigService._canonical_ipv4_numeric_host(host)
+        return canonical is not None and host.lower() != canonical
+
+    @staticmethod
+    def _normalize_hostname_for_security(host: str) -> Optional[str]:
+        """Return a normalized ASCII host for URL safety checks."""
+        import unicodedata
+
+        candidate = (host or "").strip().lower().rstrip(".")
+        if not candidate:
+            return None
+        if ":" in candidate:
+            return candidate
+        try:
+            normalized = unicodedata.normalize("NFKC", candidate)
+            ascii_host = normalized.encode("idna").decode("ascii").lower().rstrip(".")
+        except UnicodeError:
+            return None
+        return ascii_host or None
+
+    @staticmethod
+    def _is_valid_llm_base_url(value: str, allowed_schemes: Tuple[str, ...] = ("http", "https")) -> bool:
+        """Return True when an LLM base URL is safe to parse consistently."""
+        if not value:
+            return False
+        if any(char == "\\" or char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+            return False
+
+        try:
+            parsed = urlparse(value)
+            host = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            return False
+
+        if parsed.scheme not in allowed_schemes or not parsed.netloc or not host:
+            return False
+        if "@" in parsed.netloc or parsed.username is not None or parsed.password is not None:
+            return False
+        if SystemConfigService._is_noncanonical_ipv4_numeric_host(host):
+            return False
+
+        return True
+
+    @staticmethod
     def _split_csv(value: str) -> List[str]:
         return [item.strip() for item in (value or "").split(",") if item.strip()]
 
@@ -1902,7 +2131,14 @@ class SystemConfigService:
                 return []
             missing_by_group.append(missing)
 
-        return missing_by_group[0] if missing_by_group else []
+        if not missing_by_group:
+            return []
+        ranked_groups = []
+        for group, missing in zip(groups, missing_by_group):
+            present_count = len(group) - len(missing)
+            ranked_groups.append((len(missing), -present_count, missing))
+        ranked_groups.sort(key=lambda item: (item[0], item[1]))
+        return ranked_groups[0][2]
 
     @staticmethod
     def _get_invalid_notification_test_config_message(
@@ -2425,6 +2661,30 @@ class SystemConfigService:
         return "", "尚未检测到主模型配置"
 
     def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        if generation_backend == CODEX_CLI_BACKEND_ID:
+            if shutil.which("codex"):
+                return self._setup_check(
+                    "llm_primary",
+                    "LLM 主渠道",
+                    "ai_model",
+                    True,
+                    "configured",
+                    "已启用 Codex CLI 本地生成 Backend（experimental/limited）。",
+                )
+            return self._setup_check(
+                "llm_primary",
+                "LLM 主渠道",
+                "ai_model",
+                True,
+                "needs_action",
+                "已选择 codex_cli，但未找到 codex 可执行文件。",
+                "请先安装并登录 Codex CLI，或将 GENERATION_BACKEND 设回 litellm。",
+            )
+
         model, source = self._resolve_setup_primary_model(effective_map)
         if model:
             source_label = {
@@ -2456,8 +2716,57 @@ class SystemConfigService:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
+        generation_backend = normalize_backend_id(
+            effective_map.get("GENERATION_BACKEND"),
+            default=LITELLM_BACKEND_ID,
+        )
+        agent_backend = normalize_backend_id(
+            effective_map.get("AGENT_GENERATION_BACKEND"),
+            default=AUTO_AGENT_BACKEND_ID,
+        )
+        if agent_backend == CODEX_CLI_BACKEND_ID:
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                "Agent 工具调用暂不支持 codex_cli text-only backend。",
+                "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
+            )
+
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
         if not agent_model_raw:
+            if generation_backend == CODEX_CLI_BACKEND_ID:
+                litellm_model, _source = self._resolve_setup_primary_model(effective_map)
+                if litellm_model:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "configured",
+                        "Agent 工具调用将继续使用 LiteLLM 渠道。",
+                    )
+                if agent_backend == LITELLM_BACKEND_ID:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "needs_action",
+                        "AGENT_GENERATION_BACKEND 已选择 litellm，但未检测到可用 LiteLLM 模型配置。",
+                        "如需使用 Ask-Stock Agent，请配置 AGENT_LITELLM_MODEL、LITELLM_MODEL、LLM_CHANNELS 或 LITELLM_CONFIG。",
+                    )
+                return self._setup_check(
+                    "llm_agent",
+                    "Agent 渠道",
+                    "agent",
+                    True,
+                    "needs_action",
+                    "Agent 工具调用需要 LiteLLM 模型配置；codex_cli 主生成方式不会被自动继承。",
+                    "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
+                )
             if primary_check["status"] == "configured":
                 return self._setup_check(
                     "llm_agent",
@@ -2537,7 +2846,8 @@ class SystemConfigService:
 
     def _build_setup_notification_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
         configured = (
-            self._has_any_config_value(effective_map, ("WECHAT_WEBHOOK_URL", "FEISHU_WEBHOOK_URL", "DISCORD_WEBHOOK_URL"))
+            self._has_any_config_value(effective_map, ("WECHAT_WEBHOOK_URL", "DISCORD_WEBHOOK_URL"))
+            or is_feishu_static_env_configured(effective_map)
             or (
                 self._has_any_config_value(effective_map, ("TELEGRAM_BOT_TOKEN",))
                 and self._has_any_config_value(effective_map, ("TELEGRAM_CHAT_ID",))
@@ -2575,11 +2885,6 @@ class SystemConfigService:
             )
             or self._has_valid_ntfy_endpoint(effective_map)
             or self._has_valid_gotify_config(effective_map)
-            or (
-                parse_env_bool(effective_map.get("FEISHU_STREAM_ENABLED"), default=False)
-                and self._has_any_config_value(effective_map, ("FEISHU_APP_ID",))
-                and self._has_any_config_value(effective_map, ("FEISHU_APP_SECRET",))
-            )
         )
         if configured:
             return self._setup_check(
@@ -2651,10 +2956,16 @@ class SystemConfigService:
         """
         import ipaddress
 
-        parsed = urlparse(value)
-        host = (parsed.hostname or "").lower()
-        if not host:
+        try:
+            parsed = urlparse(value)
+            raw_host = parsed.hostname or ""
+        except ValueError:
+            return False
+        if not raw_host:
             return True
+        host = SystemConfigService._normalize_hostname_for_security(raw_host)
+        if not host:
+            return False
         # Known cloud metadata hostnames
         _BLOCKED_HOSTS = frozenset({
             "169.254.169.254",
@@ -2663,11 +2974,18 @@ class SystemConfigService:
         })
         if host in _BLOCKED_HOSTS:
             return False
-        # Numeric IPs: block link-local range (169.254.0.0/16)
+        if SystemConfigService._is_noncanonical_ipv4_numeric_host(host):
+            return False
+        # Numeric IPs: block link-local range (169.254.0.0/16), including IPv4-mapped IPv6.
         try:
             addr = ipaddress.ip_address(host)
-            if addr.is_link_local:
-                return False
+            candidate_addrs = [addr]
+            mapped_addr = getattr(addr, "ipv4_mapped", None)
+            if mapped_addr is not None:
+                candidate_addrs.append(mapped_addr)
+            for candidate_addr in candidate_addrs:
+                if str(candidate_addr) in _BLOCKED_HOSTS or candidate_addr.is_link_local:
+                    return False
         except ValueError:
             pass  # hostname, not an IP — already checked against blocklist above
         return True
@@ -2675,7 +2993,12 @@ class SystemConfigService:
     @staticmethod
     def _build_llm_models_url(base_url: str) -> str:
         """Convert a channel base URL into a `/models` endpoint."""
-        parsed = urlparse(base_url.strip())
+        if not SystemConfigService._is_valid_llm_base_url(base_url):
+            raise ValueError("LLM channel base URL must be a valid absolute URL")
+        if not SystemConfigService._is_safe_base_url(base_url):
+            raise ValueError("LLM channel base URL points to a restricted address")
+
+        parsed = urlparse(base_url)
         normalized = (parsed.path or "").rstrip("/")
         for suffix in ("/chat/completions", "/completions"):
             if normalized.endswith(suffix):
@@ -2685,7 +3008,12 @@ class SystemConfigService:
             models_path = normalized or "/models"
         else:
             models_path = f"{normalized}/models" if normalized else "/models"
-        return urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
+        models_url = urlunparse(parsed._replace(path=models_path, params="", query="", fragment=""))
+        if not SystemConfigService._is_valid_llm_base_url(models_url):
+            raise ValueError("LLM channel models URL must be a valid absolute URL")
+        if not SystemConfigService._is_safe_base_url(models_url):
+            raise ValueError("LLM channel models URL points to a restricted address")
+        return models_url
 
     @staticmethod
     def _get_runtime_llm_temperature() -> float:
@@ -3141,15 +3469,15 @@ class SystemConfigService:
             "FEISHU_WEBHOOK_KEYWORD",
             "FEISHU_STREAM_ENABLED",
             "FEISHU_FOLDER_TOKEN",
+            "FEISHU_CHAT_ID",
         }
         has_feishu_app_id = bool((effective_map.get("FEISHU_APP_ID") or "").strip())
         has_feishu_app_secret = bool((effective_map.get("FEISHU_APP_SECRET") or "").strip())
+        has_feishu_app_credentials_complete = has_feishu_app_id and has_feishu_app_secret
         has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
-        has_feishu_webhook = bool((effective_map.get("FEISHU_WEBHOOK_URL") or "").strip())
         has_feishu_folder_token = bool((effective_map.get("FEISHU_FOLDER_TOKEN") or "").strip())
         has_feishu_full_cloud_doc_credentials = (
-            has_feishu_app_id
-            and has_feishu_app_secret
+            has_feishu_app_credentials_complete
             and has_feishu_folder_token
         )
         # Match runtime semantics: Config.from_env only enables stream mode
@@ -3160,25 +3488,33 @@ class SystemConfigService:
             .lower()
             == "true"
         )
+        has_feishu_stream_route = feishu_stream_enabled and has_feishu_app_credentials_complete
+        has_feishu_app_bot_route = is_feishu_app_bot_env_configured(effective_map)
         if (
             has_feishu_app_credentials
             and not has_feishu_full_cloud_doc_credentials
-            and not has_feishu_webhook
-            and not (feishu_stream_enabled and has_feishu_app_id and has_feishu_app_secret)
+            and not is_feishu_static_env_configured(effective_map)
+            and not has_feishu_stream_route
+            and not has_feishu_app_bot_route
             and (updated_keys & feishu_relevant_keys)
         ):
             issues.append(
                 {
-                    "key": "FEISHU_WEBHOOK_URL",
+                    "key": "FEISHU_CHAT_ID",
                     "code": "feishu_mode_mismatch",
                     "message": (
-                        "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书群 Webhook 推送；"
-                        "如需通知推送请填写 FEISHU_WEBHOOK_URL，若要使用应用机器人请同时开启 "
-                        "FEISHU_STREAM_ENABLED 并完成应用发布与权限配置。"
+                        "仅配置 FEISHU_APP_ID / FEISHU_APP_SECRET 不会开启飞书静态通知；"
+                        "App Bot 主动推送需要同时配置 FEISHU_CHAT_ID，"
+                        "Webhook 推送请填写 FEISHU_WEBHOOK_URL；"
+                        "事件订阅请使用 FEISHU_STREAM_ENABLED=true 并完成应用发布与权限配置。"
                     ),
                     "severity": "warning",
-                    "expected": "FEISHU_WEBHOOK_URL or FEISHU_STREAM_ENABLED=true",
-                    "actual": "app credentials only",
+                    "expected": (
+                        "static notification: FEISHU_WEBHOOK_URL or "
+                        "FEISHU_APP_ID + FEISHU_APP_SECRET + FEISHU_CHAT_ID; "
+                        "event subscription: FEISHU_STREAM_ENABLED=true"
+                    ),
+                    "actual": "app credentials without notification target",
                 }
             )
 
@@ -3698,10 +4034,7 @@ class SystemConfigService:
                     "actual": "",
                 }
             )
-        elif base_url_value and not SystemConfigService._is_valid_url(
-            base_url_value,
-            allowed_schemes=("http", "https"),
-        ):
+        elif base_url_value and not SystemConfigService._is_valid_llm_base_url(base_url_value):
             issues.append(
                 {
                     "key": base_url_key,

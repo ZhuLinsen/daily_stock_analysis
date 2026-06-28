@@ -14,6 +14,7 @@ import sys
 import unittest
 from email.header import decode_header, make_header
 from email.utils import parseaddr
+from types import SimpleNamespace
 from unittest import mock
 from typing import Optional
 
@@ -55,6 +56,29 @@ def _response(status_code: int, json_body: Optional[dict] = None):
     if json_body is not None:
         resp.json.return_value = json_body
     return resp
+
+
+def _sdk_response(success: bool, *, code: int = 0, msg: str = "ok", log_id: str = "log-id"):
+    resp = mock.MagicMock()
+    resp.success.return_value = success
+    resp.code = code
+    resp.msg = msg
+    resp.get_log_id.return_value = log_id
+    return resp
+
+
+def _fake_feishu_client(*side_effects):
+    create = mock.Mock()
+    if side_effects:
+        create.side_effect = list(side_effects)
+    client = SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(
+                message=SimpleNamespace(create=create)
+            )
+        )
+    )
+    return client, create
 
 
 class TestDiscordSender(unittest.TestCase):
@@ -209,6 +233,31 @@ class TestFeishuSender(unittest.TestCase):
         )
 
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_uses_legacy_feishu_report_formatter(self, mock_post):
+        mock_post.return_value = _response(200, {"code": 0})
+        cfg = _config(feishu_webhook_url="https://feishu.example/hook")
+        sender = FeishuSender(cfg)
+        content = (
+            "# 日报\n\n"
+            "## 📊 分析结果摘要\n\n"
+            "| 股票 | 信号 |\n"
+            "| --- | --- |\n"
+            "| 600519 | 强势 |\n\n"
+            "[详情](https://example.com/report)"
+        )
+
+        result = sender.send_to_feishu(content)
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        rendered = payload["card"]["elements"][0]["text"]["content"]
+        self.assertIn("**日报**", rendered)
+        self.assertIn("**📊 分析结果摘要**", rendered)
+        self.assertIn("• 股票：600519 | 信号：强势", rendered)
+        self.assertIn("[详情](https://example.com/report)", rendered)
+        self.assertNotIn("| --- |", rendered)
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
     def test_send_error_response_returns_false(self, mock_post):
         mock_post.return_value = _response(200, {"code": 19024, "msg": "keyword not found"})
         cfg = _config(feishu_webhook_url="https://feishu.example/hook")
@@ -232,6 +281,314 @@ class TestFeishuSender(unittest.TestCase):
 
         self.assertFalse(result)
         mock_post.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # App Bot mode tests
+    # ------------------------------------------------------------------
+
+    def test_app_bot_returns_false_when_no_app_credentials(self):
+        """send_to_feishu returns False when app credentials are missing."""
+        cfg = _config(feishu_chat_id="oc_chat")
+        sender = FeishuSender(cfg)
+        self.assertFalse(sender.send_to_feishu("hello"))
+
+    def test_app_bot_returns_false_when_no_chat_id(self):
+        """send_to_feishu returns False when feishu_chat_id is missing."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+        )
+        sender = FeishuSender(cfg)
+        self.assertFalse(sender.send_to_feishu("hello"))
+
+    def test_app_bot_success_via_card(self):
+        """send_to_feishu sends an interactive card via App Bot on success."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        dummy_client = object()
+        with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=dummy_client), \
+             mock.patch.object(FeishuSender, "_app_send_raw", return_value=True) as mock_raw:
+            result = sender.send_to_feishu("**hello** world")
+
+        self.assertTrue(result)
+        mock_raw.assert_called_once()
+        self.assertIs(mock_raw.call_args[0][0], dummy_client)
+        # call_args[0] = (client, msg_type, content_json)
+        msg_type = mock_raw.call_args[0][1]
+        content_json = mock_raw.call_args[0][2]
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("**hello**", content_json)
+
+    def test_app_bot_card_fallback_to_text_on_formatted_content(self):
+        """App Bot falls back to text when interactive card fails."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=object()), \
+             mock.patch.object(FeishuSender, "_app_send_raw", side_effect=[False, True]) as mock_raw:
+            result = sender.send_to_feishu("hello world")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_raw.call_count, 2)
+        # call_args_list[0][0] = (client, msg_type, content_json)
+        self.assertEqual(mock_raw.call_args_list[0][0][1], "interactive")
+        self.assertEqual(mock_raw.call_args_list[1][0][1], "text")
+
+    def test_app_bot_card_first_success_no_fallback(self):
+        """App Bot sends interactive card successfully and does not try text."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=object()), \
+             mock.patch.object(FeishuSender, "_app_send_raw", return_value=True) as mock_raw:
+            result = sender.send_to_feishu("**bold** text")
+
+        self.assertTrue(result)
+        mock_raw.assert_called_once()
+        # call_args_list[0][0][1] = msg_type, [0][0][2] = content_json
+        self.assertEqual(mock_raw.call_args_list[0][0][1], "interactive")
+        self.assertIn("**bold**", mock_raw.call_args_list[0][0][2])
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
+    def test_webhook_takes_precedence_over_app_bot(self, mock_app_raw, mock_webhook_post):
+        """When both webhook URL and App Bot credentials are configured, webhook is used."""
+        mock_webhook_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        mock_webhook_post.assert_called_once()
+        mock_app_raw.assert_not_called()
+
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_webhook_does_not_require_sdk_when_app_bot_is_also_configured(self, mock_webhook_post):
+        """Webhook precedence keeps SDK absence from breaking existing delivery."""
+        mock_webhook_post.return_value = _response(200, {"code": 0})
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+
+        with mock.patch("src.notification_sender.feishu_sender.FEISHU_SDK_AVAILABLE", False), \
+             mock.patch.object(FeishuSender, "_ensure_app_client", side_effect=AssertionError("SDK should not be used")):
+            result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        mock_webhook_post.assert_called_once()
+
+    def test_app_bot_missing_sdk_logs_standard_requirements_install(self):
+        """App Bot SDK absence fails closed with the standard project install hint."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+
+        with mock.patch("src.notification_sender.feishu_sender.FEISHU_SDK_AVAILABLE", False), \
+             self.assertLogs("src.notification_sender.feishu_sender", level="WARNING") as logs:
+            result = sender.send_to_feishu("hello")
+
+        self.assertFalse(result)
+        install_hints = [
+            line
+            for line in logs.output
+            if "pip install -r requirements.txt" in line
+        ]
+        self.assertEqual(install_hints, logs.output)
+        self.assertEqual(len(install_hints), 1)
+
+    def test_app_bot_chunking_long_content(self):
+        """Long content is chunked for App Bot."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+            feishu_max_bytes=200,
+        )
+        sender = FeishuSender(cfg)
+
+        with mock.patch.object(FeishuSender, "_ensure_app_client", return_value=object()), \
+             mock.patch.object(FeishuSender, "_app_send_raw", return_value=False) as mock_raw:
+            result = sender.send_to_feishu("A" * 500)
+
+        self.assertFalse(result)  # All chunks fail
+        self.assertGreater(mock_raw.call_count, 1)
+
+    @mock.patch.object(FeishuSender, "_app_send_raw", return_value=True)
+    def test_app_bot_request_shape_interactive(self, mock_raw):
+        """_app_send_once constructs interactive card payload with lark_md."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        result = sender._app_send_once(object(), "**bold** text")
+
+        self.assertTrue(result)
+        call = mock_raw.call_args
+        self.assertEqual(call[0][1], "interactive")  # msg_type
+        card = json.loads(call[0][2])
+        self.assertEqual(card["header"]["title"]["content"], "股票智能分析报告")
+        self.assertEqual(card["elements"][0]["text"]["tag"], "lark_md")
+        self.assertIn("**bold**", card["elements"][0]["text"]["content"])
+
+    @mock.patch.object(FeishuSender, "_app_send_raw")
+    def test_app_bot_request_shape_text_fallback(self, mock_raw):
+        """_app_send_once falls back to text payload when card fails."""
+        mock_raw.side_effect = [False, True]
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        result = sender._app_send_once(object(), "plain text")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_raw.call_count, 2)
+        # Second call is text fallback
+        second_call = mock_raw.call_args_list[1]
+        self.assertEqual(second_call[0][1], "text")
+        text_content = json.loads(second_call[0][2])
+        self.assertIn("plain text", text_content["text"])
+
+    @mock.patch("src.notification_sender.feishu_sender.uuid_mod.uuid4", return_value="uuid-open-id")
+    def test_app_bot_request_includes_receive_id_type(self, _mock_uuid4):
+        """_app_send_raw request builder passes receive_id_type and request body fields."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="ou_user",
+            feishu_receive_id_type="open_id",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(_sdk_response(True))
+
+        result = sender._app_send_raw(client, "text", json.dumps({"text": "hi"}))
+
+        self.assertTrue(result)
+        create.assert_called_once()
+        req = create.call_args[0][0]
+        self.assertEqual(req.receive_id_type, "open_id")
+        self.assertEqual(req.request_body.receive_id, "ou_user")
+        self.assertEqual(req.request_body.msg_type, "text")
+        self.assertEqual(json.loads(req.request_body.content), {"text": "hi"})
+        self.assertEqual(req.request_body.uuid, "uuid-open-id")
+
+    @mock.patch("src.notification_sender.feishu_sender.uuid_mod.uuid4")
+    def test_app_bot_idempotency_uuid_per_call(self, mock_uuid4):
+        """Each _app_send_raw invocation gets a fresh UUID."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(_sdk_response(True), _sdk_response(True))
+
+        mock_uuid4.side_effect = ["aaaa-bbbb-cccc", "dddd-eeee-ffff"]
+        sender._app_send_raw(client, "text", json.dumps({"text": "a"}))
+        sender._app_send_raw(client, "text", json.dumps({"text": "b"}))
+
+        self.assertEqual(create.call_count, 2)
+        call1_req = create.call_args_list[0][0][0]
+        call2_req = create.call_args_list[1][0][0]
+        self.assertEqual(call1_req.request_body.uuid, "aaaa-bbbb-cccc")
+        self.assertEqual(call2_req.request_body.uuid, "dddd-eeee-ffff")
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_app_bot_retries_sdk_response_failure(self, mock_sleep):
+        """_app_send_raw retries failed SDK responses and stops after success."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(
+            _sdk_response(False, code=999, msg="temporary"),
+            _sdk_response(True),
+        )
+
+        result = sender._app_send_raw(client, "text", json.dumps({"text": "retry"}))
+
+        self.assertTrue(result)
+        self.assertEqual(create.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_app_bot_retries_sdk_exception(self, mock_sleep):
+        """_app_send_raw retries exceptions raised by the SDK create call."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(RuntimeError("network"), _sdk_response(True))
+
+        result = sender._app_send_raw(client, "text", json.dumps({"text": "retry"}))
+
+        self.assertTrue(result)
+        self.assertEqual(create.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    def test_app_bot_first_success_does_not_retry(self, mock_sleep):
+        """_app_send_raw does not retry after the first successful SDK response."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(_sdk_response(True))
+
+        result = sender._app_send_raw(client, "text", json.dumps({"text": "once"}))
+
+        self.assertTrue(result)
+        create.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    @mock.patch("src.notification_sender.feishu_sender.CreateMessageRequest.builder", side_effect=RuntimeError("bad builder"))
+    def test_app_bot_builder_failure_does_not_retry(self, _mock_builder, mock_sleep):
+        """Request builder failures are not treated as transient send failures."""
+        cfg = _config(
+            feishu_app_id="cli_app",
+            feishu_app_secret="secret",
+            feishu_chat_id="oc_chat",
+        )
+        sender = FeishuSender(cfg)
+        client, create = _fake_feishu_client(_sdk_response(True))
+
+        result = sender._app_send_raw(client, "text", json.dumps({"text": "bad"}))
+
+        self.assertFalse(result)
+        create.assert_not_called()
+        mock_sleep.assert_not_called()
 
 
 class TestEmailSender(unittest.TestCase):
@@ -910,6 +1267,22 @@ class TestSlackSender(unittest.TestCase):
         self.assertEqual(blocks[0]["text"]["type"], "mrkdwn")
 
     @mock.patch("src.notification_sender.slack_sender.requests.post")
+    def test_send_preserves_legacy_text_payload(self, mock_post):
+        resp = mock.MagicMock()
+        resp.status_code = 200
+        resp.text = "ok"
+        mock_post.return_value = resp
+        cfg = _config(slack_webhook_url="https://hooks.slack.com/services/T/B/xxx")
+        sender = SlackSender(cfg)
+
+        result = sender.send_to_slack("## 日报\n\n[详情](https://example.com/report)")
+
+        self.assertTrue(result)
+        payload = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
+        self.assertIn("## 日报", payload["text"])
+        self.assertIn("[详情](https://example.com/report)", payload["text"])
+
+    @mock.patch("src.notification_sender.slack_sender.requests.post")
     def test_send_text_prefers_bot_when_both_configured(self, mock_post):
         """When both webhook and bot are configured, text must go via bot
         so it lands in the same channel as images."""
@@ -994,6 +1367,51 @@ class TestTelegramSender(unittest.TestCase):
         self.assertEqual(first_payload["parse_mode"], "Markdown")
         self.assertNotIn("parse_mode", second_payload)
         self.assertEqual(second_payload["text"], "*ST宝实")
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_plain_text_fallback_keeps_original_text_after_legacy_markdown_error(self, mock_post):
+        markdown_error = _response(400)
+        markdown_error.text = (
+            '{"ok":false,"error_code":400,"description":"Bad Request: can\'t parse entities"}'
+        )
+        plain_text_success = _response(200, {"ok": True})
+        mock_post.side_effect = [markdown_error, plain_text_success]
+
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        content = "关注 **AAPL** (未闭合)"
+        result = sender.send_to_telegram(content)
+
+        self.assertTrue(result)
+        first_payload = mock_post.call_args_list[0][1]["json"]
+        second_payload = mock_post.call_args_list[1][1]["json"]
+        self.assertEqual(first_payload["text"], "关注 *AAPL* \\(未闭合\\)")
+        self.assertEqual(second_payload["text"], content)
+
+    @mock.patch("src.notification_sender.telegram_sender.requests.post")
+    def test_send_uses_legacy_telegram_report_formatter(self, mock_post):
+        mock_post.return_value = _response(200, {"ok": True})
+        cfg = _config(telegram_bot_token="BOT", telegram_chat_id="CHAT")
+        sender = TelegramSender(cfg)
+        content = (
+            "# 日报\n\n"
+            "## 📊 分析结果摘要\n\n"
+            "| 股票 | 信号 |\n"
+            "| --- | --- |\n"
+            "| 600519 | 强势 |\n\n"
+            "[详情](https://example.com/report)"
+        )
+
+        result = sender.send_to_telegram(content)
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        rendered = payload["text"]
+        self.assertIn("日报", rendered)
+        self.assertIn("📊 分析结果摘要", rendered)
+        self.assertIn("| 股票 | 信号 |", rendered)
+        self.assertIn("[详情](https://example.com/report)", rendered)
+        self.assertNotIn("# 日报", rendered)
 
     @mock.patch("src.notification_sender.telegram_sender.requests.post")
     def test_send_plain_text_fallback_handles_non_json_200(self, mock_post):

@@ -118,7 +118,10 @@ class TestValidateStructuredStockList:
         cfg = _make_config(stock_list=[])
         issues = cfg.validate_structured()
         errors = [i for i in issues if i.severity == "error"]
-        assert any("STOCK_LIST" in i.field for i in errors)
+        stock_errors = [i for i in errors if i.field == "STOCK_LIST"]
+        assert stock_errors
+        assert "未配置 STOCK_LIST" in stock_errors[0].message
+        assert "600519,hk00700,AAPL" in stock_errors[0].message
 
     def test_configured_stock_list_no_stock_error(self):
         cfg = _make_config(stock_list=["600519", "000001"])
@@ -182,11 +185,108 @@ class TestValidateStructuredStockList:
 # ---------------------------------------------------------------------------
 
 class TestValidateStructuredLLM:
+    def test_unknown_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_backend="codex")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "litellm 或 codex_cli" in error.message
+        assert "codex" in error.message
+
+    def test_unknown_generation_fallback_backend_is_structured_config_error(self):
+        cfg = _make_config(generation_fallback_backend="claude_code")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "GENERATION_FALLBACK_BACKEND")
+        assert error.severity == "error"
+        assert "GENERATION_FALLBACK_BACKEND" in error.message
+        assert "claude_code" in error.message
+
+    def test_unknown_agent_generation_backend_is_structured_config_error(self):
+        cfg = _make_config(agent_generation_backend="hermes")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "AGENT_GENERATION_BACKEND")
+        assert error.severity == "error"
+        assert "auto、litellm" in error.message
+        assert "不支持 Agent 工具调用" in error.message
+        assert "hermes" in error.message
+
+    def test_codex_cli_without_litellm_keys_is_not_llm_config_error(self):
+        cfg = _make_config(
+            generation_backend="codex_cli",
+            litellm_model="",
+            llm_model_list=[],
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+        )
+
+        issues = cfg.validate_structured()
+
+        assert not any(i.field == "LITELLM_CONFIG" and i.severity == "error" for i in issues)
+
+    def test_litellm_model_cannot_pretend_to_be_codex_cli_provider(self):
+        cfg = _make_config(litellm_model="codex_cli/gpt-5")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "LITELLM_MODEL")
+        assert error.severity == "error"
+        assert "不是 LiteLLM provider" in error.message
+
     def test_no_llm_is_error(self):
         """Empty llm_model_list must produce an error regardless of legacy keys."""
         cfg = _make_config(llm_model_list=[])
         issues = cfg.validate_structured()
         assert any(i.severity == "error" and "AI 模型" in i.message for i in issues)
+
+    def test_validate_missing_all_llm_keys_reports_error(self):
+        cfg = _make_config(
+            llm_model_list=[],
+            litellm_model="",
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            anspire_api_keys=[],
+        )
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.severity == "error" and i.field == "LITELLM_CONFIG")
+        assert "未配置任何可用的 AI 模型接入" in error.message
+        assert "ANSPIRE_API_KEYS" in error.message
+        assert "DEEPSEEK_API_KEY" in error.message
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_declared_llm_channels_without_models_reports_channel_error(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_CHANNELS": "primary",
+                "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            },
+            clear=True,
+        ):
+            cfg = Config._load_from_env()
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.severity == "error" and i.field == "LLM_CHANNELS")
+        assert "已配置 LLM_CHANNELS" in error.message
+        assert "LLM_<CHANNEL>_MODELS" in error.message
+        assert not any(i.severity == "error" and i.field == "ANSPIRE_API_KEYS" for i in issues)
 
     def test_llm_channels_only_no_error(self):
         """LLM_CHANNELS populated via llm_model_list must NOT trigger an error.
@@ -257,6 +357,19 @@ class TestValidateStructuredLLM:
         assert all(i.severity == "info" for i in llm_issues)
         assert all("LITELLM_MODEL" not in i.message for i in llm_issues)
         assert any("主模型" in i.message for i in llm_issues)
+
+    def test_codex_cli_without_litellm_model_does_not_emit_primary_model_hint(self):
+        cfg = _make_config(
+            generation_backend="codex_cli",
+            generation_fallback_backend="",
+            litellm_model="",
+            llm_model_list=[],
+        )
+
+        issues = cfg.validate_structured()
+
+        assert not any(i.field == "LITELLM_MODEL" and "主模型" in i.message for i in issues)
+        assert not any(i.severity == "error" and "AI 模型" in i.message for i in issues)
 
     def test_direct_env_provider_model_without_model_list_no_error(self):
         """Direct LiteLLM env providers should count as configured for runtime."""
@@ -336,6 +449,61 @@ class TestValidateStructuredNotification:
         cfg = _make_config(wechat_webhook_url="https://example.com/wh")
         issues = cfg.validate_structured()
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "missing_field"),
+        [
+            ({"telegram_bot_token": "bot-token", "telegram_chat_id": None}, "TELEGRAM_CHAT_ID"),
+            ({"telegram_bot_token": None, "telegram_chat_id": "123456"}, "TELEGRAM_BOT_TOKEN"),
+        ],
+    )
+    def test_validate_incomplete_telegram_config_reports_error(self, kwargs, missing_field):
+        cfg = _make_config(**kwargs)
+        issues = cfg.validate_structured()
+
+        assert any(
+            i.severity == "error"
+            and i.field == missing_field
+            and "Telegram 通知配置不完整" in i.message
+            for i in issues
+        )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "missing_field"),
+        [
+            ({"email_sender": "sender@example.com", "email_password": None}, "EMAIL_PASSWORD"),
+            ({"email_sender": None, "email_password": "app-password"}, "EMAIL_SENDER"),
+        ],
+    )
+    def test_validate_incomplete_email_config_reports_error(self, kwargs, missing_field):
+        cfg = _make_config(**kwargs)
+        issues = cfg.validate_structured()
+
+        assert any(
+            i.severity == "error"
+            and i.field == missing_field
+            and "邮件通知配置不完整" in i.message
+            for i in issues
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "kwargs"),
+        [
+            ("WECHAT_WEBHOOK_URL", {"wechat_webhook_url": "abc"}),
+            ("FEISHU_WEBHOOK_URL", {"feishu_webhook_url": "xxx"}),
+            ("DISCORD_WEBHOOK_URL", {"discord_webhook_url": "test"}),
+        ],
+    )
+    def test_validate_invalid_webhook_url_reports_warning(self, field, kwargs):
+        cfg = _make_config(**kwargs)
+        issues = cfg.validate_structured()
+
+        assert any(
+            i.severity == "warning"
+            and i.field == field
+            and "http:// 或 https://" in i.message
+            for i in issues
+        )
 
     def test_astrbot_url_counts_as_notification_channel(self):
         cfg = _make_config(
@@ -417,6 +585,19 @@ class TestValidateStructuredNotification:
             feishu_app_id="cli_xxx",
             feishu_app_secret="secret_xxx",
             feishu_folder_token="folder_xxx",
+            feishu_webhook_url=None,
+            feishu_stream_enabled=False,
+        )
+        issues = cfg.validate_structured()
+        warn = [i for i in issues if i.severity == "warning"]
+        assert not any("FEISHU_APP_ID / FEISHU_APP_SECRET" in i.message for i in warn)
+
+    def test_feishu_app_bot_triad_without_webhook_no_mode_warning(self):
+        cfg = _make_config(
+            wechat_webhook_url=None,
+            feishu_app_id="cli_xxx",
+            feishu_app_secret="secret_xxx",
+            feishu_chat_id="oc_xxx",
             feishu_webhook_url=None,
             feishu_stream_enabled=False,
         )

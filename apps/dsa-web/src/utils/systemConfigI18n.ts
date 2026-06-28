@@ -1,6 +1,8 @@
 import type { SystemConfigCategory } from '../types/systemConfig';
+import type { UiLanguage } from '../i18n/uiText';
 
-const categoryTitleMap: Record<SystemConfigCategory, string> = {
+const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>> = {
+  zh: {
   base: '基础设置',
   data_source: '数据源',
   ai_model: 'AI 模型',
@@ -9,9 +11,21 @@ const categoryTitleMap: Record<SystemConfigCategory, string> = {
   agent: 'Agent 设置',
   backtest: '回测配置',
   uncategorized: '其他',
+  },
+  en: {
+    base: 'Base settings',
+    data_source: 'Data sources',
+    ai_model: 'AI models',
+    notification: 'Notifications',
+    system: 'System',
+    agent: 'Agent',
+    backtest: 'Backtest',
+    uncategorized: 'Other',
+  },
 };
 
-const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
+const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCategory, string>>> = {
+  zh: {
   base: '管理自选股与基础运行参数。',
   data_source: '管理行情数据源与优先级策略。',
   ai_model: '管理模型服务、模型名称与推理参数。',
@@ -20,6 +34,17 @@ const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
   agent: '管理 Agent 模式、策略与多 Agent 编排配置。',
   backtest: '管理回测开关、评估窗口和引擎参数。',
   uncategorized: '其他未归类的配置项。',
+  },
+  en: {
+    base: 'Manage watchlists and base runtime parameters.',
+    data_source: 'Manage market data sources and priority strategies.',
+    ai_model: 'Manage model services, model names, and inference parameters.',
+    notification: 'Manage bots, webhooks, and notification delivery.',
+    system: 'Manage scheduling, logging, ports, and system parameters.',
+    agent: 'Manage Agent mode, strategies, and multi-agent orchestration.',
+    backtest: 'Manage backtest switches, evaluation windows, and engine parameters.',
+    uncategorized: 'Other uncategorized settings.',
+  },
 };
 
 const fieldTitleMap: Record<string, string> = {
@@ -30,19 +55,38 @@ const fieldTitleMap: Record<string, string> = {
   ANSPIRE_API_KEYS: 'Anspire API Keys',
   SERPAPI_API_KEYS: 'SerpAPI API Keys',
   BRAVE_API_KEYS: 'Brave API Keys',
-  SEARXNG_BASE_URLS: 'SearXNG Base URLs',
+  STOCK_INDEX_REMOTE_UPDATE_ENABLED: '股票索引远程更新',
+  SEARXNG_BASE_URLS: 'SearXNG 自建实例地址',
   SEARXNG_PUBLIC_INSTANCES_ENABLED: 'SearXNG 公共实例自动发现',
   MINIMAX_API_KEYS: 'MiniMax API Keys',
   NEWS_STRATEGY_PROFILE: '新闻策略窗口档位',
   NEWS_MAX_AGE_DAYS: '新闻最大时效（天）',
   REALTIME_SOURCE_PRIORITY: '实时数据源优先级',
+  TICKFLOW_API_KEY: 'TickFlow API Key',
+  ENABLE_REALTIME_QUOTE: '启用实时行情',
   ENABLE_REALTIME_TECHNICAL_INDICATORS: '盘中实时技术面',
+  ENABLE_CHIP_DISTRIBUTION: '启用筹码分布分析',
+  PYTDX_HOST: 'Pytdx 主机地址',
+  PYTDX_PORT: 'Pytdx 端口',
+  PYTDX_SERVERS: 'Pytdx 服务器列表',
+  BIAS_THRESHOLD: 'BIAS 阈值',
+  GENERATION_BACKEND: '分析生成方式',
+  GENERATION_FALLBACK_BACKEND: '备用生成方式',
+  GENERATION_BACKEND_TIMEOUT_SECONDS: '生成超时（秒）',
+  GENERATION_BACKEND_MAX_OUTPUT_BYTES: '最大输出大小（字节）',
+  GENERATION_BACKEND_MAX_CONCURRENCY: '模型生成最大并发',
+  LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '本地命令行最大并发',
   LITELLM_MODEL: '主模型',
   AGENT_LITELLM_MODEL: 'Agent 主模型',
   LITELLM_FALLBACK_MODELS: '备选模型',
   LITELLM_CONFIG: '高级模型路由配置',
   LLM_CHANNELS: 'LLM 渠道列表',
   LLM_TEMPERATURE: '采样温度',
+  LLM_PROMPT_CACHE_TELEMETRY_ENABLED: 'Prompt Cache 遥测',
+  LLM_PROMPT_CACHE_HINTS_ENABLED: 'Prompt Cache Hints',
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: 'Prompt Cache 诊断级别',
+  LLM_USAGE_HMAC_SECRET: 'LLM 用量 HMAC 密钥',
+  LLM_USAGE_HMAC_KEY_VERSION: 'LLM 用量 HMAC 版本',
   AIHUBMIX_KEY: 'AIHubmix Key',
   ANSPIRE_LLM_ENABLED: '启用 Anspire 大模型',
   ANSPIRE_LLM_BASE_URL: 'Anspire 大模型网关',
@@ -60,10 +104,51 @@ const fieldTitleMap: Record<string, string> = {
   FEISHU_WEBHOOK_KEYWORD: '飞书 Webhook 关键词',
   FEISHU_APP_ID: '飞书应用 App ID',
   FEISHU_APP_SECRET: '飞书应用 App Secret',
+  FEISHU_STREAM_ENABLED: '飞书 Stream 模式',
   DINGTALK_APP_KEY: '钉钉 App Key',
   DINGTALK_APP_SECRET: '钉钉 App Secret',
+  DINGTALK_STREAM_ENABLED: '钉钉 Stream 模式',
+  TELEGRAM_BOT_TOKEN: 'Telegram Bot Token',
+  TELEGRAM_CHAT_ID: 'Telegram Chat ID',
+  TELEGRAM_MESSAGE_THREAD_ID: 'Telegram 话题 Thread ID',
+  EMAIL_SENDER: '发件邮箱',
+  EMAIL_PASSWORD: '邮箱授权码',
+  EMAIL_RECEIVERS: '收件邮箱列表',
+  DISCORD_WEBHOOK_URL: 'Discord Webhook URL',
+  DISCORD_BOT_TOKEN: 'Discord Bot Token',
+  DISCORD_MAIN_CHANNEL_ID: 'Discord 主频道 ID',
+  DISCORD_INTERACTIONS_PUBLIC_KEY: 'Discord 交互公钥',
+  SLACK_BOT_TOKEN: 'Slack Bot Token',
+  SLACK_CHANNEL_ID: 'Slack Channel ID',
+  SLACK_WEBHOOK_URL: 'Slack Webhook URL',
+  PUSHPLUS_TOPIC: 'PushPlus 分组 Topic',
+  PUSHOVER_USER_KEY: 'Pushover User Key',
+  PUSHOVER_API_TOKEN: 'Pushover API Token',
+  SERVERCHAN3_SENDKEY: 'Server酱3 SendKey',
+  ASTRBOT_URL: 'AstrBot 地址',
+  ASTRBOT_TOKEN: 'AstrBot Token',
   CUSTOM_WEBHOOK_URLS: '自定义 Webhook 地址',
+  CUSTOM_WEBHOOK_BEARER_TOKEN: '自定义 Webhook Bearer Token',
   CUSTOM_WEBHOOK_BODY_TEMPLATE: '自定义 Webhook Body 模板',
+  WEBHOOK_VERIFY_SSL: 'Webhook SSL 校验',
+  SINGLE_STOCK_NOTIFY: '单股单独通知',
+  REPORT_TYPE: '报告类型',
+  REPORT_LANGUAGE: '报告语言',
+  REPORT_TEMPLATES_DIR: '报告模板目录',
+  REPORT_INTEGRITY_ENABLED: '报告完整性检查',
+  REPORT_RENDERER_ENABLED: '报告渲染器',
+  REPORT_INTEGRITY_RETRY: '报告完整性重试次数',
+  REPORT_HISTORY_COMPARE_N: '历史对比期数',
+  MERGE_EMAIL_NOTIFICATION: '合并邮件通知',
+  NOTIFICATION_REPORT_CHANNELS: '报告通知渠道',
+  NOTIFICATION_ALERT_CHANNELS: '告警通知渠道',
+  NOTIFICATION_SYSTEM_ERROR_CHANNELS: '系统错误通知渠道',
+  NOTIFICATION_DEDUP_TTL_SECONDS: '通知去重窗口（秒）',
+  NOTIFICATION_COOLDOWN_SECONDS: '通知冷却时间（秒）',
+  NOTIFICATION_QUIET_HOURS: '通知静默时段',
+  NOTIFICATION_TIMEZONE: '通知时区',
+  NOTIFICATION_MIN_SEVERITY: '最小通知级别',
+  NOTIFICATION_DAILY_DIGEST_ENABLED: '启用每日汇总通知',
   NTFY_URL: 'ntfy URL',
   NTFY_TOKEN: 'ntfy Token',
   GOTIFY_URL: 'Gotify URL',
@@ -72,12 +157,30 @@ const fieldTitleMap: Record<string, string> = {
   REPORT_SUMMARY_ONLY: '仅分析结果摘要',
   REPORT_SHOW_LLM_MODEL: '显示分析模型',
   MAX_WORKERS: '最大并发线程数',
+  SCHEDULE_ENABLED: '启用定时任务',
+  SCHEDULE_TIMES: '定时执行时间',
+  SCHEDULE_RUN_IMMEDIATELY: '启动定时模式后立即执行',
+  TRADING_DAY_CHECK_ENABLED: '启用交易日检查',
+  WEBUI_HOST: 'WebUI 监听地址',
+  ADMIN_AUTH_ENABLED: '启用后台登录鉴权',
+  TRUST_X_FORWARDED_FOR: '信任 X-Forwarded-For',
+  RUN_IMMEDIATELY: '启动后立即运行',
+  MARKET_REVIEW_ENABLED: '启用大盘复盘',
+  DAILY_MARKET_CONTEXT_ENABLED: '大盘上下文约束个股分析',
+  MARKET_REVIEW_REGION: '大盘复盘市场',
   MARKET_REVIEW_COLOR_SCHEME: '大盘复盘涨跌颜色',
+  ANALYSIS_DELAY: '分析启动延迟（秒）',
+  SAVE_CONTEXT_SNAPSHOT: '保存分析上下文快照',
   SCHEDULE_TIME: '定时任务时间',
+  DEBUG: '调试模式',
   HTTP_PROXY: 'HTTP 代理',
+  LOG_DIR: '日志目录',
   LOG_LEVEL: '日志级别',
+  WEBUI_ENABLED: '默认启动 WebUI',
+  WEBUI_AUTO_BUILD: '启动前自动构建前端',
   WEBUI_PORT: 'WebUI 端口',
   AGENT_MODE: '启用 Agent 策略问股',
+  AGENT_GENERATION_BACKEND: '问股生成方式',
   AGENT_MAX_STEPS: 'Agent 最大步数',
   AGENT_SKILLS: 'Agent 激活策略',
   AGENT_SKILL_DIR: 'Agent 策略目录',
@@ -88,6 +191,16 @@ const fieldTitleMap: Record<string, string> = {
   AGENT_SKILL_AUTOWEIGHT: '策略自动加权',
   AGENT_SKILL_ROUTING: '策略路由模式',
   AGENT_MEMORY_ENABLED: '记忆与校准',
+  AGENT_NL_ROUTING: '自然语言路由',
+  AGENT_DEEP_RESEARCH_BUDGET: 'Deep Research 预算',
+  AGENT_DEEP_RESEARCH_TIMEOUT: 'Deep Research 超时（秒）',
+  AGENT_EVENT_MONITOR_ENABLED: '启用事件监控',
+  AGENT_EVENT_MONITOR_INTERVAL_MINUTES: '事件监控间隔（分钟）',
+  AGENT_EVENT_ALERT_RULES_JSON: '事件告警规则（JSON）',
+  AGENT_CONTEXT_COMPRESSION_ENABLED: '上下文压缩',
+  AGENT_CONTEXT_COMPRESSION_PROFILE: '上下文压缩策略',
+  AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS: '压缩触发阈值（tokens）',
+  AGENT_CONTEXT_PROTECTED_TURNS: '原文保护轮次',
   BACKTEST_ENABLED: '启用回测',
   BACKTEST_EVAL_WINDOW_DAYS: '回测评估窗口（交易日）',
   BACKTEST_MIN_AGE_DAYS: '回测最小历史天数',
@@ -103,19 +216,38 @@ const fieldDescriptionMap: Record<string, string> = {
   ANSPIRE_API_KEYS: 'Anspire Open 密钥，支持逗号分隔多个；默认同时用于大模型网关和新闻检索。',
   SERPAPI_API_KEYS: '用于新闻检索的 SerpAPI 密钥，支持逗号分隔多个。',
   BRAVE_API_KEYS: '用于新闻检索的 Brave Search 密钥，支持逗号分隔多个。',
+  STOCK_INDEX_REMOTE_UPDATE_ENABLED: '控制是否从 GitHub main 远程刷新股票自动补全索引；失败会降级到本地缓存或内置索引，不影响主分析流程。',
   SEARXNG_BASE_URLS: 'SearXNG 自建实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）。',
   SEARXNG_PUBLIC_INSTANCES_ENABLED: '当未配置 SearXNG 自建实例时，自动从 searx.space 获取公共实例并轮询使用；设为 false 可禁用该默认行为。',
   MINIMAX_API_KEYS: '用于新闻检索的 MiniMax 密钥，支持逗号分隔多个（最低优先级）。',
   NEWS_STRATEGY_PROFILE: '新闻窗口档位：ultra_short=1天，short=3天，medium=7天，long=30天。',
   NEWS_MAX_AGE_DAYS: '新闻最大时效上限。实际窗口 = min(策略档位天数, NEWS_MAX_AGE_DAYS)。例如 ultra_short + 7 仍为 1 天。',
   REALTIME_SOURCE_PRIORITY: '按逗号分隔填写数据源调用优先级。',
+  TICKFLOW_API_KEY: '用于接入 TickFlow 数据服务的 API 密钥。',
+  ENABLE_REALTIME_QUOTE: '控制是否启用实时行情数据获取。',
   ENABLE_REALTIME_TECHNICAL_INDICATORS: '盘中分析时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘。',
+  ENABLE_CHIP_DISTRIBUTION: '控制是否启用筹码分布分析；关闭后可减少外部请求和失败噪音。',
+  PYTDX_HOST: 'Pytdx 单节点主机地址，留空时按默认节点池选择。',
+  PYTDX_PORT: 'Pytdx 单节点端口，需与主机配置配套。',
+  PYTDX_SERVERS: 'Pytdx 自定义节点列表，支持 host:port 逗号分隔。',
+  BIAS_THRESHOLD: 'BIAS 偏离阈值，超过后用于增强超买超卖提示。',
+  GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。Codex CLI 需要本机已安装并登录，仍可能调用对应云服务，不是离线模型。',
+  GENERATION_FALLBACK_BACKEND: '本地 Codex 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
+  GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于 Codex CLI 这类本地命令行方式。',
+  GENERATION_BACKEND_MAX_OUTPUT_BYTES: '单次本地命令行生成可读取的输出大小上限，默认 1048576 字节。',
+  GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；使用默认模型配置时不改变分析任务线程数。',
+  LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '同时允许启动多少个本地命令行生成进程，默认 1；最终不会超过“模型生成最大并发”。',
   LITELLM_MODEL: '主模型，格式 provider/model（如 gemini/gemini-2.5-flash）。配置渠道后自动推断。',
   AGENT_LITELLM_MODEL: 'Agent 专用主模型。留空时继承主模型；无 provider 前缀时会按 openai/<model> 解析。',
   LITELLM_FALLBACK_MODELS: '备选模型，逗号分隔，主模型失败时按序尝试。',
   LITELLM_CONFIG: '高级模型路由 YAML 配置文件路径（高级用法）。仅在 YAML 可解析且产出 model_list 时优先于渠道与旧配置，否则会回退。',
   LLM_CHANNELS: '渠道名称列表（逗号分隔）。推荐使用上方渠道编辑器管理。',
   LLM_TEMPERATURE: '控制模型输出随机性，0 为确定性输出，2 为最大随机性，推荐 0.7。',
+  LLM_PROMPT_CACHE_TELEMETRY_ENABLED: '记录 provider 返回的 prompt cache usage 与归一化诊断；不控制 provider implicit cache。',
+  LLM_PROMPT_CACHE_HINTS_ENABLED: '允许向已验证 provider/route 主动发送 prompt_cache_key、cache_control 或 user_id 等 cache hint；未知网关默认不发送。',
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: '控制 prompt cache capability 与 hint 决策诊断：off、basic 或 debug；debug 也不得包含 raw prompt 或密钥。',
+  LLM_USAGE_HMAC_SECRET: '用于 LLM 用量遥测 message HMAC 的部署级密钥。留空时使用本地自动生成的密钥文件。',
+  LLM_USAGE_HMAC_KEY_VERSION: 'LLM 用量遥测 HMAC 密钥版本标签；轮换密钥时同步更新，避免跨版本 hash 被误比较。',
   AIHUBMIX_KEY: 'AIHubmix 一站式密钥，自动指向 aihubmix.com/v1。',
   ANSPIRE_LLM_ENABLED: '开启后，未配置更高优先级 LLM 渠道或 OpenAI 兼容密钥时，ANSPIRE_API_KEYS 会自动作为 Anspire 大模型密钥使用。',
   ANSPIRE_LLM_BASE_URL: 'Anspire OpenAI 兼容网关地址，默认 https://open-gateway.anspire.cn/v6，海外可用 https://open-gateway.anspire.ai/v6。',
@@ -133,10 +265,51 @@ const fieldDescriptionMap: Record<string, string> = {
   FEISHU_WEBHOOK_KEYWORD: '飞书群机器人安全设置里的“关键词”。填写后，系统会在每条飞书消息前自动补上该关键词。',
   FEISHU_APP_ID: '仅用于飞书应用机器人 / Stream Bot / 云文档等应用模式，不会直接开启群 Webhook 推送。',
   FEISHU_APP_SECRET: '仅用于飞书应用机器人 / Stream Bot / 云文档等应用模式，不会直接开启群 Webhook 推送。',
+  FEISHU_STREAM_ENABLED: '启用飞书应用机器人 / Stream Bot 长连接模式；不是飞书群 Webhook 推送开关，需配套 App ID/Secret 并重启相关进程。',
   DINGTALK_APP_KEY: '钉钉应用模式 App Key。',
   DINGTALK_APP_SECRET: '钉钉应用模式 App Secret。',
+  DINGTALK_STREAM_ENABLED: '启用钉钉应用机器人长连接模式；不是普通群机器人 Webhook 开关，需配套 App Key/Secret 并重启相关进程。',
+  TELEGRAM_BOT_TOKEN: 'Telegram Bot Token（由 @BotFather 创建）。',
+  TELEGRAM_CHAT_ID: 'Telegram 目标会话 ID（个人/群组/频道）。',
+  TELEGRAM_MESSAGE_THREAD_ID: 'Telegram 群组 Topic Thread ID；未启用话题可留空。',
+  EMAIL_SENDER: 'SMTP 发件邮箱地址。',
+  EMAIL_PASSWORD: '发件邮箱 SMTP 授权码（通常不是网页登录密码）。',
+  EMAIL_RECEIVERS: '收件邮箱列表，多个收件人用英文逗号分隔。',
+  DISCORD_WEBHOOK_URL: 'Discord Webhook 推送地址。',
+  DISCORD_BOT_TOKEN: 'Discord Bot Token（用于 Bot API 推送路径）。',
+  DISCORD_MAIN_CHANNEL_ID: 'Discord 默认主频道 ID。',
+  DISCORD_INTERACTIONS_PUBLIC_KEY: 'Discord Interactions 公钥（用于签名校验）。',
+  SLACK_BOT_TOKEN: 'Slack Bot OAuth Token。',
+  SLACK_CHANNEL_ID: 'Slack 目标频道 ID。',
+  SLACK_WEBHOOK_URL: 'Slack Incoming Webhook 地址。',
+  PUSHPLUS_TOPIC: 'PushPlus 主题分组 Topic，留空时发送到默认分组。',
+  PUSHOVER_USER_KEY: 'Pushover 用户标识 User Key。',
+  PUSHOVER_API_TOKEN: 'Pushover 应用 API Token。',
+  SERVERCHAN3_SENDKEY: 'Server酱3 SendKey。',
+  ASTRBOT_URL: 'AstrBot 接口地址。',
+  ASTRBOT_TOKEN: 'AstrBot 鉴权 Token。',
   CUSTOM_WEBHOOK_URLS: '自定义通知端点，多个用英文逗号分隔；Bark 可直接填写 https://api.day.app/YOUR_BARK_KEY。',
+  CUSTOM_WEBHOOK_BEARER_TOKEN: '自定义 Webhook 的 Bearer Token，发送时自动附加 Authorization 头。',
   CUSTOM_WEBHOOK_BODY_TEMPLATE: '全局 JSON body 模板，会先于 Bark、Slack、Discord 等自动 payload 生效；推荐使用 $content_json / $title_json，裸 $content / $title 不做 JSON 转义。',
+  WEBHOOK_VERIFY_SSL: '发送 HTTPS Webhook 时是否校验证书，公网环境建议保持开启。',
+  SINGLE_STOCK_NOTIFY: '启用后按个股分别推送通知；关闭则合并为单条消息。',
+  REPORT_TYPE: '通知报告展示粒度（如 simple/full/brief）。',
+  REPORT_LANGUAGE: '通知报告语言（zh/en）。',
+  REPORT_TEMPLATES_DIR: '自定义报告模板目录路径。',
+  REPORT_INTEGRITY_ENABLED: '启用报告完整性检查，避免发送缺字段或异常内容。',
+  REPORT_RENDERER_ENABLED: '启用报告渲染器，将结构化数据渲染为最终通知内容。',
+  REPORT_INTEGRITY_RETRY: '报告完整性检查失败时的重试次数。',
+  REPORT_HISTORY_COMPARE_N: '通知中引用历史报告做对比时的回看期数。',
+  MERGE_EMAIL_NOTIFICATION: '启用后将多条邮件通知合并发送，减少同一周期邮件数量。',
+  NOTIFICATION_REPORT_CHANNELS: '报告类通知默认发送渠道，多个值用英文逗号分隔。',
+  NOTIFICATION_ALERT_CHANNELS: '告警类通知默认发送渠道，多个值用英文逗号分隔。',
+  NOTIFICATION_SYSTEM_ERROR_CHANNELS: '系统错误通知默认发送渠道，多个值用英文逗号分隔。',
+  NOTIFICATION_DEDUP_TTL_SECONDS: '通知去重时间窗口（秒），窗口内相同内容可抑制重复发送。',
+  NOTIFICATION_COOLDOWN_SECONDS: '通知冷却时间（秒），避免短时间内频繁打扰。',
+  NOTIFICATION_QUIET_HOURS: '通知静默时段配置，静默期内仅发送关键消息。',
+  NOTIFICATION_TIMEZONE: '通知时间计算使用的时区。',
+  NOTIFICATION_MIN_SEVERITY: '通知最低级别阈值，低于该级别的消息将被忽略。',
+  NOTIFICATION_DAILY_DIGEST_ENABLED: '启用每日汇总通知，按日合并发送摘要。',
   NTFY_URL: 'ntfy 完整 topic endpoint，必须包含 topic path，例如 https://ntfy.sh/my-topic。',
   NTFY_TOKEN: 'ntfy Bearer Token；公开 topic 可留空。',
   GOTIFY_URL: 'Gotify server base URL，不包含 /message；系统发送时会自动拼接 /message。',
@@ -145,12 +318,30 @@ const fieldDescriptionMap: Record<string, string> = {
   REPORT_SUMMARY_ONLY: '仅推送分析结果摘要，不包含个股详情。多股时适合快速浏览。',
   REPORT_SHOW_LLM_MODEL: '在通知报告底部显示本次分析使用的 LLM 模型名称；关闭后隐藏运行时模型信息。仅影响展示，不会影响 provider/model/Base URL、运行时模型保存、迁移或清理。',
   MAX_WORKERS: '异步任务队列最大并发数。配置保存后，队列空闲时会自动应用；繁忙时延后生效。',
+  SCHEDULE_ENABLED: '启用每日定时分析任务。',
+  SCHEDULE_TIMES: '多个每日定时任务执行时间，使用逗号分隔；Web 设置页会以时间控件维护。',
+  SCHEDULE_RUN_IMMEDIATELY: '仅影响 schedule 模式启动时是否立即触发一次任务；保存 Web 设置不会触发执行。',
+  TRADING_DAY_CHECK_ENABLED: '启用交易日校验，非交易日自动跳过定时分析。',
+  WEBUI_HOST: 'WebUI 服务监听地址（默认通常为 0.0.0.0）。',
+  ADMIN_AUTH_ENABLED: '启用 Web 管理端账号密码登录校验。',
+  TRUST_X_FORWARDED_FOR: '启用后信任反向代理透传的 X-Forwarded-For 源 IP。',
+  RUN_IMMEDIATELY: '程序启动后立即执行一次分析任务。',
+  MARKET_REVIEW_ENABLED: '是否启用大盘复盘流程。',
+  DAILY_MARKET_CONTEXT_ENABLED: '默认开启。开启后会把当日大盘摘要注入个股分析，并在高风险或退潮环境下软化激进买入建议；关闭后仍可运行大盘复盘。',
+  MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/us/hk）。',
   MARKET_REVIEW_COLOR_SCHEME: '控制大盘复盘指数涨跌幅图标颜色：green_up 为绿涨红跌，red_up 为红涨绿跌。',
+  ANALYSIS_DELAY: '启动任务前的延迟秒数，可用于等待依赖服务就绪。',
+  SAVE_CONTEXT_SNAPSHOT: '控制是否持久化整份分析历史 context_snapshot；关闭后不会保存低敏输入概览、市场阶段摘要和增强上下文，但不影响当次分析的 pack 构建或 Prompt 摘要。',
   SCHEDULE_TIME: '每日定时任务执行时间，格式为 HH:MM。',
+  DEBUG: '启用调试模式，输出更多诊断日志。',
   HTTP_PROXY: '网络代理地址，可留空。',
+  LOG_DIR: '应用日志输出目录；需对运行用户或容器可写，修改后通常需要重启进程才完全生效。',
   LOG_LEVEL: '设置日志输出级别。',
+  WEBUI_ENABLED: '启动期兼容开关，控制后续默认入口是否进入 WebUI/API 服务模式；保存后不会立即启动或关闭当前 WebUI。',
+  WEBUI_AUTO_BUILD: '后端启动 WebUI 前是否自动检查并构建前端静态产物；关闭前需确认产物已预构建，保存后需重启生效。',
   WEBUI_PORT: 'Web 页面服务监听端口。',
   AGENT_MODE: '是否启用 ReAct Agent 策略问股。对外文案仍叫“策略”，内部配置字段统一使用 skill。',
+  AGENT_GENERATION_BACKEND: '用于问股助手生成回复并调用行情、新闻和历史数据工具。通常保持“自动”，系统会选择当前可用的方式。',
   AGENT_MAX_STEPS: 'Agent 最大推理步数上限。保持默认 10 时，各子 Agent 按自身预设步数运行；调高到高于默认值时，所有子 Agent 统一采用该值；调低到低于某子 Agent 默认值时，该 Agent 会被封顶。',
   AGENT_SKILLS: '逗号分隔的交易策略列表。留空时使用 metadata 里声明的主默认策略 skill（内置默认是 bull_trend）；也可填写 all 启用全部策略。',
   AGENT_SKILL_DIR: '存放 Agent 策略定义文件的目录路径，支持 YAML 与 SKILL.md bundle。',
@@ -161,6 +352,16 @@ const fieldDescriptionMap: Record<string, string> = {
   AGENT_SKILL_AUTOWEIGHT: "根据回测表现自动调整策略权重。",
   AGENT_SKILL_ROUTING: "策略选择方式。auto 按市场状态自动选择，manual 使用 AGENT_SKILLS 列表。",
   AGENT_MEMORY_ENABLED: "启用记忆与校准系统，追踪历史分析准确率并自动调节置信度。",
+  AGENT_NL_ROUTING: '启用自然语言路由，让 Agent 自动识别意图并选择执行路径。',
+  AGENT_DEEP_RESEARCH_BUDGET: 'Deep Research 预算上限，用于限制深度调研阶段的资源消耗。',
+  AGENT_DEEP_RESEARCH_TIMEOUT: 'Deep Research 超时秒数，超过后自动结束深度调研。',
+  AGENT_EVENT_MONITOR_ENABLED: '启用 Agent 事件监控与告警能力。',
+  AGENT_EVENT_MONITOR_INTERVAL_MINUTES: '事件监控轮询间隔（分钟）。',
+  AGENT_EVENT_ALERT_RULES_JSON: '事件告警规则 JSON 配置；用于定义触发条件与阈值。',
+  AGENT_CONTEXT_COMPRESSION_ENABLED: "开启后，问股会在长会话中压缩可见历史上下文，减少重复 token 消耗；默认关闭。",
+  AGENT_CONTEXT_COMPRESSION_PROFILE: "选择问股长会话上下文压缩策略。cost 偏省 token，balanced 均衡推荐、兼顾保真与成本，long_context_raw_first 优先保留更多原文。",
+  AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS: "估算历史 token 超过该值时触发摘要；留空则跟随当前上下文压缩策略 profile 默认值。",
+  AGENT_CONTEXT_PROTECTED_TURNS: "压缩时最近 N 个用户轮次及其后的回复保持原文；留空则跟随当前上下文压缩策略 profile 默认值。",
   BACKTEST_ENABLED: '是否启用回测功能（true/false）。',
   BACKTEST_EVAL_WINDOW_DAYS: '回测评估窗口长度，单位为交易日。',
   BACKTEST_MIN_AGE_DAYS: '仅回测早于该天数的分析记录。',
@@ -168,12 +369,190 @@ const fieldDescriptionMap: Record<string, string> = {
   BACKTEST_NEUTRAL_BAND_PCT: '中性区间阈值百分比，例如 2 表示 -2%~+2%。',
 };
 
+const fieldOptionLabelMap: Record<string, Record<string, string>> = {
+  NEWS_STRATEGY_PROFILE: {
+    ultra_short: '超短线（1天）',
+    short: '短期（3天）',
+    medium: '中期（7天）',
+    long: '长期（30天）',
+  },
+  REPORT_TYPE: {
+    simple: '简洁',
+    full: '完整',
+    brief: '简报',
+  },
+  REPORT_LANGUAGE: {
+    zh: '中文',
+    en: '英文',
+    chinese: '中文',
+    english: '英文',
+  },
+  NOTIFICATION_MIN_SEVERITY: {
+    '': '未设置',
+    'not set': '未设置',
+    info: '信息',
+    warning: '警告',
+    error: '错误',
+    critical: '严重',
+  },
+  MARKET_REVIEW_COLOR_SCHEME: {
+    green_up: '绿涨红跌',
+    red_up: '红涨绿跌',
+    'green up / red down': '绿涨红跌',
+    'red up / green down': '红涨绿跌',
+  },
+  GENERATION_BACKEND: {
+    litellm: '默认模型配置',
+    codex_cli: 'Codex CLI（实验）',
+  },
+  GENERATION_FALLBACK_BACKEND: {
+    '': '禁用',
+    litellm: '默认模型配置',
+  },
+  AGENT_GENERATION_BACKEND: {
+    auto: '自动',
+    litellm: '默认模型配置',
+    codex_cli: 'Codex CLI（不支持工具）',
+  },
+  LOG_LEVEL: {
+    debug: '调试',
+    info: '信息',
+    warning: '警告',
+    error: '错误',
+    critical: '严重',
+  },
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: {
+    off: '关闭',
+    basic: '基础',
+    debug: '调试',
+  },
+  MARKET_REVIEW_REGION: {
+    cn: 'A 股',
+    hk: '港股',
+    us: '美股',
+    both: '全部市场',
+  },
+  AGENT_ARCH: {
+    single: '单 Agent',
+    multi: '多 Agent（编排）',
+    'single agent': '单 Agent',
+    'multi agent (orchestrator)': '多 Agent（编排）',
+  },
+  AGENT_ORCHESTRATOR_MODE: {
+    quick: '快速',
+    standard: '标准',
+    full: '完整',
+    specialist: '专家',
+  },
+  AGENT_SKILL_ROUTING: {
+    auto: '自动（按市场状态）',
+    manual: '手动（使用 AGENT_SKILLS）',
+    'auto (regime-based)': '自动（按市场状态）',
+    'manual (use agent_skills)': '手动（使用 AGENT_SKILLS）',
+  },
+};
+
+const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
+  NEWS_STRATEGY_PROFILE: {
+    ultra_short: 'Ultra short (1 day)',
+    short: 'Short (3 days)',
+    medium: 'Medium (7 days)',
+    long: 'Long (30 days)',
+  },
+  REPORT_TYPE: {
+    simple: 'Simple',
+    full: 'Full',
+    brief: 'Brief',
+  },
+  REPORT_LANGUAGE: {
+    zh: 'Chinese',
+    en: 'English',
+    chinese: 'Chinese',
+    english: 'English',
+  },
+  NOTIFICATION_MIN_SEVERITY: {
+    '': 'Not set',
+    'not set': 'Not set',
+    info: 'Info',
+    warning: 'Warning',
+    error: 'Error',
+    critical: 'Critical',
+  },
+  MARKET_REVIEW_COLOR_SCHEME: {
+    green_up: 'Green up / red down',
+    red_up: 'Red up / green down',
+    'green up / red down': 'Green up / red down',
+    'red up / green down': 'Red up / green down',
+  },
+  GENERATION_BACKEND: {
+    litellm: 'Default model settings',
+    codex_cli: 'Codex CLI (experimental)',
+  },
+  GENERATION_FALLBACK_BACKEND: {
+    '': 'Disabled',
+    litellm: 'Default model settings',
+  },
+  AGENT_GENERATION_BACKEND: {
+    auto: 'Auto',
+    litellm: 'Default model settings',
+    codex_cli: 'Codex CLI (tools unsupported)',
+  },
+  LOG_LEVEL: {
+    debug: 'Debug',
+    info: 'Info',
+    warning: 'Warning',
+    error: 'Error',
+    critical: 'Critical',
+  },
+  LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: {
+    off: 'Off',
+    basic: 'Basic',
+    debug: 'Debug',
+  },
+  MARKET_REVIEW_REGION: {
+    cn: 'A-shares',
+    hk: 'Hong Kong',
+    us: 'US',
+    both: 'All markets',
+  },
+  AGENT_ARCH: {
+    single: 'Single Agent',
+    multi: 'Multi Agent (orchestrator)',
+    'single agent': 'Single Agent',
+    'multi agent (orchestrator)': 'Multi Agent (orchestrator)',
+  },
+  AGENT_ORCHESTRATOR_MODE: {
+    quick: 'Quick',
+    standard: 'Standard',
+    full: 'Full',
+    specialist: 'Specialist',
+  },
+  AGENT_SKILL_ROUTING: {
+    auto: 'Auto (regime-based)',
+    manual: 'Manual (use AGENT_SKILLS)',
+    'auto (regime-based)': 'Auto (regime-based)',
+    'manual (use agent_skills)': 'Manual (use AGENT_SKILLS)',
+  },
+};
+
+function normalizeOptionToken(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
 export function getCategoryTitleZh(category: SystemConfigCategory, fallback?: string): string {
-  return categoryTitleMap[category] || fallback || category;
+  return getCategoryTitle(category, fallback, 'zh');
 }
 
 export function getCategoryDescriptionZh(category: SystemConfigCategory, fallback?: string): string {
-  return categoryDescriptionMap[category] || fallback || '';
+  return getCategoryDescription(category, fallback, 'zh');
+}
+
+export function getCategoryTitle(category: SystemConfigCategory, fallback?: string, locale: UiLanguage = 'zh'): string {
+  return categoryTitleMap[locale][category] || fallback || category;
+}
+
+export function getCategoryDescription(category: SystemConfigCategory, fallback?: string, locale: UiLanguage = 'zh'): string {
+  return categoryDescriptionMap[locale][category] || fallback || '';
 }
 
 export function getFieldTitleZh(key: string, fallback?: string): string {
@@ -182,4 +561,34 @@ export function getFieldTitleZh(key: string, fallback?: string): string {
 
 export function getFieldDescriptionZh(key: string, fallback?: string): string {
   return fieldDescriptionMap[key] || fallback || '';
+}
+
+export function getFieldOptionLabelZh(key: string, value: string, fallbackLabel?: string): string {
+  return getFieldOptionLabel(key, value, fallbackLabel, 'zh');
+}
+
+export function getFieldOptionLabel(
+  key: string,
+  value: string,
+  fallbackLabel?: string,
+  locale: UiLanguage = 'zh',
+): string {
+  const map = locale === 'en' ? fieldOptionLabelMapEn[key] : fieldOptionLabelMap[key];
+  if (!map) {
+    return fallbackLabel ?? value;
+  }
+
+  const byValue = map[normalizeOptionToken(value)];
+  if (byValue) {
+    return byValue;
+  }
+
+  if (fallbackLabel) {
+    const byLabel = map[normalizeOptionToken(fallbackLabel)];
+    if (byLabel) {
+      return byLabel;
+    }
+  }
+
+  return fallbackLabel ?? value;
 }

@@ -1,6 +1,6 @@
 {
   "name": "daily-stock-analysis-desktop",
-  "version": "3.17.1",
+  "version": "3.21.0",
   "private": true,
   "main": "main.js",
   "scripts": {

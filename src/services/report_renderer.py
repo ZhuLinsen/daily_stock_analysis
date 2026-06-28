@@ -15,16 +15,24 @@ from typing import Any, Dict, List, Optional
 
 from src.analyzer import AnalysisResult
 from src.config import get_config
+from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
+from src.services.decision_signal_summary import format_decision_signal_excerpt
 from src.report_language import (
     get_localized_stock_name,
     get_report_labels,
     get_signal_level,
+    get_chip_unavailable_reason,
+    is_chip_structure_unavailable,
     localize_chip_health,
     localize_operation_advice,
     localize_trend_prediction,
     normalize_report_language,
 )
-from src.utils.data_processing import normalize_model_used
+from src.utils.data_processing import (
+    normalize_model_used,
+    signal_attribution_has_content,
+    signal_attribution_weight_items,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +154,31 @@ def render(
     def failed_checks(checklist: List[str]) -> List[str]:
         return [c for c in (checklist or []) if c.startswith("❌") or c.startswith("⚠️")]
 
+    def phase_pack_excerpt(result: AnalysisResult) -> str:
+        return format_public_phase_pack_excerpt(
+            getattr(result, "market_phase_summary", None),
+            getattr(result, "analysis_context_pack_overview", None),
+            source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
+            report_language=report_language,
+        )
+
+    def decision_signal_excerpt(result: AnalysisResult) -> str:
+        return format_decision_signal_excerpt(
+            getattr(result, "decision_signal_summary", None),
+            report_language=report_language,
+        )
+
+    def market_status_line() -> str:
+        for source_results in (results or [], sorted_results):
+            for result in source_results:
+                line = format_public_market_status_line(
+                    getattr(result, "market_phase_summary", None),
+                    report_language=report_language,
+                )
+                if line:
+                    return line
+        return ""
+
     context: Dict[str, Any] = {
         "report_date": report_date,
         "report_timestamp": report_timestamp,
@@ -159,13 +192,20 @@ def render(
         "report_language": report_language,
         "models_used": models_used,
         "show_llm_model": show_llm_model,
+        "market_status_line": market_status_line(),
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,
+        "phase_pack_excerpt": phase_pack_excerpt,
+        "decision_signal_excerpt": decision_signal_excerpt,
         "history_by_code": {},
+        "get_chip_unavailable_reason": get_chip_unavailable_reason,
+        "is_chip_structure_unavailable": is_chip_structure_unavailable,
         "localize_operation_advice": localize_operation_advice,
         "localize_trend_prediction": localize_trend_prediction,
         "localize_chip_health": localize_chip_health,
+        "signal_attribution_has_content": signal_attribution_has_content,
+        "signal_attribution_weight_items": signal_attribution_weight_items,
     }
     if extra_context:
         safe_extra_context = dict(extra_context)

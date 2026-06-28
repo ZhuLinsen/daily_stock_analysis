@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for backtest engine."""
 
+import math
 import unittest
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -147,6 +148,92 @@ class BacktestEngineTestCase(unittest.TestCase):
             take_profit=None,
             config=cfg,
         )
+        self.assertEqual(res["outcome"], "win")
+
+    def test_decision_signal_helper_classifies_structured_up_not_down_and_not_up(self):
+        cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0, engine_version="decision-signal-v1")
+
+        up = BacktestEngine.evaluate_decision_signal(
+            direction_expected="up",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=self._bars(date(2024, 1, 1), [101, 102, 103]),
+            config=cfg,
+        )
+        not_down = BacktestEngine.evaluate_decision_signal(
+            direction_expected="not_down",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=self._bars(date(2024, 1, 1), [99.5, 99, 99]),
+            config=cfg,
+        )
+        not_up = BacktestEngine.evaluate_decision_signal(
+            direction_expected="not_up",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=self._bars(date(2024, 1, 1), [100.5, 101, 101.5]),
+            config=cfg,
+        )
+        not_up_miss = BacktestEngine.evaluate_decision_signal(
+            direction_expected="not_up",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=self._bars(date(2024, 1, 1), [101, 102, 103]),
+            config=cfg,
+        )
+
+        self.assertEqual(up["outcome"], "hit")
+        self.assertEqual(not_down["outcome"], "neutral")
+        self.assertEqual(not_up["outcome"], "hit")
+        self.assertEqual(not_up_miss["outcome"], "miss")
+
+    def test_decision_signal_helper_rejects_non_finite_prices(self):
+        cfg = EvaluationConfig(eval_window_days=1, neutral_band_pct=2.0, engine_version="decision-signal-v1")
+
+        bad_start = BacktestEngine.evaluate_decision_signal(
+            direction_expected="up",
+            anchor_date=date(2024, 1, 1),
+            start_price=math.nan,
+            forward_bars=self._bars(date(2024, 1, 1), [103]),
+            config=cfg,
+        )
+        bad_end = BacktestEngine.evaluate_decision_signal(
+            direction_expected="up",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=[Bar(date=date(2024, 1, 2), high=101, low=99, close=math.nan)],
+            config=cfg,
+        )
+        bad_bounds = BacktestEngine.evaluate_decision_signal(
+            direction_expected="up",
+            anchor_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=[Bar(date=date(2024, 1, 2), high=math.inf, low=-math.inf, close=103)],
+            config=cfg,
+        )
+
+        self.assertEqual(bad_start["eval_status"], "unable")
+        self.assertEqual(bad_start["unable_reason"], "invalid_anchor_price")
+        self.assertEqual(bad_end["eval_status"], "unable")
+        self.assertEqual(bad_end["unable_reason"], "invalid_end_close")
+        self.assertEqual(bad_bounds["eval_status"], "completed")
+        self.assertEqual(bad_bounds["stock_return_pct"], 3.0)
+        self.assertIsNone(bad_bounds["max_high"])
+        self.assertIsNone(bad_bounds["min_low"])
+
+    def test_decision_signal_helper_does_not_change_evaluate_single_hold_behavior(self):
+        cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0)
+        res = BacktestEngine.evaluate_single(
+            operation_advice="持有",
+            analysis_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=self._bars(date(2024, 1, 1), [100.2, 100.4, 100.6]),
+            stop_loss=None,
+            take_profit=None,
+            config=cfg,
+        )
+
+        self.assertEqual(res["direction_expected"], "not_down")
         self.assertEqual(res["outcome"], "win")
 
     def test_stop_loss_hit_first(self):
