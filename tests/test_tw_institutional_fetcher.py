@@ -258,5 +258,49 @@ class TestStructureRobustness(unittest.TestCase):
             self.assertIsNone(_fetcher().get_institutional_net("3105.TWO"))
 
 
+class TestConcurrencyAndHttpError(unittest.TestCase):
+    """Cache-stampede guard: concurrent same-key callers coalesce into one upstream
+    fetch (protects the T86 ~3 req/5 s budget); HTTP errors fail open."""
+
+    def test_concurrent_same_key_coalesces_to_single_fetch(self):
+        import threading
+        import time as _t
+        calls = []
+        barrier = threading.Barrier(8)
+
+        def slow_get(*a, **k):
+            calls.append(1)
+            _t.sleep(0.05)   # window for the other threads to pile up on the key lock
+            return _resp(T86_FIXTURE)
+
+        f = _fetcher()
+
+        def caller():
+            barrier.wait()   # release all 8 threads together so they truly race
+            f.get_institutional_net("2330.TW", "20260626")
+
+        with patch("data_provider.tw_institutional_fetcher.requests.get", side_effect=slow_get):
+            threads = [threading.Thread(target=caller) for _ in range(8)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        self.assertEqual(len(calls), 1)   # 8 concurrent same-key callers -> ONE fetch
+
+    def test_different_keys_are_not_coalesced(self):
+        with patch("data_provider.tw_institutional_fetcher.requests.get", return_value=_resp(T86_FIXTURE)) as mock_get:
+            f = _fetcher()
+            f.get_institutional_net("2330.TW", "20260626")
+            f.get_institutional_net("2330.TW", "20260625")   # different date -> different key
+            self.assertEqual(mock_get.call_count, 2)
+
+    def test_http_error_fails_open(self):
+        import requests as _rq
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = _rq.HTTPError("429 Too Many Requests")
+        with patch("data_provider.tw_institutional_fetcher.requests.get", return_value=resp):
+            self.assertIsNone(_fetcher().get_institutional_net("2330.TW", "20260626"))
+
+
 if __name__ == "__main__":
     unittest.main()

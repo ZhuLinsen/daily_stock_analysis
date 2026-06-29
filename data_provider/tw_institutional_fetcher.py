@@ -119,6 +119,9 @@ class TwInstitutionalFetcher:
         self._last_request_at = 0.0
         self._lock = threading.Lock()
         self._throttle_lock = threading.Lock()
+        # One lock per unique (market, ad_date) key; bounded by tw markets x
+        # distinct dates queried -- low thousands at most, negligible memory.
+        self._inflight: Dict[Any, threading.Lock] = {}
 
     # ------------------------------------------------------------------ public
     def get_institutional_net(
@@ -174,23 +177,46 @@ class TwInstitutionalFetcher:
         May raise on network / HTTP errors -- the public get_institutional_net wraps
         this in a fail-open try/except. Only non-empty results are cached, so a
         transient rate-limit / empty response is retried on the next call rather
-        than serving an empty table for the whole TTL. A benign check-then-fetch
-        race may issue a duplicate request under concurrent callers (this v1 is not
-        called concurrently); it never corrupts data -- last write wins.
+        than serving an empty table for the whole TTL.
+
+        Concurrent callers for the SAME (market, date) coalesce into a single
+        upstream fetch (cache-stampede guard) -- this keeps the T86 ~3 req/5 s
+        budget intact under parallel callers; different keys still fetch in
+        parallel, and the master lock is never held across network I/O. On a fetch
+        error the key-lock is released and waiting callers each retry independently
+        (serialized only by _throttle), since failures are deliberately not cached.
         """
         ad_date = self._norm_ad_date(date) if market == "twse" else None
         key = (market, ad_date)
-        now = time.time()
+        cached = self._read_cache(key)
+        if cached is not None:
+            return cached
+        # Serialize same-key fetches so a burst of callers issues ONE request, not N.
+        with self._key_lock(key):
+            cached = self._read_cache(key)  # double-check: a prior holder may have filled it
+            if cached is not None:
+                return cached
+            table = self._fetch_twse(ad_date) if market == "twse" else self._fetch_tpex()
+            if table:  # never cache an empty / failed fetch -> no TTL-long blackout
+                with self._lock:
+                    self._cache[key] = table
+                    self._cache_at[key] = time.time()
+            return table
+
+    def _read_cache(self, key: Any) -> Optional[Dict[str, dict]]:
         with self._lock:
             cached = self._cache.get(key)
-            if cached is not None and (now - self._cache_at.get(key, 0.0)) < self._cache_ttl:
+            if cached is not None and (time.time() - self._cache_at.get(key, 0.0)) < self._cache_ttl:
                 return cached
-        table = self._fetch_twse(ad_date) if market == "twse" else self._fetch_tpex()
-        if table:  # never cache an empty / failed fetch -> avoid a TTL-long silent blackout
-            with self._lock:
-                self._cache[key] = table
-                self._cache_at[key] = time.time()
-        return table
+        return None
+
+    def _key_lock(self, key: Any) -> threading.Lock:
+        with self._lock:
+            lock = self._inflight.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._inflight[key] = lock
+            return lock
 
     def _throttle(self) -> None:
         with self._throttle_lock:
