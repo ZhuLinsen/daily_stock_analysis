@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。
 - [改进] #1595 P1 新增 prompt cache telemetry / analysis-path hints / diagnostics 最小配置，默认不改变 provider 请求 shape，并复用 LLM usage HMAC secret 做 domain-separated cache hint 派生。
+- [修复] 修复移动端问股页面布局问题：将容器高度从 `100vh` 改为 `100dvh`，解决 iOS Safari/Android Chrome 地址栏遮挡导致聊天区域不可见的问题；同时为 `.chat-prose table` 添加 `overflow-x: auto` 支持，避免 AI 分析报告中的宽表格在手机端被截断。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
