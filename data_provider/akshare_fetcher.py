@@ -94,6 +94,13 @@ _etf_realtime_cache: Dict[str, Any] = {
     'ttl': 1200  # 20分钟缓存有效期
 }
 
+# 港股实时行情缓存（ak.stock_hk_spot_em() 拉取全市场 4688 只港股耗时 ~50 秒）
+_hk_realtime_cache: Dict[str, Any] = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 1200  # 20分钟缓存有效期
+}
+
 
 def _is_etf_code(stock_code: str) -> bool:
     """
@@ -1486,18 +1493,36 @@ class AkshareFetcher(BaseFetcher):
 
         # --- 主数据源：东方财富 ---
         if circuit_breaker.is_available(em_key):
-            try:
-                logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
-                import time as _time
-                api_start = _time.time()
+            # 检查港股缓存
+            current_time = time.time()
+            if (_hk_realtime_cache['data'] is not None and
+                current_time - _hk_realtime_cache['timestamp'] < _hk_realtime_cache['ttl']):
+                df = _hk_realtime_cache['data']
+                cache_age = int(current_time - _hk_realtime_cache['timestamp'])
+                logger.debug(f"[缓存命中] 港股实时行情(东财) - 缓存年龄 {cache_age}s/{_hk_realtime_cache['ttl']}s")
+            else:
+                try:
+                    logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
+                    import time as _time
+                    api_start = _time.time()
 
-                df = ak.stock_hk_spot_em()
+                    df = ak.stock_hk_spot_em()
 
-                api_elapsed = _time.time() - api_start
-                logger.info(f"[API返回] ak.stock_hk_spot_em 成功: 返回 {len(df)} 只港股, 耗时 {api_elapsed:.2f}s")
-                circuit_breaker.record_success(em_key)
+                    api_elapsed = _time.time() - api_start
+                    logger.info(f"[API返回] ak.stock_hk_spot_em 成功: 返回 {len(df)} 只港股, 耗时 {api_elapsed:.2f}s")
+                    circuit_breaker.record_success(em_key)
 
-                # 查找指定港股
+                    # 更新缓存：成功缓存数据；失败也缓存空数据，避免同一轮任务对同一接口反复请求
+                    _hk_realtime_cache['data'] = df if df is not None else pd.DataFrame()
+                    _hk_realtime_cache['timestamp'] = current_time
+                    logger.info(f"[缓存更新] 港股实时行情(东财) 缓存已刷新，TTL={_hk_realtime_cache['ttl']}s")
+                except Exception as e:
+                    logger.warning(f"[API错误] ak.stock_hk_spot_em 获取港股 {stock_code} 失败: {e}，尝试 stock_hk_spot 备用接口")
+                    circuit_breaker.record_failure(em_key, str(e))
+                    df = None
+
+            # 查找指定港股（缓存命中或刚拉取的数据都走这里）
+            if df is not None and not df.empty:
                 row = df[df['代码'] == code]
                 if row.empty:
                     logger.info(f"[API返回] 未找到港股 {code} 的实时行情 (stock_hk_spot_em)")
@@ -1525,10 +1550,6 @@ class AkshareFetcher(BaseFetcher):
                     logger.info(f"[港股实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
                                 f"换手率={quote.turnover_rate}%")
                     return quote
-
-            except Exception as e:
-                logger.warning(f"[API错误] ak.stock_hk_spot_em 获取港股 {stock_code} 失败: {e}，尝试 stock_hk_spot 备用接口")
-                circuit_breaker.record_failure(em_key, str(e))
         else:
             logger.info(f"[熔断] 数据源 {em_key} 处于熔断状态，尝试使用备用链路")
 
