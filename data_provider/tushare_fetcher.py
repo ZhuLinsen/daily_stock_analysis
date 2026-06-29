@@ -846,6 +846,32 @@ class TushareFetcher(BaseFetcher):
 
         return None
 
+    def get_sentiment_market_stats(self, date: str) -> Optional[Dict[str, Any]]:
+        """Optional historical breadth/turnover enhancement for sentiment review."""
+        if self._api is None:
+            return None
+        try:
+            df = self._call_api_with_rate_limit(
+                "daily",
+                ts_code='3*.SZ,6*.SH,0*.SZ,92*.BJ',
+                start_date=date,
+                end_date=date,
+            )
+            if df is None or df.empty:
+                return None
+            changes = pd.to_numeric(df.get('pct_chg'), errors='coerce').dropna()
+            amounts = pd.to_numeric(df.get('amount'), errors='coerce')
+            return {
+                'up_count': int((changes > 0).sum()),
+                'down_count': int((changes < 0).sum()),
+                'flat_count': int((changes == 0).sum()),
+                'total_amount': float(amounts.sum()) * 1000,
+                'source': 'tushare',
+            }
+        except Exception as exc:
+            logger.warning("[Tushare] sentiment market stats failed: %s", exc)
+            return None
+
     def get_market_stats(self) -> Optional[dict]:
         """
         获取市场涨跌统计 (Tushare Pro)

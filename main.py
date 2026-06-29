@@ -959,6 +959,23 @@ def run_full_analysis(
         except Exception as e:
             logger.error(f"飞书文档生成失败: {e}")
 
+        # Generate once for the latest completed A-share session. Database
+        # uniqueness keeps runs idempotent across multiple schedule times.
+        try:
+            if getattr(config, 'sentiment_review_enabled', True):
+                from src.core.sentiment_review import SentimentReviewRunner
+                from src.core.trading_calendar import get_effective_trading_date
+
+                review_date = get_effective_trading_date('cn')
+                sentiment_result = SentimentReviewRunner().run(review_date, market='cn')
+                logger.info(
+                    "Sentiment review schedule status=%s trade_date=%s",
+                    sentiment_result.get('status'),
+                    sentiment_result.get('trade_date'),
+                )
+        except Exception as e:
+            logger.warning("Automatic sentiment review failed without blocking other jobs: %s", e)
+
         # === Auto backtest ===
         try:
             if getattr(config, 'backtest_enabled', False):

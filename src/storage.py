@@ -298,6 +298,71 @@ class FundamentalSnapshot(Base):
         return f"<FundamentalSnapshot(query_id={self.query_id}, code={self.code})>"
 
 
+class SentimentReviewDaily(Base):
+    """One deterministic post-close sentiment review per market and trade date."""
+
+    __tablename__ = 'sentiment_review_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market = Column(String(8), nullable=False, default='cn', index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    run_status = Column(String(16), nullable=False, default='pending', index=True)
+    data_quality = Column(String(16), nullable=False, default='partial', index=True)
+    structured_payload = Column(Text, nullable=False, default='{}')
+    llm_analysis = Column(Text)
+    llm_next_day_watch = Column(Text)
+    llm_risk_notes = Column(Text)
+    provider_trace = Column(Text, nullable=False, default='{}')
+    completeness = Column(Text, nullable=False, default='{}')
+    rule_version = Column(Integer, nullable=False, default=1)
+    prompt_version = Column(Integer, nullable=False, default=1)
+    task_id = Column(String(64), index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('market', 'trade_date', name='uix_sentiment_review_market_date'),
+        Index('ix_sentiment_review_market_date', 'market', 'trade_date'),
+    )
+
+    def payload(self) -> Dict[str, Any]:
+        try:
+            value = json.loads(self.structured_payload or '{}')
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+
+class SentimentReviewStock(Base):
+    """Per-stock evidence used to reproduce a daily sentiment review."""
+
+    __tablename__ = 'sentiment_review_stocks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    daily_id = Column(
+        Integer,
+        ForeignKey('sentiment_review_daily.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    stock_code = Column(String(16), nullable=False)
+    stock_name = Column(String(64))
+    evidence_payload = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('daily_id', 'stock_code', name='uix_sentiment_stock_daily_code'),
+        Index('ix_sentiment_stock_daily', 'daily_id', 'stock_code'),
+    )
+
+    def evidence(self) -> Dict[str, Any]:
+        try:
+            value = json.loads(self.evidence_payload or '{}')
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+
 class AnalysisHistory(Base):
     """
     分析结果历史记录模型

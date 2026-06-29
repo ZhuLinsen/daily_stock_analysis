@@ -1,6 +1,9 @@
 export type UiLanguage = 'zh' | 'en';
 
 const zh = {
+  'layout.nav.sentimentReview': '情绪复盘',
+  'layout.route.sentimentReview.description': '收盘后的规则化市场情绪指标与历史趋势',
+  'layout.route.sentimentReview.title': '每日情绪复盘',
   'common.cancel': '取消',
   'common.close': '关闭',
   'common.closeDrawer': '关闭抽屉',
@@ -748,6 +751,9 @@ const zh = {
 export type UiTextKey = keyof typeof zh;
 
 const en: Record<UiTextKey, string> = {
+  'layout.nav.sentimentReview': 'Sentiment Review',
+  'layout.route.sentimentReview.description': 'Post-close rule-based market sentiment metrics and history',
+  'layout.route.sentimentReview.title': 'Daily Sentiment Review',
   'common.cancel': 'Cancel',
   'common.close': 'Close',
   'common.closeDrawer': 'Close drawer',

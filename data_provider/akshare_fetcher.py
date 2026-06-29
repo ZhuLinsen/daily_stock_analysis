@@ -2155,6 +2155,79 @@ class AkshareFetcher(BaseFetcher):
             logger.warning(f"[Akshare] 获取涨停池失败: {e}")
             return None
 
+    def get_sentiment_market_stats(self, date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return post-close market breadth and turnover from one A-share snapshot."""
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = ak.stock_zh_a_spot_em()
+            if df is None or df.empty or '涨跌幅' not in df.columns:
+                return None
+            changes = pd.to_numeric(df['涨跌幅'], errors='coerce').dropna()
+            amounts = pd.to_numeric(df.get('成交额', pd.Series(dtype=float)), errors='coerce')
+            return {
+                'up_count': int((changes > 0).sum()),
+                'down_count': int((changes < 0).sum()),
+                'flat_count': int((changes == 0).sum()),
+                'total_amount': float(amounts.sum()),
+                'source': 'akshare',
+            }
+        except Exception as exc:
+            logger.warning("[Akshare] sentiment market stats failed: %s", exc)
+            return None
+
+    def get_broken_limit_pool(self, date: str) -> Optional[List[Dict[str, Any]]]:
+        """Return stocks which touched but did not close at their limit price."""
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = ak.stock_zt_pool_zbgc_em(date=date)
+            if df is None or df.empty:
+                return []
+            return [{
+                'code': str(row.get('代码', '')).strip(),
+                'name': str(row.get('名称', '')).strip(),
+                'change_pct': self._safe_float(row.get('涨跌幅')),
+                'amount': self._safe_float(row.get('成交额')),
+                'first_limit_time': self._normalize_limit_time_value(row.get('首次封板时间')),
+                'break_count': self._safe_int(row.get('炸板次数')),
+                'industry': str(row.get('所属行业', '')).strip(),
+                'source': 'akshare',
+            } for _, row in df.iterrows()]
+        except Exception as exc:
+            logger.warning("[Akshare] broken limit pool failed: %s", exc)
+            return None
+
+    def get_previous_limit_up_pool(self, date: str) -> Optional[List[Dict[str, Any]]]:
+        """Return current-day performance for the previous session's limit-up stocks."""
+        import akshare as ak
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            df = ak.stock_zt_pool_previous_em(date=date)
+            if df is None or df.empty:
+                return []
+            rows: List[Dict[str, Any]] = []
+            for _, row in df.iterrows():
+                previous_close = self._safe_float(row.get('昨收'))
+                current_open = self._safe_float(row.get('今开'))
+                change_pct = self._safe_float(row.get('涨跌幅'))
+                rows.append({
+                    'code': str(row.get('代码', '')).strip(),
+                    'name': str(row.get('名称', '')).strip(),
+                    'previous_consecutive_boards': self._safe_int(row.get('昨日连板数')),
+                    'auction_return': current_open / previous_close - 1
+                    if current_open is not None and previous_close not in (None, 0) else None,
+                    'close_return': change_pct / 100 if change_pct is not None else None,
+                    'source': 'akshare',
+                })
+            return rows
+        except Exception as exc:
+            logger.warning("[Akshare] previous limit pool failed: %s", exc)
+            return None
+
     @staticmethod
     def _normalize_limit_time_value(value: Any) -> str:
         """Normalize AkShare HHMMSS-like seal time values to zero-padded HHMMSS."""
