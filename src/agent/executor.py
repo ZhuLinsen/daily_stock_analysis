@@ -818,6 +818,8 @@ class AgentExecutor:
                 parts.append(f"报告类型: {context['report_type']}")
             if report_language == "en":
                 parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
+            elif report_language == "ko":
+                parts.append("출력 언어: 한국어（모든 JSON 키는 그대로 유지하고, 사용자 노출 텍스트 값은 한국어로 작성）")
             else:
                 parts.append("输出语言: 中文（所有 JSON 键名保持不变，所有面向用户的文本值使用中文）")
 

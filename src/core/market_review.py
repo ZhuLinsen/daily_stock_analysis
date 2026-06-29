@@ -120,6 +120,17 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "kr_title": "# Korea Market Recap",
             "separator": "> Next market recap follows",
         }
+    if normalized == "ko":
+        return {
+            "root_title": "# 🎯 시황 리뷰",
+            "push_title": "🎯 시황 리뷰",
+            "cn_title": "# 중국 A주 시황 리뷰",
+            "us_title": "# 미국 시황 리뷰",
+            "hk_title": "# 홍콩 시황 리뷰",
+            "jp_title": "# 일본 시황 리뷰",
+            "kr_title": "# 한국 시황 리뷰",
+            "separator": "> 다음 시장 시황 리뷰",
+        }
     return {
         "root_title": "# 🎯 大盘复盘",
         "push_title": "🎯 大盘复盘",
@@ -554,6 +565,10 @@ def _persist_market_review_history(
             stock_name = "Market Review"
             operation_advice = "View review"
             trend_prediction = "Market review"
+        elif report_language == "ko":
+            stock_name = "시황 리뷰"
+            operation_advice = "리뷰 보기"
+            trend_prediction = "시황 리뷰"
         else:
             stock_name = "大盘复盘"
             operation_advice = "查看复盘"
@@ -657,7 +672,11 @@ def _build_market_review_context_overview(
         metadata["trigger_source"] = diagnostic_snapshot.get("trigger_source") or metadata["trigger_source"]
         metadata["scope"] = diagnostic_snapshot.get("scope") or metadata["scope"]
 
-    label = "Market review" if report_language == "en" else "大盘复盘"
+    label = (
+        "Market review" if report_language == "en"
+        else "시황 리뷰" if report_language == "ko"
+        else "大盘复盘"
+    )
     return {
         "pack_version": "market_review/1.0",
         "created_at": datetime.now().isoformat(),
@@ -694,4 +713,8 @@ def _summarize_market_review(review_report: str, report_language: str) -> str:
         text = line.strip().lstrip("#").strip()
         if text and not text.startswith("---") and not text.startswith(">"):
             return text[:200]
-    return "Market review report generated." if report_language == "en" else "大盘复盘报告已生成。"
+    if report_language == "en":
+        return "Market review report generated."
+    if report_language == "ko":
+        return "시황 리뷰 리포트가 생성되었습니다."
+    return "大盘复盘报告已生成。"
