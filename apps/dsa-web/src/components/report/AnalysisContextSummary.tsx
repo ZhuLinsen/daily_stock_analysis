@@ -52,6 +52,14 @@ const BLOCK_LABELS: Record<ReportLanguage, Record<string, string>> = {
     fundamentals: 'fundamentals',
     chip: 'chip',
   },
+  ko: {
+    quote: '시세',
+    daily_bars: '일봉',
+    technical: '기술',
+    news: '뉴스',
+    fundamentals: '펀더멘털',
+    chip: '매물대',
+  },
 };
 
 const TEXT = {
@@ -115,6 +123,36 @@ const TEXT = {
       fetch_failed: 'Fetch failed',
     },
   },
+  ko: {
+    eyebrow: '데이터 컨텍스트',
+    title: '입력 데이터 블록',
+    counts: '상태 카운트',
+    source: '출처',
+    warnings: '경고',
+    missingReasons: '누락 사유',
+    inputScope: '이번 분석 입력',
+    evidenceScope: '이번 LLM 입력에 포함된 항목만 표시하며, 데이터 소스 실행 성공과는 다릅니다',
+    qualityScore: '품질 점수',
+    limitations: '데이터 한계',
+    newsResultCount: '뉴스 결과 수',
+    triggerSource: '트리거',
+    qualityLevel: {
+      good: '양호',
+      usable: '사용 가능',
+      limited: '제한적',
+      poor: '미흡',
+    },
+    status: {
+      available: '사용 가능',
+      missing: '누락',
+      not_supported: '미지원',
+      fallback: '강등',
+      stale: '만료',
+      estimated: '추정',
+      partial: '부분 사용',
+      fetch_failed: '수집 실패',
+    },
+  },
 } as const;
 
 const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
@@ -137,6 +175,16 @@ const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
     chip_distribution_missing: 'Not included in analysis input',
     today_missing: 'Today data not included in analysis input',
     yesterday_missing: 'Yesterday data not included in analysis input',
+  },
+  ko: {
+    daily_bars_missing: '분석 입력에 포함되지 않음',
+    news_context_missing: '분석 입력에 포함되지 않음',
+    realtime_quote_missing: '분석 입력에 포함되지 않음',
+    trend_result_missing: '분석 입력에 포함되지 않음',
+    fundamental_context_missing: '분석 입력에 포함되지 않음',
+    chip_distribution_missing: '분석 입력에 포함되지 않음',
+    today_missing: '당일 데이터가 분석 입력에 포함되지 않음',
+    yesterday_missing: '전일 데이터가 분석 입력에 포함되지 않음',
   },
 };
 
@@ -167,7 +215,7 @@ const getCount = (
 const formatLimitation = (
   value: string,
   language: ReportLanguage,
-  text: typeof TEXT.zh | typeof TEXT.en,
+  text: (typeof TEXT)[ReportLanguage],
 ): string => {
   const [rawKey, ...statusParts] = value.split(':');
   if (!rawKey || statusParts.length === 0) {
