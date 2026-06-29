@@ -53,6 +53,14 @@ _OPERATION_ADVICE_CANONICAL_MAP = {
     "强烈卖出": "strong_sell",
     "strong sell": "strong_sell",
     "strong_sell": "strong_sell",
+    "적극 매수": "strong_buy",
+    "매수": "buy",
+    "보유": "hold",
+    "보유 관찰": "hold",
+    "관망": "watch",
+    "비중축소": "reduce",
+    "매도": "sell",
+    "적극 매도": "strong_sell",
 }
 
 _OPERATION_ADVICE_TRANSLATIONS = {
@@ -89,6 +97,11 @@ _TREND_PREDICTION_CANONICAL_MAP = {
     "强烈看空": "strong_bearish",
     "strong bearish": "strong_bearish",
     "very bearish": "strong_bearish",
+    "강한 상승": "strong_bullish",
+    "상승": "bullish",
+    "횡보": "sideways",
+    "하락": "bearish",
+    "강한 하락": "strong_bearish",
 }
 
 _TREND_PREDICTION_TRANSLATIONS = {
@@ -107,6 +120,9 @@ _CONFIDENCE_LEVEL_CANONICAL_MAP = {
     "med": "medium",
     "低": "low",
     "low": "low",
+    "높음": "high",
+    "보통": "medium",
+    "낮음": "low",
 }
 
 _CONFIDENCE_LEVEL_TRANSLATIONS = {
@@ -122,6 +138,9 @@ _CHIP_HEALTH_CANONICAL_MAP = {
     "average": "average",
     "警惕": "caution",
     "caution": "caution",
+    "양호": "healthy",
+    "보통": "average",
+    "주의": "caution",
 }
 
 _CHIP_HEALTH_TRANSLATIONS = {
@@ -139,6 +158,9 @@ _BIAS_STATUS_CANONICAL_MAP = {
     "危险": "danger",
     "risk": "danger",
     "danger": "danger",
+    "안전": "safe",
+    "경계": "caution",
+    "위험": "danger",
 }
 
 _BIAS_STATUS_TRANSLATIONS = {

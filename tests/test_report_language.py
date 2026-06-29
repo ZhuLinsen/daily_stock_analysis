@@ -119,6 +119,20 @@ class KoreanReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(get_sentiment_label(80, "en"), "Very Bullish")
         self.assertEqual(get_sentiment_label(40, "zh"), "中性")
 
+    def test_korean_advice_canonicalizes_to_decision_type(self) -> None:
+        self.assertEqual(infer_decision_type_from_advice("매수"), "buy")
+        self.assertEqual(infer_decision_type_from_advice("매도"), "sell")
+        self.assertEqual(infer_decision_type_from_advice("보유"), "hold")
+        self.assertEqual(infer_decision_type_from_advice("관망"), "hold")
+
+    def test_korean_advice_resolves_signal_level(self) -> None:
+        self.assertEqual(get_signal_level("매수", 72, "ko"), ("매수", "🟢", "buy"))
+        self.assertEqual(get_signal_level("매도", 30, "ko"), ("매도", "🔴", "sell"))
+
+    def test_korean_values_canonicalize_back_for_other_languages(self) -> None:
+        self.assertEqual(localize_trend_prediction("상승", "en"), "Bullish")
+        self.assertEqual(localize_operation_advice("적극 매도", "zh"), "强烈卖出")
+
 
 if __name__ == "__main__":
     unittest.main()
