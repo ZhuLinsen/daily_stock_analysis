@@ -173,14 +173,21 @@ def level_twse(fetcher: TwInstitutionalFetcher, codes) -> bool:
 
     for code in codes:
         print(f"\n  -- {code} --")
-        rec = _fetch_with_retry(fetcher, code)
-        if rec is None:
-            print(f"  [!] {code} -> None after retries (transient / suspended) — soft skip")
-            continue
         base = code.upper().rsplit(".", 1)[0]
         raw = rows.get(base)
+        rec = _fetch_with_retry(fetcher, code)
+        if rec is None:
+            # raw row present but the fetcher returned None => a parse/date drift the fetcher
+            # fail-opened on (e.g. a 民國->ISO date switch) — fail LOUD, never a soft-skip
+            # (that conflation is exactly what would let the drift this script exists to catch slip).
+            if raw is not None:
+                ok &= _check(f"{base}: fetcher must parse a row that exists in the raw feed", False,
+                             "raw row present but get_institutional_net() returned None after retries — parse/date drift")
+            else:
+                print(f"  [!] {base} not in T86 feed today — soft skip")
+            continue
         if raw is None:
-            print(f"  [!] {base} not in T86 feed today — soft skip")
+            print(f"  [!] {base} parsed by the fetcher but absent from this raw snapshot — soft-skip cross-check")
             continue
         fd_val = _to_int(raw[fd_idx]) if (fd_idx is not None and fd_idx < len(raw)) else None
         ok &= _cross_check_record(
@@ -219,14 +226,20 @@ def level_tpex(fetcher: TwInstitutionalFetcher, codes) -> bool:
     by_code = {str(r.get("SecuritiesCompanyCode", "")).strip(): r for r in arr if isinstance(r, dict)}
     for code in codes:
         print(f"\n  -- {code} --")
-        rec = _fetch_with_retry(fetcher, code)
-        if rec is None:
-            print(f"  [!] {code} -> None after retries (transient / suspended) — soft skip")
-            continue
         base = code.upper().rsplit(".", 1)[0]
         raw = by_code.get(base)
+        rec = _fetch_with_retry(fetcher, code)
+        if rec is None:
+            # raw row present but fetcher None => parse/date drift (e.g. a 民國 date-format change
+            # _parse_tpex_row can't convert) — fail LOUD, not a soft-skip.
+            if raw is not None:
+                ok &= _check(f"{base}: fetcher must parse a row that exists in the raw feed", False,
+                             "raw row present but get_institutional_net() returned None after retries — parse/date drift")
+            else:
+                print(f"  [!] {base} not in TPEx feed today — soft skip")
+            continue
         if raw is None:
-            print(f"  [!] {base} not in TPEx feed today — soft skip")
+            print(f"  [!] {base} parsed by the fetcher but absent from this raw snapshot — soft-skip cross-check")
             continue
         fd_val = _to_int(raw.get(_TPEX_FOREIGN_DEALER)) if fd_present else None
         ok &= _cross_check_record(

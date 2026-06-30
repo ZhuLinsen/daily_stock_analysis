@@ -94,15 +94,20 @@ class TestTwInstitutionalLiveNetwork(unittest.TestCase):
         missing = [name for name in _T86_CORE if name not in fields]
         self.assertEqual(missing, [], f"TWSE T86 core columns renamed/removed: {missing}")
 
-        rec = _fetch_with_retry(TwInstitutionalFetcher(), "2330.TW")
-        if rec is None:
-            self.skipTest("2330.TW returned None after retries (transient / suspended)")
-        self._assert_record_shape(rec, "上市")
         idx = {name: fields.index(name) for name in fields}
         row = next((r for r in (payload.get("data") or [])
                     if isinstance(r, (list, tuple)) and str(r[idx[_T86_CODE]]).strip() == "2330"), None)
+        rec = _fetch_with_retry(TwInstitutionalFetcher(), "2330.TW")
+        if rec is None:
+            # row present in the raw feed but the fetcher returned None => parse/date drift
+            # (the exact fail-open this test exists to catch) -> FAIL, never a soft-skip.
+            if row is not None:
+                self.fail("2330 is present in the raw T86 feed but the fetcher returned None after "
+                          "retries — parse/date drift (e.g. a column/date-format change)")
+            self.skipTest("2330.TW None and absent from the raw feed (transient / suspended)")
         if row is None:
-            self.skipTest("2330 not in T86 feed today")
+            self.skipTest("2330 not in the raw T86 snapshot (cross-check unavailable)")
+        self._assert_record_shape(rec, "上市")
         self.assertEqual(rec["foreign_net"], _to_int(row[idx[_T86_FOREIGN]]))
         self.assertEqual(rec["trust_net"], _to_int(row[idx[_T86_TRUST]]))
         self.assertEqual(rec["dealer_net"], _to_int(row[idx[_T86_DEALER]]))
@@ -124,14 +129,19 @@ class TestTwInstitutionalLiveNetwork(unittest.TestCase):
         missing = [k for k in core_keys if k not in arr[0]]
         self.assertEqual(missing, [], f"TPEx core keys renamed/removed: {missing}")
 
-        rec = _fetch_with_retry(TwInstitutionalFetcher(), "5483.TWO")
-        if rec is None:
-            self.skipTest("5483.TWO returned None after retries (transient / suspended)")
-        self._assert_record_shape(rec, "上櫃")
         raw = next((r for r in arr
                     if isinstance(r, dict) and str(r.get("SecuritiesCompanyCode", "")).strip() == "5483"), None)
+        rec = _fetch_with_retry(TwInstitutionalFetcher(), "5483.TWO")
+        if rec is None:
+            # row present in the raw feed but the fetcher returned None => parse/date drift
+            # (e.g. a 民國 date-format change _parse_tpex_row can't convert) -> FAIL, not soft-skip.
+            if raw is not None:
+                self.fail("5483 is present in the raw TPEx feed but the fetcher returned None after "
+                          "retries — parse/date drift (e.g. a 民國 date-format change)")
+            self.skipTest("5483.TWO None and absent from the raw feed (transient / suspended)")
         if raw is None:
-            self.skipTest("5483 not in TPEx feed today")
+            self.skipTest("5483 not in the raw TPEx snapshot (cross-check unavailable)")
+        self._assert_record_shape(rec, "上櫃")
         self.assertEqual(rec["foreign_net"], _to_int(raw.get(_TPEX_FOREIGN_EXCL)))
         self.assertEqual(rec["trust_net"], _to_int(raw.get(_TPEX_TRUST)))
         self.assertEqual(rec["dealer_net"], _to_int(raw.get(_TPEX_DEALER)))
