@@ -2952,10 +2952,63 @@ class DataFetcherManager:
             list(adapter_errors),
         )
 
-        # institution / capital_flow / dragon_tiger / boards: keep as not_supported
-        # for offshore markets — no equivalent data feed today.
-        for block in ("institution", "capital_flow", "dragon_tiger", "boards"):
+        # capital_flow / dragon_tiger / boards: no offshore data feed today -> not_supported.
+        for block in ("capital_flow", "dragon_tiger", "boards"):
             result_ctx[block] = self._build_fundamental_block(
+                "not_supported",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported for offshore market"],
+            )
+
+        # institution: tw (台股) has a free official 三大法人 (institutional net buy/sell)
+        # feed (TWSE T86 / TPEx OpenAPI); every other offshore market keeps not_supported.
+        # tw-only + strictly additive + fail-open: any error or no-data -> not_supported,
+        # which never interrupts the main analysis. Raw net figures only — no derived
+        # signal / score / schema (per the v2 scope confirmed on issue #1777).
+        tw_record = None
+        if market == "tw":
+            fetcher = getattr(self, "_tw_institutional_fetcher", None)
+            if fetcher is None:
+                # Wiring (import + construct) is a one-time op; a failure here is a
+                # programming / deploy bug, so log it LOUD (error). Still fail-open
+                # (never interrupt the main analysis — a hard requirement of #1777).
+                try:
+                    from data_provider.tw_institutional_fetcher import TwInstitutionalFetcher
+
+                    fetcher = TwInstitutionalFetcher()
+                    self._tw_institutional_fetcher = fetcher
+                except Exception as exc:  # noqa: BLE001 - wiring failure: loud but fail-open
+                    logger.error("[tw-inst] fetcher init failed (wiring bug?) code=%s: %s", stock_code, exc)
+                    fetcher = None
+            if fetcher is not None:
+                try:
+                    tw_record = fetcher.get_institutional_net(stock_code)
+                except Exception as exc:  # noqa: BLE001 - fetch failure: fail-open
+                    logger.warning("[tw-inst] fetch failed code=%s: %s", stock_code, exc)
+                    tw_record = None
+        # status 'ok' only when the record carries all core net figures (a genuine 0 is
+        # kept — 0 is not None); None / missing core field / fetch failure -> not_supported.
+        _tw_core = ("foreign_net", "trust_net", "dealer_net", "total_net")
+        if tw_record is not None and all(tw_record.get(key) is not None for key in _tw_core):
+            institution_status = "ok"
+            result_ctx["institution"] = self._build_fundamental_block(
+                "ok",
+                {
+                    "foreign_net": tw_record.get("foreign_net"),
+                    "trust_net": tw_record.get("trust_net"),
+                    "dealer_net": tw_record.get("dealer_net"),
+                    "total_net": tw_record.get("total_net"),
+                    "unit": tw_record.get("unit"),
+                    "date": tw_record.get("date"),
+                    "source": tw_record.get("source"),
+                },
+                [{"provider": tw_record.get("source", "tw-institutional"), "result": "ok", "duration_ms": 0}],
+                [],
+            )
+        else:
+            institution_status = "not_supported"
+            result_ctx["institution"] = self._build_fundamental_block(
                 "not_supported",
                 {},
                 [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
@@ -2968,7 +3021,7 @@ class DataFetcherManager:
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
             "growth": growth_status,
             "earnings": earnings_status,
-            "institution": "not_supported",
+            "institution": institution_status,
             "capital_flow": "not_supported",
             "dragon_tiger": "not_supported",
             "boards": "not_supported",
