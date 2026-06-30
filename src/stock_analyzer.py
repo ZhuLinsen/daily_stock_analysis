@@ -143,6 +143,15 @@ class TrendAnalysisResult:
             'ma20': self.ma20,
             'ma60': self.ma60,
             'current_price': self.current_price,
+            'boll_mid': self.boll_mid,
+            'boll_upper': self.boll_upper,
+            'boll_lower': self.boll_lower,
+            'boll_width': self.boll_width,
+            'boll_position_pct': self.boll_position_pct,
+            'boll_signal': self.boll_signal,
+            'boll_buy_zone': self.boll_buy_zone,
+            'boll_breakout_level': self.boll_breakout_level,
+            'boll_stop_loss': self.boll_stop_loss,
             'bias_ma5': self.bias_ma5,
             'bias_ma10': self.bias_ma10,
             'bias_ma20': self.bias_ma20,
@@ -226,9 +235,10 @@ class StockTrendAnalyzer:
         # 计算均线
         df = self._calculate_mas(df)
 
-        # 计算 MACD 和 RSI
+        # 计算 MACD、RSI 和 BOLL
         df = self._calculate_macd(df)
         df = self._calculate_rsi(df)
+        df = self._calculate_boll(df)
 
         # 获取最新数据
         latest = df.iloc[-1]
@@ -237,6 +247,11 @@ class StockTrendAnalyzer:
         result.ma10 = float(latest['MA10'])
         result.ma20 = float(latest['MA20'])
         result.ma60 = float(latest.get('MA60', 0))
+        result.boll_mid = float(latest.get('BOLL_MID', 0) or 0)
+        result.boll_upper = float(latest.get('BOLL_UPPER', 0) or 0)
+        result.boll_lower = float(latest.get('BOLL_LOWER', 0) or 0)
+        result.boll_width = float(latest.get('BOLL_WIDTH', 0) or 0)
+        result.boll_position_pct = float(latest.get('BOLL_POSITION_PCT', 0) or 0)
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -244,7 +259,10 @@ class StockTrendAnalyzer:
         # 2. 乖离率计算
         self._calculate_bias(result)
 
-        # 3. 量能分析
+        # 3. BOLL 布林线分析
+        self._analyze_boll(df, result)
+
+        # 4. 量能分析
         self._analyze_volume(df, result)
 
         # 4. 支撑压力分析
@@ -271,6 +289,19 @@ class StockTrendAnalyzer:
             df['MA60'] = df['close'].rolling(window=60).mean()
         else:
             df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+        return df
+
+    def _calculate_boll(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算 BOLL 布林线指标。"""
+        df = df.copy()
+        mid = df['close'].rolling(window=20).mean()
+        std = df['close'].rolling(window=20).std(ddof=0)
+        df['BOLL_MID'] = mid
+        df['BOLL_UPPER'] = mid + 2 * std
+        df['BOLL_LOWER'] = mid - 2 * std
+        df['BOLL_WIDTH'] = ((df['BOLL_UPPER'] - df['BOLL_LOWER']) / mid * 100).where(mid > 0, 0)
+        band = df['BOLL_UPPER'] - df['BOLL_LOWER']
+        df['BOLL_POSITION_PCT'] = ((df['close'] - df['BOLL_LOWER']) / band * 100).where(band > 0, 50)
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -407,6 +438,48 @@ class StockTrendAnalyzer:
         if result.ma20 > 0:
             result.bias_ma20 = (price - result.ma20) / result.ma20 * 100
     
+    def _analyze_boll(self, df: pd.DataFrame, result: TrendAnalysisResult) -> None:
+        """分析 BOLL 位置，用于低吸、突破和止损判断。"""
+        price = result.current_price
+        mid = result.boll_mid
+        upper = result.boll_upper
+        lower = result.boll_lower
+
+        if not price or not mid or not upper or not lower or upper <= lower:
+            result.boll_signal = "BOLL数据不足"
+            return
+
+        result.boll_buy_zone = f"{lower:.2f} - {mid:.2f}"
+        result.boll_breakout_level = f"{upper:.2f}"
+        result.boll_stop_loss = f"{lower:.2f}"
+
+        is_near_lower = price <= lower * 1.03
+        is_near_upper = price >= upper * 0.97
+        is_breakout_upper = price > upper
+        is_narrow_band = 0 < result.boll_width < 8
+
+        if price < lower:
+            result.boll_signal = "跌破下轨，弱势风险释放，等待重新站回下轨确认"
+            result.risk_factors.append("BOLL跌破下轨，止损纪律优先")
+        elif is_breakout_upper and is_narrow_band:
+            result.boll_signal = "布林带收窄后突破上轨，趋势突破确认信号"
+            result.signal_reasons.append("BOLL收窄后突破上轨，若量能配合可视为突破买点")
+        elif is_breakout_upper:
+            result.boll_signal = "突破上轨，趋势强但需防冲高回落"
+            result.risk_factors.append("价格位于BOLL上轨外，追高需控制仓位")
+        elif is_near_upper:
+            result.boll_signal = "接近上轨，偏高位，观察是否冲高回落"
+            result.risk_factors.append("价格接近BOLL上轨，短线追涨性价比下降")
+        elif price > mid:
+            result.boll_signal = "站上中轨，趋势修复中，关注能否继续向上轨推进"
+            result.signal_reasons.append("价格站上BOLL中轨，结构改善")
+        elif is_near_lower:
+            result.boll_signal = "接近下轨，进入低吸观察区，但需等待止跌确认"
+            result.signal_reasons.append("价格接近BOLL下轨，可关注低吸观察位")
+        else:
+            result.boll_signal = "中轨下方震荡，趋势确认不足"
+            result.risk_factors.append("价格仍在BOLL中轨下方，趋势确认不足")
+
     def _analyze_volume(self, df: pd.DataFrame, result: TrendAnalysisResult) -> None:
         """
         分析量能

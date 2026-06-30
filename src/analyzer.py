@@ -879,7 +879,7 @@ def fill_chip_structure_if_needed(result: "AnalysisResult", chip_data: Any) -> N
         logger.warning("[chip_structure] Fill failed, skipping: %s", e)
 
 
-_PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level")
+_PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level", "boll_mid", "boll_upper", "boll_lower", "boll_width", "boll_position_pct", "boll_signal", "boll_buy_zone", "boll_breakout_level", "boll_stop_loss")
 
 
 def fill_price_position_if_needed(
@@ -1825,7 +1825,26 @@ class GeminiAnalyzer:
                 "ideal_buy": "理想买入点：XX元（在MA5附近）",
                 "secondary_buy": "次优买入点：XX元（在MA10附近）",
                 "stop_loss": "止损位：XX元（跌破MA20或X%）",
-                "take_profit": "目标位：XX元（前高/整数关口）"
+                "take_profit": "目标位：XX元（前高/整数关口）",
+                "boll_status": "BOLL状态：接近下轨/中轨下方/站上中轨/接近上轨/突破上轨",
+                "boll_buy_zone": "低吸观察区：XX-XX元（下轨至中轨）",
+                "boll_mid_confirm": "中轨确认位：XX元（站上中轨才算结构修复）",
+                "boll_breakout": "突破确认位：XX元（放量突破上轨才确认）",
+                "boll_stop_loss": "BOLL止损位：XX元（跌破下轨需谨慎）",
+                "chase_advice": "是否适合追涨：不适合/谨慎/可小仓位，说明理由",
+                "rsi_status": "RSI状态：超卖/弱势/中性/强势/超买",
+                "rsi_signal": "RSI信号：结合RSI(6/12/24)判断反弹、趋势延续或追高风险",
+                "rsi_buy_condition": "RSI买点条件：例如RSI从30下方回升、RSI(6)上穿RSI(12)、或RSI站回40以上",
+                "rsi_risk": "RSI风险：例如RSI>70追高风险，或RSI持续低于40说明弱势未改",
+                "macd_status": "MACD状态：金叉/死叉/零轴上方/零轴下方/柱体收敛或扩张",
+                "macd_signal": "MACD信号：结合DIF、DEA、MACD柱判断趋势修复或转弱",
+                "macd_buy_condition": "MACD买点条件：例如DIF上穿DEA、MACD柱由负转正、或负柱连续缩短",
+                "macd_risk": "MACD风险：例如死叉、DIF/DEA在零轴下方、负柱扩大说明弱势延续",
+                "composite_signal": "综合信号：观望/低吸观察/趋势确认/突破买点/减仓风控",
+                "buy_point_type": "买点类型：暂无买点/低吸观察/趋势确认/突破买点",
+                "trigger_conditions": "触发条件：例如站上BOLL中轨 + RSI>40 + MACD负柱缩短或金叉",
+                "risk_level": "风险级别：低/中/中高/高，并说明原因",
+                "composite_conclusion": "综合结论：一句话说明当前是否可买、应等什么信号、关键止损位在哪里"
             },
             "position_strategy": {
                 "suggested_position": "建议仓位：X成",
@@ -1995,7 +2014,26 @@ class GeminiAnalyzer:
                 "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
                 "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
                 "stop_loss": "止损位：XX元（失效条件或X%风险）",
-                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
+                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）",
+                "boll_status": "BOLL状态：接近下轨/中轨下方/站上中轨/接近上轨/突破上轨",
+                "boll_buy_zone": "低吸观察区：XX-XX元（下轨至中轨）",
+                "boll_mid_confirm": "中轨确认位：XX元（站上中轨才算结构修复）",
+                "boll_breakout": "突破确认位：XX元（放量突破上轨才确认）",
+                "boll_stop_loss": "BOLL止损位：XX元（跌破下轨需谨慎）",
+                "chase_advice": "是否适合追涨：不适合/谨慎/可小仓位，说明理由",
+                "rsi_status": "RSI状态：超卖/弱势/中性/强势/超买",
+                "rsi_signal": "RSI信号：结合RSI(6/12/24)判断反弹、趋势延续或追高风险",
+                "rsi_buy_condition": "RSI买点条件：例如RSI从30下方回升、RSI(6)上穿RSI(12)、或RSI站回40以上",
+                "rsi_risk": "RSI风险：例如RSI>70追高风险，或RSI持续低于40说明弱势未改",
+                "macd_status": "MACD状态：金叉/死叉/零轴上方/零轴下方/柱体收敛或扩张",
+                "macd_signal": "MACD信号：结合DIF、DEA、MACD柱判断趋势修复或转弱",
+                "macd_buy_condition": "MACD买点条件：例如DIF上穿DEA、MACD柱由负转正、或负柱连续缩短",
+                "macd_risk": "MACD风险：例如死叉、DIF/DEA在零轴下方、负柱扩大说明弱势延续",
+                "composite_signal": "综合信号：观望/低吸观察/趋势确认/突破买点/减仓风控",
+                "buy_point_type": "买点类型：暂无买点/低吸观察/趋势确认/突破买点",
+                "trigger_conditions": "触发条件：例如站上BOLL中轨 + RSI>40 + MACD负柱缩短或金叉",
+                "risk_level": "风险级别：低/中/中高/高，并说明原因",
+                "composite_conclusion": "综合结论：一句话说明当前是否可买、应等什么信号、关键止损位在哪里"
             },
             "position_strategy": {
                 "suggested_position": "建议仓位：X成",
@@ -3272,6 +3310,11 @@ class GeminiAnalyzer:
 | 趋势强度 | {trend.get('trend_strength', 0)}/100 | |
 | **乖离率(MA5)** | **{trend.get('bias_ma5', 0):+.2f}%** | {bias_warning} |
 | 乖离率(MA10) | {trend.get('bias_ma10', 0):+.2f}% | |
+| BOLL状态 | {trend.get('boll_signal', unknown_text)} | 低吸/突破/止损辅助 |
+| BOLL位置 | {trend.get('boll_position_pct', 0)}% | 0%接近下轨，100%接近上轨 |
+| BOLL低吸区 | {trend.get('boll_buy_zone', unknown_text)} | 下轨至中轨 |
+| BOLL突破位 | {trend.get('boll_breakout_level', unknown_text)} | 放量突破上轨才确认 |
+| BOLL止损位 | {trend.get('boll_stop_loss', unknown_text)} | 跌破下轨需谨慎 |
 | 量能状态 | {trend.get('volume_status', unknown_text)} | {trend.get('volume_trend', '')} |
 | 系统信号 | {trend.get('buy_signal', unknown_text)} | |
 | 系统评分 | {trend.get('signal_score', 0)}/100 | |

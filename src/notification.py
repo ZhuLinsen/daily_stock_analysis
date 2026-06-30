@@ -1280,6 +1280,81 @@ class NotificationService(
                             f"| 🎊 {labels['take_profit_label']} | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
                             "",
                         ])
+
+                        composite_rows = [
+                            ("综合信号", sniper.get('composite_signal')),
+                            ("买点类型", sniper.get('buy_point_type')),
+                            ("触发条件", sniper.get('trigger_conditions')),
+                            ("风险级别", sniper.get('risk_level')),
+                            ("综合结论", sniper.get('composite_conclusion')),
+                        ]
+                        composite_rows = [(label, value) for label, value in composite_rows if value]
+                        if composite_rows:
+                            report_lines.extend([
+                                "**🧭 综合买卖点判断**",
+                                "",
+                                "| 项目 | 判断 |",
+                                "|------|------|",
+                            ])
+                            for label, value in composite_rows:
+                                report_lines.append(f"| {label} | {self._clean_sniper_value(value)} |")
+                            report_lines.append("")
+
+                        boll_rows = [
+                            ("BOLL状态", sniper.get('boll_status')),
+                            ("低吸观察区", sniper.get('boll_buy_zone')),
+                            ("中轨确认位", sniper.get('boll_mid_confirm')),
+                            ("突破确认位", sniper.get('boll_breakout')),
+                            ("风险止损位", sniper.get('boll_stop_loss')),
+                            ("是否适合追涨", sniper.get('chase_advice')),
+                        ]
+                        boll_rows = [(label, value) for label, value in boll_rows if value]
+                        if boll_rows:
+                            report_lines.extend([
+                                "**📌 BOLL辅助判断**",
+                                "",
+                                "| 项目 | 判断 |",
+                                "|------|------|",
+                            ])
+                            for label, value in boll_rows:
+                                report_lines.append(f"| {label} | {self._clean_sniper_value(value)} |")
+                            report_lines.append("")
+
+                        rsi_rows = [
+                            ("RSI状态", sniper.get('rsi_status')),
+                            ("RSI信号", sniper.get('rsi_signal')),
+                            ("RSI买点条件", sniper.get('rsi_buy_condition')),
+                            ("RSI风险", sniper.get('rsi_risk')),
+                        ]
+                        rsi_rows = [(label, value) for label, value in rsi_rows if value]
+                        if rsi_rows:
+                            report_lines.extend([
+                                "**📈 RSI动能辅助**",
+                                "",
+                                "| 项目 | 判断 |",
+                                "|------|------|",
+                            ])
+                            for label, value in rsi_rows:
+                                report_lines.append(f"| {label} | {self._clean_sniper_value(value)} |")
+                            report_lines.append("")
+
+                        macd_rows = [
+                            ("MACD状态", sniper.get('macd_status')),
+                            ("MACD信号", sniper.get('macd_signal')),
+                            ("MACD买点条件", sniper.get('macd_buy_condition')),
+                            ("MACD风险", sniper.get('macd_risk')),
+                        ]
+                        macd_rows = [(label, value) for label, value in macd_rows if value]
+                        if macd_rows:
+                            report_lines.extend([
+                                "**📉 MACD趋势辅助**",
+                                "",
+                                "| 项目 | 判断 |",
+                                "|------|------|",
+                            ])
+                            for label, value in macd_rows:
+                                report_lines.append(f"| {label} | {self._clean_sniper_value(value)} |")
+                            report_lines.append("")
                     # 仓位策略
                     position = battle.get('position_strategy', {})
                     if position:

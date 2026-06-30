@@ -20,9 +20,13 @@ EXEMPT_PATHS = frozenset({
     "/api/v1/auth/login",
     "/api/v1/auth/status",
     "/api/health",
+            "/assets",
+            "/favicon.ico",
+            "/vite.svg",
     "/api/v1/health",
     "/health",
-    "/docs",
+    "/",
+            "/docs",
     "/redoc",
     "/openapi.json",
 })
@@ -46,10 +50,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if _path_exempt(path):
+
+        # Only protect API v1 routes. Frontend and static assets must be public.
+        if not path.startswith("/api/v1/"):
             return await call_next(request)
 
-        if not path.startswith("/api/v1/"):
+        if _path_exempt(path):
             return await call_next(request)
 
         cookie_val = request.cookies.get(COOKIE_NAME)

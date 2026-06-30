@@ -159,6 +159,21 @@
 | 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
 {% endif %}
 
+{% set has_boll = sniper.get('boll_status') or sniper.get('boll_buy_zone') or sniper.get('boll_mid_confirm') or sniper.get('boll_breakout') or sniper.get('boll_stop_loss') or sniper.get('chase_advice') %}
+{% if has_boll %}
+**📌 BOLL辅助判断**
+
+| 项目 | 判断 |
+|------|------|
+{% if sniper.get('boll_status') %}| BOLL状态 | {{ clean_sniper(sniper.get('boll_status')) }} |
+{% endif %}{% if sniper.get('boll_buy_zone') %}| 低吸观察区 | {{ clean_sniper(sniper.get('boll_buy_zone')) }} |
+{% endif %}{% if sniper.get('boll_mid_confirm') %}| 中轨确认位 | {{ clean_sniper(sniper.get('boll_mid_confirm')) }} |
+{% endif %}{% if sniper.get('boll_breakout') %}| 突破确认位 | {{ clean_sniper(sniper.get('boll_breakout')) }} |
+{% endif %}{% if sniper.get('boll_stop_loss') %}| 风险止损位 | {{ clean_sniper(sniper.get('boll_stop_loss')) }} |
+{% endif %}{% if sniper.get('chase_advice') %}| 是否适合追涨 | {{ clean_sniper(sniper.get('chase_advice')) }} |
+{% endif %}
+{% endif %}
+
 {% set position = battle.get('position_strategy', {}) %}
 {% if position %}
 **💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}

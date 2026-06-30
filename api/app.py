@@ -448,3 +448,4 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
 
 # 默认应用实例（供 uvicorn 直接使用）
 app = create_app()
+

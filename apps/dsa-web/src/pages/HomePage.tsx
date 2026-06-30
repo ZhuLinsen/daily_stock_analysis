@@ -24,6 +24,8 @@ import { normalizeReportLanguage } from '../utils/reportLanguage';
 import type { MarketReviewPayload, StockBarItem, TaskInfo } from '../types/analysis';
 import type { RunFlowSnapshotSource } from '../types/runFlow';
 
+const SHOW_MARKET_REVIEW = false;
+
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
   title: string;
@@ -616,6 +618,10 @@ const HomePage: React.FC = () => {
       modelUsed: latestMarketReview.modelUsed,
       marketPhaseSummary: latestMarketReview.marketPhaseSummary,
     };
+
+    if (!SHOW_MARKET_REVIEW) {
+      return stockItems;
+    }
 
     return [marketReviewItem, ...stockItems].sort((left, right) => {
       const leftTime = left.lastAnalysisTime ? Date.parse(left.lastAnalysisTime) : 0;

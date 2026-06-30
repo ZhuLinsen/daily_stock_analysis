@@ -160,6 +160,31 @@ def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
     return values
 
 
+
+def _append_boll_summary_for_prompt(summary, trend_analysis):
+    """Append BOLL buy/sell helper text to the analysis context summary."""
+    if not isinstance(trend_analysis, dict):
+        return summary
+
+    boll_signal = trend_analysis.get("boll_signal")
+    if not boll_signal:
+        return summary
+
+    lines = [
+        "",
+        "### BOLL 布林线买卖点辅助",
+        f"- BOLL状态：{boll_signal}",
+        f"- BOLL位置：{trend_analysis.get('boll_position_pct', 'N/A')}%（0%接近下轨，100%接近上轨）",
+        f"- 低吸观察区：{trend_analysis.get('boll_buy_zone', 'N/A')}",
+        f"- 突破确认位：{trend_analysis.get('boll_breakout_level', 'N/A')}",
+        f"- 风险止损位：{trend_analysis.get('boll_stop_loss', 'N/A')}",
+        "- 使用约束：BOLL只作为辅助指标；买点需结合均线、量能、RSI/MACD和市场阶段确认。",
+    ]
+
+    base = summary if isinstance(summary, str) else ""
+    return base.rstrip() + "\n" + "\n".join(lines) + "\n"
+
+
 class StockAnalysisPipeline:
     """
     股票分析主流程调度器
@@ -551,7 +576,7 @@ class StockAnalysisPipeline:
             )
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            if self.search_service is not None and self.search_service.is_available:
+            if False and self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 使用多维度搜索（最多5次搜索）
@@ -696,7 +721,14 @@ class StockAnalysisPipeline:
                     news_context=news_context,
                     progress_callback=self._emit_progress,
                     stream_progress_callback=_on_llm_stream,
-                    analysis_context_pack_summary=analysis_context_pack_summary,
+                    analysis_context_pack_summary=_append_boll_summary_for_prompt(
+                    analysis_context_pack_summary,
+                    (
+                        (locals().get('trend_analysis') or locals().get('trend_result') or locals().get('trend')).to_dict()
+                        if hasattr((locals().get('trend_analysis') or locals().get('trend_result') or locals().get('trend')), 'to_dict')
+                        else (locals().get('trend_analysis') or locals().get('trend_result') or locals().get('trend'))
+                    ),
+                ),
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 record_llm_run(
@@ -1349,7 +1381,7 @@ class StockAnalysisPipeline:
 
             # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
             # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
-            if self.search_service is not None and self.search_service.is_available:
+            if False and self.search_service is not None and self.search_service.is_available:
                 try:
                     news_response = self.search_service.search_stock_news(
                         stock_code=code,
