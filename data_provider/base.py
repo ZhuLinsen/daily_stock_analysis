@@ -2982,10 +2982,19 @@ class DataFetcherManager:
                     logger.error("[tw-inst] fetcher init failed (wiring bug?) code=%s: %s", stock_code, exc)
                     fetcher = None
             if fetcher is not None:
-                try:
-                    tw_record = fetcher.get_institutional_net(stock_code)
-                except Exception as exc:  # noqa: BLE001 - fetch failure: fail-open
-                    logger.warning("[tw-inst] fetch failed code=%s: %s", stock_code, exc)
+                # Run the fetch under the SAME fundamental stage/fetch budget as the other
+                # offshore blocks (_run_with_retry) so a slow / rate-limited TWSE/TPEx call
+                # cannot push the analysis past its deadline — it fails open on timeout.
+                inst_timeout = min(fetch_timeout, max(stage_timeout - (time.time() - start_ts), 0.0))
+                if inst_timeout > 0:
+                    tw_record, inst_err, _inst_ms = self._run_with_retry(
+                        lambda: fetcher.get_institutional_net(stock_code),
+                        inst_timeout,
+                        "fundamental_tw_institution",
+                    )
+                    if inst_err:
+                        logger.warning("[tw-inst] fetch failed/timeout code=%s: %s", stock_code, inst_err)
+                else:
                     tw_record = None
         # status 'ok' only when the record carries all core net figures (a genuine 0 is
         # kept — 0 is not None); None / missing core field / fetch failure -> not_supported.
@@ -3032,10 +3041,17 @@ class DataFetcherManager:
             result_ctx["source_chain"].extend(result_ctx[block].get("source_chain", []))
 
         active_statuses = {"valuation": valuation_status, "growth": growth_status, "earnings": earnings_status}
-        if all(value == "not_supported" for value in active_statuses.values()):
+        # tw institution (when present) counts toward the OVERALL status so a report that
+        # only has 三大法人 data still surfaces fundamentals (consumers key off the top-level
+        # status). missing_fields stays the original three blocks, so offshore markets
+        # without institution data are byte-identical (institution is not_supported there).
+        status_values = list(active_statuses.values())
+        if institution_status == "ok":
+            status_values.append("ok")
+        if all(value == "not_supported" for value in status_values):
             result_ctx["status"] = "not_supported"
             result_ctx["data_quality"] = "unavailable"
-        elif "failed" in active_statuses.values() or "partial" in active_statuses.values():
+        elif "failed" in status_values or "partial" in status_values:
             result_ctx["status"] = "partial"
             result_ctx["data_quality"] = "partial"
         else:

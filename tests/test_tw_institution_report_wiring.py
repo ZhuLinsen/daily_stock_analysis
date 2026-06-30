@@ -14,6 +14,7 @@ so it runs under the blocking backend gate (`pytest -m "not network"`).
 
 import os
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -91,7 +92,10 @@ class TestTwInstitutionReportWiring(unittest.TestCase):
         # other offshore blocks untouched
         for block in ("capital_flow", "dragon_tiger", "boards"):
             self.assertEqual(ctx["coverage"].get(block), "not_supported")
-        tw_mock.assert_called_once_with("2330.TW")
+        # institution data must surface: the top-level status (which consumers key off)
+        # is not 'not_supported' even though valuation/growth/earnings are unavailable.
+        self.assertNotEqual(ctx["status"], "not_supported")
+        tw_mock.assert_called_with("2330.TW")
 
     # ---- tw genuine-zero day is kept (record present, nets 0) ----------------------
     def test_tw_institution_keeps_genuine_zero(self):
@@ -155,6 +159,35 @@ class TestTwInstitutionReportWiring(unittest.TestCase):
         ctx, _ = self._context("2330.TW", institutional_return=broken)
         self.assertEqual(ctx["coverage"].get("institution"), "not_supported")
         self.assertEqual(ctx["institution"].get("data"), {})
+
+    # ---- a slow fetch must NOT push the analysis past the fundamental stage budget ---
+    def test_tw_institution_fetch_respects_stage_timeout(self):
+        slow_cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_stage_timeout_seconds=0.3,
+            fundamental_fetch_timeout_seconds=0.3,
+            fundamental_retry_max=1,
+        )
+        manager = DataFetcherManager(fetchers=[])
+
+        def _slow(_code):
+            time.sleep(2.0)  # simulate a slow / rate-limited TWSE-TPEx call
+            return dict(_FAKE_REC)
+
+        start = time.time()
+        with patch("src.config.get_config", return_value=slow_cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=None), \
+                patch(
+                    "data_provider.yfinance_fundamental_adapter.YfinanceFundamentalAdapter.get_fundamental_bundle",
+                    return_value=_EMPTY_BUNDLE,
+                ), \
+                patch(_TW_FETCHER_METHOD, side_effect=_slow):
+            ctx = manager.get_fundamental_context("2330.TW")
+        elapsed = time.time() - start
+        # the 2s fetch must be abandoned at the ~0.3s stage budget, not block the analysis
+        self.assertLess(elapsed, 1.5, f"institution fetch ignored the stage timeout ({elapsed:.2f}s)")
+        self.assertEqual(ctx["coverage"].get("institution"), "not_supported")
 
     # ---- negative: institution data carries RAW figures only, no derived signal ----
     def test_tw_institution_data_has_no_derived_signal_or_score(self):
