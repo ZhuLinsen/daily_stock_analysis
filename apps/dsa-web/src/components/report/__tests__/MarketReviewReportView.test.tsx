@@ -196,6 +196,9 @@ describe('MarketReviewReportView', () => {
     expect(screen.getByText('Structured Market Data')).toBeInTheDocument();
     expect(screen.getByText('No data')).toBeInTheDocument();
     expect(screen.getByText('S&P 500')).toBeInTheDocument();
+    expect(screen.getAllByText('Industry Sectors').length).toBeGreaterThan(0);
+    expect(screen.getByText('Technology')).toBeInTheDocument();
+    expect(screen.getByText('Energy')).toBeInTheDocument();
     expect(screen.queryByText('Advancers')).not.toBeInTheDocument();
     expect(screen.queryByText('Decliners')).not.toBeInTheDocument();
   });

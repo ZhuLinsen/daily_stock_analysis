@@ -80,23 +80,25 @@ const buildRankingSignalMap = (rankings?: ReportDetailsType['sectorRankings']): 
 
   topBoards.forEach((item) => {
     const normalizedName = normalizeBoardName(item?.name);
-    if (!normalizedName) {
+    const changePct = coerceFiniteNumber(item?.changePct);
+    if (!normalizedName || changePct === undefined) {
       return;
     }
     signalMap.set(normalizedName, {
       status: 'leading',
-      changePct: coerceFiniteNumber(item.changePct),
+      changePct,
     });
   });
 
   bottomBoards.forEach((item) => {
     const normalizedName = normalizeBoardName(item?.name);
-    if (!normalizedName) {
+    const changePct = coerceFiniteNumber(item?.changePct);
+    if (!normalizedName || changePct === undefined) {
       return;
     }
     signalMap.set(normalizedName, {
       status: 'lagging',
-      changePct: coerceFiniteNumber(item.changePct),
+      changePct,
     });
   });
 

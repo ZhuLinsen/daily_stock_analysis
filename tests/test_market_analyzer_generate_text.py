@@ -2864,6 +2864,29 @@ Sector text.
         assert "新闻。" in result
         assert "算力产业链延续活跃" not in result
 
+    def test_inject_data_into_review_appends_sector_block_when_heading_drifts(self):
+        from src.market_analyzer import MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        overview = MarketOverview(
+            date="2026-03-05",
+            top_sectors=[{"name": "AI算力", "change_pct": 3.25}],
+            bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+        )
+        review = """## 2026-03-05 大盘复盘
+
+### 今日主线观察
+正文。
+"""
+
+        result = ma._inject_data_into_review(review, overview)
+
+        assert "### 三、板块主线" in result
+        assert "#### 行业板块领涨 Top 5" in result
+        assert "| 1 | AI算力 | +3.25% |" in result
+        assert "#### 行业板块领跌 Top 5" in result
+        assert "| 1 | 煤炭 | -1.12% |" in result
+
     def test_market_review_payload_sections_skip_top_report_title(self):
         from src.market_analyzer import MarketAnalyzer
 

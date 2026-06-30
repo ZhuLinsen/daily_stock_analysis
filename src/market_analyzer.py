@@ -912,11 +912,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
 
         if sector_block:
+            original_review = review
             review = self._insert_after_section(
                 review,
                 patterns["sector_highlights"],
                 sector_block,
             )
+            if review == original_review and sector_block not in review:
+                fallback_heading = (
+                    "### 4. Sector Highlights"
+                    if self._get_review_language() == "en"
+                    else "### 三、板块主线"
+                )
+                review = f"{review.rstrip()}\n\n{fallback_heading}\n{sector_block}\n"
 
         return review
 

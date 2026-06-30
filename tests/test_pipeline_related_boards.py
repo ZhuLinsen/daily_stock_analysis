@@ -165,6 +165,24 @@ class PipelineRelatedBoardsTestCase(unittest.TestCase):
         self.assertIsNot(enriched["belong_boards"], existing_boards)
         pipeline.fetcher_manager.get_belong_boards.assert_not_called()
 
+    def test_attach_belong_boards_refetches_empty_cn_board_list(self) -> None:
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.fetcher_manager = MagicMock()
+        pipeline.fetcher_manager.get_belong_boards.return_value = [{"name": "白酒", "type": "行业"}]
+
+        context = {
+            "market": "cn",
+            "status": "ok",
+            "belong_boards": [],
+            "coverage": {"boards": "ok"},
+            "boards": {"status": "ok", "data": {"top": [], "bottom": []}},
+        }
+
+        enriched = pipeline._attach_belong_boards_to_fundamental_context("600519", context)
+
+        self.assertEqual(enriched["belong_boards"], [{"name": "白酒", "type": "行业"}])
+        pipeline.fetcher_manager.get_belong_boards.assert_called_once_with("600519")
+
     def test_attach_belong_boards_skips_provider_for_non_cn(self) -> None:
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetcher_manager = MagicMock()

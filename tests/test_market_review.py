@@ -169,6 +169,52 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertEqual(result.market_review_payload["language"], "en")
         self.assertEqual(result.report, "English market review body")
 
+    def test_run_market_review_returns_sector_fallback_for_merged_notification(self) -> None:
+        notifier = self._make_notifier()
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="## 今日大盘\n\n盘面正文。",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-06-03", "score": 60},
+            structured_payload={
+                "kind": "market_review",
+                "region": "cn",
+                "language": "zh",
+                "title": "今日大盘",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "概览",
+                        "markdown": "盘面正文。",
+                    }
+                ],
+                "sectors": {
+                    "top": [{"name": "AI算力", "change_pct": 3.25}],
+                    "bottom": [{"name": "煤炭", "change_pct": -1.12}],
+                },
+            },
+        )
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            result = run_market_review(
+                notifier,
+                send_notification=True,
+                merge_notification=True,
+            )
+
+        self.assertIn("## 今日大盘", result)
+        self.assertIn("### 板块主线", result)
+        self.assertIn("| 1 | AI算力 | +3.25% |", result)
+        self.assertIn("| 1 | 煤炭 | -1.12% |", result)
+        notifier.send.assert_not_called()
+
     def test_run_market_review_reraises_generation_backend_config_error(self) -> None:
         notifier = self._make_notifier()
         backend_error = GenerationError(
@@ -513,6 +559,184 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
 
         self.assertEqual(markdown.count("2026-06-03 大盘复盘"), 1)
         self.assertTrue(markdown.startswith("🎯 大盘复盘\n\n## 2026-06-03 大盘复盘"))
+
+    def test_render_market_review_payload_markdown_appends_structured_sector_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "language": "zh",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "Overview",
+                        "markdown": "> 今日指数强弱分化。",
+                    }
+                ],
+                "sectors": {
+                    "top": [{"name": "AI算力", "change_pct": 3.25}],
+                    "bottom": [{"name": "煤炭", "change_pct": -1.12}],
+                },
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertIn("### 板块主线", markdown)
+        self.assertIn("#### 领涨板块 Top 5", markdown)
+        self.assertIn("| 1 | AI算力 | +3.25% |", markdown)
+        self.assertIn("#### 领跌板块 Top 5", markdown)
+        self.assertIn("| 1 | 煤炭 | -1.12% |", markdown)
+
+    def test_render_market_review_payload_markdown_keeps_injected_chinese_sector_block_once(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "language": "zh",
+                "markdown_report": (
+                    "## 2026-06-03 大盘复盘\n\n"
+                    "### 板块表现\n\n"
+                    "#### 行业板块领涨 Top 5\n"
+                    "| 排名 | 行业板块 | 涨跌幅 |\n"
+                    "|------|------|--------|\n"
+                    "| 1 | AI算力 | +3.25% |"
+                ),
+                "sectors": {
+                    "top": [{"name": "AI算力", "change_pct": 3.25}],
+                    "bottom": [{"name": "煤炭", "change_pct": -1.12}],
+                },
+            }
+        )
+
+        self.assertEqual(markdown.count("#### 行业板块领涨 Top 5"), 1)
+        self.assertNotIn("### 板块主线", markdown)
+        self.assertNotIn("#### 领涨板块 Top 5", markdown)
+        self.assertNotIn("#### 领跌板块 Top 5", markdown)
+
+    def test_render_market_review_payload_markdown_appends_each_market_sector_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "language": "zh",
+                "markdown_report": (
+                    "## A 股大盘\n\n今日震荡。\n\n"
+                    "---\n\n"
+                    "## 港股大盘\n\n今日反弹。\n\n"
+                    "---\n\n"
+                    "## 美股大盘\n\n科技走强。"
+                ),
+                "markets": {
+                    "cn": {
+                        "title": "A 股大盘",
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "AI算力", "change_pct": 3.25}]},
+                    },
+                    "hk": {
+                        "title": "港股大盘",
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "科技", "change_pct": 2.18}]},
+                    },
+                    "us": {
+                        "title": "美股大盘",
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "半导体", "change_pct": 1.86}]},
+                    },
+                },
+            }
+        )
+
+        self.assertIn("### A 股大盘 / 板块主线", markdown)
+        self.assertIn("| 1 | AI算力 | +3.25% |", markdown)
+        self.assertIn("### 港股大盘 / 板块主线", markdown)
+        self.assertIn("| 1 | 科技 | +2.18% |", markdown)
+        self.assertIn("### 美股大盘 / 板块主线", markdown)
+        self.assertIn("| 1 | 半导体 | +1.86% |", markdown)
+        self.assertLess(markdown.index("### A 股大盘 / 板块主线"), markdown.index("## 港股大盘"))
+        self.assertLess(markdown.index("### 港股大盘 / 板块主线"), markdown.index("## 美股大盘"))
+
+    def test_render_market_review_payload_markdown_checks_duplicate_titles_by_market_wrapper(self) -> None:
+        duplicate_title = "2026-06-03 大盘复盘"
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "language": "zh",
+                "markdown_report": (
+                    "# A股大盘复盘\n\n"
+                    f"## {duplicate_title}\n\n"
+                    "### 板块表现\n\n"
+                    "#### 行业板块领涨 Top 5\n"
+                    "| 排名 | 行业板块 | 涨跌幅 |\n"
+                    "|------|------|--------|\n"
+                    "| 1 | AI算力 | +3.25% |\n\n"
+                    "---\n\n"
+                    "> 以下为下一市场大盘复盘\n\n"
+                    "# 港股大盘复盘\n\n"
+                    f"## {duplicate_title}\n\n"
+                    "港股正文。\n\n"
+                    "---\n\n"
+                    "> 以下为下一市场大盘复盘\n\n"
+                    "# 美股大盘复盘\n\n"
+                    f"## {duplicate_title}\n\n"
+                    "美股正文。"
+                ),
+                "markets": {
+                    "cn": {
+                        "title": duplicate_title,
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "AI算力", "change_pct": 3.25}]},
+                    },
+                    "hk": {
+                        "title": duplicate_title,
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "科技", "change_pct": 2.18}]},
+                    },
+                    "us": {
+                        "title": duplicate_title,
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "半导体", "change_pct": 1.86}]},
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(markdown.count("#### 行业板块领涨 Top 5"), 1)
+        self.assertEqual(markdown.count(f"### {duplicate_title} / 板块主线"), 2)
+        self.assertIn("| 1 | 科技 | +2.18% |", markdown)
+        self.assertIn("| 1 | 半导体 | +1.86% |", markdown)
+
+    def test_render_market_review_payload_markdown_preserves_segment_boundaries_after_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "language": "en",
+                "markdown_report": (
+                    "## CN Market\n\n"
+                    "CN overview.\n\n"
+                    "## HK Market\n\n"
+                    "HK overview.\n\n"
+                    "---\n\n"
+                    "## US Market\n\n"
+                    "US overview."
+                ),
+                "markets": {
+                    "cn": {
+                        "title": "CN Market",
+                        "language": "en",
+                        "sectors": {"top": [{"name": "AI", "change_pct": 3.25}]},
+                    },
+                    "hk": {
+                        "title": "HK Market",
+                        "language": "en",
+                        "sectors": {"top": [{"name": "Tech", "change_pct": 2.18}]},
+                    },
+                    "us": {
+                        "title": "US Market",
+                        "language": "en",
+                        "sectors": {},
+                    },
+                },
+            }
+        )
+
+        self.assertIn("| 1 | AI | +3.25% |\n\n## HK Market", markdown)
+        self.assertIn("| 1 | Tech | +2.18% |\n\n---\n\n## US Market", markdown)
+        self.assertNotIn("+3.25% |## HK Market", markdown)
+        self.assertNotIn("+2.18% |---", markdown)
 
     def test_persist_market_review_history_saves_markdown_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
