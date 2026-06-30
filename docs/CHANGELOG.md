@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] #1743 Phase 4 新增 `opencode_cli` generation-only 本地 CLI backend，使用 OpenCode `run --format json --file` prompt-file 路径、JSON event extractor、Agent 边界和 provider credential 不接管约束。
 - [文档] #1743 Phase 4 同步本地 CLI backend 隐私/部署边界：local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
 - [新功能] 台股报告接入三大法人：tw 个股分析报告的 institution 区块改为展示 TWSE T86 / TPEx 三大法人原始买卖超净额（外资/投信/自营/合计，单位:股）；tw-only、严格 additive（A股/港股/美股/日韩股 offshore 流程字节不变）、fail-open（取不到数据维持 not_supported，绝不中断分析）；不接 Web、不派生 capital_flow_signal、不改评分权重或 schema。
+- [改进] 台股三大法人 fetcher 韧性加固：(1) 接入熔断器（复用 `realtime_types.CircuitBreaker`，按市场 twse/tpex 分流，连续失败 3 次→冷却 ~5min→半开探测），TWSE/TPEx 端点异常时快速跳过网络往返并 fail-open，避免端点故障时每档个股都付 timeout+throttle；(2) TPEx OpenAPI 仅服务最新交易日，调用方传入与服务日期不符的明确日期时改为 fail-open（返回无数据），避免静默返回错日资料。
 
 ## [3.24.1] - 2026-06-28
 
