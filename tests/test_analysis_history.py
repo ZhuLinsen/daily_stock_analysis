@@ -755,6 +755,45 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(response.items[0].action, "avoid")
         self.assertEqual(response.items[0].action_label, "回避")
 
+    def test_stock_bar_item_falls_back_to_raw_result_summary_fields(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.operation_advice = "Hold"
+        result.report_language = "en"
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_raw_fallback",
+            report_type="detailed",
+            news_content="stock report",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.session_scope() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_stock_bar_raw_fallback"
+            ).first()
+            self.assertIsNotNone(row)
+            row.sentiment_score = None
+            row.operation_advice = None
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        self.assertEqual(len(response.items), 1)
+        self.assertEqual(response.items[0].sentiment_score, 78)
+        self.assertEqual(response.items[0].operation_advice, "Hold")
+        self.assertEqual(response.items[0].action, "hold")
+        self.assertEqual(response.items[0].action_label, "Hold")
+
     def test_history_detail_uses_service_resolved_action_fields(self) -> None:
         if get_history_detail is None:
             self.skipTest("fastapi is not installed in this test environment")

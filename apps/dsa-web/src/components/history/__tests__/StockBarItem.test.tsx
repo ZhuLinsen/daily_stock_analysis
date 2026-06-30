@@ -121,7 +121,7 @@ describe('StockBarItemComponent', () => {
 
     const actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('buy 28')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/28/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/28/)).toBeInTheDocument();
   });
 
   it('does not render financial compound English advice as an action badge', () => {
@@ -141,7 +141,7 @@ describe('StockBarItemComponent', () => {
 
     let actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('持有 28')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/28/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/28/)).toBeInTheDocument();
 
     rerender(
       <StockBarItemComponent
@@ -159,7 +159,7 @@ describe('StockBarItemComponent', () => {
 
     actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('卖出 31')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/31/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/31/)).toBeInTheDocument();
   });
 
   it('does not render Chinese financial context legacy advice as an action badge', () => {
@@ -179,7 +179,7 @@ describe('StockBarItemComponent', () => {
 
     let actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('买入 32')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/32/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/32/)).toBeInTheDocument();
 
     rerender(
       <StockBarItemComponent
@@ -197,7 +197,7 @@ describe('StockBarItemComponent', () => {
 
     actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('卖出 34')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/34/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/34/)).toBeInTheDocument();
   });
 
   it('does not render multi-guard legacy advice as an action badge', () => {
@@ -218,6 +218,6 @@ describe('StockBarItemComponent', () => {
     const actions = screen.getByTestId('history-card-actions');
     expect(within(actions).queryByText('回避 28')).not.toBeInTheDocument();
     expect(within(actions).queryByText('预警 28')).not.toBeInTheDocument();
-    expect(within(actions).queryByText(/28/)).not.toBeInTheDocument();
+    expect(within(actions).getByText(/28/)).toBeInTheDocument();
   });
 });
