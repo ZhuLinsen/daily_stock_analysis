@@ -190,7 +190,8 @@ def format_public_phase_pack_excerpt(
     overview = _as_mapping(analysis_context_pack_overview)
     if not phase_summary and not overview:
         return ""
-    lang = "en" if str(report_language or "").lower().startswith("en") else "zh"
+    # Korean reuses the English structural summary; output language is set by directive.
+    lang = "en" if str(report_language or "").lower().startswith(("en", "ko")) else "zh"
     source_label = _source_label(source, lang)
 
     lines: List[str] = []
@@ -246,7 +247,8 @@ def format_public_market_status_line(
     if phase is None:
         return ""
 
-    lang = "en" if str(report_language or "").lower().startswith("en") else "zh"
+    # Korean reuses the English structural summary; output language is set by directive.
+    lang = "en" if str(report_language or "").lower().startswith(("en", "ko")) else "zh"
     phase_labels = _PHASE_LABELS_EN if lang == "en" else _PHASE_LABELS_ZH
     market_labels = _MARKET_LABELS_EN if lang == "en" else _MARKET_LABELS_ZH
     phase_label = phase_labels.get(phase, phase)

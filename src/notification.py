@@ -1117,12 +1117,20 @@ class NotificationService(
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
-        reason_label = "Rationale" if report_language == "en" else "操作理由"
-        risk_warning_label = "Risk Warning" if report_language == "en" else "风险提示"
-        technical_heading = "Technicals" if report_language == "en" else "技术面"
-        ma_label = "Moving Averages" if report_language == "en" else "均线"
-        volume_analysis_label = "Volume" if report_language == "en" else "量能"
-        news_heading = "News Flow" if report_language == "en" else "消息面"
+
+        def _nlabel(en: str, zh: str, ko: str) -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko
+            return zh
+
+        reason_label = _nlabel("Rationale", "操作理由", "판단 근거")
+        risk_warning_label = _nlabel("Risk Warning", "风险提示", "리스크 경고")
+        technical_heading = _nlabel("Technicals", "技术面", "기술적 분석")
+        ma_label = _nlabel("Moving Averages", "均线", "이동평균")
+        volume_analysis_label = _nlabel("Volume", "量能", "거래량")
+        news_heading = _nlabel("News Flow", "消息面", "뉴스 흐름")
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
             out = render(
@@ -2187,17 +2195,19 @@ class NotificationService(
         if not belong_boards:
             return
 
-        sector_signals: Dict[str, Tuple[str, Optional[float]]] = {}
-        concept_signals: Dict[str, Tuple[str, Optional[float]]] = {}
+        sector_signals: Dict[str, Tuple[str, float]] = {}
+        concept_signals: Dict[str, Tuple[str, float]] = {}
 
-        def add_signals(target: Dict[str, Tuple[str, Optional[float]]], rows: Any, label: str) -> None:
+        def add_signals(target: Dict[str, Tuple[str, float]], rows: Any, label: str) -> None:
             for item in rows or []:
                 if not isinstance(item, dict):
                     continue
                 name = str(item.get("name") or "").strip()
                 if not name or name in target:
                     continue
-                target[name] = (label, _safe_float(item.get("change_pct")))
+                change_pct = _safe_float(item.get("change_pct"))
+                if change_pct is not None:
+                    target[name] = (label, change_pct)
 
         add_signals(sector_signals, blocks.get("sector_top"), labels["leading_board_label"])
         add_signals(sector_signals, blocks.get("sector_bottom"), labels["lagging_board_label"])
@@ -2245,8 +2255,8 @@ class NotificationService(
                 return labels["industry_boards_heading"]
             return labels["concept_boards_heading"]
 
-        # Pre-resolve rows so signal-bearing reports can show type/status columns,
-        # while plain related-board lists keep the original compact line.
+        # Pre-resolve rows so signal-bearing boards can show their own
+        # percentage, while boards without a matching change stay plain.
         prepared: List[Tuple[str, str, Optional[str], Optional[float]]] = []
         for raw in belong_boards[:5]:
             if not isinstance(raw, dict):
@@ -2264,17 +2274,14 @@ class NotificationService(
 
         lines.append(f"### 🧩 {labels['related_boards_heading']}")
         lines.append("")
-        has_signal = any(status is not None for _, _, status, _ in prepared)
+        has_signal = any(status is not None and change_pct is not None for _, _, status, change_pct in prepared)
         if has_signal:
-            lines.append(
-                f"| {labels['board_name_label']} | {labels['board_type_label']} | "
-                f"{labels['board_status_label']} | {labels['board_change_pct_label']} |"
-            )
-            lines.append("|:-----|:-----:|:------:|------:|")
             for name, board_type, status_text, change_pct in prepared:
-                status = status_text if status_text is not None else "--"
-                change = "--" if change_pct is None else f"{change_pct:+.2f}%"
-                lines.append(f"| {name} | {board_type} | {status} | {change} |")
+                details = []
+                if status_text is not None and change_pct is not None:
+                    details.append(f"{board_type} {status_text} {change_pct:+.2f}%")
+                suffix = f" ({', '.join(details)})" if details else ""
+                lines.append(f"- {name}{suffix}")
         else:
             lines.append(" / ".join(name for name, _, _, _ in prepared))
         lines.append("")

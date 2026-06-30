@@ -38,6 +38,8 @@ from src.analyzer import (
 )
 from src.notification import NotificationService, NotificationChannel
 from src.report_language import (
+    get_placeholder_text,
+    get_unknown_text,
     infer_decision_type_from_advice,
     localize_confidence_level,
     localize_operation_advice,
@@ -1068,12 +1070,14 @@ class StockAnalysisPipeline:
                 "invalid fundamental context",
             )
 
+        market = enriched_context.get("market")
+        if not isinstance(market, str) or not market.strip():
+            market = get_market_for_stock(normalize_stock_code(code))
+
         existing_boards = enriched_context.get("belong_boards")
-        if isinstance(existing_boards, list):
-            enriched_context["belong_boards"] = list(existing_boards)
-            market = enriched_context.get("market")
-            if not isinstance(market, str) or not market.strip():
-                market = get_market_for_stock(normalize_stock_code(code))
+        existing_board_list = list(existing_boards) if isinstance(existing_boards, list) else None
+        if existing_board_list:
+            enriched_context["belong_boards"] = existing_board_list
             self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
             return enriched_context
 
@@ -1081,20 +1085,17 @@ class StockAnalysisPipeline:
         boards_status = boards_block.get("status") if isinstance(boards_block, dict) else None
         coverage = enriched_context.get("coverage")
         boards_coverage = coverage.get("boards") if isinstance(coverage, dict) else None
-        market = enriched_context.get("market")
-        if not isinstance(market, str) or not market.strip():
-            market = get_market_for_stock(normalize_stock_code(code))
 
         # For HK/US: the offshore adapter already populates belong_boards from
         # yfinance sector/industry. Don't overwrite it (and we have no AkShare
         # 板块 endpoint for those markets anyway). Default to [] when callers
         # pass a minimal context without the key.
         if market != "cn":
-            enriched_context.setdefault("belong_boards", [])
+            enriched_context["belong_boards"] = existing_board_list or []
             return enriched_context
 
         if boards_status == "not_supported" or boards_coverage == "not_supported":
-            enriched_context["belong_boards"] = []
+            enriched_context["belong_boards"] = existing_board_list or []
             return enriched_context
 
         boards: List[Dict[str, Any]] = []
@@ -1105,7 +1106,7 @@ class StockAnalysisPipeline:
         except Exception as e:
             logger.debug("%s attach belong_boards failed (fail-open): %s", code, e)
 
-        enriched_context["belong_boards"] = boards
+        enriched_context["belong_boards"] = boards or existing_board_list or []
         self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
         return enriched_context
 
@@ -1307,8 +1308,8 @@ class StockAnalysisPipeline:
                 initial_context["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # 运行 Agent
-            if report_language == "en":
-                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON in English."
+            if report_language in ("en", "ko"):
+                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON."
             else:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
             llm_started_at = time.monotonic()
@@ -1711,8 +1712,8 @@ class StockAnalysisPipeline:
             code=code,
             name=stock_name,
             sentiment_score=50,
-            trend_prediction="Unknown" if report_language == "en" else "未知",
-            operation_advice="Watch" if report_language == "en" else "观望",
+            trend_prediction=get_unknown_text(report_language),
+            operation_advice=localize_operation_advice("观望", report_language),
             confidence_level=localize_confidence_level("medium", report_language),
             report_language=report_language,
             success=agent_result.success,
@@ -1792,7 +1793,7 @@ class StockAnalysisPipeline:
                 allow_dict=True,
                 expect_text=True,
             ):
-                result.operation_advice = str(raw_advice) if raw_advice else ("Watch" if report_language == "en" else "观望")
+                result.operation_advice = str(raw_advice) if raw_advice else (localize_operation_advice("观望", report_language))
             else:
                 signal_label = self._trend_signal_fallback(trend_result, report_language)
                 if signal_label:
@@ -1868,7 +1869,11 @@ class StockAnalysisPipeline:
                 )
                 self._backfill_agent_dashboard_fields(result, trend_result, report_language)
             if not result.error_message:
-                result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
+                result.error_message = (
+                    "Agent failed to generate a valid decision dashboard" if report_language == "en"
+                    else "에이전트가 유효한 결정 대시보드를 생성하지 못했습니다" if report_language == "ko"
+                    else "Agent 未能生成有效的决策仪表盘"
+                )
 
         explicit_action = dash.get("action") if isinstance(dash, dict) else None
         if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
@@ -2038,6 +2043,8 @@ class StockAnalysisPipeline:
         if trend and advice:
             if report_language == "en":
                 return f"Trend view: {trend}; action advice: {advice}."
+            if report_language == "ko":
+                return f"추세 결론: {trend}; 대응 전략: {advice}."
             return f"趋势结论：{trend}；操作建议：{advice}。"
         return ""
 
@@ -2074,7 +2081,11 @@ class StockAnalysisPipeline:
             core["one_sentence"] = result.analysis_summary or self._summary_fallback_from_result(
                 result,
                 report_language,
-            ) or ("Analysis pending" if report_language == "en" else "分析待补充")
+            ) or (
+                "Analysis pending" if report_language == "en"
+                else "분석 보완 예정" if report_language == "ko"
+                else "分析待补充"
+            )
 
         intelligence = dashboard.get("intelligence")
         if not isinstance(intelligence, dict):
@@ -2112,7 +2123,7 @@ class StockAnalysisPipeline:
         levels = getattr(trend_result, "support_levels", None) if trend_result else None
         if levels:
             return levels[0]
-        return "To be completed" if report_language == "en" else "待补充"
+        return get_placeholder_text(report_language)
 
     @staticmethod
     def _apply_trend_fallback(
@@ -2122,7 +2133,7 @@ class StockAnalysisPipeline:
     ) -> None:
         if trend_result is None:
             result.sentiment_score = 50
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            result.operation_advice = localize_operation_advice("观望", report_language)
             return
 
         score = getattr(trend_result, "signal_score", None)
@@ -2144,7 +2155,7 @@ class StockAnalysisPipeline:
         if signal_label:
             result.operation_advice = signal_label
         else:
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            result.operation_advice = localize_operation_advice("观望", report_language)
 
         from src.agent.protocols import normalize_decision_signal
 

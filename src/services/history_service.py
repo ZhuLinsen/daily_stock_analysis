@@ -896,14 +896,22 @@ class HistoryService:
         report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now().strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
-        analysis_date_label = "Analysis Date" if report_language == "en" else "分析日期"
-        report_time_label = "Report Time" if report_language == "en" else "报告生成时间"
-        reason_label = "Rationale" if report_language == "en" else "操作理由"
-        risk_warning_label = "Risk Warning" if report_language == "en" else "风险提示"
-        technical_heading = "Technicals" if report_language == "en" else "技术面"
-        ma_label = "Moving Averages" if report_language == "en" else "均线"
-        volume_analysis_label = "Volume" if report_language == "en" else "量能"
-        news_heading = "News Flow" if report_language == "en" else "消息面"
+
+        def _label(en: str, zh: str, ko: str) -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko
+            return zh
+
+        analysis_date_label = _label("Analysis Date", "分析日期", "분석일")
+        report_time_label = _label("Report Time", "报告生成时间", "생성 시각")
+        reason_label = _label("Rationale", "操作理由", "판단 근거")
+        risk_warning_label = _label("Risk Warning", "风险提示", "리스크 경고")
+        technical_heading = _label("Technicals", "技术面", "기술적 분석")
+        ma_label = _label("Moving Averages", "均线", "이동평균")
+        volume_analysis_label = _label("Volume", "量能", "거래량")
+        news_heading = _label("News Flow", "消息面", "뉴스 흐름")
 
         # Escape markdown special characters in stock name
         name_escaped = self._escape_md(

@@ -109,6 +109,20 @@ def test_request_models_accept_report_language_camel_case_alias() -> None:
     assert market_review_request.report_language == "en"
 
 
+def test_request_models_accept_korean_report_language() -> None:
+    analyze_request = AnalyzeRequest.model_validate({
+        "stock_code": "005930.KS",
+        "report_language": "ko",
+    })
+    assert analyze_request.report_language == "ko"
+
+    market_review_request = MarketReviewRequest.model_validate({
+        "send_notification": False,
+        "report_language": "ko",
+    })
+    assert market_review_request.report_language == "ko"
+
+
 def test_analyze_request_analysis_phase_defaults_to_auto() -> None:
     request = AnalyzeRequest(stock_code="600519")
 

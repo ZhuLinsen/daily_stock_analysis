@@ -276,6 +276,29 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     leading: 'Leading',
     lagging: 'Lagging',
   },
+  ko: {
+    reviewSummary: '리뷰 요약',
+    noReviewSummary: '요약 없음',
+    noSentimentScore: '점수 없음',
+    rotationAndFunds: '순환과 자금',
+    noRotationView: '순환 관점 없음',
+    riskAndWatch: '리스크와 관찰',
+    noRiskWatch: '관찰 포인트 없음',
+    structuredMarketData: '구조화 시장 데이터',
+    noBreadthData: '데이터 없음',
+    advancers: '상승 종목 수',
+    decliners: '하락 종목 수',
+    limitUpDown: '상한가/하한가',
+    turnover: '거래대금',
+    index: '지수',
+    last: '현재',
+    change: '등락률',
+    highLow: '고가/저가',
+    industryBoards: '업종 섹터',
+    conceptBoards: '테마 섹터',
+    leading: '강세',
+    lagging: '약세',
+  },
 };
 
 const formatRankingChange = (value: unknown): string => {
@@ -298,7 +321,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
 }) => {
   const normalizedReportLanguage = normalizeReportLanguage(reportLanguage);
   const text = getReportText(normalizedReportLanguage);
-  const runFlowText = UI_TEXT[normalizedReportLanguage];
+  const runFlowText = UI_TEXT[normalizedReportLanguage === 'ko' ? 'en' : normalizedReportLanguage];
   const marketReviewText = MARKET_REVIEW_TEXT[normalizedReportLanguage];
   const [loadedMarkdown, setLoadedMarkdown] = useState<LoadedMarkdown | null>(null);
   const [loadError, setLoadError] = useState<LoadError | null>(null);

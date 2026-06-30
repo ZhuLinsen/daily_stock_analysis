@@ -260,6 +260,28 @@ describe('ReportOverview', () => {
     expect(screen.queryByText('领跌')).not.toBeInTheDocument();
   });
 
+  it('shows only the board when a matching ranking has no change percent', () => {
+    render(
+      <ReportOverview
+        meta={baseMeta}
+        summary={baseSummary}
+        details={{
+          belongBoards: [{ name: '白酒', type: '行业' }],
+          sectorRankings: {
+            top: [{ name: '白酒' }],
+            bottom: [],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('关联板块')).toBeInTheDocument();
+    expect(screen.getByText('白酒')).toBeInTheDocument();
+    expect(screen.queryByText('行业')).not.toBeInTheDocument();
+    expect(screen.queryByText('领涨')).not.toBeInTheDocument();
+    expect(screen.queryByText('领跌')).not.toBeInTheDocument();
+  });
+
   it('hides related boards section when no boards are available', () => {
     render(<ReportOverview meta={baseMeta} summary={baseSummary} details={{ belongBoards: [] }} />);
 

@@ -53,7 +53,7 @@ class DecisionSignalCreateRequest(BaseModel):
     status: Optional[DecisionSignalStatus] = None
     expires_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
-    report_language: Optional[Literal["zh", "en"]] = None
+    report_language: Optional[Literal["zh", "en", "ko"]] = None
 
 
 class DecisionSignalStatusUpdateRequest(BaseModel):

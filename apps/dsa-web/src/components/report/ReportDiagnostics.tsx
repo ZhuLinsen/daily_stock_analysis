@@ -93,6 +93,36 @@ const TEXT = {
       skipped: 'Skipped',
     },
   },
+  ko: {
+    eyebrow: '실행 진단',
+    title: '실행 상태',
+    loading: '진단 불러오는 중...',
+    unavailable: '실행 진단을 사용할 수 없음',
+    noComponents: '컴포넌트 진단 없음',
+    components: '핵심 경로',
+    advanced: '고급 필드',
+    copy: '진단 정보 복사',
+    copied: '복사됨',
+    scope: '수집 / LLM / 저장 / 알림 경로',
+    trace: 'Trace',
+    task: 'Task',
+    query: 'Query',
+    trigger: '트리거',
+    overall: {
+      normal: '정상',
+      degraded: '부분 강등',
+      failed: '실패',
+      unknown: '알 수 없음',
+    },
+    component: {
+      ok: '정상',
+      degraded: '최근 실패 후 강등',
+      failed: '실패',
+      unknown: '알 수 없음',
+      not_configured: '미설정',
+      skipped: '건너뜀',
+    },
+  },
 } as const;
 
 const OVERALL_STATUS_STYLE: Record<RunDiagnosticStatus, { variant: BadgeVariant; tone: StatusTone }> = {
@@ -140,7 +170,7 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
 }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = TEXT[reportLanguage];
-  const runFlowText = UI_TEXT[reportLanguage];
+  const runFlowText = UI_TEXT[reportLanguage === 'ko' ? 'en' : reportLanguage];
   const [fetchState, setFetchState] = useState<{
     recordId?: number;
     summary: RunDiagnosticSummary | null;

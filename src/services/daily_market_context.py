@@ -659,7 +659,7 @@ def format_daily_market_context_prompt_section(
     position_cap = str(payload.get("position_cap") or "").strip()
     source = str(payload.get("source") or "").strip()
 
-    if language == "en":
+    if language in ("en", "ko"):
         label = _REGION_LABEL_EN.get(region, region)
         lines = [
             "\n## Daily Market Context",
