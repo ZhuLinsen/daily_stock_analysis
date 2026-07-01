@@ -840,6 +840,37 @@ def _mark_chip_structure_unavailable(result: "AnalysisResult", language: str) ->
     data_perspective["chip_unavailable_reason"] = get_chip_unavailable_text(language)
 
 
+def normalize_us_chip_checklist_text(result: "AnalysisResult") -> None:
+    """For US stocks, replace A-share chip no-data checklist wording with volume-cost wording."""
+    try:
+        market = ""
+        ctx = getattr(result, "fundamental_context", None)
+        if isinstance(ctx, dict):
+            market = str(ctx.get("market") or "").lower()
+        code = str(getattr(result, "code", "") or "").upper()
+        is_us = market == "us" or (code and code.isascii() and code.replace(".", "").replace("-", "").isalnum())
+        if not is_us:
+            return
+
+        dashboard = getattr(result, "dashboard", None)
+        if not isinstance(dashboard, dict):
+            return
+        checklist = dashboard.get("checklist")
+        if not isinstance(checklist, list):
+            return
+
+        cleaned = []
+        for item in checklist:
+            text = str(item)
+            if "筹码" in text and ("数据缺失" in text or "无法判断" in text or "未知" in text):
+                cleaned.append("⚪ 检查项5：使用成交量成本区估算")
+            else:
+                cleaned.append(item)
+        dashboard["checklist"] = cleaned
+    except Exception:
+        return
+
+
 def normalize_chip_structure_availability(result: "AnalysisResult", chip_data: Any) -> None:
     """Fill valid chip metrics or collapse placeholder-only chip fields to one fallback line."""
     if not result:
@@ -2991,6 +3022,7 @@ class GeminiAnalyzer:
                 result.model_used = model_used
                 result.report_language = report_language
                 normalize_chip_structure_availability(result, context.get("chip"))
+                normalize_us_chip_checklist_text(result)
 
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
