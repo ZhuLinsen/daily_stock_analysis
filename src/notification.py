@@ -1987,6 +1987,7 @@ class NotificationService(
         ctx = getattr(result, "fundamental_context", None)
         if not isinstance(ctx, dict):
             return {
+                "valuation": {},
                 "financial_report": {},
                 "growth": {},
                 "dividend": {},
@@ -2010,7 +2011,11 @@ class NotificationService(
 
         belong_boards = ctx.get("belong_boards") if isinstance(ctx.get("belong_boards"), list) else []
 
+        valuation_block = ctx.get("valuation") if isinstance(ctx.get("valuation"), dict) else {}
+        valuation_data = valuation_block.get("data") if isinstance(valuation_block.get("data"), dict) else {}
+
         return {
+            "valuation": valuation_data,
             "financial_report": financial_report,
             "growth": growth_data,
             "dividend": dividend,
@@ -2030,9 +2035,72 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
+        self._append_valuation_summary(lines, blocks, labels)
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)
+
+    def _append_valuation_summary(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        valuation = blocks.get("valuation") or {}
+
+        def fmt_number(value: Any) -> str:
+            try:
+                if value is None:
+                    return "N/A"
+                return f"{float(value):.2f}"
+            except Exception:
+                return "N/A"
+
+        def fmt_usd_amount(value: Any) -> str:
+            try:
+                number = float(value)
+            except Exception:
+                return "N/A"
+            if number >= 1e12:
+                return f"{number / 1e12:.2f} 万亿美元"
+            if number >= 1e8:
+                return f"{number / 1e8:.2f} 亿美元"
+            return f"{number:.0f} 美元"
+
+        def fmt_shares(value: Any) -> str:
+            try:
+                number = float(value)
+            except Exception:
+                return "N/A"
+            if number >= 1e8:
+                return f"{number / 1e8:.2f} 亿股"
+            if number >= 1e4:
+                return f"{number / 1e4:.2f} 万股"
+            return f"{number:.0f} 股"
+
+        cells = {
+            "pe_ttm": fmt_number(valuation.get("trailing_pe") or valuation.get("pe_ratio")),
+            "forward_pe": fmt_number(valuation.get("forward_pe")),
+            "market_cap": fmt_usd_amount(valuation.get("market_cap") or valuation.get("total_mv")),
+            "shares": fmt_shares(valuation.get("shares_outstanding")),
+            "float_shares": fmt_shares(valuation.get("float_shares")),
+            "judgement": self._format_text(valuation.get("valuation_judgement")),
+        }
+
+        if all(v == "N/A" for v in cells.values()):
+            return
+
+        lines.extend([
+            "### 📏 估值与股本",
+            "",
+            "| PE(TTM) | Forward PE | 市值 | 总股本 | 流通股本 | 估值判断 |",
+            "|-------:|-----------:|-----:|-------:|---------:|---------|",
+            (
+                f"| {cells['pe_ttm']} | {cells['forward_pe']} | {cells['market_cap']} | "
+                f"{cells['shares']} | {cells['float_shares']} | {cells['judgement']} |"
+            ),
+            "",
+        ])
 
     def _append_financial_summary(
         self,

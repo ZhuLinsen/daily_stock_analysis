@@ -1857,7 +1857,7 @@ class GeminiAnalyzer:
                 "✅/⚠️/❌ 检查项3：量能配合",
                 "✅/⚠️/❌ 检查项4：无重大利空",
                 "✅/⚠️/❌ 检查项5：筹码健康",
-                "✅/⚠️/❌ 检查项6：PE估值合理"
+                "✅/⚠️/❌/⚪ 检查项6：Forward PE估值（forward_pe < 30 为合理；30及以上为偏高；缺失则写“Forward PE缺失，暂不判断”；严禁写“PE估值合理（数据缺失）”）"
             ]
         },
 
@@ -3168,6 +3168,30 @@ class GeminiAnalyzer:
 
         # 添加财报与分红（价值投资口径）
         fundamental_context = context.get("fundamental_context") if isinstance(context, dict) else None
+        valuation_data = {}
+        if isinstance(fundamental_context, dict):
+            valuation_block = fundamental_context.get("valuation")
+            if isinstance(valuation_block, dict):
+                raw_valuation = valuation_block.get("data")
+                if isinstance(raw_valuation, dict):
+                    valuation_data = raw_valuation
+
+        if valuation_data:
+            prompt += f"""
+
+### 估值数据（Forward PE规则）
+| 指标 | 数值 |
+|------|------|
+| PE(TTM) | {valuation_data.get('trailing_pe') or valuation_data.get('pe_ratio') or 'N/A'} |
+| Forward PE | {valuation_data.get('forward_pe') or 'N/A'} |
+| 市值 | {valuation_data.get('market_cap') or valuation_data.get('total_mv') or 'N/A'} |
+| 总股本 | {valuation_data.get('shares_outstanding') or 'N/A'} |
+| 流通股本 | {valuation_data.get('float_shares') or 'N/A'} |
+| 估值判断 | {valuation_data.get('valuation_judgement') or 'N/A'} |
+
+估值检查规则：Forward PE < 30 为合理；30及以上为偏高；50及以上为明显偏高；Forward PE缺失时写“Forward PE缺失，暂不判断”。严禁写“PE估值合理（数据缺失）”。
+"""
+
         earnings_block = (
             fundamental_context.get("earnings", {})
             if isinstance(fundamental_context, dict)
@@ -3426,7 +3450,7 @@ class GeminiAnalyzer:
             prompt += """
 ⚠️ **数据缺失警告**
 由于接口限制，当前无法获取完整的实时行情和技术指标数据。
-请 **忽略上述表格中的 N/A 数据**，重点依据 **【📰 舆情情报】** 中的新闻进行基本面和情绪面分析。
+请 **忽略上述表格中的 N/A 数据**。若 fundamental_context.valuation.data 中存在 forward_pe，请优先按 Forward PE 判断估值：forward_pe < 30 为合理，30及以上为偏高，50及以上为明显偏高；若 forward_pe 缺失，必须写“Forward PE缺失，暂不判断”，严禁写“PE估值合理（数据缺失）”。同时结合 **【📰 舆情情报】** 进行基本面和情绪面分析。
 在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
 """
 
