@@ -2116,6 +2116,43 @@ class NotificationService(
             "",
         ])
 
+    def _append_volume_cost_zone_summary(self, lines: List[str], result: AnalysisResult) -> None:
+        code = getattr(result, "code", "") or getattr(result, "stock_code", "")
+        try:
+            from src.services.volume_cost_zone_service import build_volume_cost_zone_from_db
+            zone = build_volume_cost_zone_from_db(code)
+        except Exception:
+            return
+
+        if not isinstance(zone, dict) or zone.get("status") != "ok":
+            return
+
+        support = (
+            f"{zone['support_low']:.2f}-{zone['support_high']:.2f}"
+            if zone.get("support_low") is not None and zone.get("support_high") is not None
+            else "N/A"
+        )
+        resistance = (
+            f"{zone['resistance_low']:.2f}-{zone['resistance_high']:.2f}"
+            if zone.get("resistance_low") is not None and zone.get("resistance_high") is not None
+            else "N/A"
+        )
+
+        lines.extend([
+            "### 📊 成交量成本区估算",
+            "",
+            "| 样本 | 成交均价 | 主要成本区 | 当前价位置 | 支撑参考 | 压力参考 |",
+            "|-----:|---------:|-----------:|----------|---------:|---------:|",
+            (
+                f"| {zone.get('sample_days', 'N/A')}日 | {zone.get('avg_cost', 'N/A')} | "
+                f"{zone.get('main_cost_low', 'N/A')}-{zone.get('main_cost_high', 'N/A')} | "
+                f"{zone.get('position', 'N/A')} | {support} | {resistance} |"
+            ),
+            "",
+            f"> {zone.get('note', '这是成交量成本区估算，不等同于A股筹码分布。')}",
+            "",
+        ])
+
     def _append_financial_summary(
         self,
         lines: List[str],
