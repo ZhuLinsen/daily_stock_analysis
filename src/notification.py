@@ -2036,6 +2036,7 @@ class NotificationService(
         labels = get_report_labels(report_language)
 
         self._append_valuation_summary(lines, blocks, labels)
+        self._append_weekly_rsi_summary(lines, result)
         self._append_volume_cost_zone_summary(lines, result)
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
@@ -2113,6 +2114,35 @@ class NotificationService(
                 f"| {cells['pe_ttm']} | {cells['forward_pe']} | {cells['market_cap']} | "
                 f"{cells['shares']} | {cells['float_shares']} | {cells['judgement']} |"
             ),
+            "",
+        ])
+
+    def _append_weekly_rsi_summary(self, lines: List[str], result: AnalysisResult) -> None:
+        code = getattr(result, "code", "") or getattr(result, "stock_code", "")
+        try:
+            from src.services.weekly_rsi_service import build_weekly_rsi_from_db
+            weekly = build_weekly_rsi_from_db(code)
+        except Exception:
+            return
+
+        if not isinstance(weekly, dict) or weekly.get("status") != "ok":
+            return
+
+        previous = weekly.get("previous_rsi")
+        previous_text = f"{previous:.2f}" if isinstance(previous, (int, float)) else "N/A"
+
+        lines.extend([
+            "### 📈 周线 RSI(14)",
+            "",
+            "| 周线日期 | 当前RSI | 上周RSI | 趋势 | 对比30 | 对比50 | 对比70 |",
+            "|:------:|-------:|-------:|:----:|-------|-------|-------|",
+            (
+                f"| {weekly.get('week_date', 'N/A')} | {weekly.get('current_rsi', 'N/A')} | "
+                f"{previous_text} | {weekly.get('trend', 'N/A')} | "
+                f"{weekly.get('vs_30', 'N/A')} | {weekly.get('vs_50', 'N/A')} | {weekly.get('vs_70', 'N/A')} |"
+            ),
+            "",
+            f"> {weekly.get('interpretation', '')}",
             "",
         ])
 
