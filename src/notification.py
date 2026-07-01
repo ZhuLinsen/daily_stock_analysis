@@ -996,7 +996,7 @@ class NotificationService(
             f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         
-        return "\n".join(report_lines)
+        return _normalize_us_chip_markdown_text("\n".join(report_lines))
     
     @staticmethod
     def _escape_md(name: str) -> str:
@@ -1425,7 +1425,7 @@ class NotificationService(
         if models:
             report_lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
         
-        return "\n".join(report_lines)
+        return _normalize_us_chip_markdown_text("\n".join(report_lines))
     
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
         """
@@ -2801,3 +2801,21 @@ if __name__ == "__main__":
         print(f"推送结果: {'成功' if success else '失败'}")
     else:
         print("\n通知渠道未配置，跳过推送测试")
+
+
+def _normalize_us_chip_markdown_text(markdown: str) -> str:
+    """Final markdown guard: US reports with volume-cost zones should not show chip no-data as a defect."""
+    if not isinstance(markdown, str) or "成交量成本区估算" not in markdown:
+        return markdown
+
+    cleaned = []
+    bad_tokens = ("数据缺失", "无法判断", "缺失", "未知")
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("-") and "筹码" in stripped and any(token in stripped for token in bad_tokens):
+            indent = line[: len(line) - len(line.lstrip())]
+            cleaned.append(f"{indent}- ⚪ 检查项5：使用成交量成本区估算")
+        else:
+            cleaned.append(line)
+    return "\n".join(cleaned)
+
