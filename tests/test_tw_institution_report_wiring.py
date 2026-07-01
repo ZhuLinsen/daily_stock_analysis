@@ -202,5 +202,36 @@ class TestTwInstitutionReportWiring(unittest.TestCase):
             self.assertNotIn(key, data, f"derived key '{key}' leaked into institution data")
 
 
+    # ---- institution must use the STAGE budget, not the small per-symbol fetch cap -----
+    def test_tw_institution_not_starved_by_small_fetch_timeout(self):
+        # The 三大法人 block is a whole-market download (~4-5s). It must run under the
+        # remaining STAGE budget, not the (small) per-symbol fetch_timeout — otherwise the
+        # first/only stock of a run coin-flips to not_supported. A fetch slower than
+        # fetch_timeout but within the stage budget must still land as 'ok'.
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_stage_timeout_seconds=8.0,   # generous stage budget
+            fundamental_fetch_timeout_seconds=0.3,   # tiny per-symbol cap (would starve institution)
+            fundamental_retry_max=1,
+        )
+        manager = DataFetcherManager(fetchers=[])
+
+        def _slowish(_code):
+            time.sleep(1.0)  # > fetch_timeout(0.3) but << stage budget(8) -> must complete
+            return dict(_FAKE_REC)
+
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=None), \
+                patch(
+                    "data_provider.yfinance_fundamental_adapter.YfinanceFundamentalAdapter.get_fundamental_bundle",
+                    return_value=_EMPTY_BUNDLE,
+                ), \
+                patch(_TW_FETCHER_METHOD, side_effect=_slowish):
+            ctx = manager.get_fundamental_context("2330.TW")
+        self.assertEqual(ctx["coverage"].get("institution"), "ok")
+        self.assertEqual(ctx["institution"]["data"]["total_net"], _FAKE_REC["total_net"])
+
+
 if __name__ == "__main__":
     unittest.main()

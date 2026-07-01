@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] #1743 Phase 4 新增 `opencode_cli` generation-only 本地 CLI backend，使用 OpenCode `run --format json --file` prompt-file 路径、JSON event extractor、Agent 边界和 provider credential 不接管约束。
 - [文档] #1743 Phase 4 同步本地 CLI backend 隐私/部署边界：local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
 - [新功能] 台股报告接入三大法人：tw 个股分析报告的 institution 区块改为展示 TWSE T86 / TPEx 三大法人原始买卖超净额（外资/投信/自营/合计，单位:股）；tw-only、严格 additive（A股/港股/美股/日韩股 offshore 流程字节不变）、fail-open（取不到数据维持 not_supported，绝不中断分析）；不接 Web、不派生 capital_flow_signal、不改评分权重或 schema。
+- [改进] 台股报告完整消费三大法人：tw 个股报告的 `institution` 区块现会在报告中渲染三大法人净买卖超表格，并注入 LLM 分析 prompt 作为台股筹码过滤器（此前仅接入数据层，报告与 prompt 均未消费，导致报告出现「筹码结构：数据缺失」）；同时三大法人整市场抓取改用剩余 stage 预算而非较小的 per-symbol fetch 超时，避免单股/首档分析因冷抓取（~4-5s）超时而降级为 not_supported。tw-only、严格 additive、fail-open。
+- [修复] 台股财务金额币别标示：TWD 金额此前落入默认「元」(在 A 股语境易误读为人民币)，`_CURRENCY_SUFFIX` 补入 TWD→「新台币」，营业收入/归母净利润/经营现金流/每股现金分红均正确标注新台币。
 
 ## [3.24.1] - 2026-06-28
 

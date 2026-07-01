@@ -2982,10 +2982,13 @@ class DataFetcherManager:
                     logger.error("[tw-inst] fetcher init failed (wiring bug?) code=%s: %s", stock_code, exc)
                     fetcher = None
             if fetcher is not None:
-                # Run the fetch under the SAME fundamental stage/fetch budget as the other
-                # offshore blocks (_run_with_retry) so a slow / rate-limited TWSE/TPEx call
-                # cannot push the analysis past its deadline — it fails open on timeout.
-                inst_timeout = min(fetch_timeout, max(stage_timeout - (time.time() - start_ts), 0.0))
+                # The tw institution block is a WHOLE-MARKET download (~4-5s), far slower
+                # than the per-symbol quote/bundle fetches, and it is the LAST offshore
+                # block. Give it the full REMAINING stage budget rather than the ~3s
+                # per-fetch cap (fetch_timeout) that starves it and makes the first/only
+                # stock of a run coin-flip between ok and not_supported. Still bounded by
+                # the stage deadline via _run_with_retry, so it fails open (never blocks).
+                inst_timeout = max(stage_timeout - (time.time() - start_ts), 0.0)
                 if inst_timeout > 0:
                     tw_record, inst_err, _inst_ms = self._run_with_retry(
                         lambda: fetcher.get_institutional_net(stock_code),
