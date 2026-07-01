@@ -289,7 +289,7 @@ daily_stock_analysis/
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（与 Webhook 二选一） | 可选 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 时需要） | 可选 |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key（仅入站 Interaction/Webhook 回调验签时需要） | 可选 |
-| `DISCORD_MAX_WORDS` | Discord 最大字数限制（默认 免费服务器限制2000） | 可选 |
+| `DISCORD_MAX_WORDS` | Discord 单条消息 content 上限（默认 2000；运行时不会超过 Discord 2000 字符限制，长报告会自动分片并对 429 限流做有限重试） | 可选 |
 | `SLACK_BOT_TOKEN` | Slack Bot Token（推荐，支持图片上传；同时配置时优先于 Webhook） | 可选 |
 | `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 时需要） | 可选 |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（仅文本，不支持图片） | 可选 |
@@ -1097,6 +1097,8 @@ GOTIFY_TOKEN=app-token
 ### Discord
 
 Discord 支持两种方式推送：
+
+长报告会按 Discord 单条 content 2000 字符上限自动分片发送；如果某一片遇到 429 限流，发送器会按 Discord 返回的 `retry_after` 或 `Retry-After` 做有限重试，并继续尝试后续分片。`DISCORD_MAX_WORDS` 可调低单片长度，但运行时不会允许超过 2000。
 
 **方式一：Webhook（推荐，简单）**
 
