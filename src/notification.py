@@ -2036,6 +2036,7 @@ class NotificationService(
         labels = get_report_labels(report_language)
 
         self._append_valuation_summary(lines, blocks, labels)
+        self._append_volume_cost_zone_summary(lines, result)
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)

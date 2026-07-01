@@ -1856,7 +1856,7 @@ class GeminiAnalyzer:
                 "✅/⚠️/❌ 检查项2：乖离率合理（强势趋势可放宽）",
                 "✅/⚠️/❌ 检查项3：量能配合",
                 "✅/⚠️/❌ 检查项4：无重大利空",
-                "✅/⚠️/❌ 检查项5：筹码健康",
+                "✅/⚠️/❌/⚪ 检查项5：A股筹码健康；美股使用成交量成本区估算，严禁因“无真实筹码分布”直接判为负面",
                 "✅/⚠️/❌/⚪ 检查项6：Forward PE估值（forward_pe < 30 为合理；30及以上为偏高；缺失则写“Forward PE缺失，暂不判断”；严禁写“PE估值合理（数据缺失）”）"
             ]
         },
@@ -3062,7 +3062,7 @@ class GeminiAnalyzer:
         """
         格式化分析提示词（决策仪表盘 v2.0）
         
-        包含：技术指标、实时行情（量比/换手率）、筹码分布、趋势分析、新闻
+        包含：技术指标、实时行情（量比/换手率）、A股筹码分布或美股成交量成本区估算、趋势分析、新闻
         
         Args:
             context: 技术面数据上下文（包含增强数据）
@@ -3221,7 +3221,7 @@ class GeminiAnalyzer:
 | 估算换手率 | {estimated_turnover_text} |
 | 估值判断 | {valuation_data.get('valuation_judgement') or 'N/A'} |
 
-估值检查规则：Forward PE < 30 为合理；30及以上为偏高；50及以上为明显偏高；Forward PE缺失时写“Forward PE缺失，暂不判断”。严禁写“PE估值合理（数据缺失）”。
+估值检查规则：Forward PE < 30 为合理；30及以上为偏高；50及以上为明显偏高；Forward PE缺失时写“Forward PE缺失，暂不判断”。严禁写“PE估值合理（数据缺失）”。\n美股筹码规则：美股没有A股式真实筹码分布；应参考成交量成本区估算，不得把“筹码未知/筹码缺失”作为主要风险。
 换手率规则：若实时换手率缺失，但估算换手率存在，请在 volume_analysis.turnover_rate 中使用估算换手率数值，并在量能含义中注明“按流通股本估算”或“按总股本估算”；若估算换手率也缺失，写“换手率数据缺失，暂不判断”，严禁写“数据缺失，无法判断%”。
 """
 
@@ -3341,7 +3341,7 @@ class GeminiAnalyzer:
                 "Do not fabricate profit ratio, average cost, or concentration. Mention chip data "
                 "unavailability only once in the report; do not repeat per-field no-data text in `chip_structure`."
                 if report_language == "en"
-                else "请勿编造获利比例、平均成本或集中度；报告中只说明一次筹码数据不可用，不要把“数据缺失，无法判断”逐字段重复写入 `chip_structure`。"
+                else "请勿编造获利比例、平均成本或集中度；A股筹码数据不可用时只说明一次。若市场为美股，请使用“成交量成本区估算”表述，不要把“无真实筹码分布”作为核心负面风险。"
             )
             prompt += f"""
 ### 筹码分布数据（效率指标）
@@ -3483,7 +3483,7 @@ class GeminiAnalyzer:
             prompt += """
 ⚠️ **数据缺失警告**
 由于接口限制，当前无法获取完整的实时行情和技术指标数据。
-请 **忽略上述表格中的 N/A 数据**。若 fundamental_context.valuation.data 中存在 forward_pe，请优先按 Forward PE 判断估值：forward_pe < 30 为合理，30及以上为偏高，50及以上为明显偏高；若 forward_pe 缺失，必须写“Forward PE缺失，暂不判断”，严禁写“PE估值合理（数据缺失）”。同时结合 **【📰 舆情情报】** 进行基本面和情绪面分析。
+请 **忽略上述表格中的 N/A 数据**。若 fundamental_context.valuation.data 中存在 forward_pe，请优先按 Forward PE 判断估值：forward_pe < 30 为合理，30及以上为偏高，50及以上为明显偏高；若 forward_pe 缺失，必须写“Forward PE缺失，暂不判断”，严禁写“PE估值合理（数据缺失）”。\n美股筹码规则：美股没有A股式真实筹码分布；应参考成交量成本区估算，不得把“筹码未知/筹码缺失”作为主要风险。同时结合 **【📰 舆情情报】** 进行基本面和情绪面分析。
 在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
 """
 
