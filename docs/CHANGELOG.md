@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] #1743 Phase 4 新增 `opencode_cli` generation-only 本地 CLI backend，使用 OpenCode `run --format json --file` prompt-file 路径、JSON event extractor、Agent 边界和 provider credential 不接管约束。
 - [文档] #1743 Phase 4 同步本地 CLI backend 隐私/部署边界：local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
 - [新功能] 台股报告接入三大法人：tw 个股分析报告的 institution 区块改为展示 TWSE T86 / TPEx 三大法人原始买卖超净额（外资/投信/自营/合计，单位:股）；tw-only、严格 additive（A股/港股/美股/日韩股 offshore 流程字节不变）、fail-open（取不到数据维持 not_supported，绝不中断分析）；不接 Web、不派生 capital_flow_signal、不改评分权重或 schema。
+- [修复] `.env.example` 中 `REALTIME_SOURCE_PRIORITY` 默认示例改为 `tencent,akshare_em`，避开 `efinance.stock.get_realtime_quotes()` 一次拉全 A ~5000 只导致的单股实时行情阶段 ~28s 卡顿（前端停在 progress=18%）；保留含 efinance 的备选预设供需要更强字段完整性的用户选择；不影响代码默认 (`src/config.py`)，仅调整 `.env.example` 推荐预设。
 
 ## [3.24.1] - 2026-06-28
 
