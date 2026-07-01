@@ -115,6 +115,16 @@ class _NaiveTimestampCalendar(_FakeCalendar):
         return pd.Timestamp(datetime.combine(session.date(), time(self._close_hour, 0)))
 
 
+class _HalfHourCloseCalendar(_FakeCalendar):
+    """TWSE closes at 13:30 (half-hour); _FakeCalendar only models on-the-hour close."""
+
+    def session_close(self, session: pd.Timestamp) -> pd.Timestamp:
+        local_close = datetime.combine(
+            session.date(), time(13, 30), tzinfo=ZoneInfo(self._tz_name)
+        )
+        return pd.Timestamp(local_close).tz_convert("UTC")
+
+
 class EffectiveTradingDateTestCase(unittest.TestCase):
     def test_weekend_returns_previous_session(self):
         fake_calendar = _FakeCalendar(
@@ -384,6 +394,31 @@ class InferMarketPhaseTestCase(unittest.TestCase):
         for current_time, expected in cases:
             with self.subTest(current_time=current_time):
                 self.assertEqual(self._infer_with_calendar("us", current_time, fake_calendar), expected)
+
+    def test_tw_phase_boundaries_include_five_minute_closing_window(self):
+        # TWSE: continuous 09:00-13:30, no lunch break, 13:25-13:30 closing auction.
+        fake_calendar = _HalfHourCloseCalendar(
+            sessions=[date(2026, 3, 27)],
+            close_hour=13,  # unused: _HalfHourCloseCalendar hard-codes the 13:30 close
+            tz_name="Asia/Taipei",
+            open_time=time(9, 0),
+            break_start=None,
+            break_end=None,
+        )
+
+        tz = ZoneInfo("Asia/Taipei")
+        cases = (
+            (datetime(2026, 3, 27, 8, 59, tzinfo=tz), trading_calendar.MarketPhase.PREMARKET),
+            (datetime(2026, 3, 27, 9, 0, tzinfo=tz), trading_calendar.MarketPhase.INTRADAY),
+            (datetime(2026, 3, 27, 13, 24, tzinfo=tz), trading_calendar.MarketPhase.INTRADAY),
+            (datetime(2026, 3, 27, 13, 25, tzinfo=tz), trading_calendar.MarketPhase.CLOSING_AUCTION),
+            (datetime(2026, 3, 27, 13, 29, tzinfo=tz), trading_calendar.MarketPhase.CLOSING_AUCTION),
+            (datetime(2026, 3, 27, 13, 30, tzinfo=tz), trading_calendar.MarketPhase.POSTMARKET),
+        )
+
+        for current_time, expected in cases:
+            with self.subTest(current_time=current_time):
+                self.assertEqual(self._infer_with_calendar("tw", current_time, fake_calendar), expected)
 
     def test_unknown_market_and_calendar_failures_return_unknown(self):
         current_time = datetime(2026, 3, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
