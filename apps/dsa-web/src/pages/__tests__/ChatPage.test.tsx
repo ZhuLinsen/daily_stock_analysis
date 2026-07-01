@@ -3,7 +3,7 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
 import { historyApi } from '../../api/history';
-import type { Message } from '../../stores/agentChatStore';
+import type { Message, ProgressStep } from '../../stores/agentChatStore';
 import ChatPage from '../ChatPage';
 import { extractStockCodeFromMessage, extractStockCodesFromMessage } from '../../utils/chatStockCode';
 
@@ -51,7 +51,7 @@ const mockStartNewChat = vi.fn();
 const mockStoreState = {
   messages: [] as Message[],
   loading: false,
-  progressSteps: [],
+  progressSteps: [] as ProgressStep[],
   sessionId: 'session-1',
   sessions: [
     {
@@ -394,6 +394,41 @@ describe('ChatPage', () => {
     const skillBadge = await screen.findByLabelText('技能 趋势分析、均线金叉');
     expect(skillBadge).toBeInTheDocument();
     expect(skillBadge).toHaveTextContent('趋势分析、均线金叉');
+  });
+
+  it('renders failed stage_done progress as a non-success state', async () => {
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [
+      { type: 'stage_done', stage: 'risk', status: 'failed' },
+    ];
+    mockStoreState.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Partial answer',
+        thinkingSteps: [
+          { type: 'stage_done', stage: 'risk', status: 'failed' },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findAllByText('risk failed')).toHaveLength(1);
+
+    const thinkingToggle = container.querySelector('button[class*="mb-2"][class*="w-full"]') as HTMLButtonElement;
+    fireEvent.click(thinkingToggle);
+
+    const failedStage = screen.getAllByText('risk failed').find((node) =>
+      node.closest('.chat-progress-item'),
+    );
+    expect(failedStage).toBeDefined();
+    expect(failedStage?.closest('.chat-progress-item')).toHaveClass('chat-progress-item-danger');
+    expect(failedStage?.closest('.chat-progress-item')).not.toHaveClass('chat-progress-item-success');
   });
 
   it('selects the default skill after loading skills', async () => {

@@ -63,6 +63,19 @@ const getMessageSkillNames = (msg: Message): string[] => {
 
 const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg).join('、');
 
+const isStageDoneSuccessful = (status?: string): boolean => {
+  if (!status) return true;
+  const normalized = status.trim().toLowerCase();
+  return ['completed', 'success', 'succeeded', 'done'].includes(normalized);
+};
+
+const getStageDoneLabel = (step: ProgressStep): string => {
+  const stage = step.stage || 'stage';
+  if (step.message) return step.message;
+  if (isStageDoneSuccessful(step.status)) return `${stage} completed`;
+  return `${stage} ${step.status || 'finished'}`;
+};
+
 const isCompareStockMessage = (
   message: string,
   stockCodes: string[],
@@ -684,7 +697,7 @@ const ChatPage: React.FC = () => {
     if (last.type === 'stage_start')
       return last.message || `Starting ${last.stage || 'stage'}...`;
     if (last.type === 'stage_done')
-      return last.message || `${last.stage || 'stage'} completed`;
+      return getStageDoneLabel(last);
     if (last.type === 'pipeline_timeout')
       return last.message || `${last.stage || 'pipeline'} timed out`;
     if (last.type === 'generating')
@@ -752,9 +765,10 @@ const ChatPage: React.FC = () => {
           statusClass = 'chat-progress-item-thinking';
           iconClass = 'chat-progress-dot-thinking';
         } else if (step.type === 'stage_done') {
-          text = step.message || `${step.stage || 'stage'} completed`;
-          statusClass = 'chat-progress-item-success';
-          iconClass = 'chat-progress-dot-success';
+          const isSuccess = isStageDoneSuccessful(step.status);
+          text = getStageDoneLabel(step);
+          statusClass = isSuccess ? 'chat-progress-item-success' : 'chat-progress-item-danger';
+          iconClass = isSuccess ? 'chat-progress-dot-success' : 'chat-progress-dot-danger';
         } else if (step.type === 'pipeline_timeout') {
           text = step.message || `${step.stage || 'pipeline'} timed out`;
           statusClass = 'chat-progress-item-danger';
