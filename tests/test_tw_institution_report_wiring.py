@@ -232,6 +232,30 @@ class TestTwInstitutionReportWiring(unittest.TestCase):
         self.assertEqual(ctx["coverage"].get("institution"), "ok")
         self.assertEqual(ctx["institution"]["data"]["total_net"], _FAKE_REC["total_net"])
 
+    # ---- FUNDAMENTAL_FETCH_TIMEOUT_SECONDS=0 disables per-fetch fetches — incl institution
+    def test_tw_institution_disabled_when_fetch_timeout_zero(self):
+        # fetch_timeout=0 is the existing "disable per-fetch fundamental fetches" config
+        # (valuation/bundle skip). Institution must honour it too, not bypass it via the
+        # stage budget.
+        cfg = SimpleNamespace(
+            enable_fundamental_pipeline=True,
+            fundamental_cache_ttl_seconds=0,
+            fundamental_stage_timeout_seconds=8.0,
+            fundamental_fetch_timeout_seconds=0.0,   # disabled
+            fundamental_retry_max=1,
+        )
+        manager = DataFetcherManager(fetchers=[])
+        with patch("src.config.get_config", return_value=cfg), \
+                patch.object(manager, "get_realtime_quote", return_value=None), \
+                patch(
+                    "data_provider.yfinance_fundamental_adapter.YfinanceFundamentalAdapter.get_fundamental_bundle",
+                    return_value=_EMPTY_BUNDLE,
+                ), \
+                patch(_TW_FETCHER_METHOD, return_value=dict(_FAKE_REC)) as tw_mock:
+            ctx = manager.get_fundamental_context("2330.TW")
+        self.assertEqual(ctx["coverage"].get("institution"), "not_supported")
+        self.assertEqual(tw_mock.call_count, 0)  # institution fetch skipped when disabled
+
 
 if __name__ == "__main__":
     unittest.main()
