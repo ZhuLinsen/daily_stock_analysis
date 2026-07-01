@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] #1743 Phase 4 新增 `opencode_cli` generation-only 本地 CLI backend，使用 OpenCode `run --format json --file` prompt-file 路径、JSON event extractor、Agent 边界和 provider credential 不接管约束。
 - [文档] #1743 Phase 4 同步本地 CLI backend 隐私/部署边界：local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
 - [新功能] 台股报告接入三大法人：tw 个股分析报告的 institution 区块改为展示 TWSE T86 / TPEx 三大法人原始买卖超净额（外资/投信/自营/合计，单位:股）；tw-only、严格 additive（A股/港股/美股/日韩股 offshore 流程字节不变）、fail-open（取不到数据维持 not_supported，绝不中断分析）；不接 Web、不派生 capital_flow_signal、不改评分权重或 schema。
+- [修复] yfinance 分红解析：yfinance 1.2.x 将 `Ticker.dividends` 返回为单列 DataFrame（而非 Series），适配器按 Series 迭代 `.items()` 导致每笔分红被丢弃、TTM 每股分红与分红次数静默退回 `trailingAnnualDividendRate` 年率估算（如 24.0 / 分红次数 0，而非真实 TTM 合计）；现在迭代前强制转为 Series。影响所有 yfinance 后缀市场（美股/港股/日韩股/台股）。
 
 ## [3.24.1] - 2026-06-28
 
