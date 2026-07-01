@@ -92,6 +92,15 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         supports_link=True,
         notes="Feishu uses lark_md/card payloads and needs table fallbacks.",
     ),
+    "dingtalk": ChannelProfile(
+        channel="dingtalk",
+        markdown="markdown",
+        default_mode="full_report",
+        max_text_bytes=20000,
+        supports_image=False,
+        supports_link=True,
+        notes="DingTalk uses standard markdown payloads with a title.",
+    ),
     "telegram": ChannelProfile(
         channel="telegram",
         markdown="markdown_v2",

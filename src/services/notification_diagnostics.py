@@ -93,6 +93,14 @@ CHANNEL_SPECS: Tuple[NotificationChannelSpec, ...] = (
         advanced_keys=("FEISHU_WEBHOOK_SECRET", "FEISHU_WEBHOOK_KEYWORD", "FEISHU_RECEIVE_ID_TYPE", "FEISHU_DOMAIN"),
     ),
     NotificationChannelSpec(
+        channel=NotificationChannel.DINGTALK.value,
+        display_name=ChannelDetector.get_channel_name(NotificationChannel.DINGTALK),
+        kind="configured",
+        minimal_keys=("DINGTALK_WEBHOOK_URL",),
+        alternative_minimal_keys=(),
+        advanced_keys=("DINGTALK_SECRET",),
+    ),
+    NotificationChannelSpec(
         channel=NotificationChannel.TELEGRAM.value,
         display_name=ChannelDetector.get_channel_name(NotificationChannel.TELEGRAM),
         kind="configured",
