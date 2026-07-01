@@ -517,6 +517,12 @@ class StockAnalysisPipeline:
                 fundamental_context,
             )
 
+            try:
+                from src.services.us_valuation_service import enrich_us_valuation_context
+                fundamental_context = enrich_us_valuation_context(code, fundamental_context)
+            except Exception as e:
+                logger.debug(f"{stock_name}({code}) yfinance估值数据补齐失败: {e}")
+
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:
                 self.db.save_fundamental_snapshot(

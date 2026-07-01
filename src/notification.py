@@ -996,7 +996,7 @@ class NotificationService(
             f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
         ])
         
-        return "\n".join(report_lines)
+        return _normalize_us_chip_markdown_text("\n".join(report_lines))
     
     @staticmethod
     def _escape_md(name: str) -> str:
@@ -1233,7 +1233,7 @@ class NotificationService(
                     if vol_data:
                         report_lines.extend([
                             f"**{labels['volume_label']}**: {labels['volume_ratio_label']} {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | "
-                            f"{labels['turnover_rate_label']} {vol_data.get('turnover_rate', 'N/A')}%",
+                            f"{labels['turnover_rate_label']} {self._format_turnover_rate_text(vol_data.get('turnover_rate', 'N/A'))}",
                             f"💡 *{vol_data.get('volume_meaning', '')}*",
                             "",
                         ])
@@ -1425,7 +1425,7 @@ class NotificationService(
         if models:
             report_lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
         
-        return "\n".join(report_lines)
+        return _normalize_us_chip_markdown_text("\n".join(report_lines))
     
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
         """
@@ -1987,6 +1987,7 @@ class NotificationService(
         ctx = getattr(result, "fundamental_context", None)
         if not isinstance(ctx, dict):
             return {
+                "valuation": {},
                 "financial_report": {},
                 "growth": {},
                 "dividend": {},
@@ -2010,7 +2011,11 @@ class NotificationService(
 
         belong_boards = ctx.get("belong_boards") if isinstance(ctx.get("belong_boards"), list) else []
 
+        valuation_block = ctx.get("valuation") if isinstance(ctx.get("valuation"), dict) else {}
+        valuation_data = valuation_block.get("data") if isinstance(valuation_block.get("data"), dict) else {}
+
         return {
+            "valuation": valuation_data,
             "financial_report": financial_report,
             "growth": growth_data,
             "dividend": dividend,
@@ -2030,9 +2035,123 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
+        self._append_valuation_summary(lines, blocks, labels)
+        self._append_volume_cost_zone_summary(lines, result)
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)
+
+    def _format_turnover_rate_text(self, value: Any) -> str:
+        if value is None:
+            return "数据缺失，暂不判断"
+        text = str(value).strip()
+        if not text or text.upper() in {"N/A", "NONE", "NULL"}:
+            return "数据缺失，暂不判断"
+        if "%" in text or "缺失" in text or "判断" in text or "估算" in text:
+            return text
+        try:
+            return f"{float(text):.2f}%"
+        except Exception:
+            return text
+
+    def _append_valuation_summary(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        valuation = blocks.get("valuation") or {}
+
+        def fmt_number(value: Any) -> str:
+            try:
+                if value is None:
+                    return "N/A"
+                return f"{float(value):.2f}"
+            except Exception:
+                return "N/A"
+
+        def fmt_usd_amount(value: Any) -> str:
+            try:
+                number = float(value)
+            except Exception:
+                return "N/A"
+            if number >= 1e12:
+                return f"{number / 1e12:.2f} 万亿美元"
+            if number >= 1e8:
+                return f"{number / 1e8:.2f} 亿美元"
+            return f"{number:.0f} 美元"
+
+        def fmt_shares(value: Any) -> str:
+            try:
+                number = float(value)
+            except Exception:
+                return "N/A"
+            if number >= 1e8:
+                return f"{number / 1e8:.2f} 亿股"
+            if number >= 1e4:
+                return f"{number / 1e4:.2f} 万股"
+            return f"{number:.0f} 股"
+
+        cells = {
+            "pe_ttm": fmt_number(valuation.get("trailing_pe") or valuation.get("pe_ratio")),
+            "forward_pe": fmt_number(valuation.get("forward_pe")),
+            "market_cap": fmt_usd_amount(valuation.get("market_cap") or valuation.get("total_mv")),
+            "shares": fmt_shares(valuation.get("shares_outstanding")),
+            "float_shares": fmt_shares(valuation.get("float_shares")),
+            "judgement": self._format_text(valuation.get("valuation_judgement")),
+        }
+
+        if all(v == "N/A" for v in cells.values()):
+            return
+
+        lines.extend([
+            "### 📏 估值与股本",
+            "",
+            "| PE(TTM) | Forward PE | 市值 | 总股本 | 流通股本 | 估值判断 |",
+            "|-------:|-----------:|-----:|-------:|---------:|---------|",
+            (
+                f"| {cells['pe_ttm']} | {cells['forward_pe']} | {cells['market_cap']} | "
+                f"{cells['shares']} | {cells['float_shares']} | {cells['judgement']} |"
+            ),
+            "",
+        ])
+
+    def _append_volume_cost_zone_summary(self, lines: List[str], result: AnalysisResult) -> None:
+        code = getattr(result, "code", "") or getattr(result, "stock_code", "")
+        try:
+            from src.services.volume_cost_zone_service import build_volume_cost_zone_from_db
+            zone = build_volume_cost_zone_from_db(code)
+        except Exception:
+            return
+
+        if not isinstance(zone, dict) or zone.get("status") != "ok":
+            return
+
+        support = (
+            f"{zone['support_low']:.2f}-{zone['support_high']:.2f}"
+            if zone.get("support_low") is not None and zone.get("support_high") is not None
+            else "N/A"
+        )
+        resistance = (
+            f"{zone['resistance_low']:.2f}-{zone['resistance_high']:.2f}"
+            if zone.get("resistance_low") is not None and zone.get("resistance_high") is not None
+            else "N/A"
+        )
+
+        lines.extend([
+            "### 📊 成交量成本区估算",
+            "",
+            "| 样本 | 成交均价 | 主要成本区 | 当前价位置 | 支撑参考 | 压力参考 |",
+            "|-----:|---------:|-----------:|----------|---------:|---------:|",
+            (
+                f"| {zone.get('sample_days', 'N/A')}日 | {zone.get('avg_cost', 'N/A')} | "
+                f"{zone.get('main_cost_low', 'N/A')}-{zone.get('main_cost_high', 'N/A')} | "
+                f"{zone.get('position', 'N/A')} | {support} | {resistance} |"
+            ),
+            "",
+            f"> {zone.get('note', '这是成交量成本区估算，不等同于A股筹码分布。')}",
+            "",
+        ])
 
     def _append_financial_summary(
         self,
@@ -2682,3 +2801,21 @@ if __name__ == "__main__":
         print(f"推送结果: {'成功' if success else '失败'}")
     else:
         print("\n通知渠道未配置，跳过推送测试")
+
+
+def _normalize_us_chip_markdown_text(markdown: str) -> str:
+    """Final markdown guard: US reports with volume-cost zones should not show chip no-data as a defect."""
+    if not isinstance(markdown, str) or "成交量成本区估算" not in markdown:
+        return markdown
+
+    cleaned = []
+    bad_tokens = ("数据缺失", "无法判断", "缺失", "未知")
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("-") and "筹码" in stripped and any(token in stripped for token in bad_tokens):
+            indent = line[: len(line) - len(line.lstrip())]
+            cleaned.append(f"{indent}- ⚪ 检查项5：使用成交量成本区估算")
+        else:
+            cleaned.append(line)
+    return "\n".join(cleaned)
+
