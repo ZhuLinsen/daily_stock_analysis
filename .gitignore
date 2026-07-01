@@ -87,3 +87,14 @@ static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
 docs/specs/
+
+# DSA local backups and runtime files
+backups/
+logs/*.log
+*.backup_*
+*.broken.*
+crontab.backup*.txt
+main.py.backup.*
+apps/dsa-web/src/pages/*.backup_*
+src/**/*.backup_*
+templates/*.backup_*
