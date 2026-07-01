@@ -1233,7 +1233,7 @@ class NotificationService(
                     if vol_data:
                         report_lines.extend([
                             f"**{labels['volume_label']}**: {labels['volume_ratio_label']} {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | "
-                            f"{labels['turnover_rate_label']} {vol_data.get('turnover_rate', 'N/A')}%",
+                            f"{labels['turnover_rate_label']} {self._format_turnover_rate_text(vol_data.get('turnover_rate', 'N/A'))}",
                             f"💡 *{vol_data.get('volume_meaning', '')}*",
                             "",
                         ])
@@ -2039,6 +2039,19 @@ class NotificationService(
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)
+
+    def _format_turnover_rate_text(self, value: Any) -> str:
+        if value is None:
+            return "数据缺失，暂不判断"
+        text = str(value).strip()
+        if not text or text.upper() in {"N/A", "NONE", "NULL"}:
+            return "数据缺失，暂不判断"
+        if "%" in text or "缺失" in text or "判断" in text or "估算" in text:
+            return text
+        try:
+            return f"{float(text):.2f}%"
+        except Exception:
+            return text
 
     def _append_valuation_summary(
         self,

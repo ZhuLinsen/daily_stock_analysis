@@ -3177,6 +3177,37 @@ class GeminiAnalyzer:
                     valuation_data = raw_valuation
 
         if valuation_data:
+            estimated_turnover_rate = None
+            estimated_turnover_base = None
+            try:
+                latest_volume = None
+                if isinstance(context, dict):
+                    latest_bar = context.get("latest_bar") or context.get("today") or {}
+                    if isinstance(latest_bar, dict):
+                        latest_volume = latest_bar.get("volume")
+                    if latest_volume is None:
+                        daily_data = context.get("daily_data") or context.get("daily_bars")
+                        if isinstance(daily_data, list) and daily_data:
+                            last_daily = daily_data[-1]
+                            if isinstance(last_daily, dict):
+                                latest_volume = last_daily.get("volume")
+                        elif hasattr(daily_data, "iloc") and len(daily_data) > 0:
+                            latest_volume = daily_data.iloc[-1].get("volume")
+
+                share_base = valuation_data.get("float_shares") or valuation_data.get("shares_outstanding")
+                estimated_turnover_base = "流通股本" if valuation_data.get("float_shares") else "总股本"
+                if latest_volume is not None and share_base:
+                    estimated_turnover_rate = float(latest_volume) / float(share_base) * 100
+            except Exception:
+                estimated_turnover_rate = None
+                estimated_turnover_base = None
+
+            estimated_turnover_text = (
+                f"{estimated_turnover_rate:.2f}%（按{estimated_turnover_base}估算）"
+                if estimated_turnover_rate is not None
+                else "N/A"
+            )
+
             prompt += f"""
 
 ### 估值数据（Forward PE规则）
@@ -3187,9 +3218,11 @@ class GeminiAnalyzer:
 | 市值 | {valuation_data.get('market_cap') or valuation_data.get('total_mv') or 'N/A'} |
 | 总股本 | {valuation_data.get('shares_outstanding') or 'N/A'} |
 | 流通股本 | {valuation_data.get('float_shares') or 'N/A'} |
+| 估算换手率 | {estimated_turnover_text} |
 | 估值判断 | {valuation_data.get('valuation_judgement') or 'N/A'} |
 
 估值检查规则：Forward PE < 30 为合理；30及以上为偏高；50及以上为明显偏高；Forward PE缺失时写“Forward PE缺失，暂不判断”。严禁写“PE估值合理（数据缺失）”。
+换手率规则：若实时换手率缺失，但估算换手率存在，请在 volume_analysis.turnover_rate 中使用估算换手率数值，并在量能含义中注明“按流通股本估算”或“按总股本估算”；若估算换手率也缺失，写“换手率数据缺失，暂不判断”，严禁写“数据缺失，无法判断%”。
 """
 
         earnings_block = (
