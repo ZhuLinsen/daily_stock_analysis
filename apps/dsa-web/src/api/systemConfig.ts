@@ -5,6 +5,8 @@ import type {
   DiscoverLLMChannelModelsRequest,
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
+  GenerationBackendStatusPreviewRequest,
+  GenerationBackendStatusResponse,
   ImportSystemConfigRequest,
   SchedulerRunNowResponse,
   SchedulerStatusResponse,
@@ -15,6 +17,8 @@ import type {
   SystemConfigValidationErrorResponse,
   TestLLMChannelRequest,
   TestLLMChannelResponse,
+  TestGenerationBackendRequest,
+  TestGenerationBackendResponse,
   TestNotificationChannelRequest,
   TestNotificationChannelResponse,
   UpdateSystemConfigRequest,
@@ -131,6 +135,36 @@ function toSnakeDiscoverModelsPayload(payload: DiscoverLLMChannelModelsRequest):
   };
 }
 
+function toSnakeGenerationBackendStatusPreviewPayload(
+  payload: GenerationBackendStatusPreviewRequest = {},
+): Record<string, unknown> {
+  return {
+    items: (payload.items || []).map((item) => ({
+      key: item.key,
+      value: item.value,
+    })),
+    mask_token: payload.maskToken ?? '******',
+  };
+}
+
+function toSnakeGenerationBackendSmokePayload(payload: TestGenerationBackendRequest = {}): Record<string, unknown> {
+  const request: Record<string, unknown> = {
+    mode: payload.mode ?? 'json',
+    items: (payload.items || []).map((item) => ({
+      key: item.key,
+      value: item.value,
+    })),
+    mask_token: payload.maskToken ?? '******',
+  };
+  if (payload.backendId) {
+    request.backend_id = payload.backendId;
+  }
+  if (payload.timeoutSeconds !== undefined && payload.timeoutSeconds !== null) {
+    request.timeout_seconds = payload.timeoutSeconds;
+  }
+  return request;
+}
+
 export const systemConfigApi = {
   async getConfig(includeSchema = true): Promise<SystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config', {
@@ -156,6 +190,31 @@ export const systemConfigApi = {
   async getSetupStatus(): Promise<SetupStatusResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
     return toCamelCase<SetupStatusResponse>(response.data);
+  },
+
+  async getGenerationBackendStatus(): Promise<GenerationBackendStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/system/config/generation-backends/status',
+    );
+    return toCamelCase<GenerationBackendStatusResponse>(response.data);
+  },
+
+  async previewGenerationBackendStatus(
+    payload: GenerationBackendStatusPreviewRequest = {},
+  ): Promise<GenerationBackendStatusResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/generation-backends/status/preview',
+      toSnakeGenerationBackendStatusPreviewPayload(payload),
+    );
+    return toCamelCase<GenerationBackendStatusResponse>(response.data);
+  },
+
+  async testGenerationBackend(payload: TestGenerationBackendRequest = {}): Promise<TestGenerationBackendResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/generation-backends/smoke-test',
+      toSnakeGenerationBackendSmokePayload(payload),
+    );
+    return toCamelCase<TestGenerationBackendResponse>(response.data);
   },
 
   async getSchedulerStatus(): Promise<SchedulerStatusResponse> {

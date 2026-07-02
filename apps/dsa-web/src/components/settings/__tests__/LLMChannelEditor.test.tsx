@@ -33,6 +33,128 @@ describe('LLMChannelEditor', () => {
     return Array.from(select.options).map((option) => option.value);
   }
 
+  const openAiItems = [
+    { key: 'LLM_CHANNELS', value: 'openai' },
+    { key: 'LLM_OPENAI_PROTOCOL', value: 'openai' },
+    { key: 'LLM_OPENAI_BASE_URL', value: 'https://api.openai.com/v1' },
+    { key: 'LLM_OPENAI_ENABLED', value: 'true' },
+    { key: 'LLM_OPENAI_API_KEY', value: 'secret-key' },
+    { key: 'LLM_OPENAI_MODELS', value: 'gpt-4o-mini' },
+    { key: 'LITELLM_MODEL', value: 'openai/gpt-4o-mini' },
+  ];
+
+  function lastDraftCall(onDraftItemsChange: ReturnType<typeof vi.fn>) {
+    const calls = onDraftItemsChange.mock.calls;
+    return calls[calls.length - 1]?.[0] || [];
+  }
+
+  it('reports an empty generation backend draft when channel settings are unchanged', async () => {
+    const onDraftItemsChange = vi.fn();
+    const { rerender } = render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />
+    );
+
+    await waitFor(() => expect(onDraftItemsChange).toHaveBeenCalledWith([]));
+    expect(onDraftItemsChange).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />
+    );
+
+    expect(onDraftItemsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports unsaved channel edits as generation backend draft items', async () => {
+    const onDraftItemsChange = vi.fn();
+    render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.change(await screen.findByLabelText('Base URL'), {
+      target: { value: 'https://proxy.example.com/v1' },
+    });
+    fireEvent.change(screen.getByLabelText('API Key'), {
+      target: { value: 'sk-draft' },
+    });
+    fireEvent.change(screen.getByLabelText('模型（逗号分隔）'), {
+      target: { value: 'gpt-4o-mini,gpt-4o' },
+    });
+
+    await waitFor(() => {
+      const draft = lastDraftCall(onDraftItemsChange);
+      expect(draft).toContainEqual({ key: 'LLM_OPENAI_BASE_URL', value: 'https://proxy.example.com/v1' });
+      expect(draft).toContainEqual({ key: 'LLM_OPENAI_API_KEY', value: 'sk-draft' });
+      expect(draft).toContainEqual({ key: 'LLM_OPENAI_MODELS', value: 'gpt-4o-mini,gpt-4o' });
+    });
+  });
+
+  it('returns to an empty generation backend draft after channel edits are restored', async () => {
+    const onDraftItemsChange = vi.fn();
+    render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    const baseUrlInput = await screen.findByLabelText('Base URL');
+    fireEvent.change(baseUrlInput, { target: { value: 'https://proxy.example.com/v1' } });
+    await waitFor(() => expect(lastDraftCall(onDraftItemsChange)).toContainEqual({
+      key: 'LLM_OPENAI_BASE_URL',
+      value: 'https://proxy.example.com/v1',
+    }));
+
+    fireEvent.change(baseUrlInput, { target: { value: 'https://api.openai.com/v1' } });
+
+    await waitFor(() => {
+      expect(lastDraftCall(onDraftItemsChange)).toEqual([]);
+    });
+  });
+
+  it('does not emit invalid channel env keys while the channel name is empty', async () => {
+    const onDraftItemsChange = vi.fn();
+    render(
+      <LLMChannelEditor
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+    fireEvent.change(await screen.findByLabelText('渠道名称'), { target: { value: '' } });
+
+    await waitFor(() => {
+      expect(lastDraftCall(onDraftItemsChange)).toEqual([]);
+    });
+    expect(onDraftItemsChange.mock.calls.flatMap((call) => call[0]).some((item) => item.key.startsWith('LLM__'))).toBe(false);
+  });
+
   it('renders API Key input with controlled visibility', async () => {
     render(
       <LLMChannelEditor

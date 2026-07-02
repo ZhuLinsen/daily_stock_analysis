@@ -159,6 +159,7 @@ interface LLMChannelEditorProps {
   configVersion: string;
   maskToken: string;
   onSaved: (updatedItems: Array<{ key: string; value: string }>) => void | Promise<void>;
+  onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
   disabled?: boolean;
 }
 
@@ -1440,6 +1441,82 @@ function channelsToUpdateItems(
   return updates;
 }
 
+function channelNamesAreSafe(channels: ChannelConfig[]): boolean {
+  return channels.every((channel) => /^[a-z0-9_]+$/.test(channel.name.trim()));
+}
+
+function buildFilteredChannelUpdateItems({
+  channels,
+  initialChannels,
+  initialNames,
+  initialItemSourceByKey,
+  savedItemMap,
+  runtimeConfig,
+  initialRuntimeConfig,
+  managesRuntimeConfig,
+}: {
+  channels: ChannelConfig[];
+  initialChannels: ChannelConfig[];
+  initialNames: string[];
+  initialItemSourceByKey: Map<string, boolean>;
+  savedItemMap: Map<string, string>;
+  runtimeConfig: RuntimeConfig;
+  initialRuntimeConfig: RuntimeConfig;
+  managesRuntimeConfig: boolean;
+}): Array<{ key: string; value: string }> {
+  const changedKeys = new Set<string>([
+    ...buildChangedItemKeys(channels, initialChannels, initialItemSourceByKey, savedItemMap),
+    ...runtimeConfigChangedKeys(runtimeConfig, initialRuntimeConfig),
+  ]);
+  return channelsToUpdateItems(channels, initialNames, runtimeConfig, managesRuntimeConfig).filter((item) => {
+    const itemKey = item.key.toUpperCase();
+    const initialItemSource = initialItemSourceByKey.get(itemKey);
+    if (initialItemSource === false) {
+      return changedKeys.has(itemKey);
+    }
+    if (isChannelSecretFieldKey(itemKey) && initialItemSource === undefined) {
+      return changedKeys.has(itemKey);
+    }
+    return true;
+  });
+}
+
+function buildChannelDraftItems({
+  hasChanges,
+  channels,
+  initialChannels,
+  initialNames,
+  initialItemSourceByKey,
+  savedItemMap,
+  runtimeConfig,
+  initialRuntimeConfig,
+  managesRuntimeConfig,
+}: {
+  hasChanges: boolean;
+  channels: ChannelConfig[];
+  initialChannels: ChannelConfig[];
+  initialNames: string[];
+  initialItemSourceByKey: Map<string, boolean>;
+  savedItemMap: Map<string, string>;
+  runtimeConfig: RuntimeConfig;
+  initialRuntimeConfig: RuntimeConfig;
+  managesRuntimeConfig: boolean;
+}): Array<{ key: string; value: string }> {
+  if (!hasChanges || !channelNamesAreSafe(channels)) {
+    return [];
+  }
+  return buildFilteredChannelUpdateItems({
+    channels,
+    initialChannels,
+    initialNames,
+    initialItemSourceByKey,
+    savedItemMap,
+    runtimeConfig,
+    initialRuntimeConfig,
+    managesRuntimeConfig,
+  });
+}
+
 function channelsAreEqual(left: ChannelConfig, right: ChannelConfig): boolean {
   return (
     left.name === right.name
@@ -1456,6 +1533,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   configVersion,
   maskToken,
   onSaved,
+  onDraftItemsChange,
   disabled = false,
 }) => {
   const initialItemSourceByKey = useMemo(() => {
@@ -1517,6 +1595,8 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [addPreset, setAddPreset] = useState('aihubmix');
   const addChannelIdRef = useRef(0);
+  const lastDraftFingerprintRef = useRef<string | null>(null);
+  const onDraftItemsChangeRef = useRef(onDraftItemsChange);
 
   const prevChannelsRef = useRef(channelsFingerprint);
   const prevRuntimeRef = useRef(runtimeFingerprint);
@@ -1610,6 +1690,45 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     }
     return channels.some((channel, index) => !channelsAreEqual(channel, initialChannels[index]));
   }, [channels, initialChannels, initialRuntimeConfig, runtimeConfig]);
+
+  const draftItems = useMemo(() => buildChannelDraftItems({
+    hasChanges,
+    channels,
+    initialChannels,
+    initialNames,
+    initialItemSourceByKey,
+    savedItemMap,
+    runtimeConfig,
+    initialRuntimeConfig,
+    managesRuntimeConfig,
+  }), [
+    channels,
+    hasChanges,
+    initialChannels,
+    initialItemSourceByKey,
+    initialNames,
+    initialRuntimeConfig,
+    managesRuntimeConfig,
+    runtimeConfig,
+    savedItemMap,
+  ]);
+  const draftFingerprint = useMemo(() => JSON.stringify(draftItems), [draftItems]);
+
+  useEffect(() => {
+    onDraftItemsChangeRef.current = onDraftItemsChange;
+  }, [onDraftItemsChange]);
+
+  useEffect(() => {
+    if (!onDraftItemsChange || lastDraftFingerprintRef.current === draftFingerprint) {
+      return;
+    }
+    lastDraftFingerprintRef.current = draftFingerprint;
+    onDraftItemsChange(draftItems);
+  }, [draftFingerprint, draftItems, onDraftItemsChange]);
+
+  useEffect(() => () => {
+    onDraftItemsChangeRef.current?.([]);
+  }, []);
 
   const busy = disabled || isSaving;
 
@@ -1818,23 +1937,16 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     setSaveWarnings([]);
 
     try {
-      const changedKeys = new Set<string>([
-        ...buildChangedItemKeys(channels, initialChannels, initialItemSourceByKey, savedItemMap),
-        ...runtimeConfigChangedKeys(runtimeConfigForSave, initialRuntimeConfig),
-      ]);
-      const updateItems = channelsToUpdateItems(channels, initialNames, runtimeConfigForSave, managesRuntimeConfig).filter(
-        (item) => {
-          const itemKey = item.key.toUpperCase();
-          const initialItemSource = initialItemSourceByKey.get(itemKey);
-          if (initialItemSource === false) {
-            return changedKeys.has(itemKey);
-          }
-          if (isChannelSecretFieldKey(itemKey) && initialItemSource === undefined) {
-            return changedKeys.has(itemKey);
-          }
-          return true;
-        },
-      );
+      const updateItems = buildFilteredChannelUpdateItems({
+        channels,
+        initialChannels,
+        initialNames,
+        initialItemSourceByKey,
+        savedItemMap,
+        runtimeConfig: runtimeConfigForSave,
+        initialRuntimeConfig,
+        managesRuntimeConfig,
+      });
       const response = await systemConfigApi.update({
         configVersion,
         maskToken,

@@ -2642,6 +2642,31 @@ class GeminiAnalyzer:
             return str(exc)
         return sanitize_hermes_error_text(exc, redaction_values=redactions)
 
+    def _litellm_redaction_values_for_model(self, config: Config, model: str = "") -> set[str]:
+        redactions = self._hermes_redaction_values_for_model(config, model)
+        try:
+            redactions.update(build_hermes_redaction_values(*get_api_keys_for_model(model, config)))
+        except Exception:
+            pass
+        origins = route_deployment_origins(getattr(config, "llm_model_list", []) or [], model)
+        for deployment in (*origins.hermes_deployments, *origins.non_hermes_deployments):
+            params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+            if isinstance(params, dict):
+                redactions.update(build_hermes_redaction_values(params.get("api_key")))
+        return redactions
+
+    def _sanitize_litellm_exception_text(
+        self,
+        exc: Any,
+        *,
+        config: Optional[Config] = None,
+        model: str = "",
+    ) -> str:
+        runtime_config = config or self._get_runtime_config()
+        redactions = self._litellm_redaction_values_for_model(runtime_config, model)
+        sanitized = sanitize_hermes_error_text(exc, redaction_values=redactions)
+        return redact_diagnostic_text(sanitized, limit=500)
+
     def _dispatch_litellm_completion(
         self,
         model: str,
@@ -3012,6 +3037,7 @@ class GeminiAnalyzer:
             or 8192
         )
         requested_temperature = generation_config.get('temperature', 0.7)
+        requested_timeout = generation_config.get("timeout")
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -3067,6 +3093,8 @@ class GeminiAnalyzer:
                     ],
                     "max_tokens": max_tokens,
                 }
+                if requested_timeout not in (None, ""):
+                    call_kwargs["timeout"] = requested_timeout
                 if extra:
                     call_kwargs["extra_body"] = extra
                 uses_router = (
@@ -3099,6 +3127,8 @@ class GeminiAnalyzer:
                 )
                 hint_result = apply_prompt_cache_hints(call_kwargs, route_context, config)
                 call_kwargs = hint_result.call_kwargs
+                if requested_timeout not in (None, ""):
+                    call_kwargs["timeout"] = requested_timeout
                 if hint_result.diagnostics:
                     logger.debug("[PromptCache] %s", hint_result.diagnostics)
 
@@ -3129,24 +3159,26 @@ class GeminiAnalyzer:
                             progress_callback=stream_progress_callback,
                         )
                     except _LiteLLMStreamError as exc:
+                        safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
                         if exc.partial_received:
                             logger.warning(
                                 "[LiteLLM] %s stream failed after partial output, retrying non-stream for same model: %s",
                                 model,
-                                exc,
+                                safe_error,
                             )
                         else:
                             logger.warning(
                                 "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
                                 model,
-                                exc,
+                                safe_error,
                             )
-                        last_error = exc
+                        last_error = RuntimeError(f"{type(exc).__name__}: {safe_error}")
                     except Exception as exc:
+                        safe_error = self._sanitize_litellm_exception_text(exc, config=config, model=model)
                         logger.warning(
                             "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
                             model,
-                            exc,
+                            safe_error,
                         )
 
                 if _stream_text is not None:
@@ -3192,9 +3224,9 @@ class GeminiAnalyzer:
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
-                safe_error = self._sanitize_hermes_exception_text(e, config=config, model=model)
+                safe_error = self._sanitize_litellm_exception_text(e, config=config, model=model)
                 logger.warning("[LiteLLM] %s failed: %s", model, safe_error)
-                last_error = RuntimeError(safe_error) if safe_error != str(e) else e
+                last_error = RuntimeError(f"{type(e).__name__}: {safe_error}")
                 continue
 
         raise _AllModelsFailedError(

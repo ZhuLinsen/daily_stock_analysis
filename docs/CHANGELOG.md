@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Web 设置页定时任务“立即执行一次”后台线程未传 `stock_codes` 导致任务崩溃的问题。
 - [新功能] #1743 Phase 4 新增 `claude_code_cli` generation-only 本地 CLI backend，保留 LiteLLM 默认路径、Agent 工具调用边界、per-preset extractor、最小 env allowlist 与结构化错误。
 - [新功能] #1743 Phase 4 新增 `opencode_cli` generation-only 本地 CLI backend，使用 OpenCode `run --format json --file` prompt-file 路径、JSON event extractor、Agent 边界和 provider credential 不接管约束。
+- [改进] #1743 Phase 5 增加生成后端状态、预览和冒烟测试 API 以及 Web 状态面板，区分轻量检查与 JSON 冒烟测试，并保持本地 CLI “仅生成、不支持问股工具调用”的边界。
 - [修复] #1743 Phase 4 修正 `opencode_cli` 静态指令，避免全局 JSON-only 约束影响 `generate_text()` 与大盘复盘自由文本输出。
 - [文档] #1743 Phase 4 同步本地 CLI backend 隐私/部署边界：local CLI 不是离线模型，Docker/CI/远端需自行安装登录，DSA 不读取 Claude/OpenCode credential 文件。
 - [新功能] 台股报告接入三大法人：tw 个股分析报告的 institution 区块改为展示 TWSE T86 / TPEx 三大法人原始买卖超净额（外资/投信/自营/合计，单位:股）；tw-only、严格 additive（A股/港股/美股/日韩股 offshore 流程字节不变）、fail-open（取不到数据维持 not_supported，绝不中断分析）；不接 Web、不派生 capital_flow_signal、不改评分权重或 schema。

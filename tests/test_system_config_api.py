@@ -21,7 +21,9 @@ from api.middlewares.error_handler import add_error_handlers
 from api.v1.endpoints import system_config
 from api.v1.schemas.system_config import (
     DiscoverLLMChannelModelsRequest,
+    GenerationBackendStatusPreviewRequest,
     ImportSystemConfigRequest,
+    TestGenerationBackendRequest,
     TestLLMChannelRequest,
     TestNotificationChannelRequest,
     UpdateSystemConfigRequest,
@@ -202,6 +204,81 @@ class SystemConfigApiTestCase(unittest.TestCase):
         check_map = {check["key"]: check for check in payload["checks"]}
         self.assertEqual(check_map["llm_primary"]["status"], "configured")
         self.assertEqual(check_map["llm_agent"]["status"], "inherited")
+
+    def test_get_generation_backend_status_uses_saved_config_only(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=litellm",
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+        )
+
+        payload = system_config.get_generation_backend_status(service=self.service).model_dump()
+
+        self.assertEqual(payload["primary_backend_id"], "litellm")
+        self.assertEqual(payload["primary"]["backend_id"], "litellm")
+        self.assertTrue(payload["primary"]["available"])
+
+    def test_preview_generation_backend_status_uses_draft_items(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=litellm",
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+        )
+
+        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
+            payload = system_config.preview_generation_backend_status(
+                request=GenerationBackendStatusPreviewRequest(
+                    items=[
+                        {"key": "GENERATION_BACKEND", "value": "codex_cli"},
+                        {"key": "GENERATION_FALLBACK_BACKEND", "value": ""},
+                    ],
+                    mask_token="******",
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertEqual(payload["primary_backend_id"], "codex_cli")
+        self.assertFalse(payload["primary"]["available"])
+        self.assertEqual(payload["primary"]["last_error_code"], "command_not_found")
+
+        saved_payload = system_config.get_generation_backend_status(service=self.service).model_dump()
+        self.assertEqual(saved_payload["primary_backend_id"], "litellm")
+
+    def test_generation_backend_smoke_test_returns_structured_failure(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+        )
+
+        with patch("src.llm.local_cli_backend.shutil.which", return_value=None):
+            payload = system_config.test_generation_backend(
+                request=TestGenerationBackendRequest(backend_id="codex_cli"),
+                service=self.service,
+            ).model_dump()
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["mode"], "json")
+        self.assertEqual(payload["status"]["backend_id"], "codex_cli")
+        self.assertEqual(payload["status"]["last_error_code"], "command_not_found")
+
+    def test_preview_generation_backend_status_returns_validation_error_for_bad_draft(self) -> None:
+        self._rewrite_env(
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_FALLBACK_BACKEND=",
+        )
+
+        with self.assertRaises(HTTPException) as ctx:
+            system_config.preview_generation_backend_status(
+                request=GenerationBackendStatusPreviewRequest(
+                    items=[{"key": "GENERATION_BACKEND_TIMEOUT_SECONDS", "value": "not-int"}],
+                    mask_token="******",
+                ),
+                service=self.service,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["error"], "validation_failed")
+        self.assertEqual(ctx.exception.detail["issues"][0]["key"], "GENERATION_BACKEND_TIMEOUT_SECONDS")
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:
         current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()

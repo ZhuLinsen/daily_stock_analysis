@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useAuth, useSystemConfig } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -11,6 +11,7 @@ import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/
 import {
   AuthSettingsCard,
   ChangePasswordCard,
+  GenerationBackendStatusPanel,
   IntelligentImport,
   LLMChannelEditor,
   NotificationTestPanel,
@@ -84,6 +85,86 @@ type DesktopUpdateNotice = {
   actionLabel?: string;
   actionKind?: 'release' | 'install';
 };
+
+const LLM_CHANNEL_EDITOR_RUNTIME_KEYS = new Set([
+  'LITELLM_MODEL',
+  'LITELLM_FALLBACK_MODELS',
+  'AGENT_LITELLM_MODEL',
+  'VISION_MODEL',
+  'LLM_TEMPERATURE',
+]);
+const GENERATION_BACKEND_STATUS_KEYS = new Set([
+  'GENERATION_BACKEND',
+  'GENERATION_FALLBACK_BACKEND',
+  'GENERATION_BACKEND_TIMEOUT_SECONDS',
+  'GENERATION_BACKEND_MAX_OUTPUT_BYTES',
+  'GENERATION_BACKEND_MAX_CONCURRENCY',
+  'LOCAL_CLI_BACKEND_MAX_CONCURRENCY',
+  'OPENCODE_CLI_MODEL',
+  'LITELLM_CONFIG',
+  'LITELLM_MODEL',
+  'LITELLM_FALLBACK_MODELS',
+  'GEMINI_API_KEY',
+  'GEMINI_API_KEYS',
+  'GEMINI_MODEL',
+  'GEMINI_MODEL_FALLBACK',
+  'GEMINI_TEMPERATURE',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_API_KEYS',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_TEMPERATURE',
+  'ANTHROPIC_MAX_TOKENS',
+  'OPENAI_API_KEY',
+  'OPENAI_API_KEYS',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OPENAI_VISION_MODEL',
+  'OPENAI_TEMPERATURE',
+  'OLLAMA_API_BASE',
+  'OLLAMA_MODEL',
+  'DEEPSEEK_API_KEY',
+  'DEEPSEEK_API_KEYS',
+  'AIHUBMIX_KEY',
+  'ANSPIRE_LLM_ENABLED',
+  'ANSPIRE_LLM_BASE_URL',
+  'ANSPIRE_LLM_MODEL',
+  'ANSPIRE_API_KEYS',
+]);
+const LLM_CHANNEL_STATUS_KEY_PATTERN = /^LLM_[A-Z0-9_]+_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
+
+function isLlmChannelEditorDraftKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  return normalized.startsWith('LLM_') || LLM_CHANNEL_EDITOR_RUNTIME_KEYS.has(normalized);
+}
+
+function isGenerationBackendStatusDraftKey(key: string): boolean {
+  const normalized = key.trim().toUpperCase();
+  return (
+    GENERATION_BACKEND_STATUS_KEYS.has(normalized)
+    || normalized === 'LLM_CHANNELS'
+    || LLM_CHANNEL_STATUS_KEY_PATTERN.test(normalized)
+  );
+}
+
+function mergeGenerationBackendDraftItems(
+  outerItems: SystemConfigUpdateItem[],
+  llmChannelItems: SystemConfigUpdateItem[],
+): SystemConfigUpdateItem[] {
+  const merged = new Map<string, SystemConfigUpdateItem>();
+  for (const item of outerItems) {
+    const normalizedKey = item.key.trim().toUpperCase();
+    if (isGenerationBackendStatusDraftKey(normalizedKey)) {
+      merged.set(normalizedKey, item);
+    }
+  }
+  for (const item of llmChannelItems) {
+    const normalizedKey = item.key.trim().toUpperCase();
+    if (isLlmChannelEditorDraftKey(normalizedKey) && isGenerationBackendStatusDraftKey(normalizedKey)) {
+      merged.set(normalizedKey, item);
+    }
+  }
+  return Array.from(merged.values());
+}
 
 const PROMPT_CACHE_ADVANCED_SETTING_KEYS = new Set([
   'LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
@@ -542,17 +623,6 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
   }, [hasSchedulerSettings, refreshSchedulerStatus, statusRefreshToken]);
 
   useEffect(() => {
-    const isRuntimeDerived = isEnabledConfigValue(scheduleEnabledItem?.value) === status?.enabled;
-    if (!status) {
-      return;
-    }
-
-    if (scheduleEnabledOverride === null && isRuntimeDerived) {
-      setScheduleEnabledOverride(null);
-    }
-  }, [scheduleEnabledItem?.value, scheduleEnabledOverride, statusRefreshToken]);
-
-  useEffect(() => {
     if (!onSchedulerStateChange) {
       return;
     }
@@ -797,6 +867,7 @@ const SettingsPage: React.FC = () => {
   const [isRunningSetupSmoke, setIsRunningSetupSmoke] = useState(false);
   const [setupSmokeError, setSetupSmokeError] = useState<ParsedApiError | null>(null);
   const [setupSmokeSuccess, setSetupSmokeSuccess] = useState('');
+  const [llmChannelDraftItems, setLlmChannelDraftItems] = useState<SystemConfigUpdateItem[]>([]);
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
   const desktopRuntimeApi = getDesktopRuntimeApi();
@@ -839,6 +910,17 @@ const SettingsPage: React.FC = () => {
   } = useSystemConfig();
 
   const currentChangedItems = getChangedItems();
+  const currentChangedItemsFingerprint = JSON.stringify(currentChangedItems);
+  const llmChannelDraftItemsFingerprint = JSON.stringify(llmChannelDraftItems);
+  const generationBackendDraftItems = useMemo(
+    () => mergeGenerationBackendDraftItems(currentChangedItems, llmChannelDraftItems),
+    // Fingerprints keep the status panel from refreshing when parent renders do not change draft content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentChangedItemsFingerprint, llmChannelDraftItemsFingerprint],
+  );
+  const handleLlmChannelDraftItemsChange = useCallback((items: Array<{ key: string; value: string }>) => {
+    setLlmChannelDraftItems(items);
+  }, []);
 
   const refreshSetupStatus = useCallback(async () => {
     const requestId = setupStatusRequestIdRef.current + 1;
@@ -1664,11 +1746,18 @@ const SettingsPage: React.FC = () => {
                 title={t('settings.llmAccess')}
                 description={t('settings.llmAccessDescription')}
               >
+                <GenerationBackendStatusPanel
+                  items={generationBackendDraftItems}
+                  maskToken={maskToken}
+                  disabled={isSaving || isLoading}
+                />
                 <LLMChannelEditor
                   items={rawActiveItems}
                   configVersion={configVersion}
                   maskToken={maskToken}
+                  onDraftItemsChange={handleLlmChannelDraftItemsChange}
                   onSaved={async (updatedItems) => {
+                    setLlmChannelDraftItems([]);
                     await refreshAfterExternalSave(updatedItems.map((item) => item.key));
                     void refreshSetupStatus();
                   }}

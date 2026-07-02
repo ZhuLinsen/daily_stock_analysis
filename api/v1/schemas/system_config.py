@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 LLMCapabilityCheck = Literal["json", "tools", "vision", "stream"]
+GenerationBackendSmokeMode = Literal["text", "json"]
+GenerationBackendHealthStatus = Literal["not_tested", "passed", "failed", "skipped"]
 NotificationTestChannel = Literal[
     "wechat",
     "feishu",
@@ -121,6 +123,40 @@ class SetupStatusResponse(BaseModel):
     checks: List[SetupStatusCheck] = Field(default_factory=list)
 
 
+class GenerationBackendStatus(BaseModel):
+    """Cheap status for one generation backend.
+
+    ``health_status`` and ``last_error_*`` describe the current status request
+    or the explicit smoke-test request only; they are not persisted history.
+    """
+
+    backend_id: str
+    backend_type: Literal["litellm", "local_cli"]
+    provider_id: str
+    available: bool
+    health_status: GenerationBackendHealthStatus = "not_tested"
+    supports_json: bool
+    supports_tools: bool
+    supports_stream: bool
+    supports_vision: bool
+    is_primary: bool
+    fallback_target: Optional[str] = None
+    max_concurrency: int
+    usage_available: bool
+    last_error_code: Optional[str] = None
+    last_error_message: Optional[str] = None
+
+
+class GenerationBackendStatusResponse(BaseModel):
+    """Generation backend status payload."""
+
+    primary_backend_id: str
+    fallback_backend_id: Optional[str] = None
+    primary: GenerationBackendStatus
+    fallback: Optional[GenerationBackendStatus] = None
+    backends: List[GenerationBackendStatus] = Field(default_factory=list)
+
+
 class ExportSystemConfigResponse(BaseModel):
     """Export payload for raw `.env` backups."""
 
@@ -134,6 +170,32 @@ class SystemConfigUpdateItem(BaseModel):
 
     key: str
     value: str
+
+
+class GenerationBackendStatusPreviewRequest(BaseModel):
+    """Unsaved-draft preview request for generation backend status."""
+
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+
+
+class TestGenerationBackendRequest(BaseModel):
+    """Explicit generation backend smoke-test request."""
+
+    backend_id: Optional[str] = None
+    mode: GenerationBackendSmokeMode = "json"
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+    timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=3600.0)
+
+
+class TestGenerationBackendResponse(BaseModel):
+    """Generation backend smoke-test result."""
+
+    success: bool
+    mode: GenerationBackendSmokeMode
+    message: str
+    status: GenerationBackendStatus
 
 
 class UpdateSystemConfigRequest(BaseModel):

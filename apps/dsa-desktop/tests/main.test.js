@@ -522,6 +522,58 @@ test('desktop update backup list preserves AlphaSift caches', (t) => {
   assert.ok(files.includes(path.join('data', 'alphasift', 'snapshot.last_good.json')));
 });
 
+test('desktop update backup and restore preserve generation backend env keys', (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-env-backup-'));
+  const appDir = path.join(tempRoot, 'app');
+  const userDataDir = path.join(tempRoot, 'userData');
+  const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
+  const envPath = path.join(appDir, '.env');
+  const envContent = [
+    'GENERATION_BACKEND=codex_cli',
+    'GENERATION_FALLBACK_BACKEND=litellm',
+    'CODEX_CLI_PRESET=codex',
+    'AGENT_GENERATION_BACKEND=codex_cli',
+    '',
+  ].join('\n');
+  let currentVersion = '3.12.0';
+
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'Uninstall Daily Stock Analysis.exe'), '');
+  fs.writeFileSync(envPath, envContent, 'utf-8');
+
+  const mainModule = loadMainModule(t, {
+    platform: 'win32',
+    app: {
+      isPackaged: true,
+      getPath: (name) => {
+        if (name === 'exe') {
+          return path.join(appDir, 'Daily Stock Analysis.exe');
+        }
+        return userDataDir;
+      },
+      getVersion: () => currentVersion,
+    },
+  });
+
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  mainModule.backupPackagedRuntimeState();
+  assert.equal(fs.readFileSync(path.join(backupRoot, '.env'), 'utf-8'), envContent);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(backupRoot, 'runtime-state.json'), 'utf-8')).files.includes('.env'));
+
+  fs.writeFileSync(envPath, 'GENERATION_BACKEND=litellm\n', 'utf-8');
+  currentVersion = '3.13.0';
+  const restoreResult = mainModule.restorePackagedRuntimeStateFromBackup();
+
+  assert.deepEqual(restoreResult.failed, []);
+  assert.ok(restoreResult.restored.includes('.env'));
+  assert.equal(fs.readFileSync(envPath, 'utf-8'), envContent);
+  assert.equal(fs.existsSync(backupRoot), false);
+});
+
 test('desktop update backup and restore preserve AlphaSift detail directories recursively', (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-dir-backup-'));
   const appDir = path.join(tempRoot, 'app');
