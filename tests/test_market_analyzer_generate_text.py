@@ -3318,3 +3318,211 @@ Sector text.
         assert violations == [], (
             f"market_analyzer.py still accesses private Analyzer attributes: {violations}"
         )
+
+
+# ---------------------------------------------------------------------------
+# CoT (chain-of-thought) fence stripping for the JSON extractor
+# ---------------------------------------------------------------------------
+#
+# Regression suite for the analyzer parser introduced via PR #1769 (commit
+# 1f91024d). The parser raised ValueError("ambiguous_json") for any LLM
+# response that contained a <think>...</think> (or similar) envelope around a
+# single ```json``` fence, which made every analysis run by reasoning-capable
+# models (DeepSeek R1, GPT-OSS, MiniMax-M3, Claude extended thinking, ...)
+# fall through to the text-only fallback and trigger an integrity-completion
+# retry loop.
+#
+# The fix is _strip_cot_fences: it removes the outer CoT wrappers before the
+# existing fence_pattern and _contains_embedded_json_object checks decide
+# whether the remaining text is a unique parseable JSON. These tests guard:
+#   1. Each known CoT wrapper is stripped (5 positive cases).
+#   2. Genuine multi-fence / embedded-JSON ambiguity is still rejected
+#      (1 regression case).
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzerCotFenceStripping:
+    def _make_analyzer(self):
+        """Mirror TestAnalyzerGenerateText._make_analyzer without inheriting it."""
+        with patch("src.analyzer.get_config") as mock_cfg:
+            cfg = MagicMock()
+            cfg.litellm_model = "gemini/gemini-2.0-flash"
+            cfg.litellm_fallback_models = []
+            cfg.gemini_api_keys = ["sk-gemini-testkey-1234"]
+            cfg.anthropic_api_keys = []
+            cfg.openai_api_keys = []
+            cfg.deepseek_api_keys = []
+            cfg.llm_model_list = []
+            cfg.openai_base_url = None
+            cfg.generation_backend = "litellm"
+            cfg.generation_fallback_backend = "litellm"
+            mock_cfg.return_value = cfg
+            from src.analyzer import GeminiAnalyzer
+            analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+            analyzer._router = None
+            analyzer._litellm_available = True
+            analyzer._config_override = cfg
+            return analyzer
+
+    # ---- 1. positive cases: known CoT wrappers must be stripped ----
+
+    def test_strip_think_block_allows_valid_json_fence(self):
+        """<think>...</think> + ```json``` must parse successfully (MiniMax-M3 repro)."""
+        analyzer = self._make_analyzer()
+        text = (
+            '<think>\nLet me analyze this carefully.\n'
+            'I will construct the JSON.\n</think>\n\n'
+            '```json\n{"stock_name": "京东方A", "sentiment_score": 55}\n```\n'
+        )
+        json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "京东方A"
+        assert data["sentiment_score"] == 55
+        assert "<think>" not in json_str
+        assert "</think>" not in json_str
+
+    def test_strip_reasoning_block_allows_valid_json(self):
+        analyzer = self._make_analyzer()
+        text = (
+            "<reasoning>Detailed thoughts here.</reasoning>"
+            '{"stock_name": "贵州茅台", "sentiment_score": 80}\n'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "贵州茅台"
+        assert data["sentiment_score"] == 80
+
+    def test_strip_pipelined_reasoning_block_allows_valid_json(self):
+        analyzer = self._make_analyzer()
+        text = (
+            "<|reasoning|>Some CoT|<|/reasoning|>"
+            '{"stock_name": "Tencent", "sentiment_score": 60}'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "Tencent"
+        assert data["sentiment_score"] == 60
+
+    def test_strip_begin_of_thought_block_allows_valid_json(self):
+        analyzer = self._make_analyzer()
+        text = (
+            "<|begin▁of▁thought|>long chain of thought<|/thought|>"
+            '{"stock_name": "AAPL", "sentiment_score": 70}'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "AAPL"
+        assert data["sentiment_score"] == 70
+
+    def test_strip_begin_of_thinking_block_allows_valid_json(self):
+        analyzer = self._make_analyzer()
+        text = (
+            "<|begin_of_thinking|>chain<|end_of_thinking|>"
+            '{"stock_name": "HK00700", "sentiment_score": 65}'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "HK00700"
+        assert data["sentiment_score"] == 65
+
+    def test_strip_thinking_block_allows_valid_json(self):
+        analyzer = self._make_analyzer()
+        text = (
+            "<|thinking|>some thoughts<|/thinking|>"
+            '{"stock_name": "NVDA", "sentiment_score": 75}'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "NVDA"
+        assert data["sentiment_score"] == 75
+
+    def test_strip_multiple_cot_wrappers_with_fence(self):
+        """Two non-overlapping <think> blocks plus one real ```json``` fence must parse."""
+        analyzer = self._make_analyzer()
+        text = (
+            '<think>first reasoning block that mentions ```json as an example.</think>\n'
+            '<think>second reasoning block.</think>\n'
+            '```json\n{"stock_name": "TSLA", "sentiment_score": 88}\n```\n'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "TSLA"
+        assert data["sentiment_score"] == 88
+
+    def test_strip_cot_then_no_fence_plain_json(self):
+        """CoT wrapper around a plain JSON object (no ``` fences) must parse."""
+        analyzer = self._make_analyzer()
+        text = (
+            "<think>some thinking</think>"
+            '{"stock_name": "BABA", "sentiment_score": 50}'
+        )
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "BABA"
+        assert data["sentiment_score"] == 50
+
+    def test_strip_cot_block_validate_json_response_does_not_raise(self):
+        """_validate_json_response (used as response_validator) must not raise on CoT-wrapped fence."""
+        from src.analyzer import GeminiAnalyzer
+
+        text = (
+            "<think>deep reasoning</think>\n"
+            "```json\n"
+            '{"stock_name": "X", "sentiment_score": 50, "trend_prediction": "震荡",'
+            ' "operation_advice": "持有", "confidence_level": "中", "analysis_summary": "ok"}\n'
+            "```\n"
+        )
+        # Should not raise; GeminiAnalyzer._validate_json_response is the entrypoint
+        # that downstream _call_litellm invokes as response_validator.
+        GeminiAnalyzer._validate_json_response(GeminiAnalyzer.__new__(GeminiAnalyzer), text)
+
+    # ---- 2. regression: genuine ambiguity must STILL be rejected ----
+
+    def test_ambiguous_kept_after_cot_strip(self):
+        """CoT-stripping must not let multi-fence ambiguity slip through."""
+        analyzer = self._make_analyzer()
+        text = (
+            '<think>first thoughts</think>\n'
+            '```json\n{"a": 1}\n```\n'
+            '<think>second thoughts</think>\n'
+            '```json\n{"b": 2}\n```\n'
+        )
+        with pytest.raises(ValueError) as excinfo:
+            analyzer._extract_analysis_json_object(text)
+        assert str(excinfo.value) == "ambiguous_json"
+
+    def test_ambiguous_kept_when_two_embedded_json_after_strip(self):
+        """Even after CoT stripping, two embedded JSON objects must still raise."""
+        analyzer = self._make_analyzer()
+        text = (
+            "<think>reasoning</think>"
+            '{"a": 1}\n'
+            '<!-- a comment -->\n'
+            '{"b": 2}'
+        )
+        with pytest.raises(ValueError) as excinfo:
+            analyzer._extract_analysis_json_object(text)
+        assert str(excinfo.value) == "ambiguous_json"
+
+    def test_empty_response_still_raises_empty_response(self):
+        """Stripping must not consume the empty_response sentinel."""
+        analyzer = self._make_analyzer()
+        with pytest.raises(ValueError) as excinfo:
+            analyzer._extract_analysis_json_object("")
+        assert str(excinfo.value) == "empty_response"
+
+    def test_cot_only_response_without_json_raises_invalid(self):
+        """A response that is JUST a CoT block (no JSON) must not be silently accepted."""
+        analyzer = self._make_analyzer()
+        with pytest.raises(ValueError):
+            analyzer._extract_analysis_json_object(
+                "<think>only thinking, no JSON at all</think>"
+            )
+
+    # ---- 3. no-op behavior for already-clean payloads ----
+
+    def test_no_cot_block_unchanged_behavior_plain_fence(self):
+        analyzer = self._make_analyzer()
+        text = '```json\n{"stock_name": "Y", "sentiment_score": 42}\n```'
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "Y"
+        assert data["sentiment_score"] == 42
+
+    def test_no_cot_block_unchanged_behavior_plain_json(self):
+        analyzer = self._make_analyzer()
+        text = '{"stock_name": "Z", "sentiment_score": 33}'
+        _json_str, data = analyzer._extract_analysis_json_object(text)
+        assert data["stock_name"] == "Z"
+        assert data["sentiment_score"] == 33

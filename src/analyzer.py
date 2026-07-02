@@ -4248,10 +4248,40 @@ class GeminiAnalyzer:
         """Delegate to module-level apply_placeholder_fill."""
         apply_placeholder_fill(result, missing_fields)
 
+    # Chain-of-thought wrappers emitted by reasoning-capable LLMs (DeepSeek R1,
+    # GPT-OSS, MiniMax-M3, Claude extended thinking, ...). Stripped before JSON
+    # extraction so a single ```json``` fence wrapped in CoT still parses cleanly.
+    # The patterns target the *outer* CoT envelope only; ```json``` fences and
+    # embedded JSON objects are intentionally left untouched so the existing
+    # ambiguity checks (`len(fenced_matches) > 1`, embedded JSON detection) keep
+    # catching genuinely ambiguous payloads.
+    _COT_FENCE_PATTERNS: Tuple["re.Pattern[str]", ...] = (
+        re.compile(r"<think>.*?</think>", flags=re.DOTALL),
+        re.compile(r"<reasoning>.*?</reasoning>", flags=re.DOTALL),
+        re.compile(r"<\|reasoning\|>.*?<\|/reasoning\|>", flags=re.DOTALL),
+        re.compile(r"<\|thinking\|>.*?<\|/thinking\|>", flags=re.DOTALL),
+        re.compile(r"<\|begin▁of▁thought\|>.*?<\|/thought\|>", flags=re.DOTALL),
+        re.compile(r"<\|begin_of_thinking\|>.*?<\|end_of_thinking\|>", flags=re.DOTALL),
+    )
+
+    @classmethod
+    def _strip_cot_fences(cls, text: str) -> str:
+        """Strip known chain-of-thought wrappers from LLM output.
+
+        Only removes the outer CoT envelope; does NOT touch ```` ```json``` ````
+        fences or embedded JSON objects. After stripping, the existing
+        fence_pattern and ``_contains_embedded_json_object`` checks decide
+        whether the remaining text is a unique parseable JSON.
+        """
+        out = text
+        for pattern in cls._COT_FENCE_PATTERNS:
+            out = pattern.sub("", out)
+        return out
+
     def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
         """Extract the single allowed JSON object from an LLM response."""
 
-        text = response_text or ""
+        text = self._strip_cot_fences(response_text or "")
         stripped = text.strip()
         if not stripped:
             raise ValueError("empty_response")
