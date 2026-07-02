@@ -77,6 +77,8 @@ daily_stock_analysis/
 | `FEISHU_WEBHOOK_URL` | 飞书 Webhook URL | 可选 |
 | `FEISHU_WEBHOOK_SECRET` | 飞书 Webhook 签名密钥（开启“签名校验”时必填） | 可选 |
 | `FEISHU_WEBHOOK_KEYWORD` | 飞书 Webhook 关键词（开启“关键词”时必填） | 可选 |
+| `DINGTALK_WEBHOOK_URL` | 钉钉群机器人 Webhook URL | 可选 |
+| `DINGTALK_SECRET` | 钉钉群机器人加签密钥 (SEC开头) | 可选 |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（@BotFather 获取） | 可选 |
 | `TELEGRAM_CHAT_ID` | Telegram Chat ID | 可选 |
 | `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID (用于发送到子话题) | 可选 |
