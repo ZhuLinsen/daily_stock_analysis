@@ -649,7 +649,10 @@ def render_summary_block(workbench: Optional[Dict[str, Any]], language: str = "z
     渲染注入报告顶部的"一句话结论"块（参考截图模块①）。
 
     只包含结论性判断与数据说明；指数/板块/催化等表格由各自 section 的
-    注入块承载，本块不重复。全部字段缺失时返回空字符串（不注入）。
+    注入块承载，本块不重复。数据说明独立于 summary 渲染：JP/KR 等市场
+    market_light 缺失且判读失败时，workbench 可能只剩 data_quality.notes，
+    此时仍需注入说明块，让报告/推送能解释字段缺失原因（不伪造数据的
+    另一半承诺）。结论行与数据说明全部缺失时才返回空字符串（不注入）。
     """
     if not isinstance(workbench, dict):
         return ""
@@ -690,13 +693,13 @@ def render_summary_block(workbench: Optional[Dict[str, Any]], language: str = "z
         if summary.get(key):
             lines.append(f"- {en_label}: {summary[key]}" if en else f"- {zh_label}：{summary[key]}")
 
-    if not any(line.strip() for line in lines):
-        return ""
-
     notes = (workbench.get("data_quality") or {}).get("notes") or []
     if notes:
         joined = "; ".join(notes) if en else "；".join(notes)
         lines.append(f"> Data notes: {joined}" if en else f"> 数据说明：{joined}")
+
+    if not any(line.strip() for line in lines):
+        return ""
 
     heading = SUMMARY_HEADING_EN if en else SUMMARY_HEADING_ZH
     return f"### {heading}\n\n" + "\n".join(lines)

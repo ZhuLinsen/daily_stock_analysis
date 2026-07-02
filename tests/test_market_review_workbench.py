@@ -297,8 +297,21 @@ def test_render_summary_block_full():
 def test_render_summary_block_empty_returns_empty():
     assert render_summary_block(None, 'zh') == ''
     assert render_summary_block({}, 'zh') == ''
-    # 只有数据说明、无任何结论内容时不注入（说明由其他模块携带无意义）
-    assert render_summary_block({'data_quality': {'notes': ['x']}}, 'zh') == ''
+    assert render_summary_block({'data_quality': {'notes': []}}, 'zh') == ''
+
+
+def test_render_summary_block_notes_only_still_renders():
+    """PR #1888 评审回归：JP/KR 等市场 market_light 缺失且判读失败时，
+    workbench 可能只剩 data_quality.notes——说明块必须照常注入，
+    否则报告/推送丢失唯一的缺失解释（Codex P2 / maintainer blocker 1）。"""
+    notes_only = {'data_quality': {'notes': ['市场温度缺失', '指数历史K线缺失（^N225）']}}
+    block = render_summary_block(notes_only, 'zh')
+    assert block.startswith('### 一句话结论')
+    assert '> 数据说明：市场温度缺失；指数历史K线缺失（^N225）' in block
+
+    block_en = render_summary_block(notes_only, 'en')
+    assert block_en.startswith('### One-Line Conclusion')
+    assert '> Data notes: 市场温度缺失; 指数历史K线缺失（^N225）' in block_en
 
 
 def test_render_summary_block_en_heading():

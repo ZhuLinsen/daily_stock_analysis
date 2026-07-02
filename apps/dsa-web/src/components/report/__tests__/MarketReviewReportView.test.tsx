@@ -567,6 +567,29 @@ describe('MarketReviewReportView module presentation (Issue #1584)', () => {
     }
   });
 
+  it('renders data quality notes for a notes-only payload without summary fields', () => {
+    // PR #1888 评审回归：market_light 缺失 + 判读失败的降级形态，
+    // 数据说明必须独立于 summary 展示（缺失原因不可丢）
+    const notesOnly: MarketReviewPayload = {
+      version: 1,
+      kind: 'market_review',
+      region: 'jp',
+      language: 'zh',
+      title: '日股大盘复盘',
+      indices: [],
+      sections: [],
+      dataQuality: { notes: ['市场温度缺失', '指数历史K线缺失（^N225）'] },
+    };
+    render(
+      <MarketReviewReportView payload={notesOnly} content="# 大盘复盘" reportLanguage="zh" />,
+    );
+
+    const conclusion = screen.getByTestId('module-conclusion');
+    expect(within(conclusion).getByTestId('workbench-data-quality')).toBeInTheDocument();
+    expect(within(conclusion).getByText('市场温度缺失')).toBeInTheDocument();
+    expect(screen.queryByText('结构化大盘数据')).not.toBeInTheDocument();
+  });
+
   it('absorbs matched narrative sections into module cards and keeps unmatched as narrative cards', () => {
     const payloadWithSections: MarketReviewPayload = {
       ...workbenchPayload,
