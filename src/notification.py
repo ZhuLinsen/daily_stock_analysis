@@ -1982,6 +1982,7 @@ class NotificationService(
         "CNY": "元",
         "RMB": "元",
         "CNH": "元",
+        "TWD": "新台币",  # 台股 (TWSE/TPEx) 以新台币计价，避免与 A 股「元」(人民币) 混淆
     }
 
     @classmethod
@@ -2047,6 +2048,8 @@ class NotificationService(
                 "sector_bottom": [],
                 "concept_top": [],
                 "concept_bottom": [],
+                "institution": {},
+                "institution_status": None,
             }
 
         earnings_block = ctx.get("earnings") if isinstance(ctx.get("earnings"), dict) else {}
@@ -2074,6 +2077,11 @@ class NotificationService(
 
         belong_boards = ctx.get("belong_boards") if isinstance(ctx.get("belong_boards"), list) else []
 
+        # 三大法人 (institutional flows) — tw-only; other markets keep status='not_supported'
+        # and an empty data dict, so this block only renders for a Taiwan stock with data.
+        institution_block = ctx.get("institution") if isinstance(ctx.get("institution"), dict) else {}
+        institution_data = institution_block.get("data") if isinstance(institution_block.get("data"), dict) else {}
+
         return {
             "financial_report": financial_report,
             "growth": growth_data,
@@ -2083,6 +2091,8 @@ class NotificationService(
             "sector_bottom": sector_bottom,
             "concept_top": concept_top,
             "concept_bottom": concept_bottom,
+            "institution": institution_data,
+            "institution_status": institution_block.get("status"),
         }
 
     def _append_fundamental_blocks(self, lines: List[str], result: AnalysisResult) -> None:
@@ -2098,6 +2108,7 @@ class NotificationService(
 
         self._append_financial_summary(lines, blocks, labels)
         self._append_shareholder_return(lines, blocks, labels)
+        self._append_institutional_flow(lines, blocks, labels)
         self._append_related_boards(lines, blocks, labels)
 
     def _append_financial_summary(
@@ -2182,6 +2193,65 @@ class NotificationService(
                 f"| {cells['ttm_cash']} | {cells['ttm_count']} | "
                 f"{cells['ttm_yield']} | {cells['latest_ex']} |"
             ),
+            "",
+        ])
+
+    @classmethod
+    def _format_net_shares(cls, value: Any) -> str:
+        """Format an institutional net buy/sell in 万股/亿股, signed (+ = net buy).
+
+        Thresholds: abs >= 1e8 -> 亿股, >= 1e4 -> 万股, else 股. None/NaN/non-numeric -> N/A.
+        """
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if amount != amount:  # NaN
+            return "N/A"
+        sign = "+" if amount > 0 else ("-" if amount < 0 else "")
+        a = abs(amount)
+        if a >= 1e8:
+            return f"{sign}{a / 1e8:.2f} 亿股"
+        if a >= 1e4:
+            return f"{sign}{a / 1e4:.2f} 万股"
+        return f"{sign}{a:.0f} 股"
+
+    def _append_institutional_flow(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        """Append the 三大法人 (institutional flows) table — tw-only.
+
+        Renders only when the institution block reached status='ok' (a Taiwan stock
+        whose TWSE T86 / TPEx fetch succeeded); every other market keeps
+        status='not_supported' and is skipped, so this is strictly additive.
+        """
+        if blocks.get("institution_status") != "ok":
+            return
+        inst = blocks.get("institution") or {}
+        cells = {
+            "foreign": self._format_net_shares(inst.get("foreign_net")),
+            "trust": self._format_net_shares(inst.get("trust_net")),
+            "dealer": self._format_net_shares(inst.get("dealer_net")),
+            "total": self._format_net_shares(inst.get("total_net")),
+        }
+        if all(v == "N/A" for v in cells.values()):
+            return
+        date = self._format_text(inst.get("date"))
+        source = self._format_text(inst.get("source"))
+        lines.extend([
+            f"### 📊 {labels['institutional_flow_heading']}（{date} · {source}）",
+            "",
+            f"> {labels['institutional_flow_note']}",
+            "",
+            (
+                f"| {labels['inst_foreign_label']} | {labels['inst_trust_label']} | "
+                f"{labels['inst_dealer_label']} | {labels['inst_total_label']} |"
+            ),
+            "|-----:|-----:|------:|------------:|",
+            f"| {cells['foreign']} | {cells['trust']} | {cells['dealer']} | {cells['total']} |",
             "",
         ])
 

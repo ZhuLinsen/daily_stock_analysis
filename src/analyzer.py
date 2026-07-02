@@ -3778,6 +3778,40 @@ class GeminiAnalyzer:
 > 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
 """
 
+        # 添加三大法人动向（台股筹码过滤器）— tw-only；仅当 institution 区块 status='ok'
+        # 且有净额时注入，其他市场 status='not_supported' 会跳过，严格 additive。
+        institution_block = (
+            fundamental_context.get("institution", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        institution_data = (
+            institution_block.get("data", {})
+            if isinstance(institution_block, dict)
+            else {}
+        )
+        if (
+            isinstance(institution_block, dict)
+            and institution_block.get("status") == "ok"
+            and isinstance(institution_data, dict)
+            and all(
+                institution_data.get(key) is not None
+                for key in ("foreign_net", "trust_net", "dealer_net", "total_net")
+            )
+        ):
+            prompt += f"""
+### 三大法人动向（台股筹码过滤器，净买卖超，单位:股）
+| 法人 | 净买卖超 | 决策含义 |
+|------|------|----------|
+| 外资 | {institution_data.get('foreign_net', 'N/A')} | 正值=净买超偏支持，负值=净卖超偏压制 |
+| 投信 | {institution_data.get('trust_net', 'N/A')} | 投信持续买超常伴随中线做多 |
+| 自营商 | {institution_data.get('dealer_net', 'N/A')} | 短线避险/自营方向参考 |
+| 三大法人合计 | {institution_data.get('total_net', 'N/A')} | 台股最受关注的筹码信号 |
+| 资料日期 | {institution_data.get('date', 'N/A')} | 来源 {institution_data.get('source', 'N/A')} |
+
+> 三大法人是台股的筹码过滤器（相当于 A 股主力资金/龙虎榜的角色，但口径不同、不可混用）：外资与投信同向净买支持价格、同向净卖压制价格。请据此判断台股筹码结构，不要在有本数据时写“筹码结构：数据缺失”。
+"""
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']

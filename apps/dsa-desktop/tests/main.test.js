@@ -177,6 +177,23 @@ test('buildBackendEnvironment keeps non-macOS PATH unchanged', (t) => {
   assert.equal(env.PATH, '/custom/bin:/usr/bin');
 });
 
+test('buildBackendEnvironment pins WEBUI_PORT to the Electron-selected backend port', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\.env',
+    dbPath: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\data\\stock_analysis.db',
+    logDir: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\logs',
+    port: 8000,
+    sourceEnv: {
+      PATH: 'C:\\Windows\\System32',
+      WEBUI_PORT: '18000',
+    },
+  });
+
+  assert.equal(env.WEBUI_PORT, '8000');
+});
+
 test('extendMacDesktopBackendPath preserves existing order and avoids duplicates', (t) => {
   const mainModule = loadMainModule(t, { platform: 'darwin' });
 

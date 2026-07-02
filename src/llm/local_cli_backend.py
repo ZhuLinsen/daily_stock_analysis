@@ -140,11 +140,10 @@ _CLAUDE_CODE_STATIC_INSTRUCTION = (
 )
 _PROMPT_FILE_PLACEHOLDER = "{prompt_file}"
 _OPENCODE_STATIC_INSTRUCTION = (
-    "Generate the requested DSA stock analysis from the attached prompt file. "
-    "Return only one JSON object that satisfies the DSA parser contract. "
-    "The JSON must include at least one of sentiment_score, trend_prediction, "
-    "operation_advice, analysis_summary, or dashboard. Do not use tools, read "
-    "additional files, browse the web, edit files, ask questions, or request approval."
+    "Generate the requested DSA output from the attached prompt file. "
+    "Follow the output format required by that prompt. Return only the final response "
+    "content. Do not use tools, do not read additional files, do not browse the web, "
+    "do not edit files, do not ask questions, and do not request approval."
 )
 _OPENCODE_ALLOWED_EVENT_TYPES = {"step_start", "text", "step_finish"}
 _OPENCODE_BLOCKED_EVENT_TYPES = {

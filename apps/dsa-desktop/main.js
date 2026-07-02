@@ -691,7 +691,8 @@ function extendMacDesktopBackendPath(rawPath) {
   return entries.join(path.delimiter);
 }
 
-function buildBackendEnvironment({ envFile, dbPath, logDir, sourceEnv = process.env }) {
+function buildBackendEnvironment({ envFile, dbPath, logDir, port = null, sourceEnv = process.env }) {
+  const selectedPort = Number(port);
   const env = {
     ...sourceEnv,
     DSA_DESKTOP_MODE: 'true',
@@ -705,6 +706,10 @@ function buildBackendEnvironment({ envFile, dbPath, logDir, sourceEnv = process.
     DINGTALK_STREAM_ENABLED: 'false',
     FEISHU_STREAM_ENABLED: 'false',
   };
+
+  if (Number.isInteger(selectedPort) && selectedPort >= 1 && selectedPort <= 65535) {
+    env.WEBUI_PORT = String(selectedPort);
+  }
 
   if (isMac) {
     env.PATH = extendMacDesktopBackendPath(sourceEnv.PATH);
@@ -982,7 +987,7 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   backendStartError = null;
   const launchStartedAt = Date.now();
 
-  const env = buildBackendEnvironment({ envFile, dbPath, logDir });
+  const env = buildBackendEnvironment({ envFile, dbPath, logDir, port });
 
   const args = ['--serve-only', '--host', '127.0.0.1', '--port', String(port)];
   let launchMode = '';

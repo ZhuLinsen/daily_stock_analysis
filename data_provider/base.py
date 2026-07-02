@@ -2981,11 +2981,17 @@ class DataFetcherManager:
                 except Exception as exc:  # noqa: BLE001 - wiring failure: loud but fail-open
                     logger.error("[tw-inst] fetcher init failed (wiring bug?) code=%s: %s", stock_code, exc)
                     fetcher = None
-            if fetcher is not None:
-                # Run the fetch under the SAME fundamental stage/fetch budget as the other
-                # offshore blocks (_run_with_retry) so a slow / rate-limited TWSE/TPEx call
-                # cannot push the analysis past its deadline — it fails open on timeout.
-                inst_timeout = min(fetch_timeout, max(stage_timeout - (time.time() - start_ts), 0.0))
+            # fetch_timeout == 0 disables per-fetch fundamental fetches (same as valuation /
+            # bundle above, which gate on fetch_timeout); honour that for institution too so
+            # the FUNDAMENTAL_FETCH_TIMEOUT_SECONDS=0 config semantic is not bypassed.
+            if fetcher is not None and fetch_timeout > 0:
+                # The tw institution block is a WHOLE-MARKET download (~4-5s), far slower
+                # than the per-symbol quote/bundle fetches, and it is the LAST offshore
+                # block. When enabled, give it the full REMAINING stage budget rather than
+                # the ~3s per-fetch cap that starves it and makes the first/only stock of a
+                # run coin-flip between ok and not_supported. Bounded by the stage deadline
+                # via _run_with_retry, so it fails open (never blocks).
+                inst_timeout = max(stage_timeout - (time.time() - start_ts), 0.0)
                 if inst_timeout > 0:
                     tw_record, inst_err, _inst_ms = self._run_with_retry(
                         lambda: fetcher.get_institutional_net(stock_code),

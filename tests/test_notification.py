@@ -537,8 +537,14 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_post.assert_called_once()
         
     @mock.patch("src.notification.get_config")
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
     @mock.patch("requests.post")
-    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(
+        self,
+        mock_post: mock.MagicMock,
+        _mock_sleep: mock.MagicMock,
+        mock_get_config: mock.MagicMock,
+    ):
         cfg = _make_config(
             discord_bot_token="TOKEN",
             discord_main_channel_id="123",

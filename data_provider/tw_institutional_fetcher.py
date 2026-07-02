@@ -32,6 +32,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from data_provider.realtime_types import CircuitBreaker
+
 logger = logging.getLogger(__name__)
 
 _T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
@@ -122,6 +124,11 @@ class TwInstitutionalFetcher:
         # One lock per unique (market, ad_date) key; bounded by tw markets x
         # distinct dates queried -- low thousands at most, negligible memory.
         self._inflight: Dict[Any, threading.Lock] = {}
+        # Per-market circuit breaker (keyed "twse"/"tpex"): when an endpoint is down
+        # (>= 3 consecutive failures) skip the network round-trip for ~5 min and fail
+        # open, instead of paying timeout + throttle on every stock during an outage.
+        # Reuses the repo's CircuitBreaker (same one DataFetcherManager uses).
+        self._breaker = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
 
     # ------------------------------------------------------------------ public
     def get_institutional_net(
@@ -147,7 +154,19 @@ class TwInstitutionalFetcher:
             return None
         if not table:
             return None
-        return table.get(base)
+        record = table.get(base)
+        # TPEx OpenAPI serves only the LATEST trading day (no date param). If a caller
+        # asked for a specific date, never silently return a different-day record --
+        # fail open (None) so a date-mismatched 上櫃 figure can't reach a report.
+        if record is not None and date and market == "tpex":
+            requested = self._norm_ad_date(date)
+            if requested and record.get("date") != requested:
+                logger.info(
+                    "[tw-inst] TPEx %s requested date %s != served %s -> fail-open",
+                    base, requested, record.get("date"),
+                )
+                return None
+        return record
 
     # ------------------------------------------------------------------ routing
     @staticmethod
@@ -196,7 +215,23 @@ class TwInstitutionalFetcher:
             cached = self._read_cache(key)  # double-check: a prior holder may have filled it
             if cached is not None:
                 return cached
-            table = self._fetch_twse(ad_date) if market == "twse" else self._fetch_tpex()
+            # Circuit breaker: if this endpoint has been failing (>= 3 in a row), skip
+            # the network round-trip and fail open (empty) until the ~5 min cooldown
+            # half-opens -- so a TWSE/TPEx outage costs ~0 per stock, not timeout+throttle.
+            if not self._breaker.is_available(market):
+                logger.info("[tw-inst] %s circuit OPEN -> skip fetch, fail-open", market)
+                return {}
+            try:
+                table = self._fetch_twse(ad_date) if market == "twse" else self._fetch_tpex()
+            except Exception as exc:  # network / HTTP error -> trip the breaker, then re-raise
+                self._breaker.record_failure(market, str(exc))
+                raise
+            # The breaker tracks REACHABILITY (open only on hard network/HTTP errors).
+            # An empty / stat!=OK body still means the endpoint RESPONDED, so it counts
+            # as success: it resets the failure streak and, during HALF_OPEN recovery,
+            # closes the breaker instead of re-opening it (so a no-data day mid-recovery
+            # can never strand the breaker open). Only non-empty tables are cached.
+            self._breaker.record_success(market)
             if table:  # never cache an empty / failed fetch -> no TTL-long blackout
                 with self._lock:
                     self._cache[key] = table

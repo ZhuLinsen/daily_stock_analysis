@@ -376,6 +376,53 @@ print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
     assert result.usage["backend"] == "opencode_cli"
 
 
+def test_opencode_static_instruction_does_not_force_stock_json_contract() -> None:
+    instruction = " ".join(str(arg) for arg in OPENCODE_CLI_PRESET.argv)
+    normalized_instruction = instruction.lower()
+
+    assert "attached prompt file" in instruction
+    assert "json object" not in normalized_instruction
+    assert "parser contract" not in normalized_instruction
+    for field_name in (
+        "sentiment_score",
+        "trend_prediction",
+        "operation_advice",
+        "analysis_summary",
+        "dashboard",
+    ):
+        assert field_name not in instruction
+
+
+def test_opencode_preset_accepts_free_text_without_json_validator(tmp_path: Path) -> None:
+    review = "## 今日复盘\n\n市场震荡，保持观察。"
+    script = _script(
+        tmp_path,
+        f"""
+import json
+print(json.dumps({{"type": "step_start"}}))
+print(json.dumps({{"type": "text", "part": {{"text": {review!r}}}}}, ensure_ascii=False))
+print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli"),
+        preset=preset,
+    )
+
+    result = backend.generate("请生成 Markdown 复盘", {}, response_validator=None)
+
+    assert result.text == review
+
+
 def test_opencode_model_override_inserts_model_arg(tmp_path: Path) -> None:
     argv_path = tmp_path / "argv.json"
     script = _script(
