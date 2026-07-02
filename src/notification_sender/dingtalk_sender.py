@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from src.config import Config
+from src.formatters import chunk_content_by_max_bytes  # <-- 引入项目内置的切片器
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class DingtalkSender:
         self.secret = config.dingtalk_secret
 
     def send_to_dingtalk(self, content: str, title: str = "", timeout_seconds: int = 10) -> bool:
-        """发送 Markdown 消息到钉钉群"""
+        """发送 Markdown 消息到钉钉群 (Send DingTalk Markdown message)"""
         if not self.webhook_url:
             return False
 
@@ -38,31 +39,45 @@ class DingtalkSender:
         else:
             url = self.webhook_url
 
-        # 2. 组装 Payload
-        # DingTalk requires the title in the markdown text body for it to display nicely
-        text = f"### {title}\n\n{content}" if title else content
-        
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {
-                "title": title or "通知 (Notification)",
-                "text": text
-            }
-        }
-        headers = {'Content-Type': 'application/json'}
+        # 2. 切片逻辑 (Chunking for DingTalk's 20,000 byte limit)
+        chunks = chunk_content_by_max_bytes(content, max_bytes=20000)
+        all_success = True
 
-        # 3. 发送请求
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
-            response.raise_for_status()
+        for index, chunk in enumerate(chunks):
+            # Only prepend the title to the very first chunk
+            text = f"### {title}\n\n{chunk}" if index == 0 and title else chunk
             
-            result = response.json()
-            if result.get("errcode") == 0:
-                logger.info("钉钉消息发送成功 (DingTalk message sent successfully)")
-                return True
-            else:
-                logger.error(f"钉钉消息发送失败 (DingTalk API error): {result}")
-                return False
-        except Exception as e:
-            logger.error(f"发送钉钉消息异常 (Failed to send DingTalk notification): {e}")
-            return False
+            # If the message is split into multiple chunks, add page numbers to the title
+            display_title = title or "通知 (Notification)"
+            if len(chunks) > 1:
+                display_title = f"{display_title} ({index + 1}/{len(chunks)})"
+            
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": display_title,
+                    "text": text
+                }
+            }
+            headers = {'Content-Type': 'application/json'}
+
+            # 3. 发送请求 (Send HTTP Request)
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
+                response.raise_for_status()
+                
+                result = response.json()
+                if result.get("errcode") == 0:
+                    logger.info(f"钉钉消息分段 {index + 1} 发送成功 (Chunk {index + 1} sent successfully)")
+                else:
+                    logger.error(f"钉钉消息分段 {index + 1} 发送失败 (DingTalk API error): {result}")
+                    all_success = False
+            except Exception as e:
+                logger.error(f"发送钉钉消息异常 (Failed to send DingTalk notification chunk {index + 1}): {e}")
+                all_success = False
+            
+            # Prevent rate limiting by sleeping briefly between chunks
+            if len(chunks) > 1 and index < len(chunks) - 1:
+                time.sleep(0.5)
+
+        return all_success
