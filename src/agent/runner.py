@@ -425,6 +425,7 @@ def run_agent_loop(
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
+    emit_stage_events: bool = True,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -442,6 +443,9 @@ def run_agent_loop(
         thinking_labels: Override map of tool_name → friendly label.
         max_wall_clock_seconds: Optional overall timeout budget for the loop.
         tool_call_timeout_seconds: Optional timeout for one parallel tool batch.
+        emit_stage_events: Whether to emit the synthetic ``agent_loop``
+            stage lifecycle. Orchestrated business stages disable this so
+            ``stage_start`` / ``stage_done`` only describe real stages.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -464,7 +468,19 @@ def run_agent_loop(
     # even when the total budget is small.
     _MIN_STEP_BUDGET_S = 8.0
 
-    if progress_callback:
+    def _finish(result: RunLoopResult) -> RunLoopResult:
+        if progress_callback and emit_stage_events:
+            progress_callback(
+                stream_event(
+                    "stage_done",
+                    stage="agent_loop",
+                    status="completed" if result.success else "failed",
+                    duration=round(time.time() - start_time, 2),
+                )
+            )
+        return result
+
+    if progress_callback and emit_stage_events:
         progress_callback(
             stream_event(
                 "stage_start",
@@ -490,7 +506,7 @@ def run_agent_loop(
                     remaining_timeout,
                     _MIN_STEP_BUDGET_S,
                 )
-                return _build_budget_guard_result(
+                return _finish(_build_budget_guard_result(
                     start_time=start_time,
                     step=step,
                     tool_calls_log=tool_calls_log,
@@ -500,11 +516,11 @@ def run_agent_loop(
                     messages=messages,
                     remaining_timeout_s=remaining_timeout,
                     min_step_budget_s=_MIN_STEP_BUDGET_S,
-                )
+                ))
 
             if remaining_timeout <= 0:
                 logger.warning("Agent timed out before step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step,
@@ -513,7 +529,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         logger.info("Agent step %d/%d", step + 1, max_steps)
 
@@ -545,7 +561,7 @@ def run_agent_loop(
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
             logger.warning("Agent timed out after LLM call at step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step + 1,
@@ -554,7 +570,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         if response.tool_calls:
             # ---- tool execution branch ----
@@ -621,7 +637,7 @@ def run_agent_loop(
             remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
             if remaining_timeout is not None and remaining_timeout <= 0:
                 logger.warning("Agent timed out after tool execution at step %d", step + 1)
-                return _build_timeout_result(
+                return _finish(_build_timeout_result(
                     start_time=start_time,
                     max_wall_clock_seconds=float(max_wall_clock_seconds),
                     step=step + 1,
@@ -630,7 +646,7 @@ def run_agent_loop(
                     provider_used=provider_used,
                     models_used=models_used,
                     messages=messages,
-                )
+                ))
 
         else:
             # ---- final answer branch ----
@@ -646,7 +662,7 @@ def run_agent_loop(
             final_content = response.content or ""
             is_error = response.provider == "error"
 
-            return RunLoopResult(
+            return _finish(RunLoopResult(
                 success=not is_error and bool(final_content),
                 content=final_content if not is_error else "",
                 tool_calls_log=tool_calls_log,
@@ -656,11 +672,11 @@ def run_agent_loop(
                 models_used=models_used,
                 error=final_content if is_error else None,
                 messages=messages,
-            )
+            ))
 
     # Max steps exceeded
     logger.warning("Agent hit max steps (%d)", max_steps)
-    return RunLoopResult(
+    return _finish(RunLoopResult(
         success=False,
         content="",
         tool_calls_log=tool_calls_log,
@@ -670,7 +686,7 @@ def run_agent_loop(
         models_used=models_used,
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
         messages=messages,
-    )
+    ))
 
 
 # ============================================================

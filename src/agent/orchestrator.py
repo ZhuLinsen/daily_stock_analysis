@@ -490,6 +490,14 @@ class AgentOrchestrator:
             models_used.extend(result.meta.get("models_used", []))
 
             elapsed_s = time.time() - t0
+            if progress_callback:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=agent.agent_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+
             if timeout_s and elapsed_s >= timeout_s:
                 logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
                 if progress_callback:
@@ -508,14 +516,6 @@ class AgentOrchestrator:
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
-
-            if progress_callback:
-                progress_callback(stream_event(
-                    "stage_done",
-                    stage=agent.agent_name,
-                    status=result.status.value,
-                    duration=result.duration_s,
-                ))
 
             if ctx.meta.get("response_mode") == "chat" and agent.agent_name == "decision":
                 final_text = result.meta.get("raw_text")

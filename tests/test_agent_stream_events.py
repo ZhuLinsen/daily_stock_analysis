@@ -13,6 +13,7 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
+from src.agent.agents.base_agent import BaseAgent
 from src.agent.llm_adapter import LLMResponse
 from src.agent.orchestrator import AgentOrchestrator
 from src.agent.protocols import AgentContext, StageResult, StageStatus
@@ -34,6 +35,25 @@ def _make_registry() -> ToolRegistry:
         )
     )
     return registry
+
+
+class _StreamTestAgent(BaseAgent):
+    max_steps = 1
+
+    def __init__(self, agent_name, tool_registry, llm_adapter):
+        super().__init__(tool_registry=tool_registry, llm_adapter=llm_adapter)
+        self.agent_name = agent_name
+
+    def system_prompt(self, ctx: AgentContext) -> str:
+        return f"{self.agent_name} system"
+
+    def build_user_message(self, ctx: AgentContext) -> str:
+        return ctx.query
+
+    def post_process(self, ctx: AgentContext, raw_text: str) -> None:
+        if self.agent_name == "decision":
+            ctx.set_data("final_dashboard_raw", raw_text)
+        return None
 
 
 def test_stream_event_keeps_legacy_fields_and_drops_none() -> None:
@@ -69,7 +89,7 @@ def test_stream_event_supports_stage_metadata() -> None:
     assert event["meta"] == {"mode": "single"}
 
 
-def test_run_agent_loop_emits_stage_start_and_legacy_progress_events() -> None:
+def test_run_agent_loop_emits_paired_stage_and_legacy_progress_events() -> None:
     adapter = MagicMock()
     adapter.call_with_tools.return_value = LLMResponse(
         content="Done.",
@@ -94,8 +114,70 @@ def test_run_agent_loop_emits_stage_start_and_legacy_progress_events() -> None:
         "stage": "agent_loop",
         "message": "Starting agent analysis...",
     }
+    assert events[-1]["type"] == "stage_done"
+    assert events[-1]["stage"] == "agent_loop"
+    assert events[-1]["status"] == "completed"
+    assert "duration" in events[-1]
     assert any(event["type"] == "thinking" and "step" in event for event in events)
     assert any(event["type"] == "generating" and "step" in event for event in events)
+
+
+def test_orchestrator_real_agent_path_does_not_emit_nested_agent_loop_stage() -> None:
+    adapter = MagicMock()
+    adapter.call_with_tools.side_effect = [
+        LLMResponse(
+            content="Technical done.",
+            tool_calls=[],
+            usage={},
+            provider="openai",
+            model="openai/gpt-test",
+        ),
+        LLMResponse(
+            content="Decision done.",
+            tool_calls=[],
+            usage={},
+            provider="openai",
+            model="openai/gpt-test",
+        ),
+    ]
+    registry = _make_registry()
+    orch = AgentOrchestrator(
+        tool_registry=registry,
+        llm_adapter=adapter,
+        mode="quick",
+        config=SimpleNamespace(agent_orchestrator_timeout_s=0),
+    )
+    ctx = AgentContext(query="Analyze 600519", stock_code="600519")
+    agents = [
+        _StreamTestAgent("technical", registry, adapter),
+        _StreamTestAgent("decision", registry, adapter),
+    ]
+    events = []
+
+    with patch.object(orch, "_build_agent_chain", return_value=agents):
+        result = orch._execute_pipeline(
+            ctx,
+            parse_dashboard=False,
+            progress_callback=events.append,
+        )
+
+    assert result.success is True
+    assert result.content == "Decision done."
+    stage_events = [
+        (event["type"], event.get("stage"))
+        for event in events
+        if event["type"] in {"stage_start", "stage_done"}
+    ]
+    assert stage_events == [
+        ("stage_start", "technical"),
+        ("stage_done", "technical"),
+        ("stage_start", "decision"),
+        ("stage_done", "decision"),
+    ]
+    assert ("stage_start", "agent_loop") not in stage_events
+    assert ("stage_done", "agent_loop") not in stage_events
+    assert any(event["type"] == "thinking" for event in events)
+    assert any(event["type"] == "generating" for event in events)
 
 
 def test_orchestrator_emits_stage_start_and_done_events() -> None:
@@ -157,5 +239,58 @@ def test_orchestrator_emits_stage_start_and_done_events() -> None:
             "stage": "decision",
             "status": "completed",
             "duration": 0.25,
+        },
+    ]
+
+
+def test_orchestrator_emits_stage_done_before_timeout_after_stage() -> None:
+    orch = AgentOrchestrator(
+        tool_registry=_make_registry(),
+        llm_adapter=MagicMock(),
+        mode="quick",
+        config=SimpleNamespace(agent_orchestrator_timeout_s=1),
+    )
+    ctx = AgentContext(query="Analyze 600519", stock_code="600519")
+    agents = [SimpleNamespace(agent_name="technical")]
+    events = []
+
+    def _run_stage(agent, _run_ctx, **_kwargs):
+        return StageResult(
+            stage_name=agent.agent_name,
+            status=StageStatus.COMPLETED,
+            duration_s=0.25,
+            meta={"models_used": ["mock/technical"]},
+        )
+
+    with patch.object(orch, "_build_agent_chain", return_value=agents), patch.object(
+        orch,
+        "_run_stage_agent",
+        side_effect=_run_stage,
+    ), patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.0, 1.1]):
+        result = orch._execute_pipeline(
+            ctx,
+            parse_dashboard=False,
+            progress_callback=events.append,
+        )
+
+    assert result.success is False
+    assert result.error == "Pipeline timed out after 1.10s (limit: 1s)"
+    assert events == [
+        {
+            "type": "stage_start",
+            "stage": "technical",
+            "message": "Starting technical analysis...",
+        },
+        {
+            "type": "stage_done",
+            "stage": "technical",
+            "status": "completed",
+            "duration": 0.25,
+        },
+        {
+            "type": "pipeline_timeout",
+            "stage": "technical",
+            "elapsed": 1.1,
+            "timeout": 1,
         },
     ]

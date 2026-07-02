@@ -121,6 +121,7 @@ class BaseAgent(ABC):
                 progress_callback=progress_callback,
                 max_wall_clock_seconds=timeout_seconds,
                 stock_scope=ctx.meta.get("stock_scope"),
+                emit_stage_events=False,
             )
 
             result.tokens_used = loop_result.total_tokens
