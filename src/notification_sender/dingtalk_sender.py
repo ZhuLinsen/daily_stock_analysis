@@ -40,14 +40,14 @@ class DingtalkSender:
             url = self.webhook_url
 
         # 2. 切片逻辑 (Chunking for DingTalk's 20,000 byte limit)
-        chunks = chunk_content_by_max_bytes(content, max_bytes=20000)
+        # 预留 1000 bytes 的安全预算，用于 JSON 结构、标题和分页后缀的额外开销
+        safe_max_bytes = 19000
+        chunks = chunk_content_by_max_bytes(content, max_bytes=safe_max_bytes)
         all_success = True
 
         for index, chunk in enumerate(chunks):
-            # Only prepend the title to the very first chunk
             text = f"### {title}\n\n{chunk}" if index == 0 and title else chunk
             
-            # If the message is split into multiple chunks, add page numbers to the title
             display_title = title or "通知 (Notification)"
             if len(chunks) > 1:
                 display_title = f"{display_title} ({index + 1}/{len(chunks)})"
@@ -61,7 +61,7 @@ class DingtalkSender:
             }
             headers = {'Content-Type': 'application/json'}
 
-            # 3. 发送请求 (Send HTTP Request)
+            # 3. 发送请求
             try:
                 response = requests.post(url, json=payload, headers=headers, timeout=timeout_seconds)
                 response.raise_for_status()
@@ -76,7 +76,6 @@ class DingtalkSender:
                 logger.error(f"发送钉钉消息异常 (Failed to send DingTalk notification chunk {index + 1}): {e}")
                 all_success = False
             
-            # Prevent rate limiting by sleeping briefly between chunks
             if len(chunks) > 1 and index < len(chunks) - 1:
                 time.sleep(0.5)
 
