@@ -460,8 +460,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             return_value=[],
         ), patch.object(
             market_review_module.MarketAnalyzer,
-            "generate_market_review",
-            side_effect=["JP body", "KR body"],
+            "_generate_review_text",
+            side_effect=[("JP body", False), ("KR body", False)],
         ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
             result = run_market_review(
                 notifier,
@@ -899,6 +899,149 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     os.environ.pop("DATABASE_PATH", None)
                 else:
                     os.environ["DATABASE_PATH"] = old_db_path
+
+
+class MarketReviewWorkbenchRenderGateTestCase(unittest.TestCase):
+    """工作台 payload 的推送渲染门（Issue #1584 D2）。
+
+    工作台 payload 的 sections 为纯叙事（数据表在 markdown_report 里），
+    单市场推送渲染必须直接使用完整文档；旧 payload 维持 sections 重组路径。
+    """
+
+    def test_workbench_payload_renders_from_markdown_report(self) -> None:
+        payload = {
+            "title": "A股市场复盘",
+            "summary": {"temperature_score": 45},
+            "sections": [{"key": "s1", "title": "一、盘面总览", "markdown": "纯叙事正文"}],
+            "markdown_report": (
+                "## A股市场复盘\n\n### 一句话结论\n市场温度：45/100\n\n"
+                "### 一、盘面总览\n纯叙事正文\n\n| 指标 | 数值 | 观察 |\n|--|--|--|\n| 上涨/下跌/平盘 | 1 / 2 / 3 | x |\n"
+            ),
+        }
+        rendered = market_review_module._render_single_market_review_payload(payload)
+        # 完整文档直出：数据表保留，不从纯叙事 sections 重组
+        self.assertIn("| 指标 | 数值 | 观察 |", rendered)
+        self.assertIn("### 一句话结论", rendered)
+
+    def test_legacy_payload_still_renders_from_sections(self) -> None:
+        payload = {
+            "title": "A股市场复盘",
+            "sections": [{"key": "s1", "title": "一、盘面总览", "markdown": "旧正文（含注入表）"}],
+            "markdown_report": "SHOULD_NOT_BE_USED",
+        }
+        rendered = market_review_module._render_single_market_review_payload(payload)
+        self.assertIn("旧正文（含注入表）", rendered)
+        self.assertNotIn("SHOULD_NOT_BE_USED", rendered)
+
+
+class MarketReviewCrossMarketSnapshotTestCase(unittest.TestCase):
+    """多市场复盘的跨市场参考快照（Issue #1584）。"""
+
+    def _make_notifier(self) -> MagicMock:
+        notifier = MagicMock()
+        notifier.save_report_to_file.return_value = "/tmp/market_review.md"
+        notifier.is_available.return_value = True
+        notifier.send.return_value = True
+        return notifier
+
+    def test_build_cross_market_snapshot_defensive(self) -> None:
+        us_overview = SimpleNamespace(indices=[
+            SimpleNamespace(name="标普500", change_pct=0.52),
+            SimpleNamespace(name="纳斯达克", change_pct=0.81),
+            SimpleNamespace(name="道琼斯", change_pct=0.20),
+            SimpleNamespace(name="VIX", change_pct=-3.0),
+        ])
+        snapshot = market_review_module._build_cross_market_snapshot({
+            "us": us_overview,
+            # 测试桩/抓取失败的对象结构不符时按无数据跳过
+            "jp": MagicMock(),
+            "kr": SimpleNamespace(indices=[]),
+            "hk": None,
+        })
+        self.assertEqual(list(snapshot.keys()), ["us"])
+        # 每个市场最多 3 个指数
+        self.assertEqual(len(snapshot["us"]), 3)
+        self.assertEqual(snapshot["us"][0], {"name": "标普500", "change_pct": 0.52})
+
+    def test_multi_region_passes_cross_market_snapshot_excluding_own_region(self) -> None:
+        notifier = self._make_notifier()
+
+        def _make_analyzer(region: str, index_name: str, change_pct: float) -> MagicMock:
+            analyzer = MagicMock()
+            analyzer.get_market_overview.return_value = SimpleNamespace(
+                indices=[SimpleNamespace(name=index_name, change_pct=change_pct)],
+            )
+            analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+                report=f"{region.upper()} body",
+                market_light_snapshot=None,
+            )
+            return analyzer
+
+        cn_analyzer = _make_analyzer("cn", "上证指数", 0.5)
+        us_analyzer = _make_analyzer("us", "标普500", 0.9)
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn,us"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            side_effect=[cn_analyzer, us_analyzer],
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            run_market_review(notifier, send_notification=False)
+
+        # 概览预取后传回各自的复盘生成，避免重复抓取
+        cn_kwargs = cn_analyzer.run_daily_review_with_snapshot.call_args.kwargs
+        us_kwargs = us_analyzer.run_daily_review_with_snapshot.call_args.kwargs
+        self.assertIs(cn_kwargs["overview"], cn_analyzer.get_market_overview.return_value)
+        self.assertIs(us_kwargs["overview"], us_analyzer.get_market_overview.return_value)
+        # 跨市场快照只包含其他市场
+        self.assertEqual(list(cn_kwargs["cross_market_snapshot"].keys()), ["us"])
+        self.assertEqual(
+            cn_kwargs["cross_market_snapshot"]["us"],
+            [{"name": "标普500", "change_pct": 0.9}],
+        )
+        self.assertEqual(list(us_kwargs["cross_market_snapshot"].keys()), ["cn"])
+
+    def test_multi_region_prefetch_failure_degrades_to_none(self) -> None:
+        notifier = self._make_notifier()
+        cn_analyzer = MagicMock()
+        cn_analyzer.get_market_overview.side_effect = RuntimeError("fetch failed")
+        cn_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="CN body",
+            market_light_snapshot=None,
+        )
+        us_analyzer = MagicMock()
+        us_analyzer.get_market_overview.return_value = SimpleNamespace(
+            indices=[SimpleNamespace(name="标普500", change_pct=0.9)],
+        )
+        us_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="US body",
+            market_light_snapshot=None,
+        )
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=SimpleNamespace(report_language="zh", market_review_region="cn,us"),
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            side_effect=[cn_analyzer, us_analyzer],
+        ), patch.object(market_review_module, "_persist_market_review_history"):
+            result = run_market_review(notifier, send_notification=False)
+
+        self.assertIn("CN body", result)
+        self.assertIn("US body", result)
+        # 预取失败时 overview 传 None（内部自行抓取），流程不中断
+        cn_kwargs = cn_analyzer.run_daily_review_with_snapshot.call_args.kwargs
+        self.assertIsNone(cn_kwargs["overview"])
+        # 自己市场预取失败但仍能参考其他市场
+        self.assertEqual(list(cn_kwargs["cross_market_snapshot"].keys()), ["us"])
+        # 其他市场没有 cn 数据可参考时传 None
+        us_kwargs = us_analyzer.run_daily_review_with_snapshot.call_args.kwargs
+        self.assertIsNone(us_kwargs["cross_market_snapshot"])
 
 
 if __name__ == "__main__":

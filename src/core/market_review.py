@@ -171,6 +171,32 @@ def _resolve_market_review_regions(raw_region: Optional[str]) -> list[str]:
     return ['cn']
 
 
+def _build_cross_market_snapshot(
+    overviews: Dict[str, Any],
+) -> Dict[str, list]:
+    """
+    从同一次多市场复盘预取的概览构建跨市场参考快照（Issue #1584）。
+
+    仅复用本次已抓取的数据，每个市场最多取 3 个指数；对象结构不符
+    （如测试桩/抓取失败）时按无数据跳过，绝不抛出异常。
+    """
+    snapshot: Dict[str, list] = {}
+    for region, overview in (overviews or {}).items():
+        indices = getattr(overview, "indices", None)
+        if not isinstance(indices, list):
+            continue
+        entries = []
+        for idx in indices[:3]:
+            name = getattr(idx, "name", None)
+            change_pct = getattr(idx, "change_pct", None)
+            if not isinstance(name, str) or not isinstance(change_pct, (int, float)):
+                continue
+            entries.append({"name": name, "change_pct": float(change_pct)})
+        if entries:
+            snapshot[region] = entries
+    return snapshot
+
+
 def run_market_review(
     notifier: NotificationService,
     analyzer: Optional[GeminiAnalyzer] = None,
@@ -223,13 +249,49 @@ def run_market_review(
 
     try:
         if len(run_markets) > 1:
-            # 多市场顺序执行，合并报告
+            # 多市场顺序执行，合并报告。
+            # Phase A：先预取全部市场概览，构建跨市场参考快照（Issue #1584），
+            # 让每个市场（含首个市场）都能参考同跑其他市场的指数表现；
+            # 概览随后传回各自的复盘生成，不产生额外抓取。
+            # 权衡：靠后市场的概览快照相对生成时刻会滞后数分钟（多为已收盘
+            # 市场，影响有限）；如需逐市场取最新快照可改为 Phase B 传 overview=None。
             parts = []
             market_light_snapshots: Dict[str, Dict[str, Any]] = {}
             market_review_payloads: Dict[str, Dict[str, Any]] = {}
+            region_runs = []
             for mkt, title_key, label in _MARKET_REVIEW_MARKETS:
                 if mkt not in run_markets:
                     continue
+                mkt_analyzer = MarketAnalyzer(
+                    search_service=search_service,
+                    analyzer=analyzer,
+                    region=mkt,
+                    config=runtime_config,
+                )
+                mkt_overview = None
+                try:
+                    mkt_overview = mkt_analyzer.get_market_overview()
+                except Exception as exc:
+                    logger.warning(
+                        "[MarketReview] component=market_review action=prefetch_overview "
+                        "trigger_source=%s query_id=%s region=%s status=failed error=%s",
+                        trigger_source,
+                        history_query_id,
+                        mkt,
+                        exc,
+                    )
+                region_runs.append((mkt, title_key, label, mkt_analyzer, mkt_overview))
+
+            cross_market_snapshot = _build_cross_market_snapshot(
+                {
+                    run_mkt: run_overview
+                    for run_mkt, _, _, _, run_overview in region_runs
+                    if run_overview is not None
+                }
+            )
+
+            # Phase B：逐市场生成报告，注入其他市场的参考快照
+            for mkt, title_key, label, mkt_analyzer, mkt_overview in region_runs:
                 logger.info(
                     "[MarketReview] component=market_review action=build_report "
                     "trigger_source=%s query_id=%s region=%s label=%s",
@@ -238,13 +300,15 @@ def run_market_review(
                     mkt,
                     label,
                 )
-                mkt_analyzer = MarketAnalyzer(
-                    search_service=search_service,
-                    analyzer=analyzer,
-                    region=mkt,
-                    config=runtime_config,
+                other_markets = {
+                    region: entries
+                    for region, entries in cross_market_snapshot.items()
+                    if region != mkt
+                }
+                review_result = mkt_analyzer.run_daily_review_with_snapshot(
+                    overview=mkt_overview,
+                    cross_market_snapshot=other_markets or None,
                 )
-                review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
                 _collect_market_light_snapshot(
                     market_light_snapshots,
@@ -555,7 +619,27 @@ def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:
     return _render_single_market_review_payload(payload)
 
 
+def _is_workbench_payload(payload: Dict[str, Any]) -> bool:
+    """复盘工作台 payload（Issue #1584）：sections 为纯叙事，完整文档在 markdown_report。"""
+    if not isinstance(payload, dict):
+        return False
+    return bool(
+        payload.get("summary")
+        or payload.get("catalysts")
+        or payload.get("next_session_plan")
+        or payload.get("style_rotation")
+        or payload.get("data_quality")
+    )
+
+
 def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
+    # 工作台 payload 的 sections 只含 LLM 叙事（数据表在 markdown_report 里），
+    # 推送/存档必须直接使用完整文档，否则会丢失注入的数据表
+    if _is_workbench_payload(payload):
+        markdown = payload.get("markdown_report")
+        if isinstance(markdown, str) and markdown.strip():
+            return _append_missing_sector_payload_block(markdown, payload)
+
     sections = payload.get("sections")
     if not isinstance(sections, list) or not sections:
         markdown = payload.get("markdown_report")

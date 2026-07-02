@@ -32,6 +32,7 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
+from .index_symbols import cn_index_sina_symbol, normalize_cn_index_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
@@ -52,6 +53,43 @@ except (ImportError, ModuleNotFoundError):
 import os
 
 logger = logging.getLogger(__name__)
+
+
+# 大盘复盘指数映射：code -> (yfinance 符号, 显示名称)
+# 由 tests/test_yfinance_hk_indices.py / test_yfinance_jp_kr_indices.py 等离线单测固化，
+# get_main_indices 与 get_index_daily_history 共用，避免行情与历史的符号漂移。
+CN_INDEX_YF_MAPPING = {
+    'sh000001': ('000001.SS', '上证指数'),
+    'sz399001': ('399001.SZ', '深证成指'),
+    'sz399006': ('399006.SZ', '创业板指'),
+    'sh000688': ('000688.SS', '科创50'),
+    'sh000016': ('000016.SS', '上证50'),
+    'sh000300': ('000300.SS', '沪深300'),
+}
+HK_INDEX_YF_MAPPING = {
+    # Yahoo Finance 港股指数符号：HSTECH -> HSTECH.HK（不是 ^HSTECH），HSCEI -> ^HSCE（不是 ^HSCEI）
+    'HSI': ('^HSI', '恒生指数'),
+    'HSTECH': ('HSTECH.HK', '恒生科技指数'),
+    'HSCEI': ('^HSCE', '国企指数'),
+}
+JP_INDEX_YF_MAPPING = {
+    'N225': ('^N225', '日经225'),
+    'TOPX': ('^TOPX', '东证指数'),
+}
+KR_INDEX_YF_MAPPING = {
+    'KS11': ('^KS11', 'KOSPI'),
+    'KQ11': ('^KQ11', 'KOSDAQ'),
+}
+TW_INDEX_YF_MAPPING = {
+    'TWII': ('^TWII', '台湾加权指数'),
+    'TWOII': ('^TWOII', '台湾柜买指数'),
+}
+_REGION_INDEX_YF_MAPPINGS = {
+    'hk': HK_INDEX_YF_MAPPING,
+    'jp': JP_INDEX_YF_MAPPING,
+    'kr': KR_INDEX_YF_MAPPING,
+    'tw': TW_INDEX_YF_MAPPING,
+}
 
 
 class YfinanceFetcher(BaseFetcher):
@@ -358,14 +396,7 @@ class YfinanceFetcher(BaseFetcher):
             return self._get_tw_main_indices(yf)
 
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
-        yf_mapping = {
-            'sh000001': ('000001.SS', '上证指数'),
-            'sz399001': ('399001.SZ', '深证成指'),
-            'sz399006': ('399006.SZ', '创业板指'),
-            'sh000688': ('000688.SS', '科创50'),
-            'sh000016': ('000016.SS', '上证50'),
-            'sh000300': ('000300.SS', '沪深300'),
-        }
+        yf_mapping = CN_INDEX_YF_MAPPING
 
         results = []
         try:
@@ -388,9 +419,9 @@ class YfinanceFetcher(BaseFetcher):
         return None
 
     def _get_us_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
-        """获取美股主要指数行情（SPX、IXIC、DJI、VIX），复用 _fetch_yf_ticker_data"""
-        # 大盘复盘所需核心美股指数
-        us_indices = ['SPX', 'IXIC', 'DJI', 'VIX']
+        """获取美股主要指数行情（SPX、IXIC、DJI、RUT、VIX），复用 _fetch_yf_ticker_data"""
+        # 大盘复盘所需核心美股指数；RUT（罗素2000）用于小盘股强弱观察（Issue #1584）
+        us_indices = ['SPX', 'IXIC', 'DJI', 'RUT', 'VIX']
         results = []
         try:
             for code in us_indices:
@@ -416,16 +447,8 @@ class YfinanceFetcher(BaseFetcher):
 
     def _get_hk_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取港股主要指数行情（HSI、HSTECH、HSCEI），复用 _fetch_yf_ticker_data"""
-        # Yahoo Finance 港股指数符号映射：
-        # - HSI -> ^HSI
-        # - HSTECH -> HSTECH.HK（不是 ^HSTECH）
-        # - HSCEI -> ^HSCE（不是 ^HSCEI）
-        # 该映射由离线单测 tests/test_yfinance_hk_indices.py 固化，避免在线依赖导致非确定性失败。
-        hk_indices = {
-            'HSI': ('^HSI', '恒生指数'),
-            'HSTECH': ('HSTECH.HK', '恒生科技指数'),
-            'HSCEI': ('^HSCE', '国企指数'),
-        }
+        # 符号映射由离线单测 tests/test_yfinance_hk_indices.py 固化，见模块常量注释。
+        hk_indices = HK_INDEX_YF_MAPPING
         results = []
         try:
             for code, (yf_symbol, name) in hk_indices.items():
@@ -448,10 +471,7 @@ class YfinanceFetcher(BaseFetcher):
 
     def _get_jp_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取日本主要指数行情（日经225、TOPIX），复用 _fetch_yf_ticker_data。"""
-        jp_indices = {
-            'N225': ('^N225', '日经225'),
-            'TOPX': ('^TOPX', '东证指数'),
-        }
+        jp_indices = JP_INDEX_YF_MAPPING
         results = []
         try:
             for code, (yf_symbol, name) in jp_indices.items():
@@ -471,10 +491,7 @@ class YfinanceFetcher(BaseFetcher):
 
     def _get_kr_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取韩国主要指数行情（KOSPI、KOSDAQ），复用 _fetch_yf_ticker_data。"""
-        kr_indices = {
-            'KS11': ('^KS11', 'KOSPI'),
-            'KQ11': ('^KQ11', 'KOSDAQ'),
-        }
+        kr_indices = KR_INDEX_YF_MAPPING
         results = []
         try:
             for code, (yf_symbol, name) in kr_indices.items():
@@ -494,10 +511,7 @@ class YfinanceFetcher(BaseFetcher):
 
     def _get_tw_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
         """获取台湾主要指数行情（加权指数 ^TWII、柜买指数 ^TWOII），复用 _fetch_yf_ticker_data。"""
-        tw_indices = {
-            'TWII': ('^TWII', '台湾加权指数'),
-            'TWOII': ('^TWOII', '台湾柜买指数'),
-        }
+        tw_indices = TW_INDEX_YF_MAPPING
         results = []
         try:
             for code, (yf_symbol, name) in tw_indices.items():
@@ -514,6 +528,65 @@ class YfinanceFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
         return None
+
+    @staticmethod
+    def _resolve_index_yf_symbol(index_code: str, region: str) -> Optional[str]:
+        """将大盘复盘指数代码解析为 yfinance 符号；未知代码返回 None（不猜测）。"""
+        normalized = (index_code or '').strip()
+        if not normalized:
+            return None
+        if region == 'us':
+            yf_symbol, _name = get_us_index_yf_symbol(normalized)
+            return yf_symbol
+        if region == 'cn':
+            # 先归一化：兼容 tushare 纯数字/带后缀格式（'000001'、'000001.SH'）
+            digits = normalize_cn_index_code(normalized)
+            sina_symbol = cn_index_sina_symbol(digits) if digits else None
+            entry = CN_INDEX_YF_MAPPING.get(sina_symbol) if sina_symbol else None
+            return entry[0] if entry else None
+        mapping = _REGION_INDEX_YF_MAPPINGS.get(region)
+        if not mapping:
+            return None
+        entry = mapping.get(normalized.upper())
+        return entry[0] if entry else None
+
+    def get_index_daily_history(
+        self,
+        index_code: str,
+        region: str = "cn",
+        days: int = 40,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取指数日线历史 (Yahoo Finance)，用于大盘复盘均线计算。
+
+        支持 us/hk/jp/kr/tw，并为 A 股提供最后兜底。
+        """
+        yf_symbol = self._resolve_index_yf_symbol(index_code, region)
+        if not yf_symbol:
+            return None
+        import yfinance as yf
+
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period='3mo')
+            if hist is None or hist.empty or 'Close' not in hist.columns:
+                return None
+            bars: List[Dict[str, Any]] = []
+            for index_value, row in hist.iterrows():
+                close = row['Close']
+                if pd.isna(close) or float(close) <= 0:
+                    continue
+                date_str = (
+                    index_value.strftime('%Y-%m-%d')
+                    if hasattr(index_value, 'strftime')
+                    else str(index_value)[:10]
+                )
+                bars.append({'date': date_str, 'close': float(close)})
+            bars.sort(key=lambda bar: bar['date'])
+            return bars[-days:] if bars else None
+        except Exception as e:
+            logger.warning(f"[Yfinance] 获取指数日线历史失败 code={index_code} region={region}: {e}")
+            return None
 
     def _is_us_stock(self, stock_code: str) -> bool:
         """

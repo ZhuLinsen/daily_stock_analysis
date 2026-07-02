@@ -32,12 +32,28 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS,is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, _is_hk_market
+from .index_symbols import normalize_cn_index_code
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+
+# Tushare 指数代码映射：ts_code -> 名称（get_main_indices 与指数日线历史共用）
+TUSHARE_INDEX_NAME_MAP = {
+    '000001.SH': '上证指数',
+    '399001.SZ': '深证成指',
+    '399006.SZ': '创业板指',
+    '000688.SH': '科创50',
+    '000016.SH': '上证50',
+    '000300.SH': '沪深300',
+}
+# 纯数字指数代码 -> ts_code
+TUSHARE_INDEX_TS_CODES = {
+    ts_code.split('.')[0]: ts_code for ts_code in TUSHARE_INDEX_NAME_MAP
+}
 
 
 # ETF code prefixes by exchange
@@ -787,14 +803,7 @@ class TushareFetcher(BaseFetcher):
         from .realtime_types import safe_float
 
         # 指数映射：Tushare代码 -> 名称
-        indices_map = {
-            '000001.SH': '上证指数',
-            '399001.SZ': '深证成指',
-            '399006.SZ': '创业板指',
-            '000688.SH': '科创50',
-            '000016.SH': '上证50',
-            '000300.SH': '沪深300',
-        }
+        indices_map = TUSHARE_INDEX_NAME_MAP
 
         try:
             self._check_rate_limit()
@@ -845,6 +854,60 @@ class TushareFetcher(BaseFetcher):
             logger.error(f"[Tushare] 获取指数行情失败: {e}")
 
         return None
+
+    def get_index_daily_history(
+        self,
+        index_code: str,
+        region: str = "cn",
+        days: int = 40,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取 A 股指数日线历史 (Tushare Pro index_daily)，用于大盘复盘均线计算。
+        """
+        if region != "cn":
+            return None
+        if self._api is None:
+            return None
+        digits = normalize_cn_index_code(index_code)
+        ts_code = TUSHARE_INDEX_TS_CODES.get(digits) if digits else None
+        if not ts_code:
+            return None
+
+        from .realtime_types import safe_float
+
+        try:
+            self._check_rate_limit()
+
+            end_date = datetime.now()
+            window_days = max(days * 2, 80)
+            start_date = end_date - pd.Timedelta(days=window_days)
+            df = self._api.index_daily(
+                ts_code=ts_code,
+                start_date=start_date.strftime('%Y%m%d'),
+                end_date=end_date.strftime('%Y%m%d'),
+            )
+            if df is None or df.empty:
+                return None
+            if 'trade_date' not in df.columns or 'close' not in df.columns:
+                return None
+
+            bars: List[Dict[str, Any]] = []
+            for _, row in df.iterrows():
+                trade_date = str(row['trade_date'])
+                if len(trade_date) != 8:
+                    continue
+                close = safe_float(row['close'])
+                if close <= 0:
+                    continue
+                bars.append({
+                    'date': f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}",
+                    'close': close,
+                })
+            bars.sort(key=lambda bar: bar['date'])
+            return bars[-days:] if bars else None
+        except Exception as e:
+            logger.warning(f"[Tushare] 获取指数日线历史失败 code={index_code}: {e}")
+            return None
 
     def get_market_stats(self) -> Optional[dict]:
         """

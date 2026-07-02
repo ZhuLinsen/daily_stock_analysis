@@ -428,6 +428,7 @@ daily_stock_analysis/
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
+> - 大盘复盘"复盘工作台"（Issue #1584）：报告升级为分节的盘后工作台文档——顶部注入"一句话结论"（市场温度/市场状态/建议仓位/核心结论/结构与权重观察/数据说明），各 section 数据表就地增强且全文只出现一次：指数表 6 列（收盘/涨跌幅/成交额/均线状态/点评，MA5/10/20 由新增指数日线历史本地计算，无 MA 数据时维持旧表）、强/弱板块表带领涨股（弱板块为板块内领涨股）/持续性/点评并附"判断（风格切换）"行、盘面总览附宽度分化诊断行、消息催化 section 注入催化分类表（性质×影响范围×持续性×消化状态×点评）。`market_review_payload` 以可选字段向后兼容扩展（`summary`/`style_rotation`/`catalysts`/`next_session_plan`/`data_quality` 及 `indices[].ma_status`、`breadth.divergence_diagnosis`、`sectors.*[].leader`），其中工作台 payload 的 `sections` 为纯 LLM 叙事、完整文档由 `markdown_report` 承载；Web 详情按模块分卡渲染（一句话结论/核心指数/宽度与分化/板块主线/消息催化/明日计划，各模块按字段存在独立渲染并吸收对应叙事），无工作台字段的旧记录走既有展示路径。缺失模块直接省略并在"数据说明"中写明原因（如历史 K 线不可用、LLM 判读失败），不伪造均线、领涨股或消化状态。多市场同跑（`MARKET_REVIEW_REGION` 多区域）时，每个市场的 prompt 会附带其他市场的指数快照作为跨市场参考。数据边界：确定性宽度分化诊断只使用涨跌家数与指数平均涨跌幅（涨跌停结构计入市场温度与 LLM 上下文；成交额无历史基线，不做确定性"放量"判断）；美股指数集合含罗素2000 用于小盘强弱观察。
 > - 字段契约：
 >   - `fundamental_context.belong_boards` = 个股关联板块列表；A 股从 AkShare 板块名单写入，美股/港股从 yfinance `info.sector` / `info.industry` 写入，无数据时为 `[]`；
 >   - `fundamental_context.boards.data` = `sector_rankings`（板块涨跌榜，结构 `{top, bottom}`，HK/US 当前不提供）；

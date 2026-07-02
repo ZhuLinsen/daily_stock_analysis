@@ -14,6 +14,12 @@ import { getReportText, normalizeReportLanguage } from '../../utils/reportLangua
 import { Card } from '../common';
 import { Tooltip } from '../common/Tooltip';
 import { ReportMarkdownBody } from './ReportMarkdownBody';
+import { type WorkbenchLabels } from './MarketReviewWorkbench';
+import {
+  MarketReviewMarketModules,
+  type StructuredMarketData,
+} from './MarketReviewModules';
+import { orderMarketEntries } from './marketReviewModuleMatching';
 
 interface MarketReviewReportViewProps {
   report?: AnalysisReport;
@@ -40,17 +46,41 @@ type MarketReviewSection = {
   content: string;
   icon: typeof FileText;
 };
-type StructuredMarketData = {
-  id: string;
-  title?: string;
-  breadth?: MarketReviewPayload['breadth'];
-  indices: NonNullable<MarketReviewPayload['indices']>;
-  sectors?: MarketReviewPayload['sectors'];
-  concepts?: MarketReviewPayload['concepts'];
-};
-
 const isMarketReviewPayload = (value: unknown): value is MarketReviewPayload =>
   Boolean(value && typeof value === 'object');
+
+// 后端注入 markdown 报告的工作台段标题（固定字面量，与
+// src/core/market_review_workbench.py 的 WORKBENCH_HEADING_* 同步）。
+// 存在结构化工作台字段时过滤该 markdown 段，避免与结构化卡片重复展示；
+// 纯 markdown 降级路径（无结构化字段）保留该段。
+// 与后端注入块标题字面量同步（src/core/market_review_workbench.py SUMMARY_HEADING_*）；
+// "复盘工作台"为开发期过渡记录的旧字面量，保留以兼容
+const WORKBENCH_SECTION_TITLES = new Set([
+  '一句话结论',
+  'one-line conclusion',
+  '复盘工作台',
+  'review workbench',
+  '복기 워크벤치',
+]);
+
+// 判据需与后端注入工作台 markdown 块的条件保持一致（含仅指数均线/点评、
+// 仅数据质量说明的降级形态），否则注入段会漏过滤造成重复展示
+const hasWorkbenchData = (payload?: MarketReviewPayload | null): boolean =>
+  Boolean(
+    payload?.summary
+    || payload?.catalysts?.length
+    || payload?.nextSessionPlan
+    || payload?.styleRotation
+    || payload?.breadth?.divergenceDiagnosis
+    || payload?.dataQuality?.notes?.length
+    || payload?.indices?.some((index) => index.technicalStatus || index.comment),
+  );
+
+// 整个 payload 的模式开关：任一市场携带工作台字段即进入模块化展示；
+// 旧记录/旧后端 → 走既有 Markdown/sections 展示路径，零变化
+const isWorkbenchPayload = (payload?: MarketReviewPayload | null): boolean =>
+  hasWorkbenchData(payload)
+  || Object.values(payload?.markets ?? {}).some((marketPayload) => hasWorkbenchData(marketPayload));
 
 const TOP_HEADING_PATTERN = /^\s*#\s+(.+?)\s*(?:\n+|$)/;
 const SECTION_HEADING_PATTERN = /^(#{2,3})\s+(.+?)\s*$/gm;
@@ -157,10 +187,7 @@ const getPayloadSections = (payload?: MarketReviewPayload | null): MarketReviewS
     });
   }
 
-  const payloadTitle = normalizeHeading(payload.title || '');
-  return (payload.sections || [])
-    .filter((section: MarketReviewPayloadSection) => section.markdown?.trim())
-    .filter((section: MarketReviewPayloadSection) => normalizeHeading(section.title || '') !== payloadTitle)
+  return getSingleMarketSections(payload)
     .map((section, index) => ({
       id: `${section.key || index}-${normalizeHeading(section.title).replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-') || 'section'}`,
       title: section.title || 'Review',
@@ -169,11 +196,31 @@ const getPayloadSections = (payload?: MarketReviewPayload | null): MarketReviewS
     }));
 };
 
+/** \u5355\u5e02\u573a payload \u7684\u539f\u59cb\uff08\u672a\u52a0\u5e02\u573a\u524d\u7f00\uff09\u53d9\u4e8b sections\uff1a\u8fc7\u6ee4\u7a7a\u6bb5/\u91cd\u590d\u6807\u9898/\u6ce8\u5165\u7684\u7ed3\u8bba\u6bb5 */
+const getSingleMarketSections = (
+  payload: MarketReviewPayload,
+): MarketReviewPayloadSection[] => {
+  const payloadTitle = normalizeHeading(payload.title || '');
+  const hideWorkbenchSection = hasWorkbenchData(payload);
+  return (payload.sections || [])
+    .filter((section: MarketReviewPayloadSection) => section.markdown?.trim())
+    .filter((section: MarketReviewPayloadSection) => normalizeHeading(section.title || '') !== payloadTitle)
+    .filter((section: MarketReviewPayloadSection) => (
+      !hideWorkbenchSection || !WORKBENCH_SECTION_TITLES.has(normalizeHeading(section.title || ''))
+    ));
+};
+
 const hasRankingRows = (rankings?: MarketReviewPayload['sectors']): boolean =>
   Boolean(rankings?.top?.length || rankings?.bottom?.length);
 
 const hasStructuredMarketData = (payload?: MarketReviewPayload | null): boolean =>
-  Boolean(payload?.breadth || payload?.indices?.length || hasRankingRows(payload?.sectors) || hasRankingRows(payload?.concepts));
+  Boolean(
+    payload?.breadth
+    || payload?.indices?.length
+    || hasRankingRows(payload?.sectors)
+    || hasRankingRows(payload?.concepts)
+    || hasWorkbenchData(payload),
+  );
 
 const getStructuredMarketData = (payload?: MarketReviewPayload | null): StructuredMarketData[] => {
   if (!payload) {
@@ -190,6 +237,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
         indices: marketPayload.indices || [],
         sectors: marketPayload.sectors,
         concepts: marketPayload.concepts,
+        summary: marketPayload.summary,
+        styleRotation: marketPayload.styleRotation,
+        catalysts: marketPayload.catalysts,
+        nextSessionPlan: marketPayload.nextSessionPlan,
+        dataQuality: marketPayload.dataQuality,
       }));
   }
 
@@ -204,6 +256,11 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     indices: payload.indices || [],
     sectors: payload.sectors,
     concepts: payload.concepts,
+    summary: payload.summary,
+    styleRotation: payload.styleRotation,
+    catalysts: payload.catalysts,
+    nextSessionPlan: payload.nextSessionPlan,
+    dataQuality: payload.dataQuality,
   }];
 };
 
@@ -256,6 +313,35 @@ const formatMarketHighLow = (high: unknown, low: unknown): string => {
   return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
 };
 
+interface MarketModuleGroup {
+  market: StructuredMarketData;
+  sections: MarketReviewPayloadSection[];
+  title?: string;
+}
+
+/** 模块化路径的数据分组：单市场一组（无标题），多市场按后端区域顺序分组 */
+const getMarketModuleGroups = (payload?: MarketReviewPayload | null): MarketModuleGroup[] => {
+  if (!payload) {
+    return [];
+  }
+  if (payload.markets) {
+    const markets = getStructuredMarketData(payload);
+    const byId = new Map(markets.map((market) => [market.id, market]));
+    return orderMarketEntries(payload.markets)
+      .filter(([region]) => byId.has(region))
+      .map(([region, marketPayload]) => ({
+        market: byId.get(region) as StructuredMarketData,
+        sections: getSingleMarketSections(marketPayload),
+        title: marketPayload.title || region.toUpperCase(),
+      }));
+  }
+  const markets = getStructuredMarketData(payload);
+  if (!markets.length) {
+    return [];
+  }
+  return [{ market: markets[0], sections: getSingleMarketSections(payload) }];
+};
+
 const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   reviewSummary: string;
   noReviewSummary: string;
@@ -278,6 +364,7 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   conceptBoards: string;
   leading: string;
   lagging: string;
+  workbench: WorkbenchLabels;
 }> = {
   zh: {
     reviewSummary: '复盘摘要',
@@ -301,6 +388,46 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '概念板块',
     leading: '领涨',
     lagging: '领跌',
+    workbench: {
+      temperature: '市场温度',
+      marketState: '市场状态',
+      suggestedPosition: '建议仓位',
+      structureNote: '结构观察',
+      weightNote: '权重观察',
+      divergence: '宽度诊断',
+      rotationStrong: '走强',
+      rotationWeak: '承压',
+      catalystTitle: '消息',
+      nature: '性质',
+      scope: '影响范围',
+      duration: '持续性',
+      digestion: '消化状态',
+      catalystComment: '点评',
+      positionAdvice: '仓位',
+      focus: '关注',
+      avoid: '回避',
+      keyLevels: '关键位',
+      riskTriggers: '风险触发',
+      dataQualityNotes: '数据说明',
+      moduleConclusion: '一句话结论',
+      moduleIndices: '核心指数表现',
+      moduleBreadth: '市场宽度与分化',
+      moduleSectors: '行业板块与题材主线',
+      moduleCatalysts: '消息面与政策催化',
+      modulePlan: '明日交易计划',
+      close: '收盘',
+      amountHeader: '成交额',
+      indexHeader: '指数',
+      changeHeader: '涨跌幅',
+      maStatusHeader: '均线状态',
+      sectorHeader: '板块',
+      leaderHeader: '领涨股',
+      persistenceHeader: '持续性',
+      commentHeader: '点评',
+      rotationJudgment: '判断',
+      leading: '最强板块（前5）',
+      lagging: '最弱板块（前5）',
+    },
   },
   en: {
     reviewSummary: 'Review Summary',
@@ -324,6 +451,46 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: 'Concept Themes',
     leading: 'Leading',
     lagging: 'Lagging',
+    workbench: {
+      temperature: 'Temperature',
+      marketState: 'Market State',
+      suggestedPosition: 'Suggested Position',
+      structureNote: 'Structure',
+      weightNote: 'Heavyweights',
+      divergence: 'Breadth Diagnosis',
+      rotationStrong: 'Strong:',
+      rotationWeak: 'Weak:',
+      catalystTitle: 'News',
+      nature: 'Nature',
+      scope: 'Scope',
+      duration: 'Duration',
+      digestion: 'Digestion',
+      catalystComment: 'Comment',
+      positionAdvice: 'Position',
+      focus: 'Focus',
+      avoid: 'Avoid',
+      keyLevels: 'Key Levels',
+      riskTriggers: 'Risk Triggers',
+      dataQualityNotes: 'Data Notes',
+      moduleConclusion: 'One-Line Conclusion',
+      moduleIndices: 'Core Index Performance',
+      moduleBreadth: 'Breadth & Divergence',
+      moduleSectors: 'Sectors & Themes',
+      moduleCatalysts: 'News & Policy Catalysts',
+      modulePlan: 'Next-Session Trading Plan',
+      close: 'Close',
+      amountHeader: 'Turnover',
+      indexHeader: 'Index',
+      changeHeader: 'Change',
+      maStatusHeader: 'MA Status',
+      sectorHeader: 'Sector',
+      leaderHeader: 'Leader',
+      persistenceHeader: 'Persistence',
+      commentHeader: 'Comment',
+      rotationJudgment: 'View',
+      leading: 'Strongest Sectors (Top 5)',
+      lagging: 'Weakest Sectors (Top 5)',
+    },
   },
   ko: {
     reviewSummary: '리뷰 요약',
@@ -347,6 +514,46 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     conceptBoards: '테마 섹터',
     leading: '강세',
     lagging: '약세',
+    workbench: {
+      temperature: '시장 온도',
+      marketState: '시장 상태',
+      suggestedPosition: '제안 포지션',
+      structureNote: '구조 관찰',
+      weightNote: '대형주 관찰',
+      divergence: '괴리 진단',
+      rotationStrong: '강세',
+      rotationWeak: '약세',
+      catalystTitle: '뉴스',
+      nature: '성격',
+      scope: '영향 범위',
+      duration: '지속성',
+      digestion: '소화 상태',
+      catalystComment: '코멘트',
+      positionAdvice: '포지션',
+      focus: '관심',
+      avoid: '회피',
+      keyLevels: '주요 레벨',
+      riskTriggers: '리스크 트리거',
+      dataQualityNotes: '데이터 참고',
+      moduleConclusion: '한 줄 결론',
+      moduleIndices: '핵심 지수 동향',
+      moduleBreadth: '시장 폭과 괴리',
+      moduleSectors: '업종·테마 주도주',
+      moduleCatalysts: '뉴스·정책 촉매',
+      modulePlan: '다음 거래일 계획',
+      close: '종가',
+      amountHeader: '거래대금',
+      indexHeader: '지수',
+      changeHeader: '등락률',
+      maStatusHeader: '이평선 상태',
+      sectorHeader: '섹터',
+      leaderHeader: '주도주',
+      persistenceHeader: '지속성',
+      commentHeader: '코멘트',
+      rotationJudgment: '판단',
+      leading: '강세 섹터 (Top 5)',
+      lagging: '약세 섹터 (Top 5)',
+    },
   },
 };
 
@@ -401,6 +608,13 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
     [marketReviewPayload],
   );
   const showStructuredMarketTitles = Boolean(marketReviewPayload?.markets);
+  // 模块化展示模式（Issue #1584）：任一市场携带工作台字段即按模块分卡渲染；
+  // 否则（旧记录/旧后端/纯 markdown）走既有展示路径，零变化
+  const workbenchMode = isWorkbenchPayload(marketReviewPayload);
+  const moduleGroups = useMemo(
+    () => (workbenchMode ? getMarketModuleGroups(marketReviewPayload) : []),
+    [workbenchMode, marketReviewPayload],
+  );
   const canOpenRunFlow = recordId !== undefined && onOpenRunFlow;
 
   useEffect(() => {
@@ -547,7 +761,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
         </div>
       </Card>
 
-      {summary ? (
+      {/* 工作台模式下隐藏洞察卡：其 sentimentScore 与模块①温度会同屏出现
+          两个不同分数，且"复盘摘要"卡内容为整份 markdown（D7 去重） */}
+      {summary && !workbenchMode ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           {insightCards.map(({ icon: Icon, label, value }) => (
             <Card key={label} variant="bordered" padding="sm" className="home-panel-card text-left">
@@ -565,7 +781,30 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
         </div>
       ) : null}
 
-      {structuredMarketData.length > 0 ? (
+      {workbenchMode ? (
+        <div data-testid="market-review-modules" className="space-y-4">
+          {moduleGroups.map((group) => (
+            <MarketReviewMarketModules
+              key={group.market.id}
+              market={group.market}
+              sections={group.sections}
+              labels={marketReviewText.workbench}
+              language={normalizedReportLanguage === 'zh' ? 'zh' : 'en'}
+              conceptTitle={marketReviewText.conceptBoards}
+              breadthLabels={{
+                advancers: marketReviewText.advancers,
+                decliners: marketReviewText.decliners,
+                limitUpDown: marketReviewText.limitUpDown,
+                turnover: marketReviewText.turnover,
+              }}
+              title={group.title}
+              getNarrativeIcon={getSectionIcon}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {!workbenchMode && structuredMarketData.length > 0 ? (
         <Card variant="bordered" padding="md" className="home-panel-card text-left">
           <div className="mb-3 flex items-center gap-2">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -702,7 +941,8 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
         </Card>
       ) : null}
 
-      {isLoading ? (
+      {/* 模块化路径的叙事卡在各市场分组内渲染；本区块仅服务既有展示路径 */}
+      {workbenchMode ? null : isLoading ? (
         <Card variant="bordered" padding="md" className="home-panel-card text-left">
           <div className="flex h-64 flex-col items-center justify-center">
             <div className="home-spinner h-10 w-10 animate-spin border-[3px]" />

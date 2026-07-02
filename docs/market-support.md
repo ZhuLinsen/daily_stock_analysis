@@ -86,6 +86,8 @@ PY
 - JP/KR 大盘复盘 v1 不提供涨跌家数、涨跌停、行业/板块排行或资金流统计；结构化 payload 中 `breadth` 仍只在有市场宽度数据时出现。
 - 单一 JP/KR 指数拉取失败按既有 yfinance fail-open 逻辑跳过，不拖垮其它指数或其它市场。
 - 如果 `exchange-calendars` 缺少对应交易所日历，继续沿用既有交易日 fail-open/fail-closed 语义。
+- 复盘工作台（Issue #1584）在 JP/KR 上按数据边界降级：无宽度数据即无宽度分化诊断与确定性市场状态（该类市场结构性无宽度数据，不重复加数据说明；A 股应有而缺失时才记入数据说明）；市场温度/建议仓位缺失记入数据说明；指数均线状态经 Yahoo Finance 日线本地计算，拉取失败时省略并记录数据质量提示；无板块榜即无领涨股/持续性模块。US/HK 同理（指数均线可用，宽度/板块模块按各自数据边界省略）。
+- 美股复盘指数集合含标普500、纳指、道指、罗素2000（小盘股强弱观察）与 VIX；确定性结构观察使用 标普500 vs 罗素2000（大盘权重 vs 小盘）。美股"权重股拉动/拖累"（如 NVDA/MSFT vs META/TSLA）仅由 LLM 基于新闻线索判读（系统未抓取个股权重行情），无新闻依据时为空——不做确定性权重归因。`summary.market_state` 与 `summary.core_conclusion` 在 US/HK/JP/KR 依赖 LLM 判读（确定性状态词表需要宽度数据，仅 A 股可用），判读失败时省略并记入数据说明。
 
 回滚方式：从 `MARKET_REVIEW_REGION` 合法值、Web 设置枚举、MarketProfile/MarketStrategy、`_MARKET_REVIEW_MARKETS` 和本文档中移除 `jp` / `kr`。
 

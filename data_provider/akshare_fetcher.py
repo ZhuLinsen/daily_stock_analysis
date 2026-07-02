@@ -50,6 +50,7 @@ from .realtime_types import (
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
     safe_float, safe_int  # 使用统一的类型转换函数
 )
+from .index_symbols import cn_index_sina_symbol, normalize_cn_index_code
 from .us_index_mapping import is_us_index_code, is_us_stock_code
 
 
@@ -1749,6 +1750,95 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 获取指数行情失败: {e}")
             return None
 
+    def get_index_daily_history(
+        self,
+        index_code: str,
+        region: str = "cn",
+        days: int = 40,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取 A 股指数日线历史（用于大盘复盘均线计算）
+
+        数据源优先级：
+        1. 东财接口 (ak.index_zh_a_hist)
+        2. 新浪接口 (ak.stock_zh_index_daily)
+
+        仅支持白名单内的大盘指数，避免与个股代码（如 000001 平安银行）混淆。
+        """
+        if region != "cn":
+            return None
+        digits = normalize_cn_index_code(index_code)
+        if not digits:
+            return None
+        import akshare as ak
+
+        end_date = datetime.now()
+        # 交易日不足自然日的一半，按 2 倍窗口拉取并保底 80 个自然日
+        window_days = max(days * 2, 80)
+        start_date = end_date - pd.Timedelta(days=window_days)
+
+        # 优先东财接口
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info(f"[API调用] ak.index_zh_a_hist({digits}) 获取指数日线历史...")
+            df = ak.index_zh_a_hist(
+                symbol=digits,
+                period="daily",
+                start_date=start_date.strftime('%Y%m%d'),
+                end_date=end_date.strftime('%Y%m%d'),
+            )
+            bars = self._normalize_index_history_frame(df, date_col='日期', close_col='收盘')
+            if bars:
+                return bars[-days:]
+        except Exception as e:
+            logger.warning(f"[Akshare] 东财接口获取指数日线历史失败: {e}，尝试新浪接口")
+
+        # 东财失败后，尝试新浪接口
+        try:
+            sina_symbol = cn_index_sina_symbol(digits)
+            if not sina_symbol:
+                return None
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info(f"[API调用] ak.stock_zh_index_daily({sina_symbol}) 获取指数日线历史(新浪)...")
+            df = ak.stock_zh_index_daily(symbol=sina_symbol)
+            bars = self._normalize_index_history_frame(df, date_col='date', close_col='close')
+            if bars:
+                return bars[-days:]
+        except Exception as e:
+            logger.error(f"[Akshare] 新浪接口获取指数日线历史也失败: {e}")
+
+        return None
+
+    @staticmethod
+    def _normalize_index_history_frame(
+        df: Optional[pd.DataFrame],
+        date_col: str,
+        close_col: str,
+    ) -> List[Dict[str, Any]]:
+        """将指数日线 DataFrame 归一化为按日期升序的 [{date, close}] 列表。"""
+        if df is None or df.empty:
+            return []
+        if date_col not in df.columns or close_col not in df.columns:
+            return []
+        frame = df[[date_col, close_col]].copy()
+        frame[close_col] = pd.to_numeric(frame[close_col], errors='coerce')
+        frame = frame.dropna(subset=[close_col])
+        bars: List[Dict[str, Any]] = []
+        for _, row in frame.iterrows():
+            date_value = row[date_col]
+            date_str = (
+                date_value.strftime('%Y-%m-%d')
+                if hasattr(date_value, 'strftime')
+                else str(date_value)[:10]
+            )
+            bars.append({'date': date_str, 'close': float(row[close_col])})
+        bars.sort(key=lambda bar: bar['date'])
+        return bars
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
@@ -1910,6 +2000,30 @@ class AkshareFetcher(BaseFetcher):
             
         return stats
 
+    @staticmethod
+    def _build_ranking_row(
+        row: Any,
+        name_col: str,
+        change_col: str,
+        include_leader: bool,
+    ) -> Dict[str, Any]:
+        """构建板块/概念榜单行；东财源存在领涨股列时以可选键透传。"""
+        item: Dict[str, Any] = {'name': row[name_col], 'change_pct': row[change_col]}
+        if not include_leader:
+            return item
+        leader_raw = row.get('领涨股票') if hasattr(row, 'get') else None
+        leader = str(leader_raw).strip() if leader_raw is not None else ''
+        if not leader or leader in ('-', 'nan', 'None'):
+            return item
+        item['leader'] = leader
+        leader_change = pd.to_numeric(
+            row.get('领涨股票-涨跌幅') if hasattr(row, 'get') else None,
+            errors='coerce',
+        )
+        if pd.notna(leader_change):
+            item['leader_change_pct'] = float(leader_change)
+        return item
+
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取行业板块涨跌榜
@@ -1924,16 +2038,17 @@ class AkshareFetcher(BaseFetcher):
             df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
             df = df.dropna(subset=[change_col])
 
-            # 涨幅前n
+            # 东财源涨/跌榜均携带"板块内领涨股"（东财不提供领跌股，弱板块
+            # 列出的同样是板块内领涨股，与 Issue #1584 参考截图一致、语义如实）
             top = df.nlargest(n, change_col)
             top_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                self._build_ranking_row(row, industry_name, change_col, include_leader=True)
                 for _, row in top.iterrows()
             ]
 
             bottom = df.nsmallest(n, change_col)
             bottom_sectors = [
-                {'name': row[industry_name], 'change_pct': row[change_col]}
+                self._build_ranking_row(row, industry_name, change_col, include_leader=True)
                 for _, row in bottom.iterrows()
             ]
             return top_sectors, bottom_sectors
@@ -1993,15 +2108,16 @@ class AkshareFetcher(BaseFetcher):
             df = df.dropna(subset=[change_col])
             top = df.nlargest(n, change_col)
             bottom = df.nsmallest(n, change_col)
+
+            def _concept_row(row: Any, include_leader: bool) -> Dict[str, Any]:
+                item = self._build_ranking_row(row, name_col, change_col, include_leader)
+                item['name'] = str(item['name'])
+                item['change_pct'] = float(item['change_pct'])
+                return item
+
             return (
-                [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in top.iterrows()
-                ],
-                [
-                    {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                    for _, row in bottom.iterrows()
-                ],
+                [_concept_row(row, include_leader=True) for _, row in top.iterrows()],
+                [_concept_row(row, include_leader=True) for _, row in bottom.iterrows()],
             )
         except Exception as e:
             logger.warning(f"[Akshare] 获取概念排行失败: {e}")

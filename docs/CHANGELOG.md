@@ -78,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### 测试
 
 - 台股三大法人 fetcher 新增 live-smoke 脚本与 `@pytest.mark.network` 漂移检测测试，用于非阻断 network-smoke 定时任务核对 TWSE T86 / TPEx 核心字段与解析结果。
+- [修复] 台股（tw）市场阶段（`market_phase`）新增收盘集合竞价识别：`_CLOSING_AUCTION_WINDOW_MINUTES` 缺 `tw` 键时 `.get(market, 0)` 得零宽窗口，TWSE/TPEx 13:25–13:30 的 5 分钟收盘竞价此前永远无法判定为 `closing_auction`（收盘前一刻仍 `intraday`、13:30 直接 `postmarket`）；补 `"tw": 5` 修正，附阶段边界回归测试。仅 tw 加项，cn/hk/us 与 jp/kr 行为不变。
+- [新功能] 新增 AI 建议决策风格重评估预览接口与页面预览。
+- [文档] 更新 README 三语入口和市场支持边界，明确台股个股分析已支持 `.TW` / `.TWO` suffix、三大法人报告区块、TWD 标注与收盘竞价识别，同时保留台股股票池自动补全、大盘复盘和大盘红绿灯告警的未覆盖边界。
+- [新功能] #1584 大盘复盘升级为分节"复盘工作台"文档：顶部一句话结论（市场温度/市场状态/建议仓位/核心结论/结构与权重观察），各 section 数据表就地增强且全文只出现一次——指数表 6 列含均线技术状态（新增指数日线历史获取能力，MA5/10/20 本地计算）、强/弱板块表带板块内领涨股/持续性/点评并附风格切换判断、盘面总览附宽度分化诊断、消息催化 section 注入催化分类表（性质×范围×持续性×消化状态×点评）；美股复盘指数集合新增罗素2000（小盘股强弱观察）；`market_review_payload` 以可选字段向后兼容扩展（`summary`/`style_rotation`/`catalysts`/`next_session_plan`/`data_quality` 等，工作台 payload 的 `sections` 为纯叙事、完整文档在 `markdown_report`）；Web 详情按模块分卡渲染并吸收对应叙事，多市场同跑附跨市场参考；数据缺失时输出明确数据质量说明、不伪造均线/领涨股/消化状态，LLM 判读失败自动降级为确定性字段，旧报告与历史记录完全兼容。
 
 ## [3.24.1] - 2026-06-28
 

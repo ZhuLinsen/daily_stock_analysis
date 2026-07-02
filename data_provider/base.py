@@ -401,6 +401,28 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_index_daily_history(
+        self,
+        index_code: str,
+        region: str = "cn",
+        days: int = 40,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取指数日线历史（用于大盘复盘均线计算，可选能力）
+
+        Args:
+            index_code: 指数代码（各来源格式均可，如 'sh000001'、'SPX'）
+            region: 市场区域 cn/us/hk/jp/kr/tw
+            days: 期望返回的最近交易日 K 线条数
+
+        Returns:
+            List[Dict]: 按日期升序的日线列表，每项至少包含:
+                - date: 'YYYY-MM-DD'
+                - close: 收盘点位(float)
+            不支持该指数/市场时返回 None。
+        """
+        return None
+
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜
@@ -630,6 +652,10 @@ class DataFetcherManager:
     _CONCEPT_RANKINGS_EMPTY_CACHE_TTL_SECONDS = 30.0
     _concept_rankings_cache_lock = RLock()
     _concept_rankings_cache: Dict[int, Tuple[float, List[Dict], List[Dict]]] = {}
+    _INDEX_HISTORY_CACHE_TTL_SECONDS = 1800.0
+    _INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS = 120.0
+    _index_history_cache_lock = RLock()
+    _index_history_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
         """
@@ -2481,6 +2507,96 @@ class DataFetcherManager:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
                 continue
         return []
+
+    @classmethod
+    def clear_index_history_cache_for_tests(cls) -> None:
+        with cls._index_history_cache_lock:
+            cls._index_history_cache.clear()
+
+    def get_index_daily_history(
+        self,
+        index_code: str,
+        region: str = "cn",
+        days: int = 40,
+    ) -> List[Dict[str, Any]]:
+        """获取指数日线历史（自动切换数据源；用于大盘复盘均线计算）
+
+        任何数据源失败都不会抛出异常；全部失败时返回空列表，
+        由调用方按"均线状态缺失"的数据质量说明降级处理。
+        """
+        try:
+            normalized_days = int(days)
+        except (TypeError, ValueError):
+            normalized_days = 40
+        if normalized_days <= 0:
+            normalized_days = 40
+
+        # A 股指数代码按白名单归一化后作缓存键，避免 sh000001/000001/000001.SH
+        # 等同一指数的不同来源格式产生重复抓取
+        cache_code = (index_code or '').strip().lower()
+        if region == "cn":
+            from .index_symbols import normalize_cn_index_code
+
+            cache_code = normalize_cn_index_code(cache_code) or cache_code
+        cache_key = f"{region}:{cache_code}:{normalized_days}"
+        now = time.monotonic()
+        with self.__class__._index_history_cache_lock:
+            cached = self.__class__._index_history_cache.get(cache_key)
+            if cached and cached[0] > now:
+                logger.debug("[指数历史] 命中共享缓存 key=%s", cache_key)
+                return [dict(bar) for bar in cached[1]]
+
+        bars: List[Dict[str, Any]] = []
+        last_error = ""
+        for fetcher in self._get_fetchers_snapshot():
+            if not hasattr(fetcher, 'get_index_daily_history'):
+                continue
+            try:
+                data = fetcher.get_index_daily_history(
+                    index_code,
+                    region=region,
+                    days=normalized_days,
+                )
+                if data:
+                    bars = list(data)
+                    logger.info(
+                        "[%s] 获取指数日线历史成功 code=%s region=%s bars=%d",
+                        fetcher.name,
+                        index_code,
+                        region,
+                        len(bars),
+                    )
+                    break
+            except Exception as e:
+                error_type, error_reason = summarize_exception(e)
+                last_error = f"{fetcher.name} ({error_type}) {error_reason}"
+                logger.warning(
+                    "[%s] 获取指数日线历史失败 code=%s region=%s: %s",
+                    fetcher.name,
+                    index_code,
+                    region,
+                    error_reason,
+                )
+
+        if not bars and last_error:
+            logger.warning(
+                "[指数历史] 所有数据源均失败 code=%s region=%s 最终错误: %s",
+                index_code,
+                region,
+                last_error,
+            )
+
+        ttl = (
+            self.__class__._INDEX_HISTORY_CACHE_TTL_SECONDS
+            if bars
+            else self.__class__._INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS
+        )
+        with self.__class__._index_history_cache_lock:
+            self.__class__._index_history_cache[cache_key] = (
+                time.monotonic() + ttl,
+                [dict(bar) for bar in bars],
+            )
+        return bars
 
     def get_market_stats(self, *, purpose: str = "unspecified") -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）"""

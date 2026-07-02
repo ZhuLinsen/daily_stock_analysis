@@ -132,6 +132,11 @@ export interface SectorRankingItem {
   changePct?: number;
   source?: string;
   updatedAt?: string;
+  /** 复盘工作台可选扩展（Issue #1584）：领涨股仅东财源涨幅榜提供 */
+  leader?: string;
+  leaderChangePct?: number;
+  persistence?: string;
+  comment?: string;
 }
 
 export interface SectorRankings {
@@ -143,6 +148,13 @@ export interface MarketReviewPayloadSection {
   key?: string;
   title: string;
   markdown: string;
+}
+
+/** 指数均线位置（复盘工作台）：above/below/flat，仅历史数据充足时提供 */
+export interface MarketReviewMaStatus {
+  ma5?: string;
+  ma10?: string;
+  ma20?: string;
 }
 
 export interface MarketReviewIndex {
@@ -157,6 +169,13 @@ export interface MarketReviewIndex {
   volume?: number;
   amount?: number;
   amplitude?: number;
+  /** 复盘工作台可选扩展（Issue #1584）；缺失时按旧版渲染 */
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
+  maStatus?: MarketReviewMaStatus;
+  technicalStatus?: string;
+  comment?: string;
 }
 
 export interface MarketReviewBreadth {
@@ -167,6 +186,48 @@ export interface MarketReviewBreadth {
   limitDownCount?: number;
   totalAmount?: number;
   turnoverUnit?: string;
+  /** 复盘工作台：指数-宽度分化诊断（确定性计算） */
+  divergenceDiagnosis?: string;
+}
+
+/** 复盘工作台一句话结论块 */
+export interface MarketReviewWorkbenchSummary {
+  temperatureScore?: number;
+  temperatureLabel?: string;
+  marketState?: string;
+  marketStateSource?: string;
+  suggestedPosition?: string;
+  coreConclusion?: string;
+  structureNote?: string;
+  weightStockNote?: string;
+}
+
+export interface MarketReviewStyleRotation {
+  strong?: string[];
+  weak?: string[];
+  comment?: string;
+}
+
+export interface MarketReviewCatalyst {
+  newsIndex?: number;
+  title: string;
+  nature?: string;
+  scope?: string;
+  duration?: string;
+  digestion?: string;
+  comment?: string;
+}
+
+export interface MarketReviewNextSessionPlan {
+  positionAdvice?: string;
+  focusSectors?: string[];
+  avoidSectors?: string[];
+  keyLevels?: string[];
+  riskTriggers?: string[];
+}
+
+export interface MarketReviewDataQuality {
+  notes?: string[];
 }
 
 export interface MarketReviewPayload {
@@ -188,6 +249,12 @@ export interface MarketReviewPayload {
   sections?: MarketReviewPayloadSection[];
   markets?: Record<string, MarketReviewPayload>;
   markdownReport?: string;
+  /** 复盘工作台可选扩展（Issue #1584）；旧 payload 缺失这些键时走既有渲染路径 */
+  summary?: MarketReviewWorkbenchSummary;
+  styleRotation?: MarketReviewStyleRotation;
+  catalysts?: MarketReviewCatalyst[];
+  nextSessionPlan?: MarketReviewNextSessionPlan;
+  dataQuality?: MarketReviewDataQuality;
 }
 
 export type AnalysisContextPackBlockStatus =
