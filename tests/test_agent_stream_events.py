@@ -262,11 +262,16 @@ def test_orchestrator_emits_stage_done_before_timeout_after_stage() -> None:
             meta={"models_used": ["mock/technical"]},
         )
 
+    time_values = iter([0.0, 0.0])
+
+    def _time():
+        return next(time_values, 1.1)
+
     with patch.object(orch, "_build_agent_chain", return_value=agents), patch.object(
         orch,
         "_run_stage_agent",
         side_effect=_run_stage,
-    ), patch("src.agent.orchestrator.time.time", side_effect=[0.0, 0.0, 1.1]):
+    ), patch("src.agent.orchestrator.time.time", side_effect=_time):
         result = orch._execute_pipeline(
             ctx,
             parse_dashboard=False,
