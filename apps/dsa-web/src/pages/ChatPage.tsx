@@ -76,6 +76,11 @@ const getStageDoneLabel = (step: ProgressStep): string => {
   return `${stage} ${step.status || 'finished'}`;
 };
 
+const getPipelineBudgetSkippedLabel = (step: ProgressStep): string => {
+  if (step.message) return step.message;
+  return `${step.stage || 'pipeline'} skipped: insufficient budget`;
+};
+
 const isCompareStockMessage = (
   message: string,
   stockCodes: string[],
@@ -700,6 +705,8 @@ const ChatPage: React.FC = () => {
       return getStageDoneLabel(last);
     if (last.type === 'pipeline_timeout')
       return last.message || `${last.stage || 'pipeline'} timed out`;
+    if (last.type === 'pipeline_budget_skipped')
+      return getPipelineBudgetSkippedLabel(last);
     if (last.type === 'generating')
       return last.message || '正在生成最终分析...';
     return '处理中...';
@@ -773,6 +780,10 @@ const ChatPage: React.FC = () => {
           text = step.message || `${step.stage || 'pipeline'} timed out`;
           statusClass = 'chat-progress-item-danger';
           iconClass = 'chat-progress-dot-danger';
+        } else if (step.type === 'pipeline_budget_skipped') {
+          text = getPipelineBudgetSkippedLabel(step);
+          statusClass = 'chat-progress-item-muted';
+          iconClass = 'chat-progress-dot-muted';
         } else if (step.type === 'generating') {
           text = step.message || '生成分析';
           statusClass = 'chat-progress-item-generating';

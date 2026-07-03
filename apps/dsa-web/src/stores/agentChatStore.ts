@@ -22,6 +22,9 @@ export interface ProgressStep {
   duration?: number;
   elapsed?: number;
   timeout?: number;
+  remaining?: number;
+  minimum?: number;
+  reason?: string;
   message?: string;
   content?: string;
   meta?: Record<string, unknown>;

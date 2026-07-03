@@ -431,10 +431,17 @@ class AgentOrchestrator:
                 )
                 if progress_callback:
                     progress_callback(stream_event(
-                        "pipeline_timeout",
+                        "pipeline_budget_skipped",
                         stage=agent.agent_name,
                         elapsed=round(elapsed_s, 2),
                         timeout=timeout_s,
+                        remaining=round(remaining_budget, 2),
+                        minimum=stage_min_budget_s,
+                        reason="insufficient_budget",
+                        message=(
+                            f"Skipped {agent.agent_name} analysis due to insufficient "
+                            "remaining budget"
+                        ),
                     ))
                 return self._build_budget_skip_result(
                     stats,

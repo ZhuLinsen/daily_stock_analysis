@@ -299,3 +299,78 @@ def test_orchestrator_emits_stage_done_before_timeout_after_stage() -> None:
             "timeout": 1,
         },
     ]
+
+
+def test_orchestrator_emits_budget_skipped_before_unstarted_stage() -> None:
+    orch = AgentOrchestrator(
+        tool_registry=_make_registry(),
+        llm_adapter=MagicMock(),
+        mode="quick",
+        config=SimpleNamespace(agent_orchestrator_timeout_s=20),
+    )
+    ctx = AgentContext(query="Analyze 600519", stock_code="600519")
+    ctx.meta["response_mode"] = "chat"
+    agents = [
+        SimpleNamespace(agent_name="technical"),
+        SimpleNamespace(agent_name="decision"),
+    ]
+    events = []
+
+    def _run_stage(agent, run_ctx, **_kwargs):
+        run_ctx.set_data("final_response_text", "Technical partial.")
+        return StageResult(
+            stage_name=agent.agent_name,
+            status=StageStatus.COMPLETED,
+            duration_s=0.25,
+            meta={"models_used": [f"mock/{agent.agent_name}"]},
+        )
+
+    time_values = iter([0.0, 0.0, 6.0, 6.0])
+
+    def _time():
+        return next(time_values, 6.0)
+
+    with patch.object(orch, "_build_agent_chain", return_value=agents), patch.object(
+        orch,
+        "_run_stage_agent",
+        side_effect=_run_stage,
+    ), patch("src.agent.orchestrator.time.time", side_effect=_time):
+        result = orch._execute_pipeline(
+            ctx,
+            parse_dashboard=False,
+            progress_callback=events.append,
+        )
+
+    assert result.success is True
+    assert result.content == "Technical partial."
+    assert result.error == (
+        "Pipeline skipped before stage 'decision' due to insufficient budget "
+        "(14.0s remaining, minimum 15s required)"
+    )
+    assert events == [
+        {
+            "type": "stage_start",
+            "stage": "technical",
+            "message": "Starting technical analysis...",
+        },
+        {
+            "type": "stage_done",
+            "stage": "technical",
+            "status": "completed",
+            "duration": 0.25,
+        },
+        {
+            "type": "pipeline_budget_skipped",
+            "stage": "decision",
+            "elapsed": 6.0,
+            "timeout": 20,
+            "remaining": 14.0,
+            "minimum": 15,
+            "reason": "insufficient_budget",
+            "message": "Skipped decision analysis due to insufficient remaining budget",
+        },
+    ]
+    assert "pipeline_timeout" not in {event["type"] for event in events}
+    assert ("stage_start", "decision") not in {
+        (event["type"], event.get("stage")) for event in events
+    }

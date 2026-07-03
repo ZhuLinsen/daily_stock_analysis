@@ -431,6 +431,42 @@ describe('ChatPage', () => {
     expect(failedStage?.closest('.chat-progress-item')).not.toHaveClass('chat-progress-item-success');
   });
 
+  it('renders pipeline budget skip progress without timeout severity', async () => {
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [
+      { type: 'pipeline_budget_skipped', stage: 'decision' },
+    ];
+    mockStoreState.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Partial answer',
+        thinkingSteps: [
+          { type: 'pipeline_budget_skipped', stage: 'decision' },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findAllByText('decision skipped: insufficient budget')).toHaveLength(1);
+    expect(screen.queryByText('decision timed out')).not.toBeInTheDocument();
+
+    const thinkingToggle = container.querySelector('button[class*="mb-2"][class*="w-full"]') as HTMLButtonElement;
+    fireEvent.click(thinkingToggle);
+
+    const budgetSkipped = screen.getAllByText('decision skipped: insufficient budget').find((node) =>
+      node.closest('.chat-progress-item'),
+    );
+    expect(budgetSkipped).toBeDefined();
+    expect(budgetSkipped?.closest('.chat-progress-item')).toHaveClass('chat-progress-item-muted');
+    expect(budgetSkipped?.closest('.chat-progress-item')).not.toHaveClass('chat-progress-item-danger');
+  });
+
   it('selects the default skill after loading skills', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>
