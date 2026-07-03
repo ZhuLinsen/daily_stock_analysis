@@ -162,28 +162,30 @@ def _symbol_scope_lookup_values(code: str, market: str) -> List[str]:
 
 
 def _append_boll_summary_for_prompt(summary, trend_analysis):
-    """Append BOLL buy/sell helper text to the analysis context summary."""
+    """Append technical and valuation indicator hints to the analysis context summary."""
     if not isinstance(trend_analysis, dict):
         return summary
 
-    boll_signal = trend_analysis.get("boll_signal")
-    if not boll_signal:
-        return summary
+    def v(key, default="N/A"):
+        value = trend_analysis.get(key, default)
+        return default if value in (None, "") else value
 
     lines = [
         "",
-        "### BOLL 布林线买卖点辅助",
-        f"- BOLL状态：{boll_signal}",
-        f"- BOLL位置：{trend_analysis.get('boll_position_pct', 'N/A')}%（0%接近下轨，100%接近上轨）",
-        f"- 低吸观察区：{trend_analysis.get('boll_buy_zone', 'N/A')}",
-        f"- 突破确认位：{trend_analysis.get('boll_breakout_level', 'N/A')}",
-        f"- 风险止损位：{trend_analysis.get('boll_stop_loss', 'N/A')}",
-        "- 使用约束：BOLL只作为辅助指标；买点需结合均线、量能、RSI/MACD和市场阶段确认。",
+        "### 技术与估值指标解读要求",
+        "- 最终个股分析正文必须并入 RSI、MACD、BOLL、均线乖离、量能和 PE/Forward PE 解读。",
+        "- 如果 PE/Forward PE 数据缺失，必须明确写“估值数据缺失，暂不判断”，不得写成估值合理。",
+        f"- RSI：RSI(6)={v('rsi_6')}，RSI(12)={v('rsi_12')}，RSI(24)={v('rsi_24')}；状态={v('rsi_status')}；信号={v('rsi_signal')}。",
+        f"- MACD：DIF={v('macd_dif')}，DEA={v('macd_dea')}，柱={v('macd_bar')}；状态={v('macd_status')}；信号={v('macd_signal')}。",
+        f"- BOLL：中轨={v('boll_mid')}，上轨={v('boll_upper')}，下轨={v('boll_lower')}，位置={v('boll_position_pct')}%；状态={v('boll_signal')}。",
+        f"- BOLL点位：低吸观察区={v('boll_buy_zone')}；突破确认位={v('boll_breakout_level')}；止损参考位={v('boll_stop_loss')}。",
+        f"- 均线：现价={v('current_price')}；MA5={v('ma5')}，MA10={v('ma10')}，MA20={v('ma20')}，MA60={v('ma60')}；MA5乖离={v('bias_ma5')}%。",
+        f"- 量能：状态={v('volume_status')}；5日量比={v('volume_ratio_5d')}；说明={v('volume_trend')}。",
+        "- 写作要求：说明上述指标如何支持或限制当前操作建议；如果指标互相矛盾，要说明以趋势、风险还是估值为主。",
     ]
 
     base = summary if isinstance(summary, str) else ""
     return base.rstrip() + "\n" + "\n".join(lines) + "\n"
-
 
 class StockAnalysisPipeline:
     """

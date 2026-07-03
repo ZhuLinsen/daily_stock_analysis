@@ -40,7 +40,7 @@ import {
 import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
 import { AppPage, Button, InlineAlert } from '../components/common';
 
-const MARKETS = [{ id: 'cn', label: 'A 股' }];
+const MARKETS = [{ id: 'us', label: '美股' }];
 const SCREEN_TASK_STORAGE_KEY = 'dsa.alphasift.activeScreenTask.v1';
 const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
 
@@ -67,7 +67,7 @@ const readPersistedScreenTask = (): PersistedScreenTask | null => {
     const restoredMaxResults = Number(parsed.maxResults);
     return {
       taskId: parsed.taskId,
-      market: typeof parsed.market === 'string' && parsed.market.trim() ? parsed.market : 'cn',
+      market: typeof parsed.market === 'string' && parsed.market.trim() ? parsed.market : 'us',
       strategy: typeof parsed.strategy === 'string' && parsed.strategy.trim() ? parsed.strategy : 'dual_low',
       maxResults: Number.isFinite(restoredMaxResults) ? Math.min(100, Math.max(1, restoredMaxResults)) : 3,
     };
@@ -438,7 +438,7 @@ const StockScreeningPage: React.FC = () => {
   const [restoredTask] = useState<PersistedScreenTask | null>(() => readPersistedScreenTask());
   const [enabled, setEnabled] = useState(false);
   const [available, setAvailable] = useState(false);
-  const [market, setMarket] = useState(restoredTask?.market || 'cn');
+  const [market, setMarket] = useState('us');
   const [strategy, setStrategy] = useState(restoredTask?.strategy || 'dual_low');
   const [strategies, setStrategies] = useState<AlphaSiftStrategy[]>([]);
   const [maxResults, setMaxResults] = useState(restoredTask?.maxResults || 3);

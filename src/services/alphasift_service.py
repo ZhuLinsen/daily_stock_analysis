@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -44,6 +45,27 @@ DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
 DSA_ALPHASIFT_DATA_DIR = Path("data") / "alphasift"
+DSA_US_SCREEN_DEFAULT_UNIVERSE = (
+    "AAPL", "MSFT", "GOOG", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "BRK-B", "V", "VOO", "VTI", "TLT", "SGOV", "BIL",
+)
+DSA_US_SCREEN_NAME_MAP = {
+    "AAPL": "苹果",
+    "MSFT": "微软",
+    "GOOG": "谷歌C",
+    "GOOGL": "谷歌A",
+    "AMZN": "亚马逊",
+    "META": "Meta",
+    "NVDA": "英伟达",
+    "TSLA": "特斯拉",
+    "BRK-B": "伯克希尔B",
+    "V": "Visa",
+    "VOO": "Vanguard S&P 500 ETF",
+    "VTI": "Vanguard Total Stock Market ETF",
+    "TLT": "20年期以上美债ETF",
+    "SGOV": "短期美债ETF",
+    "BIL": "1-3月短债ETF",
+}
 DSA_ALPHASIFT_HOTSPOT_CACHE_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspots.json"
 DSA_ALPHASIFT_HOTSPOT_HISTORY_PATH = DSA_ALPHASIFT_DATA_DIR / "hotspot.history.jsonl"
 DSA_ALPHASIFT_MIN_HOTSPOT_CACHE_COUNT = 3
@@ -806,6 +828,89 @@ class AlphaSiftStrategyResponse(BaseModel):
     market: str = ""
 
 
+
+def _screen_us_candidates_from_dsa(
+    *,
+    config: Config,
+    strategy: str,
+    market: str,
+    max_results: int,
+) -> Dict[str, Any]:
+    """Build a lightweight US-market screen result from the DSA default universe.
+
+    This keeps the AlphaSift screen endpoint usable for US stocks even when the
+    upstream AlphaSift adapter only supports CN market snapshots.
+    """
+    _ = config
+    strategy_text = _env_text(strategy) or "dual_low"
+    market_text = _env_text(market) or "us"
+
+    try:
+        limit = int(max_results)
+    except (TypeError, ValueError):
+        limit = 3
+    limit = max(1, min(100, limit))
+
+    symbols = list(DSA_US_SCREEN_DEFAULT_UNIVERSE)
+    # A conservative order for the existing DSA watch universe. The final
+    # candidate details are enriched later by _enrich_candidates_with_dsa().
+    if strategy_text in {"dual_low", "low", "value", "defensive"}:
+        preferred = ["SGOV", "BIL", "TLT", "VOO", "VTI", "BRK-B", "V", "AAPL", "MSFT", "GOOG", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
+        symbols = [s for s in preferred if s in symbols] + [s for s in symbols if s not in preferred]
+    elif strategy_text in {"growth", "momentum", "trend"}:
+        preferred = ["NVDA", "MSFT", "AAPL", "AMZN", "META", "GOOG", "GOOGL", "TSLA", "V", "VOO", "VTI", "BRK-B", "TLT", "SGOV", "BIL"]
+        symbols = [s for s in preferred if s in symbols] + [s for s in symbols if s not in preferred]
+
+    raw_candidates: List[Dict[str, Any]] = []
+    for idx, symbol in enumerate(symbols[:limit], start=1):
+        name = DSA_US_SCREEN_NAME_MAP.get(symbol, symbol)
+        raw_candidates.append(
+            {
+                "code": symbol,
+                "symbol": symbol,
+                "name": name,
+                "market": market_text,
+                "rank": idx,
+                "score": max(1, 100 - idx),
+                "reason": "来自 DSA 默认美股观察池，已按策略偏好排序；后续由 DSA 数据补充行情、估值和新闻摘要。",
+                "source": "dsa_us_default_universe",
+            }
+        )
+
+    selected, dsa_enrichment = _enrich_candidates_with_dsa(raw_candidates)
+
+    return {
+        "enabled": True,
+        "candidates": selected,
+        "candidate_count": len(selected),
+        "run_id": None,
+        "strategy": strategy_text,
+        "market": market_text,
+        "snapshot_count": len(symbols),
+        "snapshot_source": "dsa_us_default_universe",
+        "after_filter_count": len(raw_candidates),
+        "llm_ranked": False,
+        "llm_market_view": "美股筛选当前使用 DSA 默认观察池。排序用于生成候选清单，不等同于完整 AlphaSift 全市场扫描。",
+        "llm_selection_logic": "根据策略偏好从默认美股观察池排序，并复用 DSA enrichment 补充行情、估值、新闻与分析摘要。",
+        "llm_portfolio_risk": "",
+        "llm_coverage": None,
+        "llm_parse_errors": [],
+        "warnings": [
+            "当前美股筛选为 DSA 默认观察池模式，非全市场扫描。",
+            "候选结果需要结合个股深度分析后再判断操作。",
+        ],
+        "source_errors": [],
+        "dsa_enrichment": dsa_enrichment,
+        "deep_analysis_requested": False,
+        "post_analyzers": [],
+        "daily_enriched": True,
+        "daily_enrich_count": dsa_enrichment.get("enriched_count") if isinstance(dsa_enrichment, dict) else None,
+        "risk_enabled": False,
+        "portfolio_diversity_enabled": False,
+        "portfolio_concentration_notes": [],
+    }
+
+
 class AlphaSiftService:
     """Coordinate AlphaSift calls with DSA-owned runtime capabilities."""
 
@@ -1068,6 +1173,14 @@ class AlphaSiftService:
     def screen(self, *, strategy: str, market: str, max_results: int) -> Dict[str, Any]:
         _ensure_alphasift_enabled(self.config)
         _ensure_alphasift_available_for_use()
+        market_text = _env_text(market).lower()
+        if market_text in {"us", "usa", "美股"}:
+            return _screen_us_candidates_from_dsa(
+                config=self.config,
+                strategy=strategy,
+                market="us",
+                max_results=max_results,
+            )
         _ensure_supported_market(market)
         _ensure_supported_strategy(strategy)
 
