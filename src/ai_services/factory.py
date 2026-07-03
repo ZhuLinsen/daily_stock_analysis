@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Optional, Type
 
 from src.ai_services.base import BaseAIService
-from src.ai_services.cache import AIServiceCache, get_default_cache
+from src.ai_services.cache import AIServiceCache
 from src.ai_services.config import AIServiceConfig
 from src.ai_services.deepseek_service import DeepSeekService
 from src.ai_services.hongdie_service import HongdieService
@@ -31,8 +31,6 @@ class AIServiceFactory:
         result = deepseek.generate_text("Hello")
     """
 
-    _services: Dict[str, BaseAIService] = {}
-
     def __init__(
         self,
         config: Optional[AIServiceConfig] = None,
@@ -41,8 +39,16 @@ class AIServiceFactory:
         rate_limiter: Optional[RateLimiter] = None,
     ) -> None:
         self._config = config or AIServiceConfig.from_env()
-        self._cache = cache or get_default_cache()
+        self._cache = (
+            cache
+            if cache is not None
+            else AIServiceCache(
+                max_size=self._config.cache_max_size,
+                ttl_seconds=self._config.cache_ttl_seconds,
+            )
+        )
         self._rate_limiter = rate_limiter or get_default_limiter()
+        self._services: Dict[str, BaseAIService] = {}
 
     @classmethod
     def _service_registry(cls) -> Dict[str, Type[BaseAIService]]:
@@ -146,10 +152,9 @@ class AIServiceFactory:
                 }
         return results
 
-    @classmethod
-    def reset(cls) -> None:
-        """重置所有已创建的服务实例（主要用于测试）。"""
-        cls._services.clear()
+    def reset(self) -> None:
+        """重置当前工厂实例的所有已创建服务（主要用于测试/配置变更后刷新）。"""
+        self._services.clear()
 
     @classmethod
     def from_env(cls, **kwargs: Any) -> "AIServiceFactory":

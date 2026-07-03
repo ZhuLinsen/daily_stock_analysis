@@ -279,6 +279,25 @@ class TestBaseAIService:
         result = service.generate_text("Hello", use_cache=False)
         assert result == "response_Hello"
 
+    def test_rate_limiter_enforces_limit_when_bucket_empty(self) -> None:
+        """桶空时 acquire() 返回 False 应抛 AIRateLimitError，跳过 API 调用。"""
+        limiter = RateLimiter()
+        # 极低速率：burst=1，第二请求必然被拒
+        limiter.set_rate("test_service", rps=0.001, burst=1)
+
+        service = SimpleTestService(
+            AIServiceSettings(enabled=True, api_key="sk-test"),
+            rate_limiter=limiter,
+        )
+        # 第一次调用消耗唯一令牌
+        service.generate_text("first", use_cache=False)
+
+        # 第二次调用应被限流阻断
+        with pytest.raises(AIRateLimitError) as exc_info:
+            service.generate_text("second", use_cache=False)
+        assert exc_info.value.retry_after is not None
+        assert exc_info.value.retry_after > 0
+
     def test_extra_params_passed_to_call_generate(self) -> None:
         """额外参数应传递给 _call_generate。"""
         service = SimpleTestService(

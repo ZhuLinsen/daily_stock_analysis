@@ -19,7 +19,8 @@ class TestAIServiceFactory:
     """测试 AIServiceFactory。"""
 
     def setup_method(self) -> None:
-        AIServiceFactory.reset()
+        # 每个测试方法使用独立的 factory 实例，无需全局 reset
+        pass
 
     def test_init_with_config(self) -> None:
         config = AIServiceConfig()
@@ -122,7 +123,7 @@ class TestAIServiceFactory:
         assert len(services) == 0
 
     def test_reset(self) -> None:
-        """重置应清除所有缓存的服务实例。"""
+        """重置应清除当前工厂实例的缓存。"""
         config = AIServiceConfig()
         config.deepseek.enabled = True
         config.deepseek.api_key = "sk-test"
@@ -130,7 +131,7 @@ class TestAIServiceFactory:
         factory = AIServiceFactory(config=config)
         service1 = factory.get_service("deepseek")
 
-        AIServiceFactory.reset()
+        factory.reset()
         service2 = factory.get_service("deepseek")
         assert service1 is not service2  # 重置后应创建新实例
 
@@ -157,6 +158,20 @@ class TestAIServiceFactory:
         # 验证共享
         assert deepseek._cache is hongdie._cache
         assert deepseek._rate_limiter is hongdie._rate_limiter
+
+    def test_cache_respects_config_values(self) -> None:
+        """工厂应使用 config 中的 cache_max_size/cache_ttl 创建缓存。"""
+        config = AIServiceConfig()
+        config.cache_max_size = 10
+        config.cache_ttl_seconds = 60
+        config.deepseek.enabled = True
+        config.deepseek.api_key = "sk-test"
+
+        factory = AIServiceFactory(config=config)
+        service = factory.get_service("deepseek")
+
+        assert service._cache._max_size == 10
+        assert service._cache._ttl_seconds == 60
 
     def test_check_all_connections(self) -> None:
         config = AIServiceConfig()

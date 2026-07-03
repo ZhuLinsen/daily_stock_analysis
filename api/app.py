@@ -458,6 +458,17 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             headers=_STOCK_INDEX_HEADERS,
         )
     
+    @app.get("/ai-services", include_in_schema=False)
+    async def ai_services_console():
+        """AI 服务管理控制台页面。"""
+        html_path = Path(__file__).parent.parent / "static" / "ai-services.html"
+        if html_path.is_file():
+            return HTMLResponse(content=html_path.read_text(encoding="utf-8"), media_type="text/html")
+        return HTMLResponse(
+            content="<h1>AI Services Console Not Found</h1><p>static/ai-services.html is missing.</p>",
+            status_code=404,
+        )
+
     # ============================================================
     # 静态文件托管（前端 SPA）
     # ============================================================

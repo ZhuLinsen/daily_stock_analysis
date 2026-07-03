@@ -16,6 +16,7 @@ from src.ai_services.cache import AIServiceCache, get_default_cache
 from src.ai_services.config import AIServiceSettings
 from src.ai_services.errors import (
     AIError,
+    AIRateLimitError,
     classify_litellm_error,
 )
 from src.ai_services.rate_limiter import RateLimiter, get_default_limiter
@@ -156,9 +157,15 @@ class BaseAIService(ABC):
             cache_key = None
 
         try:
-            # 限流保护
+            # 限流保护 — 桶空时直接抛错，不调用 API
             if self._enable_rate_limiter:
-                self._rate_limiter.acquire(self.service_name)
+                if not self._rate_limiter.acquire(self.service_name):
+                    wait = self._rate_limiter.wait_time(self.service_name)
+                    raise AIRateLimitError(
+                        f"Rate limit exceeded for {self.service_name}, "
+                        f"retry after {wait:.1f}s",
+                        retry_after=wait,
+                    )
 
             # 调用底层 LLM
             result = self._call_generate(
