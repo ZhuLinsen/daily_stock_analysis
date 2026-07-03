@@ -801,7 +801,26 @@ class HistoryService:
 
         # Generate Markdown report
         try:
-            return self._generate_single_stock_markdown(result, record)
+            markdown_report = self._generate_single_stock_markdown(result, record)
+            try:
+                from src.services.report_metric_sections import append_metric_sections_to_report
+                context_snapshot = (parse_json_field(getattr(record, "context_snapshot", None)) or {})
+                enhanced_context = (
+                    context_snapshot.get("enhanced_context", {})
+                    if isinstance(context_snapshot, dict)
+                    else {}
+                )
+                fundamental_context = (
+                    enhanced_context.get("fundamental_context")
+                    or context_snapshot.get("fundamental_context")
+                    or raw_result.get("fundamental_context")
+                    or getattr(result, "fundamental_context", None)
+                    or {}
+                )
+                markdown_report = append_metric_sections_to_report(markdown_report, fundamental_context)
+            except Exception as metric_exc:
+                logger.debug(f"append metric sections failed for history report {record_id}: {metric_exc}")
+            return markdown_report
         except Exception as e:
             logger.error(f"get_markdown_report: failed to generate markdown for {record_id}: {e}", exc_info=True)
             raise MarkdownReportGenerationError(
