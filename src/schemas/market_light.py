@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -22,11 +22,23 @@ class MarketLightDimension(BaseModel):
 
 
 class MarketLightDimensions(BaseModel):
-    """Canonical Market Light dimension scores."""
+    """Canonical Market Light dimension scores.
+
+    The three core dimensions (breadth/index/limit) are always present. The
+    five extended dimensions are optional so that snapshots persisted before
+    the extension still validate; they default to ``None`` and should be
+    treated as "unavailable" by consumers.
+    """
 
     breadth: MarketLightDimension
     index: MarketLightDimension
     limit: MarketLightDimension
+    # Extended dimensions (optional for backward compatibility with old snapshots)
+    margin_balance: Optional[MarketLightDimension] = None
+    northbound_flow: Optional[MarketLightDimension] = None
+    turnover_quantile: Optional[MarketLightDimension] = None
+    limit_ratio: Optional[MarketLightDimension] = None
+    continuous_board: Optional[MarketLightDimension] = None
 
 
 class MarketLightSnapshot(BaseModel):

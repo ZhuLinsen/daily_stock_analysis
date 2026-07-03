@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] MarketLight 情绪温度计扩展 5 个维度：融资融券余额变化、北向资金方向、换手率分位、涨停跌停比、连板高度；新增维度可选，旧快照向后兼容。
+- [测试] 新增 `tests/test_market_light_extended_dimensions.py` 覆盖扩展维度评分与向后兼容。
 
 ## [3.25.0] - 2026-07-03
 

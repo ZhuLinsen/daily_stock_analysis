@@ -349,9 +349,24 @@ def _base_diagnostics(snapshot: MarketLightSnapshot) -> Dict[str, Any]:
     }
 
 
+_CORE_DIMENSION_NAMES = ("breadth", "index", "limit")
+
+
 def _missing_dimensions(snapshot: MarketLightSnapshot) -> list[str]:
+    """Return the core dimensions that are unavailable in the snapshot.
+
+    Only the three core dimensions (breadth/index/limit) are checked, matching
+    the ``data_quality`` semantics. Extended dimensions are optional context
+    and are not reported as missing to avoid noisy diagnostics.
+    """
     dimensions = snapshot.dimensions.model_dump()
-    return sorted(name for name, item in dimensions.items() if not item.get("available"))
+    return sorted(
+        name
+        for name in _CORE_DIMENSION_NAMES
+        if name in dimensions
+        and isinstance(dimensions[name], dict)
+        and not dimensions[name].get("available")
+    )
 
 
 def _positive_float(value: Any, field_name: str) -> float:

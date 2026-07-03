@@ -375,6 +375,16 @@ scope/type 校验是双向约束：`target_scope=market` 只能使用两类 Mark
 | `index` | `indices` 非空且至少一个 `change_pct != None` | `50` |
 | `limit` | `has_market_stats && (limit_up_count + limit_down_count) > 0` | `50` |
 
+扩展维度（可选，仅 A 股填充，数据源缺失时 `available=false`，不影响 `data_quality` 和 aggregate `score`）：
+
+| 扩展 dimension | 数据源 | `available=true` 条件 |
+| --- | --- | --- |
+| `margin_balance` | `ak.stock_margin_sse` + `ak.stock_margin_szse` | 最近 2 日融资融券余额可得 |
+| `northbound_flow` | `ak.stock_hsgt_hist_em` | 最近 2 日北向净流入非 NaN（2024 年后可能不可得） |
+| `turnover_quantile` | `ak.stock_zh_index_daily` (sh000001 + sz399001) | 20 日以上历史成交额 + 当日成交额 > 0 |
+| `limit_ratio` | 复用 `MarketOverview` | `limit_up_count + limit_down_count > 0` |
+| `continuous_board` | `ak.stock_zt_pool_strong_em` | 当日最高连板数 > 0 |
+
 `data_quality=unavailable` 表示 `index.available=false`，两类 market rule 都返回 `skipped` 且不触发通知；`partial` 表示至少一个维度 fallback，`ok` 表示三项均 available。`market_light_status` 在 `ok/partial` 下可触发；`partial` 触发时 diagnostics 必含 `missing_dimensions`。`market_light_score_drop` 直接比较 canonical aggregate score；任一侧 `partial` 仍允许比较，但 diagnostics 必含 `partial_comparison=true` 和 `missing_dimensions`。
 
 ### 基线、交易日与去重

@@ -103,6 +103,10 @@ class MarketOverview:
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+    # Extended dimension inputs for Market Light (populated when data sources
+    # are available; keys: margin_balance_recent, northbound_flow_recent,
+    # turnover_history, continuous_board_height).
+    extended_inputs: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -445,8 +449,49 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
-        
+
+        # 5. 获取扩展维度数据（仅 A 股；其他市场数据源不同，跳过）
+        if self.region == "cn":
+            self._fetch_extended_inputs(overview)
+
         return overview
+
+    def _fetch_extended_inputs(self, overview: MarketOverview) -> None:
+        """Fetch extended Market Light dimension data (best-effort).
+
+        Each fetcher degrades gracefully to None, so missing data sources
+        only mark the corresponding dimension as unavailable without
+        affecting the core market overview flow.
+        """
+        try:
+            from data_provider.margin_flow_fetcher import (
+                fetch_continuous_board_height,
+                fetch_margin_balance_recent,
+                fetch_northbound_flow_recent,
+                fetch_turnover_history,
+            )
+        except Exception as exc:
+            logger.debug("[大盘] %s action=extended_inputs status=import_failed error=%s", self._log_context(), exc)
+            return
+
+        for key, fetcher in (
+            ("margin_balance_recent", fetch_margin_balance_recent),
+            ("northbound_flow_recent", fetch_northbound_flow_recent),
+            ("turnover_history", fetch_turnover_history),
+            ("continuous_board_height", fetch_continuous_board_height),
+        ):
+            try:
+                value = fetcher()
+                if value:
+                    overview.extended_inputs[key] = value
+            except Exception as exc:
+                logger.debug(
+                    "[大盘] %s action=extended_inputs key=%s status=failed error=%s",
+                    self._log_context(),
+                    key,
+                    exc,
+                )
+
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
@@ -1273,9 +1318,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "limit": {"score": limit_score, "available": limit_available},
         }
 
+        # Extended dimensions (optional; available=False when data is missing).
+        # These do not affect the core score or data_quality, preserving
+        # backward compatibility for persisted snapshots and alert thresholds.
+        extended = self._compute_extended_dimensions(overview)
+        dimensions.update(extended)
+
         if not index_available:
             data_quality = "unavailable"
-        elif all(dimension["available"] for dimension in dimensions.values()):
+        elif all(dimension["available"] for dimension in dimensions.values() if dimension is not None):
             data_quality = "ok"
         else:
             data_quality = "partial"
@@ -1305,6 +1356,103 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "dimensions": dimensions,
             "data_quality": data_quality,
         }
+
+    @staticmethod
+    def _clamp_score(value: float) -> int:
+        return int(max(0, min(100, round(value))))
+
+    def _compute_extended_dimensions(self, overview: MarketOverview) -> Dict[str, Dict[str, Any]]:
+        """Compute the five extended Market Light dimensions.
+
+        Each dimension is returned as ``{"score": int, "available": bool}``.
+        When the underlying data is missing, ``available`` is False and the
+        score defaults to 50 (neutral).
+        """
+        inputs = overview.extended_inputs or {}
+
+        margin_balance = self._dimension_margin_balance(inputs.get("margin_balance_recent"))
+        northbound_flow = self._dimension_northbound_flow(inputs.get("northbound_flow_recent"))
+        turnover_quantile = self._dimension_turnover_quantile(
+            inputs.get("turnover_history"), overview.total_amount
+        )
+        limit_ratio = self._dimension_limit_ratio(
+            overview.limit_up_count, overview.limit_down_count
+        )
+        continuous_board = self._dimension_continuous_board(
+            inputs.get("continuous_board_height")
+        )
+        return {
+            "margin_balance": margin_balance,
+            "northbound_flow": northbound_flow,
+            "turnover_quantile": turnover_quantile,
+            "limit_ratio": limit_ratio,
+            "continuous_board": continuous_board,
+        }
+
+    def _dimension_margin_balance(self, recent: Optional[List[float]]) -> Dict[str, Any]:
+        """融资融券余额变化: 5日余额变化率映射到 0-100。"""
+        if not recent or len(recent) < 2:
+            return {"score": 50, "available": False}
+        try:
+            oldest = float(recent[0])
+            latest = float(recent[-1])
+            if oldest <= 0:
+                return {"score": 50, "available": False}
+            change_rate = (latest - oldest) / oldest  # e.g. +0.02 = +2%
+            # +2% -> 66, 0% -> 50, -2% -> 34
+            score = self._clamp_score(50 + change_rate * 800)
+            return {"score": score, "available": True}
+        except (TypeError, ValueError):
+            return {"score": 50, "available": False}
+
+    def _dimension_northbound_flow(self, recent: Optional[List[float]]) -> Dict[str, Any]:
+        """北向资金方向: 5日累计净流入映射到 0-100。"""
+        if not recent:
+            return {"score": 50, "available": False}
+        try:
+            values = [float(v) for v in recent if v is not None]
+            if len(values) < 2:
+                return {"score": 50, "available": False}
+            cumulative = sum(values)
+            # +50亿 -> 70, 0 -> 50, -50亿 -> 30
+            score = self._clamp_score(50 + cumulative * 0.4)
+            return {"score": score, "available": True}
+        except (TypeError, ValueError):
+            return {"score": 50, "available": False}
+
+    def _dimension_turnover_quantile(
+        self, history: Optional[List[float]], today_amount: float
+    ) -> Dict[str, Any]:
+        """换手率分位: 今日成交额在 60日历史中的百分位。"""
+        if not history or len(history) < 20 or not today_amount or today_amount <= 0:
+            return {"score": 50, "available": False}
+        try:
+            values = [float(v) for v in history if v is not None and v > 0]
+            if len(values) < 20:
+                return {"score": 50, "available": False}
+            below = sum(1 for v in values if v <= today_amount)
+            percentile = below / len(values)
+            return {"score": self._clamp_score(percentile * 100), "available": True}
+        except (TypeError, ValueError):
+            return {"score": 50, "available": False}
+
+    def _dimension_limit_ratio(self, limit_up: int, limit_down: int) -> Dict[str, Any]:
+        """涨停跌停比: 涨停家数 / (涨停 + 跌停)。"""
+        total = limit_up + limit_down
+        if total <= 0:
+            return {"score": 50, "available": False}
+        ratio = limit_up / total
+        return {"score": self._clamp_score(ratio * 100), "available": True}
+
+    def _dimension_continuous_board(self, height: Optional[int]) -> Dict[str, Any]:
+        """连板高度: 当日最高连板数映射到 0-100。"""
+        if not height or height <= 0:
+            return {"score": 50, "available": False}
+        # 1板=30, 2板=45, 3板=58, 4板=68, 5板=76, 6板=82, 7板=86, 8+=90
+        mapping = {1: 30, 2: 45, 3: 58, 4: 68, 5: 76, 6: 82, 7: 86}
+        score = mapping.get(height, 90) if height < 8 else 90
+        return {"score": score, "available": True}
+
 
     def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
         scores = self._build_market_light_scores(overview)
