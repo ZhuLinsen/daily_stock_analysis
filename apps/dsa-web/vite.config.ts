@@ -9,8 +9,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packageJson = JSON.parse(
   readFileSync(path.resolve(__dirname, './package.json'), 'utf-8'),
 ) as { version?: string }
-  readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
-) as { version?: string }
 const buildTime = new Date().toISOString()
 
 const vendorChunkByPackage: Record<string, string> = {
