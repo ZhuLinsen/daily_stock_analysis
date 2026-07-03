@@ -9,9 +9,11 @@ FROM node:20-slim AS web-builder
 
 WORKDIR /app/apps/dsa-web
 
+RUN mkdir -p /app/static
 COPY apps/dsa-web/package.json apps/dsa-web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
+RUN mkdir -p /app/static
 COPY apps/dsa-web/ ./
 RUN npm run build
 
@@ -43,19 +45,28 @@ RUN groupadd -g 1000 dsa && \
     useradd -u 1000 -g dsa -m dsa
 
 # 复制依赖文件
+RUN mkdir -p /app/static
 COPY requirements.txt .
 
 # 安装 Python 依赖
 RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 # 复制应用代码
+RUN mkdir -p /app/static
 COPY *.py ./
+RUN mkdir -p /app/static
 COPY api/ ./api/
+RUN mkdir -p /app/static
 COPY data_provider/ ./data_provider/
+RUN mkdir -p /app/static
 COPY bot/ ./bot/
+RUN mkdir -p /app/static
 COPY src/ ./src/
+RUN mkdir -p /app/static
 COPY strategies/ ./strategies/
+RUN mkdir -p /app/static
 COPY --from=web-builder /app/static ./static/
+RUN mkdir -p /app/static
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Verify the bundled AlphaSift adapter from requirements.
