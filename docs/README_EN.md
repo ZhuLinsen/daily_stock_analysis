@@ -134,7 +134,6 @@ More search providers, social sentiment, and fallback behavior are in [Search Co
 | Secret Name | Market | Description |
 |-------------|:------:|-------------|
 | `TUSHARE_TOKEN` | A-shares | Improves historical data stability |
-| `TICKFLOW_API_KEY` | A-shares | Enhances market-review data quality |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields |
 
 > See [Data Source Configuration](./full-guide_EN.md#data-source-configuration).

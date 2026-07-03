@@ -134,7 +134,6 @@
 | Secret 名稱 | 適用市場 | 說明 |
 |-------------|:--------:|------|
 | `TUSHARE_TOKEN` | A 股 | 提升歷史行情穩定性 |
-| `TICKFLOW_API_KEY` | A 股 | 增強市場回顧數據品質 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 補齊量比、換手率、PE 等欄位 |
 
 > 詳見 [數據源配置](./full-guide.md#数据源配置)。
