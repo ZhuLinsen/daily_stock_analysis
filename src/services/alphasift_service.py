@@ -877,7 +877,15 @@ def _screen_us_candidates_from_dsa(
             }
         )
 
-    selected, dsa_enrichment = _enrich_candidates_with_dsa(raw_candidates)
+    selected = raw_candidates
+    dsa_enrichment = {
+        "enabled": False,
+        "max_candidates": 0,
+        "requested_count": 0,
+        "enriched_count": 0,
+        "warnings": ["us_screen_fast_mode_skip_dsa_enrichment"],
+        "news_included": False,
+    }
 
     return {
         "enabled": True,
@@ -3368,7 +3376,7 @@ def get_dsa_candidate_context(
     return context.get("dsa_context", {})
 
 
-def _enrich_candidates_with_dsa(candidates: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _enrich_candidates_with_dsa(candidates: List[Dict[str, Any]], *, include_news: bool = True) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     enriched_count = 0
     warnings: List[str] = []
     limit = min(len(candidates), DSA_ENRICHMENT_MAX_CANDIDATES)
@@ -3392,7 +3400,7 @@ def _enrich_candidates_with_dsa(candidates: List[Dict[str, Any]]) -> Tuple[List[
         try:
             enriched = _build_dsa_candidate_context(
                 candidate,
-                include_news=True,
+                include_news=include_news,
                 include_fundamentals=True,
                 profile="post_rank_full",
             )
