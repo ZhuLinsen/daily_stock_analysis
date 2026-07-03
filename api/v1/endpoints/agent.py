@@ -382,6 +382,8 @@ async def agent_chat_stream(request: ChatRequest):
       - tool_done: a tool call finished
       - generating: final answer being generated
       - pipeline_timeout: analysis stopped because the stage/pipeline budget expired
+      - pipeline_budget_skipped: analysis stopped before an unstarted stage
+        because the remaining budget was too low for useful work
       - done: analysis complete, contains 'content' and 'success'
       - error: error occurred, contains 'message'
     """

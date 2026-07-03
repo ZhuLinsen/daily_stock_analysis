@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [文档] 记录 Agent `/chat/stream` progress event 契约，说明新增 `stage_start`、`stage_done`、`pipeline_timeout` 的字段语义、Web 兼容边界、验证方式、回滚方式，以及本变更不触及 provider/model/Base URL 或运行时配置迁移语义。
+- [文档] 记录 Agent `/chat/stream` progress event 契约，说明新增 `stage_start`、`stage_done`、`pipeline_timeout`、`pipeline_budget_skipped` 的字段语义、Web 兼容边界、验证方式、回滚方式；其中 `pipeline_budget_skipped` 表示剩余预算不足、未启动下一阶段即跳过的语义；本变更不触及 provider/model/Base URL 或运行时配置迁移语义。
 - [修复] Discord 长报告推送按 2000 字符上限分片逐段发送，遇到 429 限流会按 `retry_after`/`Retry-After` 有限重试，避免中途失败后只收到前半段报告。
 - [改进] #1777 台股三大法人 fetcher（`TwInstitutionalFetcher`）增加缓存防击穿：并发同 (市场, 日期) 调用合并为单次上游请求，保护 TWSE T86 ~3 req/5s 限流额度；不同 key 仍并行；新增并发单次抓取、不同 key 各抓一次、HTTP 错误 fail-open 回归测试。
 - [修复] A 股个股分析遇到空 `belong_boards` 占位时会继续补查所属板块，关联板块模块在已有板块时稳定展示；对应涨跌幅缺失时只显示板块，不再输出占位涨跌幅。
