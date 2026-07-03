@@ -419,6 +419,9 @@ class BacktestResult(Base):
     simulated_exit_reason = Column(String(24))  # stop_loss/take_profit/window_end/cash/ambiguous_stop_loss
     simulated_return_pct = Column(Float)
 
+    # 归因分析结果（JSON，可选，由 BacktestAttributionService 写入）
+    attribution_json = Column(Text)
+
     __table_args__ = (
         UniqueConstraint(
             'analysis_history_id',
@@ -1184,6 +1187,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
+            self._ensure_backtest_attribution_column()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -1381,6 +1385,33 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                             time.sleep(delay)
                         continue
                     raise
+
+    def _ensure_backtest_attribution_column(self) -> None:
+        """Add nullable ``attribution_json`` column to existing backtest_results tables."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(BacktestResult.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[backtest] failed to inspect attribution_json column; skipping: %s",
+                exc,
+            )
+            return
+        if "attribution_json" in existing:
+            return
+        try:
+            with self._engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {BacktestResult.__tablename__} "
+                    f"ADD COLUMN attribution_json TEXT"
+                )
+        except OperationalError as exc:
+            if not self._is_sqlite_duplicate_column_error(exc, "attribution_json"):
+                logger.warning("[backtest] attribution_json column backfill failed: %s", exc)
 
     def _ensure_intelligence_item_scope_values(self) -> None:
         """Backfill nullable intelligence item scopes so SQLite unique keys work."""

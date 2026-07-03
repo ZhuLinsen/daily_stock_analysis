@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 回测策略绩效归因（Brinson 模型）：分解选股/择时/交互效应，按策略分组展示胜率、收益贡献和权重对比；新增 `GET /api/v1/backtest/attribution` 和 `GET /api/v1/backtest/attribution/{id}` 端点。
+- [测试] 新增 `tests/test_backtest_attribution.py` 覆盖 Brinson 数学验证、边界情况、策略分组和序列化。
 
 ## [3.25.0] - 2026-07-03
 

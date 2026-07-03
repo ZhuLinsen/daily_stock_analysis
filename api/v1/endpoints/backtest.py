@@ -18,6 +18,8 @@ from api.v1.schemas.backtest import (
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
+from src.schemas.backtest_attribution import BacktestAttributionResult
+from src.services.backtest_attribution_service import BacktestAttributionService
 from src.services.backtest_service import BacktestService
 from src.storage import DatabaseManager
 
@@ -238,4 +240,69 @@ def get_stock_performance(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询单股表现失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/attribution/{backtest_id}",
+    response_model=BacktestAttributionResult,
+    responses={
+        200: {"description": "回测归因分析结果"},
+        404: {"description": "未找到回测结果或数据不足", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取单条回测归因分析",
+    description="对指定回测结果计算 Brinson 归因（选股/择时/交互效应）",
+)
+def get_backtest_attribution(
+    backtest_id: int,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BacktestAttributionResult:
+    try:
+        service = BacktestAttributionService(db_manager)
+        attribution = service.compute_attribution(backtest_id=backtest_id)
+        if attribution.total_results == 0:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"未找到回测结果 {backtest_id} 或数据不足"},
+            )
+        return attribution
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"回测归因分析失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"回测归因分析失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/attribution",
+    response_model=BacktestAttributionResult,
+    responses={
+        200: {"description": "批量回测归因分析结果"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="批量回测归因分析",
+    description="对一批回测结果计算 Brinson 归因，支持按股票代码和评估窗口过滤",
+)
+def get_batch_attribution(
+    code: Optional[str] = Query(None, description="股票代码筛选"),
+    eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    limit: int = Query(500, ge=1, le=2000, description="最多处理的结果数"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> BacktestAttributionResult:
+    try:
+        service = BacktestAttributionService(db_manager)
+        return service.compute_attribution(
+            code=code,
+            eval_window_days=eval_window_days,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.error(f"批量归因分析失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"批量归因分析失败: {str(exc)}"},
         )
