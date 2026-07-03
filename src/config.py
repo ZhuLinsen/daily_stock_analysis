@@ -903,6 +903,14 @@ class Config:
     # Gotify 配置（server base URL；sender 会拼接 /message）
     gotify_url: Optional[str] = None
     gotify_token: Optional[str] = None
+
+    # === 周期复盘配置（周报/月报）===
+    periodic_review_enabled: bool = False  # 是否启用周期复盘
+    periodic_review_weekly_time: str = "FRI 18:30"  # 周报执行时间（每周五）
+    periodic_review_monthly_enabled: bool = True  # 月报是否启用（月末交易日触发）
+    periodic_review_monthly_time: str = "18:30"  # 月报执行时间
+    periodic_review_send_report: bool = True  # 是否发送周期复盘报告
+    periodic_review_feishu_chat_id: Optional[str] = None  # 周期复盘报告飞书聊天 ID（留空用默认渠道）
     
     # 自定义 Webhook（支持多个，逗号分隔）
     # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
@@ -1902,6 +1910,21 @@ class Config:
                 field_name='SQLITE_WRITE_RETRY_MAX',
                 minimum=0,
             ),
+            periodic_review_enabled=parse_env_bool(
+                os.getenv('PERIODIC_REVIEW_ENABLED'),
+                default=False,
+            ),
+            periodic_review_weekly_time=os.getenv('PERIODIC_REVIEW_WEEKLY_TIME', 'FRI 18:30'),
+            periodic_review_monthly_enabled=parse_env_bool(
+                os.getenv('PERIODIC_REVIEW_MONTHLY_ENABLED'),
+                default=True,
+            ),
+            periodic_review_monthly_time=os.getenv('PERIODIC_REVIEW_MONTHLY_TIME', '18:30'),
+            periodic_review_send_report=parse_env_bool(
+                os.getenv('PERIODIC_REVIEW_SEND_REPORT'),
+                default=True,
+            ),
+            periodic_review_feishu_chat_id=os.getenv('PERIODIC_REVIEW_FEISHU_CHAT_ID'),
             sqlite_write_retry_base_delay=parse_env_float(
                 os.getenv('SQLITE_WRITE_RETRY_BASE_DELAY'),
                 0.1,

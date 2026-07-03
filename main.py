@@ -1499,6 +1499,33 @@ def main() -> int:
                 schedule_kwargs["schedule_times"] = config.schedule_times
                 schedule_kwargs["schedule_times_provider"] = schedule_times_provider
             run_with_schedule(**schedule_kwargs)
+
+            # 周期复盘任务（周报/月报，独立调度器）
+            if getattr(config, 'periodic_review_enabled', False):
+                from src.services.periodic_review_scheduler import create_periodic_review_scheduler
+                import threading
+
+                def periodic_review_task():
+                    runtime_config = _reload_runtime_config()
+                    periodic_scheduler = create_periodic_review_scheduler()
+                    periodic_scheduler.run_task()
+
+                # 每日检查：调度器内部判断是否为周五（周报）或月末交易日（月报）
+                periodic_schedule_time = config.periodic_review_monthly_time or "18:30"
+                periodic_schedule_kwargs = {
+                    "task": periodic_review_task,
+                    "schedule_time": periodic_schedule_time,
+                    "run_immediately": False,
+                    "background_tasks": [],
+                    "schedule_time_provider": None,
+                }
+
+                logger.info(f"启动周期复盘调度器，每日检查时间: {periodic_schedule_time}")
+                def run_periodic_schedule():
+                    run_with_schedule(**periodic_schedule_kwargs)
+
+                periodic_thread = threading.Thread(target=run_periodic_schedule, name="periodic_review_scheduler")
+                periodic_thread.start()
             return 0
 
         # 模式3: 正常单次运行

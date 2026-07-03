@@ -1,0 +1,57 @@
+{# Periodic (weekly/monthly) review report template #}
+## {% if data.review_type == "monthly" %}月度{% else %}周度{% endif %}市场复盘报告
+
+**区间**: {{ data.period_start }} ~ {{ data.period_end }} | **交易日**: {{ data.trade_days }} | **市场**: {{ data.region }}
+
+---
+
+### 一、指数表现
+
+| 指数 | 起始 | 最新 | 涨跌幅 | 日均成交额(亿) |
+|------|------|------|--------|----------------|
+{% for idx in data.indices %}
+| {{ idx.name }} | {{ idx.start_close }} | {{ idx.end_close }} | {{ "%+.2f"|format(idx.change_pct) }}% | {{ idx.avg_amount }} |
+{% endfor %}
+
+{% if not data.indices %}
+_暂无指数数据_
+{% endif %}
+
+### 二、板块强弱
+
+**涨幅前5**:
+
+| 排名 | 板块 | 涨跌幅 |
+|------|------|--------|
+{% for s in data.top_sectors %}
+| {{ s.rank }} | {{ s.name }} | {{ "%+.2f"|format(s.change_pct) }}% |
+{% endfor %}
+
+**跌幅前5**:
+
+| 排名 | 板块 | 涨跌幅 |
+|------|------|--------|
+{% for s in data.bottom_sectors %}
+| {{ s.rank }} | {{ s.name }} | {{ "%+.2f"|format(s.change_pct) }}% |
+{% endfor %}
+
+### 三、情绪温度计趋势
+
+{% if data.market_light_trend %}
+| 交易日 | Score | 状态 |
+|--------|-------|------|
+{% for t in data.market_light_trend %}
+| {{ t.trade_date }} | {{ t.score }} | {{ t.status }} |
+{% endfor %}
+
+**区间情绪**: {{ data.sector_rotation or "数据不足" }}
+{% else %}
+_暂无 Market Light 历史快照_
+{% endif %}
+
+### 四、本期关注
+
+{{ data.highlights or "数据不足，无法生成关注点。" }}
+
+---
+*由 daily_stock_analysis 周期复盘模块自动生成 | {{ data.period_end }}*

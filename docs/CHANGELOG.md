@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] 周期复盘（周报/月报）：每周五/月末交易日自动生成大盘+板块联动报告，聚合指数表现、板块强弱、情绪趋势和资金流向，通过飞书推送。
+- [测试] 新增 `tests/test_periodic_review.py` 覆盖月末判断、highlights 构建、情绪轮动检测、模板渲染和调度器分发逻辑。
 
 ## [3.25.0] - 2026-07-03
 
