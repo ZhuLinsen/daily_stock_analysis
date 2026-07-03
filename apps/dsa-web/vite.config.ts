@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
 
 const packageJson = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
@@ -115,7 +113,6 @@ export default defineConfig({
     },
   },
   build: {
-    // 打包输出到项目根目录的 static 文件夹
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {

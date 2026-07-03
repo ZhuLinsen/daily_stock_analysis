@@ -8,8 +8,9 @@ import { ThemeProvider } from './components/theme/ThemeProvider'
  * 静态数据穿透：React 挂载前拦截本地 GET 请求。
  * GitHub Pages 无后端时，防止组件 fetch 失败卡 Loading 或跳到登录页。
  */
-if (typeof window !== 'undefined' && (window as any).__INITIAL_DATA__) {
-  const staticData = (window as any).__INITIAL_DATA__ as Record<string, unknown>
+const initialData = (window as unknown as Record<string, unknown>).__INITIAL_DATA__;
+if (typeof window !== 'undefined' && initialData) {
+  const staticData = initialData as Record<string, unknown>
   console.log('[静态穿透] 检测到离线数据，启用 API 拦截')
 
   const originalFetch = window.fetch.bind(window)
