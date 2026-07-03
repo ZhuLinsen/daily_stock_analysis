@@ -116,7 +116,7 @@ export default defineConfig({
   },
   build: {
     // 打包输出到项目根目录的 static 文件夹
-    outDir: path.resolve(__dirname, '../../static'),
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {
