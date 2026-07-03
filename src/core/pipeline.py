@@ -181,6 +181,8 @@ def _append_boll_summary_for_prompt(summary, trend_analysis):
         f"- BOLL点位：低吸观察区={v('boll_buy_zone')}；突破确认位={v('boll_breakout_level')}；止损参考位={v('boll_stop_loss')}。",
         f"- 均线：现价={v('current_price')}；MA5={v('ma5')}，MA10={v('ma10')}，MA20={v('ma20')}，MA60={v('ma60')}；MA5乖离={v('bias_ma5')}%。",
         f"- 量能：状态={v('volume_status')}；5日量比={v('volume_ratio_5d')}；说明={v('volume_trend')}。",
+        "- 若 fundamental_context.daily_turnover 存在，必须增加“每日换手率”解读：最新值、5日均值、20日均值、相对20日状态。",
+        "- 若 fundamental_context.sector_valuation_comparison 存在，必须增加“同板块估值比较”：PE/Forward PE/PB/PS 与板块中位数对比，并说明偏低/接近/偏高。",
         "- 写作要求：说明上述指标如何支持或限制当前操作建议；如果指标互相矛盾，要说明以趋势、风险还是估值为主。",
     ]
 
@@ -524,6 +526,20 @@ class StockAnalysisPipeline:
                 fundamental_context = enrich_us_valuation_context(code, fundamental_context)
             except Exception as e:
                 logger.debug(f"{stock_name}({code}) yfinance估值数据补齐失败: {e}")
+
+            try:
+                from src.services.valuation_turnover_enrichment import (
+                    enrich_daily_turnover_context,
+                    enrich_sector_valuation_comparison,
+                )
+                fundamental_context = enrich_daily_turnover_context(
+                    code,
+                    fundamental_context,
+                    self.fetcher_manager,
+                )
+                fundamental_context = enrich_sector_valuation_comparison(code, fundamental_context)
+            except Exception as e:
+                logger.debug(f"{stock_name}({code}) 换手率/同板块估值增强失败: {e}")
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:

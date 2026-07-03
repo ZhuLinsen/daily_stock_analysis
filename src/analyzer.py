@@ -3257,6 +3257,58 @@ class GeminiAnalyzer:
 换手率规则：若实时换手率缺失，但估算换手率存在，请在 volume_analysis.turnover_rate 中使用估算换手率数值，并在量能含义中注明“按流通股本估算”或“按总股本估算”；若估算换手率也缺失，写“换手率数据缺失，暂不判断”，严禁写“数据缺失，无法判断%”。
 """
 
+        daily_turnover = (
+            fundamental_context.get("daily_turnover", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        if isinstance(daily_turnover, dict) and daily_turnover.get("status") in {"ok", "partial"}:
+            prompt += f"""
+### 每日换手率
+| 指标 | 数值 |
+|------|------|
+| 最新交易日 | {daily_turnover.get('latest_trade_date') or 'N/A'} |
+| 最新换手率 | {daily_turnover.get('latest_turnover_rate') or 'N/A'}% |
+| 5日均值 | {daily_turnover.get('avg_5d_turnover_rate') or 'N/A'}% |
+| 20日均值 | {daily_turnover.get('avg_20d_turnover_rate') or 'N/A'}% |
+| 相对20日 | {daily_turnover.get('latest_vs_20d_ratio') or 'N/A'} |
+| 状态 | {daily_turnover.get('activity_status') or 'N/A'} |
+| 计算口径 | {daily_turnover.get('calculation_method') or 'N/A'} |
+
+每日换手率规则：必须说明最新换手率相对5日和20日均值是放大、缩小还是正常；若为估算口径，必须注明估算基础。
+"""
+
+        sector_valuation = (
+            fundamental_context.get("sector_valuation_comparison", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        if isinstance(sector_valuation, dict) and sector_valuation.get("status") == "ok":
+            current = sector_valuation.get("current") if isinstance(sector_valuation.get("current"), dict) else {}
+            medians = sector_valuation.get("peer_medians") if isinstance(sector_valuation.get("peer_medians"), dict) else {}
+            relative = sector_valuation.get("relative") if isinstance(sector_valuation.get("relative"), dict) else {}
+
+            def _rel_text(*keys):
+                for key in keys:
+                    item = relative.get(key) if isinstance(relative.get(key), dict) else {}
+                    text = item.get("text")
+                    if text and text != "数据不足":
+                        return text
+                return "数据不足"
+
+            prompt += f"""
+### 同板块估值比较
+| 项目 | 当前股票 | 板块/同行中位数 | 相对位置 |
+|------|----------|----------------|----------|
+| PE(TTM) | {current.get('trailing_pe') or current.get('pe_ratio') or 'N/A'} | {medians.get('trailing_pe') or medians.get('pe_ratio') or 'N/A'} | {_rel_text('trailing_pe', 'pe_ratio')} |
+| Forward PE | {current.get('forward_pe') or 'N/A'} | {medians.get('forward_pe') or 'N/A'} | {_rel_text('forward_pe')} |
+| PB | {current.get('pb_ratio') or 'N/A'} | {medians.get('pb_ratio') or 'N/A'} | {_rel_text('pb_ratio')} |
+| PS | {current.get('ps_ratio') or 'N/A'} | {medians.get('ps_ratio') or 'N/A'} | {_rel_text('ps_ratio')} |
+
+所属板块/行业：{sector_valuation.get('sector') or 'N/A'} / {sector_valuation.get('industry') or 'N/A'}；样本数：{sector_valuation.get('peer_count') or 'N/A'}。
+同板块估值规则：必须把当前股票与板块中位数比较；数据缺失时写“同板块估值数据不足”，不得强行得出低估或高估结论。
+"""
+
         earnings_block = (
             fundamental_context.get("earnings", {})
             if isinstance(fundamental_context, dict)

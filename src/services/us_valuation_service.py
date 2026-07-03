@@ -50,6 +50,8 @@ def fetch_yfinance_valuation(code: str) -> Dict[str, Any]:
     trailing_pe = _num(info.get("trailingPE"))
     forward_pe = _num(info.get("forwardPE"))
     market_cap = _num(info.get("marketCap"))
+    pb_ratio = _num(info.get("priceToBook"))
+    ps_ratio = _num(info.get("priceToSalesTrailing12Months"))
     shares_outstanding = _num(info.get("sharesOutstanding"))
     float_shares = _num(info.get("floatShares"))
     level, judgement = _valuation_judgement(forward_pe)
@@ -59,6 +61,13 @@ def fetch_yfinance_valuation(code: str) -> Dict[str, Any]:
         "trailing_pe": trailing_pe,
         "forward_pe": forward_pe,
         "market_cap": market_cap,
+        "pb_ratio": pb_ratio,
+        "price_to_book": pb_ratio,
+        "ps_ratio": ps_ratio,
+        "price_to_sales": ps_ratio,
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "short_name": info.get("shortName") or info.get("longName"),
         "total_mv": market_cap,
         "shares_outstanding": shares_outstanding,
         "float_shares": float_shares,
