@@ -1,3 +1,5 @@
+from fastapi import Request
+from starlette.responses import Response
 # -*- coding: utf-8 -*-
 """
 ===================================
@@ -227,6 +229,52 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         version="1.0.0",
         lifespan=app_lifespan,
     )
+
+    @app.middleware("http")
+    async def _block_sensitive_static_paths(request: Request, call_next):
+        raw_path = request.scope.get("path") or request.url.path or ""
+        path = unquote(raw_path).replace("\\", "/")
+        lower_path = path.lower()
+
+        blocked_exact = {
+            "/.env",
+            "/.env.local",
+            "/.env.production",
+            "/.env.development",
+            "/.git/config",
+            "/config.inc.php",
+        }
+        blocked_prefixes = (
+            "/.git",
+            "/.svn",
+            "/.hg",
+            "/.aws",
+            "/.ssh",
+        )
+        blocked_suffixes = (
+            ".bak",
+            ".backup",
+            ".old",
+            ".orig",
+            ".pyc",
+            ".pyo",
+            ".swp",
+        )
+        blocked_fragments = (
+            ".bak_",
+            ".backup_",
+        )
+
+        if (
+            lower_path in blocked_exact
+            or any(lower_path.startswith(prefix) for prefix in blocked_prefixes)
+            or any(lower_path.endswith(suffix) for suffix in blocked_suffixes)
+            or any(fragment in lower_path for fragment in blocked_fragments)
+        ):
+            return Response(status_code=404)
+
+        return await call_next(request)
+
     
     # ============================================================
     # CORS 配置
