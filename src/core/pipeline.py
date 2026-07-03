@@ -38,6 +38,8 @@ from src.analyzer import (
 )
 from src.notification import NotificationService, NotificationChannel
 from src.report_language import (
+    get_placeholder_text,
+    get_unknown_text,
     infer_decision_type_from_advice,
     localize_confidence_level,
     localize_operation_advice,
@@ -222,6 +224,8 @@ class StockAnalysisPipeline:
         self.notifier = NotificationService(source_message=source_message)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
+        self._concept_rankings_cache_lock = threading.Lock()
+        self._concept_rankings_cache: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
         
         # 初始化搜索服务（可选，初始化失败不应阻断主分析流程）
         try:
@@ -1066,29 +1070,32 @@ class StockAnalysisPipeline:
                 "invalid fundamental context",
             )
 
+        market = enriched_context.get("market")
+        if not isinstance(market, str) or not market.strip():
+            market = get_market_for_stock(normalize_stock_code(code))
+
         existing_boards = enriched_context.get("belong_boards")
-        if isinstance(existing_boards, list):
-            enriched_context["belong_boards"] = list(existing_boards)
+        existing_board_list = list(existing_boards) if isinstance(existing_boards, list) else None
+        if existing_board_list:
+            enriched_context["belong_boards"] = existing_board_list
+            self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
             return enriched_context
 
         boards_block = enriched_context.get("boards")
         boards_status = boards_block.get("status") if isinstance(boards_block, dict) else None
         coverage = enriched_context.get("coverage")
         boards_coverage = coverage.get("boards") if isinstance(coverage, dict) else None
-        market = enriched_context.get("market")
-        if not isinstance(market, str) or not market.strip():
-            market = get_market_for_stock(normalize_stock_code(code))
 
         # For HK/US: the offshore adapter already populates belong_boards from
         # yfinance sector/industry. Don't overwrite it (and we have no AkShare
         # 板块 endpoint for those markets anyway). Default to [] when callers
         # pass a minimal context without the key.
         if market != "cn":
-            enriched_context.setdefault("belong_boards", [])
+            enriched_context["belong_boards"] = existing_board_list or []
             return enriched_context
 
         if boards_status == "not_supported" or boards_coverage == "not_supported":
-            enriched_context["belong_boards"] = []
+            enriched_context["belong_boards"] = existing_board_list or []
             return enriched_context
 
         boards: List[Dict[str, Any]] = []
@@ -1099,8 +1106,71 @@ class StockAnalysisPipeline:
         except Exception as e:
             logger.debug("%s attach belong_boards failed (fail-open): %s", code, e)
 
-        enriched_context["belong_boards"] = boards
+        enriched_context["belong_boards"] = boards or existing_board_list or []
+        self._attach_concept_rankings_to_fundamental_context(code, enriched_context, market)
         return enriched_context
+
+    def _attach_concept_rankings_to_fundamental_context(
+        self,
+        code: str,
+        enriched_context: Dict[str, Any],
+        market: str,
+    ) -> None:
+        """Attach concept/theme rankings for A-share related-board signals."""
+        if market != "cn" or isinstance(enriched_context.get("concept_boards"), dict):
+            return
+
+        top_concepts, bottom_concepts = self._get_concept_rankings_for_market(market)
+
+        if top_concepts or bottom_concepts:
+            enriched_context["concept_boards"] = {
+                "status": "ok" if top_concepts and bottom_concepts else "partial",
+                "data": {
+                    "top": top_concepts,
+                    "bottom": bottom_concepts,
+                },
+            }
+
+    def _get_concept_rankings_for_market(
+        self,
+        market: str,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Fetch market-wide concept rankings once per pipeline run."""
+        if market != "cn":
+            return [], []
+
+        cache = getattr(self, "_concept_rankings_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._concept_rankings_cache = cache
+
+        lock = getattr(self, "_concept_rankings_cache_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._concept_rankings_cache_lock = lock
+
+        with lock:
+            if market in cache:
+                top_concepts, bottom_concepts = cache[market]
+                return list(top_concepts), list(bottom_concepts)
+
+            top_concepts: List[Dict[str, Any]] = []
+            bottom_concepts: List[Dict[str, Any]] = []
+            try:
+                fetch_rankings = getattr(self.fetcher_manager, "get_concept_rankings", None)
+                if callable(fetch_rankings):
+                    rankings = fetch_rankings(5)
+                    if isinstance(rankings, tuple) and len(rankings) == 2:
+                        raw_top, raw_bottom = rankings
+                        if isinstance(raw_top, list):
+                            top_concepts = list(raw_top)
+                        if isinstance(raw_bottom, list):
+                            bottom_concepts = list(raw_bottom)
+            except Exception as e:
+                logger.debug("attach concept_rankings failed (fail-open): %s", e)
+
+            cache[market] = (top_concepts, bottom_concepts)
+            return list(top_concepts), list(bottom_concepts)
 
     def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
         """Ensure at least *min_days* of K-line history is in DB for agent tools."""
@@ -1238,8 +1308,8 @@ class StockAnalysisPipeline:
                 initial_context["analysis_context_pack_summary"] = analysis_context_pack_summary
 
             # 运行 Agent
-            if report_language == "en":
-                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON in English."
+            if report_language in ("en", "ko"):
+                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON."
             else:
                 message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
             llm_started_at = time.monotonic()
@@ -1642,8 +1712,8 @@ class StockAnalysisPipeline:
             code=code,
             name=stock_name,
             sentiment_score=50,
-            trend_prediction="Unknown" if report_language == "en" else "未知",
-            operation_advice="Watch" if report_language == "en" else "观望",
+            trend_prediction=get_unknown_text(report_language),
+            operation_advice=localize_operation_advice("观望", report_language),
             confidence_level=localize_confidence_level("medium", report_language),
             report_language=report_language,
             success=agent_result.success,
@@ -1723,7 +1793,7 @@ class StockAnalysisPipeline:
                 allow_dict=True,
                 expect_text=True,
             ):
-                result.operation_advice = str(raw_advice) if raw_advice else ("Watch" if report_language == "en" else "观望")
+                result.operation_advice = str(raw_advice) if raw_advice else (localize_operation_advice("观望", report_language))
             else:
                 signal_label = self._trend_signal_fallback(trend_result, report_language)
                 if signal_label:
@@ -1799,7 +1869,11 @@ class StockAnalysisPipeline:
                 )
                 self._backfill_agent_dashboard_fields(result, trend_result, report_language)
             if not result.error_message:
-                result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
+                result.error_message = (
+                    "Agent failed to generate a valid decision dashboard" if report_language == "en"
+                    else "에이전트가 유효한 결정 대시보드를 생성하지 못했습니다" if report_language == "ko"
+                    else "Agent 未能生成有效的决策仪表盘"
+                )
 
         explicit_action = dash.get("action") if isinstance(dash, dict) else None
         if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
@@ -1969,6 +2043,8 @@ class StockAnalysisPipeline:
         if trend and advice:
             if report_language == "en":
                 return f"Trend view: {trend}; action advice: {advice}."
+            if report_language == "ko":
+                return f"추세 결론: {trend}; 대응 전략: {advice}."
             return f"趋势结论：{trend}；操作建议：{advice}。"
         return ""
 
@@ -2005,7 +2081,11 @@ class StockAnalysisPipeline:
             core["one_sentence"] = result.analysis_summary or self._summary_fallback_from_result(
                 result,
                 report_language,
-            ) or ("Analysis pending" if report_language == "en" else "分析待补充")
+            ) or (
+                "Analysis pending" if report_language == "en"
+                else "분석 보완 예정" if report_language == "ko"
+                else "分析待补充"
+            )
 
         intelligence = dashboard.get("intelligence")
         if not isinstance(intelligence, dict):
@@ -2043,7 +2123,7 @@ class StockAnalysisPipeline:
         levels = getattr(trend_result, "support_levels", None) if trend_result else None
         if levels:
             return levels[0]
-        return "To be completed" if report_language == "en" else "待补充"
+        return get_placeholder_text(report_language)
 
     @staticmethod
     def _apply_trend_fallback(
@@ -2053,7 +2133,7 @@ class StockAnalysisPipeline:
     ) -> None:
         if trend_result is None:
             result.sentiment_score = 50
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            result.operation_advice = localize_operation_advice("观望", report_language)
             return
 
         score = getattr(trend_result, "signal_score", None)
@@ -2075,7 +2155,7 @@ class StockAnalysisPipeline:
         if signal_label:
             result.operation_advice = signal_label
         else:
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            result.operation_advice = localize_operation_advice("观望", report_language)
 
         from src.agent.protocols import normalize_decision_signal
 
@@ -2306,6 +2386,7 @@ class StockAnalysisPipeline:
                 query_source=getattr(self, "query_source", None) or "system",
                 report_type=report_type,
                 portfolio_context=portfolio_context,
+                profile_source="auto_default",
             )
             if isinstance(signal_result, dict):
                 summary = summarize_decision_signal(signal_result.get("item"))
@@ -2808,6 +2889,15 @@ class StockAnalysisPipeline:
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
         if len(stock_codes) >= 5:
+            daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(stock_codes, days=30)
+            if daily_prefetch_count > 0:
+                logger.info(
+                    "[prefetch] component=daily_kline_prefetch action=complete "
+                    "provider=TickFlowFetcher cached=%d stock_count=%d",
+                    daily_prefetch_count,
+                    len(stock_codes),
+                )
+
             prefetch_count = self.fetcher_manager.prefetch_realtime_quotes(stock_codes)
             if prefetch_count > 0:
                 logger.info(f"已启用批量预取架构：一次拉取全市场数据，{len(stock_codes)} 只股票共享缓存")

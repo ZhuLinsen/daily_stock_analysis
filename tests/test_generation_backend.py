@@ -11,7 +11,10 @@ from tests.litellm_stub import ensure_litellm_stub
 ensure_litellm_stub()
 
 from src.llm.backend_registry import (  # noqa: E402
+    AGENT_CAPABLE_BACKEND_IDS,
+    GENERATION_ONLY_BACKEND_IDS,
     LITELLM_BACKEND_ID,
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
     resolve_agent_generation_backend_id,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
@@ -177,16 +180,21 @@ def test_litellm_backend_derives_provider_from_model_when_usage_is_empty() -> No
     assert result.usage == {}
 
 
-def test_generation_backend_factory_dispatches_litellm_and_codex_cli() -> None:
+def test_generation_backend_factory_dispatches_litellm_and_local_cli_backends() -> None:
     litellm_backend = create_generation_backend(
         "litellm",
         config=_config(),
         litellm_completion_callable=lambda _prompt, _cfg, **_kwargs: ("ok", "openai/gpt", {}),
     )
-    codex_backend = create_generation_backend("codex_cli", config=_config(generation_backend="codex_cli"))
 
     assert isinstance(litellm_backend, LiteLLMGenerationBackend)
-    assert isinstance(codex_backend, LocalCliGenerationBackend)
+    for backend_id in sorted(LOCAL_CLI_GENERATION_BACKEND_IDS):
+        local_backend = create_generation_backend(
+            backend_id,
+            config=_config(generation_backend=backend_id),
+        )
+        assert isinstance(local_backend, LocalCliGenerationBackend)
+        assert local_backend.preset_id == backend_id
 
 
 def test_resolvers_default_to_litellm_and_self_fallback_is_noop() -> None:
@@ -227,10 +235,11 @@ def test_explicit_litellm_resolves_for_analysis_and_agent() -> None:
     assert resolve_agent_generation_backend_id(config) == "litellm"
 
 
-def test_agent_auto_does_not_inherit_codex_cli_generation_backend() -> None:
-    config = _config(generation_backend="codex_cli", agent_generation_backend="auto")
+@pytest.mark.parametrize("generation_backend", sorted(LOCAL_CLI_GENERATION_BACKEND_IDS))
+def test_agent_auto_does_not_inherit_local_generation_backend(generation_backend: str) -> None:
+    config = _config(generation_backend=generation_backend, agent_generation_backend="auto")
 
-    assert resolve_generation_backend_id(config) == "codex_cli"
+    assert resolve_generation_backend_id(config) == generation_backend
     assert resolve_agent_generation_backend_id(config) == "litellm"
 
 
@@ -246,13 +255,32 @@ def test_unknown_generation_backend_raises_structured_config_error() -> None:
     assert error.backend == "codex"
     assert error.details["field"] == "GENERATION_BACKEND"
     assert error.details["requested_backend"] == "codex"
-    assert error.details["supported_backends"] == ["codex_cli", "litellm"]
+    assert error.details["supported_backends"] == [
+        "claude_code_cli",
+        "codex_cli",
+        "litellm",
+        "opencode_cli",
+    ]
 
 
 def test_codex_cli_generation_backend_can_fallback_to_litellm() -> None:
     config = _config(generation_backend="codex_cli", generation_fallback_backend="litellm")
 
     assert resolve_generation_backend_id(config) == "codex_cli"
+    assert resolve_generation_fallback_backend_id(config) == "litellm"
+
+
+def test_claude_code_cli_is_supported_generation_backend() -> None:
+    config = _config(generation_backend="claude_code_cli", generation_fallback_backend="litellm")
+
+    assert resolve_generation_backend_id(config) == "claude_code_cli"
+    assert resolve_generation_fallback_backend_id(config) == "litellm"
+
+
+def test_opencode_cli_is_supported_generation_backend() -> None:
+    config = _config(generation_backend="opencode_cli", generation_fallback_backend="litellm")
+
+    assert resolve_generation_backend_id(config) == "opencode_cli"
     assert resolve_generation_fallback_backend_id(config) == "litellm"
 
 
@@ -282,27 +310,50 @@ def test_unknown_agent_backend_raises_structured_config_error() -> None:
     assert error.error_code is GenerationErrorCode.BACKEND_NOT_CONFIGURED
     assert error.details["field"] == "AGENT_GENERATION_BACKEND"
     assert error.details["requested_backend"] == "opencode"
-    assert error.details["supported_backends"] == ["auto", "codex_cli", "litellm"]
+    assert error.details["supported_backends"] == [
+        "auto",
+        "claude_code_cli",
+        "codex_cli",
+        "litellm",
+        "opencode_cli",
+    ]
 
 
-def test_llm_tool_adapter_unknown_agent_backend_is_not_silent_litellm_fallback() -> None:
+def test_generation_only_backends_are_not_agent_capable() -> None:
+    assert GENERATION_ONLY_BACKEND_IDS.isdisjoint(AGENT_CAPABLE_BACKEND_IDS)
+
+
+def test_explicit_local_agent_backends_resolve_to_unsupported_ids() -> None:
+    for backend_id in sorted(GENERATION_ONLY_BACKEND_IDS):
+        assert resolve_agent_generation_backend_id(
+            _config(agent_generation_backend=backend_id)
+        ) == backend_id
+
+
+@pytest.mark.parametrize("agent_backend", sorted(GENERATION_ONLY_BACKEND_IDS))
+def test_llm_tool_adapter_local_agent_backend_is_not_silent_litellm_fallback(
+    agent_backend: str,
+) -> None:
     from src.agent.llm_adapter import LLMToolAdapter
 
     with patch("src.agent.llm_adapter.litellm.register_model", create=True):
-        adapter = LLMToolAdapter(_config(agent_generation_backend="codex_cli"))
+        adapter = LLMToolAdapter(_config(agent_generation_backend=agent_backend))
 
     assert adapter.is_available is False
     response = adapter.call_completion([])
     assert response.provider == "error"
     assert "unsupported_tool_calling" in (response.content or "")
-    assert "codex_cli" in (response.content or "")
+    assert agent_backend in (response.content or "")
 
 
-def test_agent_auto_with_codex_cli_returns_unsupported_when_litellm_agent_backend_missing() -> None:
+@pytest.mark.parametrize("generation_backend", sorted(LOCAL_CLI_GENERATION_BACKEND_IDS))
+def test_agent_auto_with_local_generation_backend_returns_unsupported_when_litellm_missing(
+    generation_backend: str,
+) -> None:
     from src.agent.llm_adapter import LLMToolAdapter
 
     config = _config(
-        generation_backend="codex_cli",
+        generation_backend=generation_backend,
         agent_generation_backend="auto",
         litellm_model="",
         agent_litellm_model="",
@@ -317,4 +368,4 @@ def test_agent_auto_with_codex_cli_returns_unsupported_when_litellm_agent_backen
     response = adapter.call_completion([], tools=[{"type": "function"}])
     assert response.provider == "error"
     assert "unsupported_tool_calling" in (response.content or "")
-    assert "codex_cli" in (response.content or "")
+    assert generation_backend in (response.content or "")

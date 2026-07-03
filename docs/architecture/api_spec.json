@@ -4116,7 +4116,8 @@
                 "type": "string",
                 "enum": [
                   "zh",
-                  "en"
+                  "en",
+                  "ko"
                 ]
               },
               {

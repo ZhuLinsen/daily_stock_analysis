@@ -10,7 +10,7 @@
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
 
@@ -69,6 +69,47 @@ def _normalize_code_for_grouping(code: str) -> str:
     """
     from data_provider.base import normalize_stock_code
     return normalize_stock_code(code or "")
+
+
+def _raw_result_value(raw_result: Any, key: str) -> Any:
+    if not isinstance(raw_result, dict):
+        return None
+
+    value = raw_result.get(key)
+    if value is not None and value != "":
+        return value
+
+    for container_key in ("summary", "dashboard"):
+        container = raw_result.get(container_key)
+        if isinstance(container, dict):
+            nested_value = container.get(key)
+            if nested_value is not None and nested_value != "":
+                return nested_value
+
+    return None
+
+
+def _coalesce_text(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _coalesce_int(*values: Any) -> Optional[int]:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 @router.get(
@@ -285,15 +326,20 @@ def get_stock_bar(
             record = seen[norm_code]
             raw_result = parse_json_field(getattr(record, "raw_result", None))
             model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
+            sentiment_score = _coalesce_int(
+                record.sentiment_score,
+                _raw_result_value(raw_result, "sentiment_score"),
+            )
+            operation_advice = _coalesce_text(
+                record.operation_advice,
+                _raw_result_value(raw_result, "operation_advice"),
+            )
             action_fields = build_action_fields(
-                operation_advice=(
-                    raw_result.get("operation_advice") if isinstance(raw_result, dict) else None
-                )
-                or record.operation_advice,
-                explicit_action=raw_result.get("action") if isinstance(raw_result, dict) else None,
+                operation_advice=operation_advice,
+                explicit_action=_raw_result_value(raw_result, "action"),
                 report_type=record.report_type,
                 report_language=normalize_report_language(
-                    raw_result.get("report_language") if isinstance(raw_result, dict) else None
+                    _raw_result_value(raw_result, "report_language")
                 ),
             )
 
@@ -308,8 +354,8 @@ def get_stock_bar(
                     stock_code=display_stock_code,
                     stock_name=record.name,
                     report_type=record.report_type,
-                    sentiment_score=record.sentiment_score,
-                    operation_advice=record.operation_advice,
+                    sentiment_score=sentiment_score,
+                    operation_advice=operation_advice,
                     action=action_fields["action"],
                     action_label=action_fields["action_label"],
                     analysis_count=analysis_count,
@@ -479,6 +525,7 @@ def get_history_detail(
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            concept_rankings=extracted_boards.get("concept_rankings"),
         )
         
         return AnalysisReport(

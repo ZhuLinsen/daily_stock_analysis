@@ -20,6 +20,7 @@ import time
 from typing import List, Optional, Tuple
 
 from src.config import Config, get_config
+from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +243,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     model = _resolve_vision_model()
     if not model:
         raise ValueError("未配置 Vision API。请设置 LITELLM_MODEL 或相关 API Key。")
+    if route_has_hermes(getattr(cfg, "llm_model_list", []) or [], model):
+        raise ValueError("Hermes Vision 未验证：VISION_MODEL 不能选择包含 Hermes deployment 的 route。")
 
     keys = _get_api_keys_for_model(model, cfg)
     if not keys:

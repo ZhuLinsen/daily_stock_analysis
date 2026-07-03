@@ -1,3 +1,4 @@
+import type React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { decisionSignalsApi } from '../../api/decisionSignals';
@@ -8,6 +9,7 @@ import type {
   DecisionSignalListResponse,
   DecisionSignalOutcomeListResponse,
   DecisionSignalOutcomeStatsResponse,
+  DecisionSignalReassessResponse,
 } from '../../types/decisionSignals';
 import DecisionSignalsPage from '../DecisionSignalsPage';
 
@@ -20,7 +22,40 @@ vi.mock('../../api/decisionSignals', () => ({
     getFeedback: vi.fn(),
     putFeedback: vi.fn(),
     updateStatus: vi.fn(),
+    reassess: vi.fn(),
   },
+}));
+
+vi.mock('recharts', () => ({
+  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ScatterChart: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  CartesianGrid: () => null,
+  XAxis: () => null,
+  YAxis: () => null,
+  Tooltip: () => null,
+  Scatter: ({
+    data,
+    onClick,
+    shape,
+  }: {
+    data: Array<{ item: DecisionSignalItem }>;
+    onClick: (datum: { item: DecisionSignalItem }) => void;
+    shape: (props: unknown) => React.ReactNode;
+  }) => (
+    <div>
+      {data.map((datum, index) => (
+        <button
+          key={datum.item.id}
+          type="button"
+          data-testid={`timeline-click-${datum.item.id}`}
+          onClick={() => onClick(datum)}
+        >
+          {shape({ cx: 20 + index * 20, cy: 20, payload: datum })}
+          {datum.item.stockCode}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 const signal: DecisionSignalItem = {
@@ -131,6 +166,35 @@ const emptyFeedback: DecisionSignalFeedbackItem = {
   source: null,
 };
 
+const reassessResponse: DecisionSignalReassessResponse = {
+  preview: {
+    action: 'watch',
+    score: 72,
+    confidence: null,
+    horizon: '3d',
+    entryLow: 1680,
+    stopLoss: 1600,
+    reason: 'preview reason',
+    metadata: {
+      decision_profile: 'balanced',
+      data_quality_level: 'medium',
+      scoring_breakdown: { raw_action: 'buy' },
+      guardrail_result: {
+        raw_action: 'buy',
+        final_action: 'watch',
+        passed: false,
+        violations: ['missing_confidence'],
+        adjustments: ['action_downgraded_by_guardrail'],
+        adjusted: true,
+      },
+    },
+  },
+  item: null,
+  created: false,
+  warnings: [{ code: 'action_blocked_by_guardrail' }],
+  blockedReason: 'actionable_signal_blocked_by_guardrail',
+};
+
 function renderPage() {
   return render(
     <UiLanguageProvider>
@@ -163,6 +227,7 @@ beforeEach(() => {
     source: 'web',
   });
   vi.mocked(decisionSignalsApi.updateStatus).mockResolvedValue({ ...signal, status: 'invalidated' });
+  vi.mocked(decisionSignalsApi.reassess).mockResolvedValue(reassessResponse);
 });
 
 describe('DecisionSignalsPage', () => {
@@ -286,6 +351,108 @@ describe('DecisionSignalsPage', () => {
     });
   });
 
+  it('reassesses from the selected signal source report without triggering list lookup', async () => {
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    expect(await screen.findByText('决策风格重评估预览')).toBeInTheDocument();
+    vi.mocked(decisionSignalsApi.list).mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成预览' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.reassess).toHaveBeenCalledWith({
+        sourceReportId: 3001,
+        decisionProfile: 'balanced',
+        persist: false,
+      });
+    });
+    expect(decisionSignalsApi.list).not.toHaveBeenCalled();
+    expect(await screen.findByText('actionable_signal_blocked_by_guardrail')).toBeInTheDocument();
+    expect(screen.getByText('buy -> watch')).toBeInTheDocument();
+    expect(screen.getByText('action_blocked_by_guardrail')).toBeInTheDocument();
+  });
+
+  it('reassesses from an existing source report id filter without a selected signal', async () => {
+    window.history.pushState({}, '', '/decision-signals?sourceReportId=3001');
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([], 0));
+
+    renderPage();
+    expect(await screen.findByText('决策风格重评估预览')).toBeInTheDocument();
+    vi.mocked(decisionSignalsApi.list).mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成预览' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.reassess).toHaveBeenCalledWith({
+        sourceReportId: 3001,
+        decisionProfile: 'balanced',
+        persist: false,
+      });
+    });
+    expect(decisionSignalsApi.list).not.toHaveBeenCalled();
+  });
+
+  it('disables reassess when no source report id is available', async () => {
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([
+      makeSignal({ sourceReportId: null }),
+    ]));
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: '生成预览' })).toBeDisabled();
+  });
+
+  it('does not fallback to page source report id for a selected signal without source report id', async () => {
+    window.history.pushState({}, '', '/decision-signals?sourceReportId=3001');
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([
+      makeSignal({ sourceReportId: null }),
+    ]));
+
+    renderPage();
+    await screen.findByText('决策风格重评估预览');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: '生成预览' })).toBeDisabled();
+    expect(decisionSignalsApi.reassess).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale reassess responses after switching the selected signal', async () => {
+    const nextSignal = makeSignal({
+      id: 8,
+      stockCode: '000001',
+      stockName: '平安银行',
+      sourceReportId: 3002,
+    });
+    const pending = deferredPromise<DecisionSignalReassessResponse>();
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([signal, nextSignal], 2));
+    vi.mocked(decisionSignalsApi.reassess).mockReturnValueOnce(pending.promise);
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成预览' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看 平安银行 AI 建议详情' }));
+
+    await act(async () => {
+      pending.resolve({
+        ...reassessResponse,
+        preview: { ...reassessResponse.preview, reason: 'stale A preview' },
+      });
+    });
+
+    expect(screen.queryByText('stale A preview')).not.toBeInTheDocument();
+  });
+
   it('queries latest active signals by stock code', async () => {
     renderPage();
     await screen.findByText('贵州茅台');
@@ -386,6 +553,167 @@ describe('DecisionSignalsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '查询最新' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('latest down');
+  });
+
+  it('does not request the timeline before a non-empty stock search', async () => {
+    renderPage();
+
+    await screen.findByText('贵州茅台');
+    expect(screen.getByText('输入股票代码查看时间线')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查询时间线' })).toBeDisabled();
+    expect(decisionSignalsApi.list).toHaveBeenCalledTimes(1);
+    expect(within(screen.getByLabelText('时间线状态')).queryByRole('option', { name: '已关闭' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('profile')).not.toBeInTheDocument();
+  });
+
+  it('queries timeline with independent filters and no default status', async () => {
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.change(screen.getByLabelText('时间线市场'), { target: { value: 'cn' } });
+    fireEvent.change(screen.getByLabelText('时间线股票代码'), { target: { value: ' 600519 ' } });
+    fireEvent.change(screen.getByLabelText('时间范围'), { target: { value: '30d' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.list).toHaveBeenCalledTimes(2);
+    });
+    expect(decisionSignalsApi.list).toHaveBeenLastCalledWith(expect.objectContaining({
+      market: 'cn',
+      stockCode: '600519',
+      page: 1,
+      pageSize: 100,
+      status: undefined,
+    }));
+    const params = vi.mocked(decisionSignalsApi.list).mock.calls.at(-1)?.[0] as Record<string, string>;
+    expect(params.createdFrom).toEqual(expect.any(String));
+    expect(params.createdTo).toEqual(expect.any(String));
+  });
+
+  it('passes active timeline status, shows truncation, and opens details from a point', async () => {
+    const timelineSignal = makeSignal({
+      id: 8,
+      stockCode: 'AAPL',
+      stockName: 'Apple',
+      market: 'us',
+      action: 'alert',
+      riskSummary: 'Timeline risk',
+    });
+    vi.mocked(decisionSignalsApi.list)
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(listResponse([timelineSignal], 150));
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.change(screen.getByLabelText('时间线股票代码'), { target: { value: 'AAPL' } });
+    fireEvent.change(screen.getByLabelText('时间线状态'), { target: { value: 'active' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.list).toHaveBeenLastCalledWith(expect.objectContaining({
+        stockCode: 'AAPL',
+        status: 'active',
+        pageSize: 100,
+      }));
+    });
+    expect(await screen.findByText('仅展示最近 100 条信号，请缩小时间范围。')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('timeline-click-8'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Timeline risk')).toBeInTheDocument();
+  });
+
+  it('returns to the timeline guide when stock code is cleared after a search', async () => {
+    const timelineSignal = makeSignal({
+      id: 8,
+      stockCode: 'AAPL',
+      stockName: 'Apple',
+      market: 'us',
+      riskSummary: 'Timeline stale risk',
+    });
+    vi.mocked(decisionSignalsApi.list)
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(listResponse([timelineSignal], 1));
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    const timelineStockInput = screen.getByLabelText('时间线股票代码');
+    fireEvent.change(timelineStockInput, { target: { value: 'AAPL' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
+    fireEvent.click(await screen.findByTestId('timeline-click-8'));
+    expect(within(await screen.findByRole('dialog')).getByText('Timeline stale risk')).toBeInTheDocument();
+
+    fireEvent.change(timelineStockInput, { target: { value: '' } });
+
+    expect(screen.getByText('输入股票代码查看时间线')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查询时间线' })).toBeDisabled();
+    expect(screen.queryByTestId('timeline-click-8')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(decisionSignalsApi.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes a timeline-sourced drawer when an active timeline status update removes it', async () => {
+    const timelineSignal = makeSignal({
+      id: 8,
+      stockCode: 'AAPL',
+      stockName: 'Apple',
+      market: 'us',
+      riskSummary: 'Timeline active risk',
+    });
+    vi.mocked(decisionSignalsApi.list)
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(listResponse([timelineSignal], 1))
+      .mockResolvedValueOnce(listResponse());
+    vi.mocked(decisionSignalsApi.updateStatus).mockResolvedValueOnce({ ...timelineSignal, status: 'invalidated' });
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.change(screen.getByLabelText('时间线股票代码'), { target: { value: 'AAPL' } });
+    fireEvent.change(screen.getByLabelText('时间线状态'), { target: { value: 'active' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
+    fireEvent.click(await screen.findByTestId('timeline-click-8'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: '标记失效' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.updateStatus).toHaveBeenCalledWith(8, { status: 'invalidated' });
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('暂无时间线信号')).toBeInTheDocument();
+  });
+
+  it('uses applied timeline filters instead of draft filters after status updates', async () => {
+    const timelineSignal = makeSignal({
+      id: 8,
+      stockCode: 'AAPL',
+      stockName: 'Apple',
+      market: 'us',
+      riskSummary: 'Timeline all risk',
+    });
+    vi.mocked(decisionSignalsApi.list)
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(listResponse([timelineSignal], 1))
+      .mockResolvedValueOnce(listResponse());
+    vi.mocked(decisionSignalsApi.updateStatus).mockResolvedValueOnce({ ...timelineSignal, status: 'invalidated' });
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.change(screen.getByLabelText('时间线股票代码'), { target: { value: 'AAPL' } });
+    fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
+    fireEvent.change(screen.getByLabelText('时间线状态'), { target: { value: 'active' } });
+    fireEvent.click(await screen.findByTestId('timeline-click-8'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: '标记失效' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确定' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.updateStatus).toHaveBeenCalledWith(8, { status: 'invalidated' });
+    });
+    await waitFor(() => {
+      expect(within(screen.getByRole('dialog')).getByText('已失效')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('暂无时间线信号')).not.toBeInTheDocument();
   });
 
   it('renders empty and error states', async () => {

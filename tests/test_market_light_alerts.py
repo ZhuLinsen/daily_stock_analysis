@@ -56,6 +56,17 @@ class MarketLightAlertsTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "red or yellow"):
             normalize_market_alert_parameters("market_light_status", {"statuses": ["green"]})
 
+    def test_market_light_alert_rejects_jp_kr_targets(self) -> None:
+        for region in ("jp", "kr"):
+            with self.subTest(region=region):
+                with self.assertRaisesRegex(ValueError, "cn, hk, us"):
+                    MarketLightAlert(
+                        target_scope="market",
+                        target=region,
+                        alert_type="market_light_status",
+                        parameters={"statuses": ["red"]},
+                    )
+
     def test_status_unavailable_is_skipped(self) -> None:
         result = evaluate_market_light_alert(
             self._rule("market_light_status", {"statuses": ["red", "yellow"]}),

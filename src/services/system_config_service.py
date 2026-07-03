@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -36,6 +36,19 @@ from src.config import (
     resolve_llm_channel_protocol,
     setup_env,
 )
+from src.llm.hermes import (
+    HERMES_DEFAULT_BASE_URL,
+    HERMES_DEFAULT_MODEL,
+    HERMES_DEFAULT_PROTOCOL,
+    build_hermes_redaction_values,
+    canonicalize_hermes_model_ref,
+    canonicalize_hermes_base_url,
+    is_masked_secret_placeholder,
+    is_reserved_hermes_name,
+    open_hermes_no_proxy_client,
+    parse_hermes_channel,
+    route_identity_candidates,
+)
 from src.core.config_manager import ConfigManager
 from src.core.config_registry import (
     build_schema_response,
@@ -47,10 +60,13 @@ from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     CODEX_CLI_BACKEND_ID,
+    GENERATION_ONLY_BACKEND_IDS,
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
     LITELLM_BACKEND_ID,
     normalize_backend_id,
 )
 from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.local_cli_backend import resolve_local_cli_preset
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
     FEISHU_WEBHOOK_ENV_GROUP,
@@ -125,6 +141,9 @@ class SystemConfigService:
     }
     _SERVER_MASKED_CONFIG_KEYS: Set[str] = {
         "ALPHASIFT_INSTALL_SPEC",
+        "LLM_HERMES_API_KEY",
+        "LLM_HERMES_API_KEYS",
+        "LLM_HERMES_EXTRA_HEADERS",
         "LLM_USAGE_HMAC_SECRET",
     }
     _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
@@ -524,9 +543,15 @@ class SystemConfigService:
             for check in checks
             if check["required"] and check["status"] == "needs_action"
         ]
+        smoke_blocking_missing = [
+            check["key"]
+            for check in checks
+            if check["key"] in {"llm_primary", "stock_list"}
+            and check["status"] == "needs_action"
+        ]
         return {
             "is_complete": not required_missing,
-            "ready_for_smoke": not required_missing,
+            "ready_for_smoke": not smoke_blocking_missing,
             "required_missing_keys": required_missing,
             "next_step_key": required_missing[0] if required_missing else None,
             "checks": checks,
@@ -583,6 +608,183 @@ class SystemConfigService:
             reload_now=reload_now,
         )
 
+    def _resolve_hermes_saved_secret(
+        self,
+        *,
+        channel_name: str,
+        protocol: str,
+        base_url: str,
+        submitted_api_key: str,
+        use_saved_secret: bool,
+        stage: str,
+    ) -> Tuple[Optional[str], Dict[str, Any], Set[str]]:
+        """Resolve a saved Hermes key only when the submitted endpoint is unchanged."""
+
+        redaction_values = self._build_redaction_values(submitted_api_key)
+        if not use_saved_secret:
+            return submitted_api_key, {}, redaction_values
+
+        if not is_reserved_hermes_name(channel_name):
+            return None, self._build_llm_channel_result(
+                success=False,
+                message="Saved secret scope mismatch",
+                error="Saved Hermes secret can only be used with the reserved hermes channel",
+                stage=stage,
+                error_code="saved_secret_scope_mismatch",
+                retryable=False,
+                details={"reason": "channel_identity_mismatch"},
+                resolved_protocol=None,
+                models=[] if stage == "model_discovery" else None,
+                latency_ms=None,
+                redaction_values=redaction_values,
+            ), redaction_values
+
+        saved_map = self._manager.read_config_map()
+        saved_key = (saved_map.get("LLM_HERMES_API_KEY") or "").strip()
+        if not saved_key or is_masked_secret_placeholder(saved_key):
+            error_code = (
+                "runtime_secret_not_reusable"
+                if is_masked_secret_placeholder(saved_key) or (os.environ.get("LLM_HERMES_API_KEY") or "").strip()
+                else "missing_saved_secret"
+            )
+            return None, self._build_llm_channel_result(
+                success=False,
+                message=(
+                    "Runtime Hermes secret is not reusable"
+                    if error_code == "runtime_secret_not_reusable"
+                    else "Missing saved Hermes secret"
+                ),
+                error=(
+                    "Runtime-injected LLM_HERMES_API_KEY cannot be reused from the settings test flow"
+                    if error_code == "runtime_secret_not_reusable"
+                    else "No saved LLM_HERMES_API_KEY is available for this endpoint"
+                ),
+                stage=stage,
+                error_code=error_code,
+                retryable=False,
+                details={"reason": error_code},
+                resolved_protocol=None,
+                models=[] if stage == "model_discovery" else None,
+                latency_ms=None,
+                redaction_values=redaction_values,
+            ), redaction_values
+
+        redaction_values.update(self._build_redaction_values(saved_key))
+        saved_protocol = (saved_map.get("LLM_HERMES_PROTOCOL") or "openai").strip()
+        saved_base_url = (saved_map.get("LLM_HERMES_BASE_URL") or "").strip()
+        try:
+            submitted_protocol = (protocol or "openai").strip().lower() or "openai"
+            saved_protocol_canonical = (saved_protocol or "openai").strip().lower() or "openai"
+            submitted_base = canonicalize_hermes_base_url(base_url)
+            saved_base = canonicalize_hermes_base_url(saved_base_url)
+        except ValueError as exc:
+            return None, self._build_llm_channel_result(
+                success=False,
+                message="Saved secret scope mismatch",
+                error=str(exc),
+                stage=stage,
+                error_code="saved_secret_scope_mismatch",
+                retryable=False,
+                details={"reason": "invalid_hermes_endpoint"},
+                resolved_protocol=None,
+                models=[] if stage == "model_discovery" else None,
+                latency_ms=None,
+                redaction_values=redaction_values,
+            ), redaction_values
+
+        if submitted_protocol != saved_protocol_canonical or submitted_base != saved_base:
+            return None, self._build_llm_channel_result(
+                success=False,
+                message="Saved secret scope mismatch",
+                error="Hermes endpoint changed; re-enter LLM_HERMES_API_KEY before testing",
+                stage=stage,
+                error_code="saved_secret_scope_mismatch",
+                retryable=False,
+                details={
+                    "reason": "endpoint_mismatch",
+                    "submitted_base_url": submitted_base,
+                    "saved_base_url": saved_base,
+                },
+                resolved_protocol=submitted_protocol,
+                models=[] if stage == "model_discovery" else None,
+                latency_ms=None,
+                redaction_values=redaction_values,
+            ), redaction_values
+
+        return saved_key, {}, redaction_values
+
+    def _validate_hermes_submitted_secret(
+        self,
+        *,
+        api_key: str,
+        use_saved_secret: bool,
+        stage: str,
+        models: Optional[List[str]] = None,
+        capability_checks: Sequence[str] = (),
+        redaction_values: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Reject Hermes secret shapes that must not reach an outbound request."""
+
+        secret = (api_key or "").strip()
+        redactions = set(redaction_values or set())
+        redactions.update(self._build_redaction_values(secret))
+        if is_masked_secret_placeholder(secret):
+            return self._build_llm_channel_result(
+                success=False,
+                message="Runtime Hermes secret is not reusable",
+                error=(
+                    "Runtime-injected Hermes secret is masked and cannot be reused by "
+                    "test/discovery. Re-enter the key or save it to .env."
+                ),
+                stage=stage,
+                error_code="runtime_secret_not_reusable",
+                retryable=False,
+                details={"reason": "runtime_secret_not_reusable"},
+                resolved_protocol=None,
+                models=models if stage == "model_discovery" else None,
+                latency_ms=None,
+                capability_results=(
+                    self._build_skipped_capability_results(
+                        capability_checks,
+                        "base_test_failed",
+                        "Skipped because the base channel test did not pass",
+                        redaction_values=redactions,
+                    )
+                    if capability_checks
+                    else None
+                ),
+                redaction_values=redactions,
+            )
+        if "," in secret:
+            return self._build_llm_channel_result(
+                success=False,
+                message="Hermes API key is invalid",
+                error="Hermes Phase 3 only supports a single LLM_HERMES_API_KEY",
+                stage=stage,
+                error_code="invalid_config",
+                retryable=False,
+                details={
+                    "issue_key": "LLM_HERMES_API_KEY",
+                    "issue_code": "multiple_api_keys",
+                    "reason": "multiple_api_keys",
+                },
+                resolved_protocol=None,
+                models=models if stage == "model_discovery" else None,
+                latency_ms=None,
+                capability_results=(
+                    self._build_skipped_capability_results(
+                        capability_checks,
+                        "base_test_failed",
+                        "Skipped because the base channel test did not pass",
+                        redaction_values=redactions,
+                    )
+                    if capability_checks
+                    else None
+                ),
+                redaction_values=redactions,
+            )
+        return None
+
     def discover_llm_channel_models(
         self,
         *,
@@ -592,9 +794,52 @@ class SystemConfigService:
         api_key: str,
         models: Sequence[str] = (),
         timeout_seconds: float = 20.0,
-        ) -> Dict[str, Any]:
+        use_saved_secret: bool = False,
+    ) -> Dict[str, Any]:
         """Discover available models from an OpenAI-compatible `/models` endpoint."""
         channel_name = name.strip() or "channel"
+        resolved_secret, secret_error, redaction_values = self._resolve_hermes_saved_secret(
+            channel_name=channel_name,
+            protocol=protocol,
+            base_url=base_url,
+            submitted_api_key=api_key,
+            use_saved_secret=use_saved_secret,
+            stage="model_discovery",
+        )
+        if resolved_secret is None:
+            return secret_error
+        api_key = resolved_secret
+        redaction_values.update(self._build_redaction_values(api_key))
+        if is_reserved_hermes_name(channel_name):
+            secret_error = self._validate_hermes_submitted_secret(
+                api_key=api_key,
+                use_saved_secret=use_saved_secret,
+                stage="model_discovery",
+                models=[],
+                redaction_values=redaction_values,
+            )
+            if secret_error is not None:
+                return secret_error
+            try:
+                base_url = canonicalize_hermes_base_url(base_url)
+            except ValueError as exc:
+                return self._build_llm_channel_result(
+                    success=False,
+                    message="Hermes Base URL is invalid",
+                    error=str(exc),
+                    stage="model_discovery",
+                    error_code="invalid_config",
+                    retryable=False,
+                    details={
+                        "issue_key": "discover_channel_BASE_URL",
+                        "issue_code": "invalid_hermes_url",
+                        "reason": "invalid_hermes_url",
+                    },
+                    resolved_protocol=None,
+                    models=[],
+                    latency_ms=None,
+                    redaction_values=redaction_values,
+                )
         existing_models = [str(m).strip() for m in models if str(m).strip()]
         validation_issues, resolved_protocol = self._validate_llm_channel_connection(
             channel_name=channel_name,
@@ -629,6 +874,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=None,
+                redaction_values=redaction_values,
             )
 
         if resolved_protocol not in {"openai", "deepseek"}:
@@ -646,10 +892,12 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=None,
+                redaction_values=redaction_values,
             )
 
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
+        redaction_values.update(self._build_redaction_values(selected_api_key))
         request_headers = {"Accept": "application/json"}
         if selected_api_key:
             request_headers["Authorization"] = f"Bearer {selected_api_key}"
@@ -672,19 +920,37 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=None,
+                redaction_values=redaction_values,
             )
 
         try:
             started_at = time.perf_counter()
-            response = requests.get(
-                models_url,
-                headers=request_headers,
-                timeout=max(5.0, float(timeout_seconds)),
-                allow_redirects=False,
-            )
+            if is_reserved_hermes_name(channel_name):
+                session = requests.Session()
+                session.trust_env = False
+                try:
+                    response = session.get(
+                        models_url,
+                        headers=request_headers,
+                        timeout=max(5.0, float(timeout_seconds)),
+                        allow_redirects=False,
+                    )
+                finally:
+                    session.close()
+            else:
+                response = requests.get(
+                    models_url,
+                    headers=request_headers,
+                    timeout=max(5.0, float(timeout_seconds)),
+                    allow_redirects=False,
+                )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
         except requests.RequestException as exc:
-            logger.warning("LLM channel model discovery failed for %s: %s", channel_name, exc)
+            logger.warning(
+                "LLM channel model discovery failed for %s: %s",
+                channel_name,
+                self._sanitize_llm_error_text(exc, redaction_values=redaction_values),
+            )
             diagnostic = self._classify_llm_exception(exc)
             return self._build_llm_channel_result(
                 success=False,
@@ -697,6 +963,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=None,
+                redaction_values=redaction_values,
             )
 
         if 300 <= response.status_code < 400:
@@ -711,6 +978,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=latency_ms,
+                redaction_values=redaction_values,
             )
 
         if not response.ok:
@@ -733,6 +1001,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=latency_ms,
+                redaction_values=redaction_values,
             )
 
         try:
@@ -749,6 +1018,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=latency_ms,
+                redaction_values=redaction_values,
             )
 
         models = self._extract_discovered_llm_models(payload)
@@ -764,6 +1034,7 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 models=[],
                 latency_ms=latency_ms,
+                redaction_values=redaction_values,
             )
 
         return self._build_llm_channel_result(
@@ -777,6 +1048,7 @@ class SystemConfigService:
             resolved_protocol=resolved_protocol or None,
             models=models,
             latency_ms=latency_ms,
+            redaction_values=redaction_values,
         )
 
     def test_llm_channel(
@@ -790,11 +1062,68 @@ class SystemConfigService:
         enabled: bool = True,
         timeout_seconds: float = 20.0,
         capability_checks: Sequence[str] = (),
+        use_saved_secret: bool = False,
     ) -> Dict[str, Any]:
         """Run a minimal completion call against one channel definition."""
         requested_capabilities = self._normalize_llm_capability_checks(capability_checks)
         raw_models = [str(model).strip() for model in models if str(model).strip()]
         channel_name = name.strip() or "channel"
+        resolved_secret, secret_error, redaction_values = self._resolve_hermes_saved_secret(
+            channel_name=channel_name,
+            protocol=protocol,
+            base_url=base_url,
+            submitted_api_key=api_key,
+            use_saved_secret=use_saved_secret,
+            stage="chat_completion",
+        )
+        if resolved_secret is None:
+            result = secret_error
+            if requested_capabilities and "capability_results" not in result:
+                result["capability_results"] = self._build_skipped_capability_results(
+                    requested_capabilities,
+                    "base_test_failed",
+                    "Skipped because the base channel test did not pass",
+                    redaction_values=redaction_values,
+                )
+            return result
+        api_key = resolved_secret
+        redaction_values.update(self._build_redaction_values(api_key))
+        if is_reserved_hermes_name(channel_name):
+            secret_error = self._validate_hermes_submitted_secret(
+                api_key=api_key,
+                use_saved_secret=use_saved_secret,
+                stage="chat_completion",
+                capability_checks=requested_capabilities,
+                redaction_values=redaction_values,
+            )
+            if secret_error is not None:
+                return secret_error
+            try:
+                base_url = canonicalize_hermes_base_url(base_url)
+            except ValueError as exc:
+                return self._build_llm_channel_result(
+                    success=False,
+                    message="Hermes Base URL is invalid",
+                    error=str(exc),
+                    stage="chat_completion",
+                    error_code="invalid_config",
+                    retryable=False,
+                    details={
+                        "issue_key": "test_channel_BASE_URL",
+                        "issue_code": "invalid_hermes_url",
+                        "reason": "invalid_hermes_url",
+                    },
+                    resolved_protocol=None,
+                    resolved_model=None,
+                    latency_ms=None,
+                    capability_results=self._build_skipped_capability_results(
+                        requested_capabilities,
+                        "base_test_failed",
+                        "Skipped because the base channel test did not pass",
+                        redaction_values=redaction_values,
+                    ),
+                    redaction_values=redaction_values,
+                )
         validation_issues = self._validate_llm_channel_definition(
             channel_name=channel_name,
             protocol_value=protocol,
@@ -826,14 +1155,19 @@ class SystemConfigService:
                     requested_capabilities,
                     "base_test_failed",
                     "Skipped because the base channel test did not pass",
+                    redaction_values=redaction_values,
                 ),
+                redaction_values=redaction_values,
             )
 
         resolved_protocol = resolve_llm_channel_protocol(protocol, base_url=base_url, models=raw_models, channel_name=name)
         resolved_models = [normalize_llm_channel_model(model, resolved_protocol, base_url) for model in raw_models]
         resolved_model = resolved_models[0]
+        if is_reserved_hermes_name(channel_name):
+            resolved_model = canonicalize_hermes_model_ref(raw_models[0]).wire_model
         api_keys = [segment.strip() for segment in api_key.split(",") if segment.strip()]
         selected_api_key = api_keys[0] if api_keys else ""
+        redaction_values.update(self._build_redaction_values(selected_api_key))
 
         call_kwargs: Dict[str, Any] = {
             "model": resolved_model,
@@ -870,13 +1204,32 @@ class SystemConfigService:
             )
 
             started_at = time.perf_counter()
-            response = call_litellm_with_param_recovery(
-                lambda kwargs: litellm.completion(**kwargs),
-                model=resolved_model,
-                call_kwargs=call_kwargs,
-                logger=logger,
-                log_label="[LLM channel test]",
-            )
+            if is_reserved_hermes_name(channel_name):
+                with open_hermes_no_proxy_client(
+                    api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout=max(5.0, float(timeout_seconds)),
+                ) as client:
+                    hermes_call_kwargs = dict(call_kwargs)
+                    hermes_call_kwargs["stream"] = False
+                    hermes_call_kwargs["client"] = client
+                    hermes_call_kwargs.pop("api_key", None)
+                    hermes_call_kwargs.pop("api_base", None)
+                    response = call_litellm_with_param_recovery(
+                        lambda kwargs: litellm.completion(**kwargs),
+                        model=resolved_model,
+                        call_kwargs=hermes_call_kwargs,
+                        logger=logger,
+                        log_label="[Hermes channel test]",
+                    )
+            else:
+                response = call_litellm_with_param_recovery(
+                    lambda kwargs: litellm.completion(**kwargs),
+                    model=resolved_model,
+                    call_kwargs=call_kwargs,
+                    logger=logger,
+                    log_label="[LLM channel test]",
+                )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             content, parse_error_code, parse_error, parse_reason = self._extract_llm_completion_content(response)
             if parse_error_code:
@@ -900,11 +1253,24 @@ class SystemConfigService:
                         requested_capabilities,
                         "base_test_failed",
                         "Skipped because the base channel test did not pass",
+                        redaction_values=redaction_values,
                     ),
+                    redaction_values=redaction_values,
                 )
 
-            capability_results = (
-                self._run_llm_capability_checks(
+            capability_results: Dict[str, Any] = {}
+            if requested_capabilities and is_reserved_hermes_name(channel_name):
+                capability_results = self._run_hermes_capability_checks(
+                    litellm_module=litellm,
+                    resolved_model=resolved_model,
+                    selected_api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                    capability_checks=requested_capabilities,
+                    redaction_values=redaction_values,
+                )
+            elif requested_capabilities:
+                capability_results = self._run_llm_capability_checks(
                     litellm_module=litellm,
                     resolved_model=resolved_model,
                     selected_api_key=selected_api_key,
@@ -912,9 +1278,6 @@ class SystemConfigService:
                     timeout_seconds=timeout_seconds,
                     capability_checks=requested_capabilities,
                 )
-                if requested_capabilities
-                else {}
-            )
             return self._build_llm_channel_result(
                 success=True,
                 message="LLM channel test succeeded",
@@ -927,9 +1290,14 @@ class SystemConfigService:
                 resolved_model=resolved_model,
                 latency_ms=latency_ms,
                 capability_results=capability_results,
+                redaction_values=redaction_values,
             )
         except Exception as exc:
-            logger.warning("LLM channel test failed for %s: %s", channel_name, exc)
+            logger.warning(
+                "LLM channel test failed for %s: %s",
+                channel_name,
+                self._sanitize_llm_error_text(exc, redaction_values=redaction_values),
+            )
             diagnostic = self._classify_llm_exception(exc)
             return self._build_llm_channel_result(
                 success=False,
@@ -942,10 +1310,12 @@ class SystemConfigService:
                 resolved_protocol=resolved_protocol or None,
                 resolved_model=resolved_model,
                 latency_ms=None,
+                redaction_values=redaction_values,
                 capability_results=self._build_skipped_capability_results(
                     requested_capabilities,
                     "base_test_failed",
                     "Skipped because the base channel test did not pass",
+                    redaction_values=redaction_values,
                 ),
             )
 
@@ -960,6 +1330,8 @@ class SystemConfigService:
         capability_checks: Sequence[str],
         reason: str,
         message: str,
+        *,
+        redaction_values: Optional[Set[str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         return {
             capability: cls._build_llm_capability_result(
@@ -969,9 +1341,102 @@ class SystemConfigService:
                 error_code="skipped",
                 retryable=False,
                 details={"reason": reason},
+                redaction_values=redaction_values,
             )
             for capability in capability_checks
         }
+
+    @classmethod
+    def _run_hermes_capability_checks(
+        cls,
+        *,
+        litellm_module: Any,
+        resolved_model: str,
+        selected_api_key: str,
+        base_url: str,
+        timeout_seconds: float,
+        capability_checks: Sequence[str],
+        redaction_values: Optional[Set[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        results: Dict[str, Dict[str, Any]] = {}
+        for capability in capability_checks:
+            if capability != "json":
+                results[capability] = cls._build_llm_capability_result(
+                    capability=capability,
+                    status="skipped",
+                    message="Hermes Phase 3 does not probe this capability",
+                    error_code="not_probed",
+                    retryable=False,
+                    details={"reason": "not_probed"},
+                    redaction_values=redaction_values,
+                )
+                continue
+            try:
+                started_at = time.perf_counter()
+                with open_hermes_no_proxy_client(
+                    api_key=selected_api_key,
+                    base_url=base_url,
+                    timeout=max(5.0, float(timeout_seconds)),
+                ) as client:
+                    call_kwargs = cls._build_llm_capability_completion_kwargs(
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        messages=[{"role": "user", "content": 'Return exactly this JSON object: {"status":"ok"}'}],
+                        max_tokens=64,
+                        extra={"response_format": {"type": "json_object"}, "client": client},
+                    )
+                    call_kwargs.pop("api_key", None)
+                    call_kwargs.pop("api_base", None)
+                    response = litellm_module.completion(**call_kwargs)
+                    content, parse_error_code, parse_error, parse_reason = cls._extract_llm_completion_content(response)
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                if parse_error_code:
+                    results[capability] = cls._build_llm_capability_result(
+                        capability="json",
+                        status="failed",
+                        message="JSON capability check returned no parseable content",
+                        error_code=parse_error_code,
+                        retryable=False,
+                        latency_ms=latency_ms,
+                        details={"reason": parse_reason, "response_error": parse_error},
+                        redaction_values=redaction_values,
+                    )
+                    continue
+                try:
+                    payload = json.loads(content)
+                except ValueError:
+                    payload = None
+                if not isinstance(payload, dict) or payload.get("status") != "ok":
+                    results[capability] = cls._build_llm_capability_result(
+                        capability="json",
+                        status="failed",
+                        message="JSON capability check returned non-JSON content",
+                        error_code="format_error",
+                        retryable=False,
+                        latency_ms=latency_ms,
+                        details={"reason": "non_json", "response_preview": content[:80]},
+                        redaction_values=redaction_values,
+                    )
+                    continue
+                results[capability] = cls._build_llm_capability_result(
+                    capability="json",
+                    status="passed",
+                    message="JSON output capability check passed",
+                    latency_ms=latency_ms,
+                    details={"reason": "json_valid"},
+                    redaction_values=redaction_values,
+                )
+            except Exception as exc:
+                diagnostic = cls._classify_llm_capability_exception(exc, "json")
+                results[capability] = cls._build_llm_capability_result_from_diagnostic(
+                    "json",
+                    diagnostic,
+                    cls._sanitize_llm_error_text(exc, redaction_values=redaction_values),
+                    redaction_values=redaction_values,
+                )
+        return results
 
     @classmethod
     def _run_llm_capability_checks(
@@ -1308,15 +1773,19 @@ class SystemConfigService:
         retryable: bool = False,
         latency_ms: Optional[int] = None,
         details: Optional[Dict[str, Any]] = None,
+        redaction_values: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         return {
             "status": status,
-            "message": cls._sanitize_llm_error_text(message),
+            "message": cls._sanitize_llm_error_text(message, redaction_values=redaction_values),
             "error_code": error_code,
             "stage": f"capability_{capability}",
             "retryable": retryable,
             "latency_ms": latency_ms,
-            "details": cls._sanitize_llm_details({"capability": capability, **(details or {})}),
+            "details": cls._sanitize_llm_details(
+                {"capability": capability, **(details or {})},
+                redaction_values=redaction_values,
+            ),
         }
 
     @classmethod
@@ -1325,6 +1794,8 @@ class SystemConfigService:
         capability: str,
         diagnostic: _LLMDiagnostic,
         error: str,
+        *,
+        redaction_values: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         details = cls._merge_llm_diagnostic_details({"error": error}, diagnostic)
         return cls._build_llm_capability_result(
@@ -1334,6 +1805,7 @@ class SystemConfigService:
             error_code=diagnostic.error_code,
             retryable=diagnostic.retryable,
             details=details,
+            redaction_values=redaction_values,
         )
 
     @staticmethod
@@ -1463,10 +1935,17 @@ class SystemConfigService:
                 reload_now=reload_now,
             )
         )
+        update_map = dict(updates)
         warnings.extend(
             self._build_runtime_model_cleanup_warnings(
                 previous_map=previous_map,
-                updates=dict(updates),
+                updates=update_map,
+            )
+        )
+        warnings.extend(
+            self._build_hermes_unsupported_key_cleanup_warnings(
+                previous_map=previous_map,
+                updates=update_map,
             )
         )
         if self._runtime_scheduler is not None and submitted_keys & {
@@ -1663,6 +2142,35 @@ class SystemConfigService:
             "LITELLM_MODEL / AGENT_LITELLM_MODEL / VISION_MODEL / LLM_TEMPERATURE。"
         )
         return [warning]
+
+    @staticmethod
+    def _build_hermes_unsupported_key_cleanup_warnings(
+        *,
+        previous_map: Dict[str, str],
+        updates: Dict[str, str],
+    ) -> List[str]:
+        """Explain when Hermes save clears unsupported Phase 3 key/header fields."""
+        unsupported_labels = {
+            "LLM_HERMES_API_KEYS": "LLM_HERMES_API_KEYS",
+            "LLM_HERMES_EXTRA_HEADERS": "LLM_HERMES_EXTRA_HEADERS",
+        }
+        cleared = [
+            label
+            for key, label in unsupported_labels.items()
+            if previous_map.get(key, "").strip() and key in updates and not updates[key].strip()
+        ]
+        if not cleared:
+            return []
+
+        return [
+            (
+                "检测到已清理 Hermes Phase 3 不支持的配置项："
+                f"{', '.join(cleared)}。"
+                "Hermes reserved channel 只支持单个 LLM_HERMES_API_KEY，不支持多 Key 或额外 Header；"
+                "如需恢复旧值，请从 .env 备份、Git 历史或桌面端导出备份手动还原，"
+                "但非空 LLM_HERMES_API_KEYS / LLM_HERMES_EXTRA_HEADERS 仍会被后端校验拒绝。"
+            )
+        ]
 
     def apply_simple_updates(
         self,
@@ -2586,6 +3094,22 @@ class SystemConfigService:
                         or ANSPIRE_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
+            if is_reserved_hermes_name(name):
+                result = parse_hermes_channel(
+                    enabled=True,
+                    protocol=protocol or HERMES_DEFAULT_PROTOCOL,
+                    base_url=base_url or HERMES_DEFAULT_BASE_URL,
+                    api_key=(effective_map.get(f"{prefix}_API_KEY") or "").strip(),
+                    api_keys_raw=(effective_map.get(f"{prefix}_API_KEYS") or "").strip(),
+                    extra_headers_raw=(effective_map.get(f"{prefix}_EXTRA_HEADERS") or "").strip(),
+                    models=raw_models or [HERMES_DEFAULT_MODEL],
+                )
+                channel = result.channel or {}
+                for raw_model in channel.get("models") or []:
+                    if raw_model and raw_model not in seen:
+                        seen.add(raw_model)
+                        models.append(raw_model)
+                continue
             resolved_protocol = resolve_llm_channel_protocol(
                 protocol,
                 base_url=base_url,
@@ -2665,15 +3189,16 @@ class SystemConfigService:
             effective_map.get("GENERATION_BACKEND"),
             default=LITELLM_BACKEND_ID,
         )
-        if generation_backend == CODEX_CLI_BACKEND_ID:
-            if shutil.which("codex"):
+        if generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS:
+            preset = resolve_local_cli_preset(generation_backend)
+            if shutil.which(preset.executable):
                 return self._setup_check(
                     "llm_primary",
                     "LLM 主渠道",
                     "ai_model",
                     True,
                     "configured",
-                    "已启用 Codex CLI 本地生成 Backend（experimental/limited）。",
+                    f"已启用 {preset.display_name} 本地生成 Backend（experimental/limited）。",
                 )
             return self._setup_check(
                 "llm_primary",
@@ -2681,8 +3206,18 @@ class SystemConfigService:
                 "ai_model",
                 True,
                 "needs_action",
-                "已选择 codex_cli，但未找到 codex 可执行文件。",
-                "请先安装并登录 Codex CLI，或将 GENERATION_BACKEND 设回 litellm。",
+                (
+                    "已选择 codex_cli，但 DSA 后端进程当前 PATH 中找不到 codex 可执行文件。"
+                    if generation_backend == CODEX_CLI_BACKEND_ID
+                    else f"已选择 {generation_backend}，但未找到 {preset.executable} 可执行文件。"
+                ),
+                (
+                    "请确认 Codex CLI 已安装到后端 PATH 可见目录；桌面端请完全退出并重开。"
+                    "打开 Codex CLI 交互窗口不会改变已运行后端的 PATH；若找到后仍失败，再检查 Codex CLI 登录态，"
+                    "或将 GENERATION_BACKEND 设回 litellm。"
+                    if generation_backend == CODEX_CLI_BACKEND_ID
+                    else "请先安装并登录对应 CLI，或将 GENERATION_BACKEND 设回 litellm。"
+                ),
             )
 
         model, source = self._resolve_setup_primary_model(effective_map)
@@ -2724,29 +3259,43 @@ class SystemConfigService:
             effective_map.get("AGENT_GENERATION_BACKEND"),
             default=AUTO_AGENT_BACKEND_ID,
         )
-        if agent_backend == CODEX_CLI_BACKEND_ID:
+        if agent_backend in GENERATION_ONLY_BACKEND_IDS:
             return self._setup_check(
                 "llm_agent",
                 "Agent 渠道",
                 "agent",
                 True,
                 "needs_action",
-                "Agent 工具调用暂不支持 codex_cli text-only backend。",
+                f"Agent 工具调用暂不支持 {agent_backend} text-only backend。",
                 "请将 AGENT_GENERATION_BACKEND 设为 auto 或 litellm，并配置 LiteLLM 工具调用渠道。",
             )
 
         agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
+        hermes_routes = set(self._collect_hermes_channel_models_from_map(effective_map))
+        non_hermes_routes = set(self._collect_non_hermes_channel_models_from_map(effective_map))
         if not agent_model_raw:
-            if generation_backend == CODEX_CLI_BACKEND_ID:
+            if generation_backend in LOCAL_CLI_GENERATION_BACKEND_IDS:
                 litellm_model, _source = self._resolve_setup_primary_model(effective_map)
                 if litellm_model:
+                    if litellm_model in hermes_routes and litellm_model not in non_hermes_routes:
+                        return self._setup_check(
+                            "llm_agent",
+                            "Agent 渠道",
+                            "agent",
+                            True,
+                            "needs_action",
+                            "普通分析使用 Codex CLI；但当前 LiteLLM Agent 路径继承的是 Hermes-only 模型，"
+                            "Hermes Phase 3 不支持 Agent 工具调用。",
+                            "如需使用 Ask-Stock Agent，请配置非 Hermes 的 AGENT_LITELLM_MODEL，"
+                            "或配置包含非 Hermes deployment 的 mixed Agent route。",
+                        )
                     return self._setup_check(
                         "llm_agent",
                         "Agent 渠道",
                         "agent",
                         True,
                         "configured",
-                        "Agent 工具调用将继续使用 LiteLLM 渠道。",
+                        f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {litellm_model}",
                     )
                 if agent_backend == LITELLM_BACKEND_ID:
                     return self._setup_check(
@@ -2764,10 +3313,21 @@ class SystemConfigService:
                     "agent",
                     True,
                     "needs_action",
-                    "Agent 工具调用需要 LiteLLM 模型配置；codex_cli 主生成方式不会被自动继承。",
+                    "Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。",
                     "如需使用 Ask-Stock Agent，请配置 LiteLLM 模型，或将 AGENT_GENERATION_BACKEND 固定为 litellm 后补齐模型配置。",
                 )
             if primary_check["status"] == "configured":
+                primary_model, _source = self._resolve_setup_primary_model(effective_map)
+                if primary_model in hermes_routes and primary_model not in non_hermes_routes:
+                    return self._setup_check(
+                        "llm_agent",
+                        "Agent 渠道",
+                        "agent",
+                        True,
+                        "needs_action",
+                        "Hermes Phase 3 不支持 Agent 工具调用，且当前继承的主模型没有非 Hermes deployment。",
+                        "请选择非 Hermes Agent 模型，或配置包含非 Hermes deployment 的 mixed Agent route。",
+                    )
                 return self._setup_check(
                     "llm_agent",
                     "Agent 渠道",
@@ -2791,6 +3351,21 @@ class SystemConfigService:
             or self._collect_setup_channel_models(effective_map)
         )
         agent_model = normalize_agent_litellm_model(agent_model_raw, configured_models=configured_models)
+        if agent_model in hermes_routes and agent_model not in non_hermes_routes:
+            return self._setup_check(
+                "llm_agent",
+                "Agent 渠道",
+                "agent",
+                True,
+                "needs_action",
+                f"Agent 主模型 {agent_model} 只有 Hermes deployment，Phase 3 不支持 Agent 工具调用。",
+                "请选择非 Hermes Agent 模型，或配置 mixed route 中的非 Hermes deployment。",
+            )
+        configured_agent_message = f"已配置 Agent 主模型: {agent_model}"
+        if generation_backend == CODEX_CLI_BACKEND_ID:
+            configured_agent_message = (
+                f"普通分析使用 Codex CLI；Agent 工具调用仍使用 LiteLLM 主模型: {agent_model}"
+            )
         if _uses_direct_env_provider(agent_model):
             return self._setup_check(
                 "llm_agent",
@@ -2798,7 +3373,7 @@ class SystemConfigService:
                 "agent",
                 True,
                 "configured",
-                f"已配置 Agent 主模型: {agent_model}",
+                configured_agent_message,
             )
         if (
             not configured_models
@@ -2810,7 +3385,7 @@ class SystemConfigService:
                 "agent",
                 True,
                 "configured",
-                f"已配置 Agent 主模型: {agent_model}",
+                configured_agent_message,
             )
 
         return self._setup_check(
@@ -3040,24 +3615,31 @@ class SystemConfigService:
         models: Optional[List[str]] = None,
         latency_ms: Optional[int] = None,
         capability_results: Optional[Dict[str, Any]] = None,
+        redaction_values: Optional[Set[str]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "success": success,
-            "message": cls._sanitize_llm_error_text(message),
-            "error": cls._sanitize_llm_error_text(error) if error else None,
+            "message": cls._sanitize_llm_error_text(message, redaction_values=redaction_values),
+            "error": cls._sanitize_llm_error_text(error, redaction_values=redaction_values) if error else None,
             "stage": stage,
             "error_code": error_code,
             "retryable": retryable,
-            "details": cls._sanitize_llm_details(details),
-            "resolved_protocol": resolved_protocol,
+            "details": cls._sanitize_llm_details(details, redaction_values=redaction_values),
+            "resolved_protocol": cls._sanitize_llm_error_text(
+                resolved_protocol,
+                redaction_values=redaction_values,
+            ) if resolved_protocol is not None else None,
             "latency_ms": latency_ms,
         }
         if resolved_model is not None or models is None:
-            payload["resolved_model"] = resolved_model
+            payload["resolved_model"] = cls._sanitize_llm_error_text(
+                resolved_model,
+                redaction_values=redaction_values,
+            ) if resolved_model is not None else resolved_model
         if models is not None:
-            payload["models"] = models
+            payload["models"] = cls._sanitize_llm_value(models, redaction_values=redaction_values)
         if capability_results is not None:
-            payload["capability_results"] = cls._sanitize_llm_details(capability_results)
+            payload["capability_results"] = cls._sanitize_llm_value(capability_results, redaction_values=redaction_values)
         return payload
 
     @staticmethod
@@ -3072,12 +3654,35 @@ class SystemConfigService:
         return details
 
     @staticmethod
-    def _sanitize_llm_error_text(text: Any) -> str:
+    def _build_redaction_values(*values: Any) -> Set[str]:
+        return build_hermes_redaction_values(*values)
+
+    @staticmethod
+    def _comma_flexible_secret_pattern(secret: str) -> Optional[re.Pattern[str]]:
+        normalized = re.sub(r"(?i)^\s*authorization\s*[:=]\s*", "", str(secret or "").strip())
+        normalized = re.sub(r"(?i)^\s*bearer\s+", "", normalized)
+        parts = [part.strip() for part in normalized.split(",") if part.strip()]
+        if len(parts) <= 1:
+            return None
+        return re.compile(
+            r"(?i)(?:authorization\s*[:=]\s*)?(?:bearer\s+)?"
+            + r"\s*,\s*".join(re.escape(part) for part in parts)
+        )
+
+    @classmethod
+    def _sanitize_llm_error_text(cls, text: Any, *, redaction_values: Optional[Set[str]] = None) -> str:
         if text is None:
             return ""
         sanitized = str(text).strip()
         if not sanitized:
             return ""
+        for secret in sorted((redaction_values or set()), key=len, reverse=True):
+            pattern = cls._comma_flexible_secret_pattern(secret)
+            if pattern is not None:
+                sanitized = pattern.sub("[REDACTED]", sanitized)
+        for secret in sorted((redaction_values or set()), key=len, reverse=True):
+            if secret:
+                sanitized = sanitized.replace(secret, "[REDACTED]")
 
         patterns = [
             (r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?([^\s,;]+)", r"\1[REDACTED]"),
@@ -3092,23 +3697,40 @@ class SystemConfigService:
         return sanitized[:300]
 
     @classmethod
-    def _sanitize_llm_details(cls, details: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _sanitize_llm_details(
+        cls,
+        details: Optional[Dict[str, Any]],
+        *,
+        redaction_values: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
         if not details:
             return {}
-        sanitized: Dict[str, Any] = {}
-        for key, value in details.items():
-            if isinstance(value, str):
-                sanitized[key] = cls._sanitize_llm_error_text(value)
-            elif isinstance(value, dict):
-                sanitized[key] = cls._sanitize_llm_details(value)
-            elif isinstance(value, list):
-                sanitized[key] = [
-                    cls._sanitize_llm_error_text(item) if isinstance(item, str) else item
-                    for item in value
-                ]
-            else:
-                sanitized[key] = value
-        return sanitized
+        sanitized = cls._sanitize_llm_value(details, redaction_values=redaction_values)
+        return sanitized if isinstance(sanitized, dict) else {}
+
+    @classmethod
+    def _sanitize_llm_value(cls, value: Any, *, redaction_values: Optional[Set[str]] = None) -> Any:
+        if isinstance(value, str):
+            return cls._sanitize_llm_error_text(value, redaction_values=redaction_values)
+        if isinstance(value, dict):
+            return {
+                cls._sanitize_llm_error_text(key, redaction_values=redaction_values): cls._sanitize_llm_value(
+                    item,
+                    redaction_values=redaction_values,
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                cls._sanitize_llm_value(item, redaction_values=redaction_values)
+                for item in value
+            ]
+        if isinstance(value, tuple):
+            return [
+                cls._sanitize_llm_value(item, redaction_values=redaction_values)
+                for item in value
+            ]
+        return value
 
     @staticmethod
     def _classify_llm_http_error(status_code: int, error_text: str) -> _LLMDiagnostic:
@@ -3623,6 +4245,28 @@ class SystemConfigService:
             if name.lower() == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
             enabled = parse_env_bool(enabled_raw, default=True)
+            if is_reserved_hermes_name(name):
+                result = parse_hermes_channel(
+                    enabled=enabled,
+                    protocol=protocol_value or HERMES_DEFAULT_PROTOCOL,
+                    base_url=base_url_value or HERMES_DEFAULT_BASE_URL,
+                    api_key=(effective_map.get(f"{prefix}_API_KEY") or "").strip(),
+                    api_keys_raw=(effective_map.get(f"{prefix}_API_KEYS") or "").strip(),
+                    extra_headers_raw=(effective_map.get(f"{prefix}_EXTRA_HEADERS") or "").strip(),
+                    models=models_value or [HERMES_DEFAULT_MODEL],
+                )
+                for issue in result.issues:
+                    issues.append(
+                        {
+                            "key": issue.field,
+                            "code": issue.code,
+                            "message": issue.message,
+                            "severity": issue.severity,
+                            "expected": "valid reserved Hermes channel",
+                            "actual": "",
+                        }
+                    )
+                continue
             issues.extend(
                 SystemConfigService._validate_llm_channel_definition(
                     channel_name=name,
@@ -3681,6 +4325,22 @@ class SystemConfigService:
                         or ANSPIRE_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
+            if is_reserved_hermes_name(name):
+                result = parse_hermes_channel(
+                    enabled=True,
+                    protocol=protocol_value or HERMES_DEFAULT_PROTOCOL,
+                    base_url=base_url_value or HERMES_DEFAULT_BASE_URL,
+                    api_key=(effective_map.get(f"{prefix}_API_KEY") or "").strip(),
+                    api_keys_raw=(effective_map.get(f"{prefix}_API_KEYS") or "").strip(),
+                    extra_headers_raw=(effective_map.get(f"{prefix}_EXTRA_HEADERS") or "").strip(),
+                    models=raw_models or [HERMES_DEFAULT_MODEL],
+                )
+                channel = result.channel or {}
+                for model in channel.get("models") or []:
+                    if model and model not in seen:
+                        seen.add(model)
+                        models.append(model)
+                continue
             resolved_protocol = resolve_llm_channel_protocol(protocol_value, base_url=base_url_value, models=raw_models, channel_name=name)
             for model in raw_models:
                 normalized_model = normalize_llm_channel_model(model, resolved_protocol, base_url_value)
@@ -3690,6 +4350,107 @@ class SystemConfigService:
                 models.append(normalized_model)
 
         return models
+
+    @staticmethod
+    def _collect_hermes_channel_models_from_map(effective_map: Dict[str, str]) -> List[str]:
+        """Collect valid reserved Hermes route aliases from channel-style env values."""
+        raw_channels = (effective_map.get("LLM_CHANNELS") or "").strip()
+        if not raw_channels:
+            return []
+
+        models: List[str] = []
+        seen: Set[str] = set()
+        for raw_name in raw_channels.split(","):
+            name = raw_name.strip()
+            if not is_reserved_hermes_name(name):
+                continue
+
+            prefix = f"LLM_{name.upper()}"
+            enabled = parse_env_bool(effective_map.get(f"{prefix}_ENABLED"), default=True)
+            if not enabled:
+                continue
+
+            raw_models = SystemConfigService._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
+            result = parse_hermes_channel(
+                enabled=True,
+                protocol=(effective_map.get(f"{prefix}_PROTOCOL") or HERMES_DEFAULT_PROTOCOL).strip(),
+                base_url=(effective_map.get(f"{prefix}_BASE_URL") or HERMES_DEFAULT_BASE_URL).strip(),
+                api_key=(effective_map.get(f"{prefix}_API_KEY") or "").strip(),
+                api_keys_raw=(effective_map.get(f"{prefix}_API_KEYS") or "").strip(),
+                extra_headers_raw=(effective_map.get(f"{prefix}_EXTRA_HEADERS") or "").strip(),
+                models=raw_models or [HERMES_DEFAULT_MODEL],
+            )
+            channel = result.channel or {}
+            for model in channel.get("models") or []:
+                if model and model not in seen:
+                    seen.add(model)
+                    models.append(model)
+        return models
+
+    @staticmethod
+    def _collect_non_hermes_channel_models_from_map(effective_map: Dict[str, str]) -> List[str]:
+        """Collect enabled non-Hermes channel route aliases from channel-style env values."""
+        raw_channels = (effective_map.get("LLM_CHANNELS") or "").strip()
+        if not raw_channels:
+            return []
+        models: List[str] = []
+        seen: Set[str] = set()
+        for raw_name in raw_channels.split(","):
+            name = raw_name.strip()
+            if not name or is_reserved_hermes_name(name):
+                continue
+            prefix = f"LLM_{name.upper()}"
+            enabled_raw = effective_map.get(f"{prefix}_ENABLED")
+            if name.lower() == "anspire" and not (enabled_raw or "").strip():
+                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
+            if not parse_env_bool(enabled_raw, default=True):
+                continue
+            base_url_value = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
+            if name.lower() == "anspire" and not base_url_value:
+                base_url_value = (
+                    effective_map.get("ANSPIRE_LLM_BASE_URL")
+                    or ANSPIRE_LLM_BASE_URL_DEFAULT
+                ).strip()
+            protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
+            if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
+            raw_models = SystemConfigService._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
+            if name.lower() == "anspire" and not raw_models:
+                raw_models = [
+                    (
+                        effective_map.get("ANSPIRE_LLM_MODEL")
+                        or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            resolved_protocol = resolve_llm_channel_protocol(
+                protocol_value,
+                base_url=base_url_value,
+                models=raw_models,
+                channel_name=name,
+            )
+            for raw_model in raw_models:
+                model = normalize_llm_channel_model(raw_model, resolved_protocol, base_url_value)
+                if model and model not in seen:
+                    seen.add(model)
+                    models.append(model)
+        return models
+
+    @staticmethod
+    def _collect_mixed_hermes_routes_from_map(effective_map: Dict[str, str]) -> Set[str]:
+        hermes_routes = set(SystemConfigService._collect_hermes_channel_models_from_map(effective_map))
+        non_hermes_routes = set(SystemConfigService._collect_non_hermes_channel_models_from_map(effective_map))
+        return hermes_routes & non_hermes_routes
+
+    @staticmethod
+    def _matches_route_set(model: str, routes: Set[str]) -> bool:
+        """Loose safety match for Hermes/provenance checks, not normal route availability."""
+        return bool(route_identity_candidates(model) & set(routes or set()))
+
+    @staticmethod
+    def _matches_exact_route(model: str, routes: Set[str]) -> bool:
+        """Match the Router's top-level model_name exactly for normal availability checks."""
+        normalized_model = str(model or "").strip()
+        return bool(normalized_model) and normalized_model in set(routes or set())
 
     @staticmethod
     def _uses_litellm_yaml(effective_map: Dict[str, str]) -> bool:
@@ -3756,6 +4517,8 @@ class SystemConfigService:
             or SystemConfigService._collect_llm_channel_models_from_map(effective_map)
         )
         available_model_set = set(available_models)
+        hermes_route_set = set(SystemConfigService._collect_hermes_channel_models_from_map(effective_map))
+        mixed_hermes_routes = SystemConfigService._collect_mixed_hermes_routes_from_map(effective_map)
         if not available_model_set:
             raw_channels = (effective_map.get("LLM_CHANNELS") or "").strip()
             if not raw_channels:
@@ -3805,6 +4568,25 @@ class SystemConfigService:
                         "actual": configured_agent_model,
                     }
                 )
+            elif (
+                configured_agent_model_raw
+                and configured_agent_model
+                and SystemConfigService._matches_route_set(configured_agent_model, hermes_route_set)
+                and not SystemConfigService._matches_route_set(configured_agent_model, mixed_hermes_routes)
+            ):
+                issues.append(
+                    {
+                        "key": "AGENT_LITELLM_MODEL",
+                        "code": "explicit_agent_model_no_safe_deployment",
+                        "message": (
+                            "Hermes-only routes are not valid Agent models in Phase 3. "
+                            "Choose a route with at least one non-Hermes deployment."
+                        ),
+                        "severity": "error",
+                        "expected": "Agent-safe route with non-Hermes deployment",
+                        "actual": configured_agent_model,
+                    }
+                )
 
             fallback_models = [
                 model.strip()
@@ -3831,7 +4613,21 @@ class SystemConfigService:
                 )
 
             vision_model = (effective_map.get("VISION_MODEL") or "").strip()
-            if vision_model and not SystemConfigService._has_runtime_source_for_model(vision_model, effective_map):
+            if vision_model and SystemConfigService._matches_route_set(vision_model, hermes_route_set):
+                issues.append(
+                    {
+                        "key": "VISION_MODEL",
+                        "code": "hermes_vision_unsupported",
+                        "message": (
+                            "Hermes routes are not valid Vision models in Phase 3. "
+                            "Choose a pure non-Hermes Vision-capable route."
+                        ),
+                        "severity": "error",
+                        "expected": "pure non-Hermes Vision route",
+                        "actual": vision_model,
+                    }
+                )
+            elif vision_model and not SystemConfigService._has_runtime_source_for_model(vision_model, effective_map):
                 issues.append(
                     {
                         "key": "VISION_MODEL",
@@ -3849,7 +4645,25 @@ class SystemConfigService:
             return issues
 
         primary_model = (effective_map.get("LITELLM_MODEL") or "").strip()
-        if primary_model and primary_model not in available_model_set and not _uses_direct_env_provider(primary_model):
+        if SystemConfigService._matches_route_set(primary_model, mixed_hermes_routes):
+            issues.append(
+                {
+                    "key": "LITELLM_MODEL",
+                    "code": "mixed_hermes_route_unsupported",
+                    "message": (
+                        "Mixed Hermes/non-Hermes generation routes are not supported in Phase 3. "
+                        "Choose a pure Hermes or pure non-Hermes route."
+                    ),
+                    "severity": "error",
+                    "expected": "pure generation route",
+                    "actual": primary_model,
+                }
+            )
+        if (
+            primary_model
+            and not SystemConfigService._matches_exact_route(primary_model, available_model_set)
+            and not _uses_direct_env_provider(primary_model)
+        ):
             issues.append(
                 {
                     "key": "LITELLM_MODEL",
@@ -3873,7 +4687,7 @@ class SystemConfigService:
         if (
             configured_agent_model_raw
             and configured_agent_model
-            and configured_agent_model not in available_model_set
+            and not SystemConfigService._matches_exact_route(configured_agent_model, available_model_set)
             and not _uses_direct_env_provider(configured_agent_model)
         ):
             issues.append(
@@ -3890,15 +4704,52 @@ class SystemConfigService:
                     "actual": configured_agent_model,
                 }
             )
+        elif (
+                configured_agent_model_raw
+                and configured_agent_model
+                and SystemConfigService._matches_route_set(configured_agent_model, hermes_route_set)
+                and not SystemConfigService._matches_route_set(configured_agent_model, mixed_hermes_routes)
+            ):
+            issues.append(
+                {
+                    "key": "AGENT_LITELLM_MODEL",
+                    "code": "explicit_agent_model_no_safe_deployment",
+                    "message": (
+                        "Hermes-only routes are not valid Agent models in Phase 3. "
+                        "Choose a route with at least one non-Hermes deployment."
+                    ),
+                    "severity": "error",
+                    "expected": "Agent-safe route with non-Hermes deployment",
+                    "actual": configured_agent_model,
+                }
+            )
 
         fallback_models = [
             model.strip()
             for model in (effective_map.get("LITELLM_FALLBACK_MODELS") or "").split(",")
             if model.strip()
         ]
+        mixed_fallbacks = [
+            model for model in fallback_models
+            if SystemConfigService._matches_route_set(model, mixed_hermes_routes)
+        ]
+        if mixed_fallbacks:
+            issues.append(
+                {
+                    "key": "LITELLM_FALLBACK_MODELS",
+                    "code": "mixed_hermes_route_unsupported",
+                    "message": (
+                        "Mixed Hermes/non-Hermes generation routes are not supported as fallback models in Phase 3."
+                    ),
+                    "severity": "error",
+                    "expected": "pure generation fallback routes",
+                    "actual": ", ".join(mixed_fallbacks[:3]),
+                }
+            )
         invalid_fallbacks = [
             model for model in fallback_models
-            if model not in available_model_set and not _uses_direct_env_provider(model)
+            if not SystemConfigService._matches_exact_route(model, available_model_set)
+            and not _uses_direct_env_provider(model)
         ]
         if invalid_fallbacks:
             issues.append(
@@ -3916,7 +4767,25 @@ class SystemConfigService:
             )
 
         vision_model = (effective_map.get("VISION_MODEL") or "").strip()
-        if vision_model and vision_model not in available_model_set and not _uses_direct_env_provider(vision_model):
+        if vision_model and SystemConfigService._matches_route_set(vision_model, hermes_route_set):
+            issues.append(
+                {
+                    "key": "VISION_MODEL",
+                    "code": "hermes_vision_unsupported",
+                    "message": (
+                        "Hermes routes are not valid Vision models in Phase 3. "
+                        "Choose a pure non-Hermes Vision-capable route."
+                    ),
+                    "severity": "error",
+                    "expected": "pure non-Hermes Vision route",
+                    "actual": vision_model,
+                }
+            )
+        elif (
+            vision_model
+            and not SystemConfigService._matches_exact_route(vision_model, available_model_set)
+            and not _uses_direct_env_provider(vision_model)
+        ):
             issues.append(
                 {
                     "key": "VISION_MODEL",

@@ -247,6 +247,83 @@ describe('buildRunFlowTopologyModel', () => {
     expect(model.events.find((event) => event.id === 'evt-normalized-block')?.nodeId).toBe('context_pack');
   });
 
+  it('groups TickFlow realtime fallback attempts without provider-specific UI branches', () => {
+    const tickFlowSnapshot: RunFlowSnapshot = {
+      ...baseSnapshot,
+      nodes: [
+        baseSnapshot.nodes[0],
+        {
+          id: 'provider_realtime_quote_tickflowfetcher_1',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · TickFlowFetcher',
+          status: 'failed',
+          provider: 'TickFlowFetcher',
+          durationMs: 892,
+          metadata: { data_type: 'realtime_quote', attempt: 1 },
+        },
+        {
+          id: 'provider_realtime_quote_aksharefetcher_2',
+          lane: 'data_source',
+          kind: 'data_source',
+          label: '实时行情 · AkshareFetcher',
+          status: 'success',
+          provider: 'AkshareFetcher',
+          durationMs: 8700,
+          recordCount: 1,
+          metadata: { data_type: 'realtime_quote', attempt: 2 },
+        },
+        {
+          id: 'context_pack',
+          lane: 'analysis',
+          kind: 'analysis',
+          label: 'ContextPack',
+          status: 'success',
+        },
+      ],
+      edges: [
+        {
+          id: 'tickflow-akshare-fallback',
+          from: 'provider_realtime_quote_tickflowfetcher_1',
+          to: 'provider_realtime_quote_aksharefetcher_2',
+          kind: 'fallback',
+          status: 'success',
+        },
+      ],
+      events: [],
+    };
+
+    const collapsed = buildRunFlowTopologyModel(tickFlowSnapshot);
+    const quoteGroup = collapsed.nodes.find((node) => node.id === 'topology_data_realtime_quote');
+
+    expect(quoteGroup).toMatchObject({
+      label: '实时行情',
+      status: 'fallback',
+      provider: 'TickFlowFetcher -> AkshareFetcher',
+      attempts: 2,
+      recordCount: 1,
+    });
+    expect(quoteGroup?.metadata).toMatchObject({
+      data_type: 'realtime_quote',
+      fallback_count: 1,
+      success_count: 1,
+      failed_count: 1,
+    });
+
+    const expanded = buildRunFlowTopologyModel(tickFlowSnapshot, {
+      expandedGroupIds: new Set(['topology_data_realtime_quote']),
+    });
+    expect(expanded.nodes.map((node) => node.id)).toContain('provider_realtime_quote_tickflowfetcher_1');
+    expect(expanded.nodes.map((node) => node.id)).toContain('provider_realtime_quote_aksharefetcher_2');
+    expect(expanded.nodes.find((node) => node.id === 'provider_realtime_quote_tickflowfetcher_1')).toMatchObject({
+      label: '实时行情 · TickFlowFetcher',
+      provider: 'TickFlowFetcher',
+      metadata: expect.objectContaining({
+        topologyRole: 'provider_attempt',
+        topologyParentId: 'topology_data_realtime_quote',
+      }),
+    });
+  });
   it('keeps retry-only provider groups successful when every attempt succeeds', () => {
     const retryOnlySnapshot: RunFlowSnapshot = {
       ...baseSnapshot,

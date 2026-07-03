@@ -51,6 +51,8 @@ const KNOWN_MODEL_PREFIXES = new Set([
 const CHANNEL_FIELD_SUFFIXES = ['PROTOCOL', 'BASE_URL', 'API_KEY', 'API_KEYS', 'MODELS', 'EXTRA_HEADERS', 'ENABLED'] as const;
 const CHANNEL_FIELD_KEY_PATTERN = /^LLM_([A-Z0-9_]+)_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
 const FALSEY_VALUES = new Set(['0', 'false', 'no', 'off']);
+const HERMES_CHANNEL_NAME = 'hermes';
+const HERMES_DEFAULT_MODEL = 'hermes-agent';
 
 const RUNTIME_CAPABILITY_OPTIONS: Array<{ value: LLMCapabilityCheck; label: string; hint: string }> = [
   { value: 'json', label: 'JSON', hint: '检测 response_format JSON 输出是否可用。' },
@@ -64,6 +66,54 @@ const CAPABILITY_STATUS_LABELS: Record<LLMCapabilityCheckResult['status'], strin
   failed: '失败',
   skipped: '跳过',
 };
+
+const isHermesChannel = (channel: Pick<ChannelConfig, 'name'>): boolean => (
+  channel.name.trim().toLowerCase() === HERMES_CHANNEL_NAME
+);
+
+function canonicalizeHermesRouteModel(model: string): string {
+  const trimmed = model.trim() || HERMES_DEFAULT_MODEL;
+  return trimmed.startsWith('openai/') ? trimmed : `openai/${trimmed}`;
+}
+
+function routeIdentityCandidates(model: string): Set<string> {
+  const trimmed = model.trim();
+  if (!trimmed) return new Set();
+  const candidates = new Set<string>([trimmed]);
+  if (!trimmed.startsWith('openai/') && !trimmed.includes('/')) {
+    candidates.add(`openai/${trimmed}`);
+  }
+  return candidates;
+}
+
+function getRouteProvenance(
+  routeProvenanceMap: Map<string, RouteProvenance>,
+  model: string,
+): RouteProvenance | undefined {
+  for (const candidate of routeIdentityCandidates(model)) {
+    const origin = routeProvenanceMap.get(candidate);
+    if (origin) return origin;
+  }
+  return undefined;
+}
+
+const shouldUseSavedHermesSecret = (
+  channel: Pick<ChannelConfig, 'name' | 'apiKey'>,
+  maskToken: string,
+  hasPersistedSecret: boolean,
+): boolean => (
+  isHermesChannel(channel) && channel.apiKey === maskToken && hasPersistedSecret
+);
+
+const hasRuntimeOnlyMaskedHermesSecret = (
+  channel: Pick<ChannelConfig, 'name' | 'apiKey'>,
+  maskToken: string,
+  hasPersistedSecret: boolean,
+): boolean => (
+  isHermesChannel(channel) && channel.apiKey === maskToken && !hasPersistedSecret
+);
+
+const RUNTIME_ONLY_HERMES_SECRET_MESSAGE = '运行时注入的 Hermes Key 不会回传；如需在设置页测试，请重新输入 Key 或保存到 .env。';
 
 interface ChannelConfig {
   id: string;
@@ -211,6 +261,9 @@ function resolveInitialChannelApiKeySource(
   const apiKeysValue = (initialItemValueByKey.get(apiKeysKey) || '').trim();
   const apiKeyValue = (initialItemValueByKey.get(apiKeyKey) || '').trim();
 
+  if (channelName.trim().toLowerCase() === HERMES_CHANNEL_NAME && apiKeyValue && initialItemSourceByKey.has(apiKeyKey)) {
+    return initialItemSourceByKey.get(apiKeyKey);
+  }
   if (apiKeysValue && initialItemSourceByKey.has(apiKeysKey)) {
     return initialItemSourceByKey.get(apiKeysKey);
   }
@@ -239,6 +292,9 @@ function resolveInitialChannelApiKeyValue(
   const apiKeysValue = (itemValueByKey.get(apiKeysKey) || '').trim();
   const apiKeyValue = (itemValueByKey.get(apiKeyKey) || '').trim();
 
+  if (channelName.trim().toLowerCase() === HERMES_CHANNEL_NAME && apiKeyValue) {
+    return apiKeyValue;
+  }
   if (apiKeysValue && itemSourceByKey.has(apiKeysKey)) {
     return apiKeysValue;
   }
@@ -365,6 +421,9 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
   const providerSources = showProviderTemplateDetails ? (preset?.officialSources || []) : [];
   const providerHint = showProviderTemplateDetails ? preset?.configHint : undefined;
   const selectedModels = splitModels(channel.models);
+  const runtimeCapabilityOptions = isHermesChannel(channel)
+    ? RUNTIME_CAPABILITY_OPTIONS.filter((option) => option.value === 'json')
+    : RUNTIME_CAPABILITY_OPTIONS;
   const discoveredModels = discoveryState?.models || [];
   const manualOnlyModels = selectedModels.filter(
     (model) => !discoveredModels.some((discoveredModel) => areModelsEquivalent(model, discoveredModel, channel.protocol)),
@@ -748,7 +807,7 @@ const ChannelRow: React.FC<ChannelRowProps> = ({
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {RUNTIME_CAPABILITY_OPTIONS.map((option) => (
+              {runtimeCapabilityOptions.map((option) => (
                 <Tooltip key={option.value} content={option.hint}>
                   <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)] px-2 py-1 text-[11px] text-secondary-text">
                     <input
@@ -957,6 +1016,44 @@ function resolveModelPreview(models: string, protocol: ChannelProtocol): string[
   return splitModels(models).map((model) => normalizeModelForRuntime(model, protocol));
 }
 
+interface RouteProvenance {
+  routeName: string;
+  hasHermes: boolean;
+  hasNonHermes: boolean;
+}
+
+function resolveChannelRouteModels(channel: ChannelConfig): string[] {
+  if (isHermesChannel(channel)) {
+    const models = splitModels(channel.models);
+    return (models.length > 0 ? models : [HERMES_DEFAULT_MODEL]).map(canonicalizeHermesRouteModel);
+  }
+  return resolveModelPreview(channel.models, channel.protocol);
+}
+
+function buildRouteProvenanceMap(channels: ChannelConfig[]): Map<string, RouteProvenance> {
+  const provenance = new Map<string, RouteProvenance>();
+  for (const channel of channels) {
+    if (!channel.enabled || !channel.name.trim()) {
+      continue;
+    }
+    const hermes = isHermesChannel(channel);
+    for (const routeName of resolveChannelRouteModels(channel)) {
+      if (!routeName) continue;
+      const existing = provenance.get(routeName) || {
+        routeName,
+        hasHermes: false,
+        hasNonHermes: false,
+      };
+      provenance.set(routeName, {
+        ...existing,
+        hasHermes: existing.hasHermes || hermes,
+        hasNonHermes: existing.hasNonHermes || !hermes,
+      });
+    }
+  }
+  return provenance;
+}
+
 function buildModelOptions(models: string[], selectedModel: string, autoLabel: string): Array<{ value: string; label: string }> {
   const options: Array<{ value: string; label: string }> = [{ value: '', label: autoLabel }];
   if (selectedModel && !models.includes(selectedModel)) {
@@ -1137,26 +1234,43 @@ function hasLegacyRuntimeSource(model: string, itemMap: Map<string, string>): bo
 }
 
 function isRuntimeModelAvailable(model: string, availableModels: string[], itemMap: Map<string, string>): boolean {
-  return availableModels.includes(model)
+  const normalizedModel = model.trim();
+  const matchesAvailableModel = normalizedModel.length > 0 && availableModels.includes(normalizedModel);
+  return matchesAvailableModel
     || usesDirectEnvProvider(model)
     || (availableModels.length === 0 && hasLegacyRuntimeSource(model, itemMap));
 }
 
+function hasCanonicalRouteAliasMismatch(model: string, availableModels: string[]): boolean {
+  const normalizedModel = model.trim();
+  if (!normalizedModel || availableModels.includes(normalizedModel) || usesDirectEnvProvider(normalizedModel)) {
+    return false;
+  }
+  for (const candidate of routeIdentityCandidates(normalizedModel)) {
+    if (candidate !== normalizedModel && availableModels.includes(candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function sanitizeRuntimeConfigForSave(
   runtimeConfig: RuntimeConfig,
-  availableModels: string[],
+  generationModels: string[],
+  agentSafeModels: string[],
+  visionSafeModels: string[],
   itemMap: Map<string, string>,
 ): RuntimeConfig {
-  const primaryModel = runtimeConfig.primaryModel && !isRuntimeModelAvailable(runtimeConfig.primaryModel, availableModels, itemMap)
+  const primaryModel = runtimeConfig.primaryModel && !isRuntimeModelAvailable(runtimeConfig.primaryModel, generationModels, itemMap)
     ? ''
     : runtimeConfig.primaryModel;
-  const agentPrimaryModel = runtimeConfig.agentPrimaryModel && !isRuntimeModelAvailable(runtimeConfig.agentPrimaryModel, availableModels, itemMap)
+  const agentPrimaryModel = runtimeConfig.agentPrimaryModel && !isRuntimeModelAvailable(runtimeConfig.agentPrimaryModel, agentSafeModels, itemMap)
     ? ''
     : runtimeConfig.agentPrimaryModel;
-  const visionModel = runtimeConfig.visionModel && !isRuntimeModelAvailable(runtimeConfig.visionModel, availableModels, itemMap)
+  const visionModel = runtimeConfig.visionModel && !isRuntimeModelAvailable(runtimeConfig.visionModel, visionSafeModels, itemMap)
     ? ''
     : runtimeConfig.visionModel;
-  const fallbackModels = runtimeConfig.fallbackModels.filter((model) => isRuntimeModelAvailable(model, availableModels, itemMap));
+  const fallbackModels = runtimeConfig.fallbackModels.filter((model) => isRuntimeModelAvailable(model, generationModels, itemMap));
 
   return {
     ...runtimeConfig,
@@ -1296,8 +1410,14 @@ function channelsToUpdateItems(
     updates.push({ key: `${prefix}_PROTOCOL`, value: channel.protocol });
     updates.push({ key: `${prefix}_BASE_URL`, value: channel.baseUrl });
     updates.push({ key: `${prefix}_ENABLED`, value: channel.enabled ? 'true' : 'false' });
-    updates.push({ key: `${prefix}_API_KEY${isMultiKey ? 'S' : ''}`, value: channel.apiKey });
-    updates.push({ key: `${prefix}_API_KEY${isMultiKey ? '' : 'S'}`, value: '' });
+    if (isHermesChannel(channel)) {
+      updates.push({ key: `${prefix}_API_KEY`, value: channel.apiKey });
+      updates.push({ key: `${prefix}_API_KEYS`, value: '' });
+      updates.push({ key: `${prefix}_EXTRA_HEADERS`, value: '' });
+    } else {
+      updates.push({ key: `${prefix}_API_KEY${isMultiKey ? 'S' : ''}`, value: channel.apiKey });
+      updates.push({ key: `${prefix}_API_KEY${isMultiKey ? '' : 'S'}`, value: '' });
+    }
     updates.push({ key: `${prefix}_MODELS`, value: channel.models });
   }
 
@@ -1367,6 +1487,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const initialNames = useMemo(() => initialChannels.map((channel) => channel.name), [initialChannels]);
   const initialRuntimeConfig = useMemo(() => parseRuntimeConfigFromItems(items), [items]);
   const savedItemMap = useMemo(() => new Map(items.map((item) => [item.key.toUpperCase(), item.value])), [items]);
+  const hasPersistedHermesSecret = (channel: ChannelConfig): boolean => (
+    isHermesChannel(channel) && initialItemSourceByKey.get('LLM_HERMES_API_KEY') === true
+  );
   const hasLitellmConfig = useMemo(
     () => items.some((item) => item.key === 'LITELLM_CONFIG' && item.value.trim().length > 0),
     [items],
@@ -1429,26 +1552,49 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     setIsCollapsed(false);
   }, [channelsFingerprint, runtimeFingerprint, initialChannels, initialRuntimeConfig]);
 
-  const availableModels = useMemo(() => {
+  const routeProvenanceMap = useMemo(() => {
     if (!managesRuntimeConfig) {
-      return [];
+      return new Map<string, RouteProvenance>();
     }
-    const seen = new Set<string>();
-    const models: string[] = [];
-    for (const channel of channels) {
-      if (!channel.enabled || !channel.name.trim()) {
-        continue;
-      }
-      for (const model of resolveModelPreview(channel.models, channel.protocol)) {
-        if (!model || seen.has(model)) {
-          continue;
-        }
-        seen.add(model);
-        models.push(model);
-      }
-    }
-    return models;
+    return buildRouteProvenanceMap(channels);
   }, [channels, managesRuntimeConfig]);
+
+  const availableModels = useMemo(
+    () => Array.from(routeProvenanceMap.values())
+      .filter((origin) => !(origin.hasHermes && origin.hasNonHermes))
+      .map((origin) => origin.routeName),
+    [routeProvenanceMap],
+  );
+
+  const agentSafeModels = useMemo(
+    () => Array.from(routeProvenanceMap.values())
+      .filter((origin) => !origin.hasHermes || origin.hasNonHermes)
+      .map((origin) => origin.routeName),
+    [routeProvenanceMap],
+  );
+
+  const visionSafeModels = useMemo(
+    () => Array.from(routeProvenanceMap.values())
+      .filter((origin) => !origin.hasHermes)
+      .map((origin) => origin.routeName),
+    [routeProvenanceMap],
+  );
+
+  const agentSelectedModelForOptions = useMemo(() => {
+    if (!runtimeConfig.agentPrimaryModel || agentSafeModels.includes(runtimeConfig.agentPrimaryModel)) {
+      return runtimeConfig.agentPrimaryModel;
+    }
+    const origin = getRouteProvenance(routeProvenanceMap, runtimeConfig.agentPrimaryModel);
+    return origin?.hasHermes && !origin.hasNonHermes ? '' : runtimeConfig.agentPrimaryModel;
+  }, [agentSafeModels, routeProvenanceMap, runtimeConfig.agentPrimaryModel]);
+
+  const visionSelectedModelForOptions = useMemo(() => {
+    if (!runtimeConfig.visionModel || visionSafeModels.includes(runtimeConfig.visionModel)) {
+      return runtimeConfig.visionModel;
+    }
+    const origin = getRouteProvenance(routeProvenanceMap, runtimeConfig.visionModel);
+    return origin?.hasHermes ? '' : runtimeConfig.visionModel;
+  }, [routeProvenanceMap, runtimeConfig.visionModel, visionSafeModels]);
 
   const hasChanges = useMemo(() => {
     const runtimeChanged = (
@@ -1604,8 +1750,33 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       return;
     }
 
+    if (managesRuntimeConfig) {
+      const mixedPrimary = runtimeConfig.primaryModel
+        && getRouteProvenance(routeProvenanceMap, runtimeConfig.primaryModel)?.hasHermes
+        && getRouteProvenance(routeProvenanceMap, runtimeConfig.primaryModel)?.hasNonHermes;
+      const mixedFallback = runtimeConfig.fallbackModels.find((model) => {
+        const origin = getRouteProvenance(routeProvenanceMap, model);
+        return origin?.hasHermes && origin.hasNonHermes;
+      });
+      if (mixedPrimary || mixedFallback) {
+        setSaveMessage({ type: 'local-error', text: 'Mixed Hermes/non-Hermes route 暂不支持作为主生成或备选模型，请选择纯 Hermes 或纯非 Hermes route。' });
+        return;
+      }
+
+      const nonCanonicalRouteAlias = (
+        hasCanonicalRouteAliasMismatch(runtimeConfig.primaryModel, availableModels)
+        || hasCanonicalRouteAliasMismatch(runtimeConfig.agentPrimaryModel, agentSafeModels)
+        || hasCanonicalRouteAliasMismatch(runtimeConfig.visionModel, visionSafeModels)
+        || runtimeConfig.fallbackModels.some((model) => hasCanonicalRouteAliasMismatch(model, availableModels))
+      );
+      if (nonCanonicalRouteAlias) {
+        setSaveMessage({ type: 'local-error', text: '当前运行时模型使用非规范 route alias，请从下拉框重新选择规范模型。' });
+        return;
+      }
+    }
+
     const runtimeConfigForSave = managesRuntimeConfig
-      ? sanitizeRuntimeConfigForSave(runtimeConfig, availableModels, savedItemMap)
+      ? sanitizeRuntimeConfigForSave(runtimeConfig, availableModels, agentSafeModels, visionSafeModels, savedItemMap)
       : runtimeConfig;
     if (!runtimeConfigsAreEqual(runtimeConfigForSave, runtimeConfig)) {
       setRuntimeConfig(runtimeConfigForSave);
@@ -1620,9 +1791,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       }
 
       const invalidAgentPrimaryModel = runtimeConfigForSave.agentPrimaryModel
-        && !isRuntimeModelAvailable(runtimeConfigForSave.agentPrimaryModel, availableModels, savedItemMap);
+        && !isRuntimeModelAvailable(runtimeConfigForSave.agentPrimaryModel, agentSafeModels, savedItemMap);
       if (invalidAgentPrimaryModel) {
-        setSaveMessage({ type: 'local-error', text: '当前 Agent 主模型不在已启用渠道的模型列表中，请重新选择。' });
+        setSaveMessage({ type: 'local-error', text: '当前 Agent 主模型没有 Agent-safe 非 Hermes deployment，请重新选择。' });
         return;
       }
 
@@ -1635,9 +1806,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       }
 
       const invalidVisionModel = runtimeConfigForSave.visionModel
-        && !isRuntimeModelAvailable(runtimeConfigForSave.visionModel, availableModels, savedItemMap);
+        && !isRuntimeModelAvailable(runtimeConfigForSave.visionModel, visionSafeModels, savedItemMap);
       if (invalidVisionModel) {
-        setSaveMessage({ type: 'local-error', text: '当前 Vision 模型不在已启用渠道的模型列表中，请重新选择。' });
+        setSaveMessage({ type: 'local-error', text: '当前 Vision 模型不能包含 Hermes deployment，请重新选择纯非 Hermes route。' });
         return;
       }
     }
@@ -1687,6 +1858,14 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   };
 
   const handleTest = async (channel: ChannelConfig, index: number) => {
+    if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      setTestStates((previous) => ({
+        ...previous,
+        [index]: { status: 'error', text: RUNTIME_ONLY_HERMES_SECRET_MESSAGE },
+      }));
+      return;
+    }
+
     setTestStates((previous) => ({
       ...previous,
       [index]: { status: 'loading', text: '测试中...' },
@@ -1700,6 +1879,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         apiKey: channel.apiKey,
         models: splitModels(channel.models),
         enabled: channel.enabled,
+        useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
       const text = result.success
@@ -1725,6 +1905,19 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   };
 
   const handleDiscoverModels = async (channel: ChannelConfig) => {
+    if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      setDiscoveryStates((previous) => ({
+        ...previous,
+        [channel.id]: {
+          status: 'error',
+          text: RUNTIME_ONLY_HERMES_SECRET_MESSAGE,
+          hint: undefined,
+          models: previous[channel.id]?.models || [],
+        },
+      }));
+      return;
+    }
+
     const requestId = discoveryRequestIdRef.current + 1;
     discoveryRequestIdRef.current = requestId;
     discoveryNonceRef.current[channel.id] = requestId;
@@ -1747,6 +1940,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
         models: splitModels(channel.models),
+        useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
       if (discoveryNonceRef.current[channel.id] !== nonce) return;
@@ -1799,8 +1993,24 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   };
 
   const handleCapabilityCheck = async (channel: ChannelConfig) => {
-    const selected = capabilityStates[channel.id]?.selected || [];
+    const selected = (capabilityStates[channel.id]?.selected || []).filter(
+      (capability) => !isHermesChannel(channel) || capability === 'json',
+    );
     if (selected.length === 0) return;
+
+    if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
+      setCapabilityStates((previous) => ({
+        ...previous,
+        [channel.id]: {
+          selected,
+          status: 'error',
+          text: RUNTIME_ONLY_HERMES_SECRET_MESSAGE,
+          hint: undefined,
+          results: {},
+        },
+      }));
+      return;
+    }
 
     const requestId = capabilityRequestIdRef.current + 1;
     capabilityRequestIdRef.current = requestId;
@@ -1827,6 +2037,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
         models: splitModels(channel.models),
         enabled: channel.enabled,
         capabilityChecks: selected,
+        useSavedSecret: shouldUseSavedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel)),
       });
 
       if (capabilityNonceRef.current[channel.id] !== nonce) return;
@@ -2053,7 +2264,11 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                         ...previous,
                         agentPrimaryModel: normalizeAgentPrimaryModel(value),
                       }))}
-                      options={buildModelOptions(availableModels, runtimeConfig.agentPrimaryModel, '自动（继承普通分析主模型）')}
+                      options={buildModelOptions(
+                        agentSafeModels,
+                        agentSelectedModelForOptions,
+                        '自动（继承普通分析主模型）',
+                      )}
                       disabled={busy}
                       placeholder=""
                     />
@@ -2099,7 +2314,11 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
                       id="runtime-vision-model"
                       value={runtimeConfig.visionModel}
                       onChange={(value) => setRuntimeConfig((previous) => ({ ...previous, visionModel: value }))}
-                      options={buildModelOptions(availableModels, runtimeConfig.visionModel, '自动（跟随 Vision 默认逻辑）')}
+                      options={buildModelOptions(
+                        visionSafeModels,
+                        visionSelectedModelForOptions,
+                        '自动（跟随 Vision 默认逻辑）',
+                      )}
                       disabled={busy}
                       placeholder=""
                     />

@@ -411,6 +411,7 @@ def test_llm_channel(
             enabled=request.enabled,
             timeout_seconds=request.timeout_seconds,
             capability_checks=request.capability_checks,
+            use_saved_secret=request.use_saved_secret,
         )
         return TestLLMChannelResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
@@ -499,6 +500,7 @@ def discover_llm_channel_models(
             api_key=request.api_key,
             models=request.models,
             timeout_seconds=request.timeout_seconds,
+            use_saved_secret=request.use_saved_secret,
         )
         return DiscoverLLMChannelModelsResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:

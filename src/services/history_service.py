@@ -42,6 +42,8 @@ from src.utils.data_processing import (
     extract_realtime_detail_fields,
     normalize_model_used,
     parse_json_field,
+    signal_attribution_has_content,
+    signal_attribution_weight_items,
 )
 
 if TYPE_CHECKING:
@@ -894,14 +896,22 @@ class HistoryService:
         report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now().strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
-        analysis_date_label = "Analysis Date" if report_language == "en" else "分析日期"
-        report_time_label = "Report Time" if report_language == "en" else "报告生成时间"
-        reason_label = "Rationale" if report_language == "en" else "操作理由"
-        risk_warning_label = "Risk Warning" if report_language == "en" else "风险提示"
-        technical_heading = "Technicals" if report_language == "en" else "技术面"
-        ma_label = "Moving Averages" if report_language == "en" else "均线"
-        volume_analysis_label = "Volume" if report_language == "en" else "量能"
-        news_heading = "News Flow" if report_language == "en" else "消息面"
+
+        def _label(en: str, zh: str, ko: str) -> str:
+            if report_language == "en":
+                return en
+            if report_language == "ko":
+                return ko
+            return zh
+
+        analysis_date_label = _label("Analysis Date", "分析日期", "분석일")
+        report_time_label = _label("Report Time", "报告生成时间", "생성 시각")
+        reason_label = _label("Rationale", "操作理由", "판단 근거")
+        risk_warning_label = _label("Risk Warning", "风险提示", "리스크 경고")
+        technical_heading = _label("Technicals", "技术面", "기술적 분석")
+        ma_label = _label("Moving Averages", "均线", "이동평균")
+        volume_analysis_label = _label("Volume", "量能", "거래량")
+        news_heading = _label("News Flow", "消息面", "뉴스 흐름")
 
         # Escape markdown special characters in stock name
         name_escaped = self._escape_md(
@@ -1103,6 +1113,34 @@ class HistoryService:
                 for item in checklist:
                     report_lines.append(f"- {item}")
                 report_lines.append("")
+
+        # ========== 信号归因分析 ==========
+        signal_attr = dashboard.get('signal_attribution', {}) if dashboard else {}
+        if signal_attribution_has_content(signal_attr):
+            report_lines.extend([
+                f"### 🎯 {labels.get('signal_attribution_heading', '信号归因分析')}",
+                "",
+            ])
+            weight_items = signal_attribution_weight_items(signal_attr)
+            if weight_items:
+                report_lines.append(f"**{labels.get('attribution_weights_label', '归因权重')}**:")
+                weight_labels = {
+                    "technical_indicators": ("📈", labels.get('technical_indicators_label', '技术指标')),
+                    "news_sentiment": ("📰", labels.get('news_sentiment_label', '新闻舆情')),
+                    "fundamentals": ("📊", labels.get('fundamentals_label', '基本面')),
+                    "market_conditions": ("🌐", labels.get('market_conditions_label', '市场环境')),
+                }
+                for key, value in weight_items:
+                    icon, label = weight_labels[key]
+                    report_lines.append(f"- {icon} {label}: {value}%")
+                report_lines.append("")
+            bullish = signal_attr.get('strongest_bullish_signal')
+            bearish = signal_attr.get('strongest_bearish_signal')
+            if bullish:
+                report_lines.append(f"**🐂 {labels.get('strongest_bullish_signal_label', '最强看多信号')}**: {bullish}")
+            if bearish:
+                report_lines.append(f"**🐻 {labels.get('strongest_bearish_signal_label', '最强看空信号')}**: {bearish}")
+            report_lines.append("")
 
         # ========== 如果没有 dashboard，显示传统格式 ==========
         if not dashboard:

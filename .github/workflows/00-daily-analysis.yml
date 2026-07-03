@@ -88,6 +88,13 @@ jobs:
           LLM_PROMPT_CACHE_HINTS_ENABLED: ${{ vars.LLM_PROMPT_CACHE_HINTS_ENABLED || secrets.LLM_PROMPT_CACHE_HINTS_ENABLED }}
           LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL: ${{ vars.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL || secrets.LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL }}
           LLM_CHANNELS: ${{ vars.LLM_CHANNELS || secrets.LLM_CHANNELS }}
+          # Hermes 是本地 loopback generation preset；API Key 只从 Secrets 注入。
+          # GitHub-hosted runner 的 127.0.0.1 不是用户电脑，本配置通常只适合 self-hosted runner。
+          LLM_HERMES_PROTOCOL: ${{ vars.LLM_HERMES_PROTOCOL || secrets.LLM_HERMES_PROTOCOL }}
+          LLM_HERMES_BASE_URL: ${{ vars.LLM_HERMES_BASE_URL || secrets.LLM_HERMES_BASE_URL }}
+          LLM_HERMES_API_KEY: ${{ secrets.LLM_HERMES_API_KEY }}
+          LLM_HERMES_MODELS: ${{ vars.LLM_HERMES_MODELS || secrets.LLM_HERMES_MODELS }}
+          LLM_HERMES_ENABLED: ${{ vars.LLM_HERMES_ENABLED || secrets.LLM_HERMES_ENABLED }}
 
           # Gemini AI（主选）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -45,6 +45,8 @@ type StructuredMarketData = {
   title?: string;
   breadth?: MarketReviewPayload['breadth'];
   indices: NonNullable<MarketReviewPayload['indices']>;
+  sectors?: MarketReviewPayload['sectors'];
+  concepts?: MarketReviewPayload['concepts'];
 };
 
 const isMarketReviewPayload = (value: unknown): value is MarketReviewPayload =>
@@ -167,8 +169,11 @@ const getPayloadSections = (payload?: MarketReviewPayload | null): MarketReviewS
     }));
 };
 
+const hasRankingRows = (rankings?: MarketReviewPayload['sectors']): boolean =>
+  Boolean(rankings?.top?.length || rankings?.bottom?.length);
+
 const hasStructuredMarketData = (payload?: MarketReviewPayload | null): boolean =>
-  Boolean(payload?.breadth || payload?.indices?.length);
+  Boolean(payload?.breadth || payload?.indices?.length || hasRankingRows(payload?.sectors) || hasRankingRows(payload?.concepts));
 
 const getStructuredMarketData = (payload?: MarketReviewPayload | null): StructuredMarketData[] => {
   if (!payload) {
@@ -183,6 +188,8 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
         title: marketPayload.title || region.toUpperCase(),
         breadth: marketPayload.breadth,
         indices: marketPayload.indices || [],
+        sectors: marketPayload.sectors,
+        concepts: marketPayload.concepts,
       }));
   }
 
@@ -195,6 +202,8 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     title: payload.title,
     breadth: payload.breadth,
     indices: payload.indices || [],
+    sectors: payload.sectors,
+    concepts: payload.concepts,
   }];
 };
 
@@ -216,6 +225,10 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   last: string;
   change: string;
   highLow: string;
+  industryBoards: string;
+  conceptBoards: string;
+  leading: string;
+  lagging: string;
 }> = {
   zh: {
     reviewSummary: '复盘摘要',
@@ -235,6 +248,10 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     last: '最新',
     change: '涨跌幅',
     highLow: '高/低',
+    industryBoards: '行业板块',
+    conceptBoards: '概念板块',
+    leading: '领涨',
+    lagging: '领跌',
   },
   en: {
     reviewSummary: 'Review Summary',
@@ -254,7 +271,43 @@ const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
     last: 'Last',
     change: 'Change',
     highLow: 'High/Low',
+    industryBoards: 'Industry Sectors',
+    conceptBoards: 'Concept Themes',
+    leading: 'Leading',
+    lagging: 'Lagging',
   },
+  ko: {
+    reviewSummary: '리뷰 요약',
+    noReviewSummary: '요약 없음',
+    noSentimentScore: '점수 없음',
+    rotationAndFunds: '순환과 자금',
+    noRotationView: '순환 관점 없음',
+    riskAndWatch: '리스크와 관찰',
+    noRiskWatch: '관찰 포인트 없음',
+    structuredMarketData: '구조화 시장 데이터',
+    noBreadthData: '데이터 없음',
+    advancers: '상승 종목 수',
+    decliners: '하락 종목 수',
+    limitUpDown: '상한가/하한가',
+    turnover: '거래대금',
+    index: '지수',
+    last: '현재',
+    change: '등락률',
+    highLow: '고가/저가',
+    industryBoards: '업종 섹터',
+    conceptBoards: '테마 섹터',
+    leading: '강세',
+    lagging: '약세',
+  },
+};
+
+const formatRankingChange = (value: unknown): string => {
+  const numeric = typeof value === 'number' ? value : Number(String(value ?? '').replace(/%$/, ''));
+  if (!Number.isFinite(numeric)) {
+    return '-';
+  }
+  const sign = numeric > 0 ? '+' : '';
+  return `${sign}${numeric.toFixed(2)}%`;
 };
 
 export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
@@ -268,7 +321,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
 }) => {
   const normalizedReportLanguage = normalizeReportLanguage(reportLanguage);
   const text = getReportText(normalizedReportLanguage);
-  const runFlowText = UI_TEXT[normalizedReportLanguage];
+  const runFlowText = UI_TEXT[normalizedReportLanguage === 'ko' ? 'en' : normalizedReportLanguage];
   const marketReviewText = MARKET_REVIEW_TEXT[normalizedReportLanguage];
   const [loadedMarkdown, setLoadedMarkdown] = useState<LoadedMarkdown | null>(null);
   const [loadError, setLoadError] = useState<LoadError | null>(null);
@@ -527,6 +580,68 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                     </table>
                   </div>
                 ) : null}
+                {(() => {
+                  const boardTypes = [{
+                    key: 'sectors' as const,
+                    title: marketReviewText.industryBoards,
+                    rankings: marketData.sectors,
+                  }, {
+                    key: 'concepts' as const,
+                    title: marketReviewText.conceptBoards,
+                    rankings: marketData.concepts,
+                  }].filter(({ rankings }) => hasRankingRows(rankings));
+                  if (boardTypes.length === 0) {
+                    return null;
+                  }
+                  const renderPanels = (
+                    key: string,
+                    title: string,
+                    rankings: MarketReviewPayload['sectors'],
+                  ) => (['top', 'bottom'] as const).map((side) => {
+                    const rows = rankings?.[side] || [];
+                    if (rows.length === 0) {
+                      return null;
+                    }
+                    return (
+                      <div key={`${key}-${side}`} className="rounded-lg border border-subtle p-3">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="label-uppercase">{title}</p>
+                          <span className="text-xs text-secondary-text">
+                            {side === 'top' ? marketReviewText.leading : marketReviewText.lagging}
+                          </span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {rows.slice(0, 5).map((item, index) => (
+                            <div key={`${item.name}-${index}`} className="flex items-center justify-between gap-3 text-sm">
+                              <span className="min-w-0 truncate text-foreground">{item.name}</span>
+                              <span className="shrink-0 font-mono text-secondary-text">
+                                {formatRankingChange(item.changePct)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  });
+                  // 两类板块都存在时按 行业|概念 左右并列，节省纵向空间；只有一类时保留 领涨|领跌 横向布局。
+                  if (boardTypes.length >= 2) {
+                    return (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                        {boardTypes.map(({ key, title, rankings }) => (
+                          <div key={key} className="space-y-3">
+                            {renderPanels(key, title, rankings)}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+                  const { key, title, rankings } = boardTypes[0];
+                  return (
+                    <div key={key} className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      {renderPanels(key, title, rankings)}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

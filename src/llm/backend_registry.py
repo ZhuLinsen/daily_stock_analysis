@@ -10,14 +10,33 @@ from src.llm.generation_backend import GenerationError, GenerationErrorCode
 
 LITELLM_BACKEND_ID = "litellm"
 CODEX_CLI_BACKEND_ID = "codex_cli"
+CLAUDE_CODE_CLI_BACKEND_ID = "claude_code_cli"
+OPENCODE_CLI_BACKEND_ID = "opencode_cli"
 AUTO_AGENT_BACKEND_ID = "auto"
 
-SUPPORTED_GENERATION_BACKENDS = frozenset({LITELLM_BACKEND_ID, CODEX_CLI_BACKEND_ID})
+LOCAL_CLI_GENERATION_BACKEND_IDS = frozenset({
+    CODEX_CLI_BACKEND_ID,
+    CLAUDE_CODE_CLI_BACKEND_ID,
+    OPENCODE_CLI_BACKEND_ID,
+})
+AGENT_CAPABLE_BACKEND_IDS = frozenset({LITELLM_BACKEND_ID})
+# Phase 4 local CLI backends are generation-only today. Keep this derived so a
+# future agent-capable local backend does not remain classified as generation-only.
+GENERATION_ONLY_BACKEND_IDS = LOCAL_CLI_GENERATION_BACKEND_IDS - AGENT_CAPABLE_BACKEND_IDS
+
+SUPPORTED_GENERATION_BACKENDS = frozenset({
+    LITELLM_BACKEND_ID,
+    *LOCAL_CLI_GENERATION_BACKEND_IDS,
+})
 SUPPORTED_GENERATION_FALLBACK_BACKENDS = frozenset({LITELLM_BACKEND_ID})
 SUPPORTED_AGENT_GENERATION_BACKENDS = frozenset({
     AUTO_AGENT_BACKEND_ID,
-    LITELLM_BACKEND_ID,
-    CODEX_CLI_BACKEND_ID,
+    *AGENT_CAPABLE_BACKEND_IDS,
+    *GENERATION_ONLY_BACKEND_IDS,
+})
+SUPPORTED_AGENT_UI_BACKENDS = frozenset({
+    AUTO_AGENT_BACKEND_ID,
+    *AGENT_CAPABLE_BACKEND_IDS,
 })
 
 
@@ -101,7 +120,7 @@ def resolve_generation_fallback_backend_id(config: Any) -> Optional[str]:
 def resolve_agent_generation_backend_id(config: Any) -> str:
     """Return the Agent tool-calling backend id.
 
-    Phase 2 keeps Agent tool-calling on LiteLLM for auto. Explicit local
+    Phase 4 keeps Agent tool-calling on LiteLLM for auto. Explicit local
     backends are returned so the Agent adapter can reject or fallback
     explicitly instead of treating text-only output as successful tool use.
     """

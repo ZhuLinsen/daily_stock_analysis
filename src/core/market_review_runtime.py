@@ -12,7 +12,7 @@ from typing import Any, Optional, Tuple
 
 from src.config import Config
 from src.llm.backend_registry import (
-    CODEX_CLI_BACKEND_ID,
+    LOCAL_CLI_GENERATION_BACKEND_IDS,
     resolve_generation_backend_id,
     resolve_generation_fallback_backend_id,
 )
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def has_configured_llm_runtime(config: Config) -> bool:
     """Return whether any LLM model configuration is available."""
     try:
-        if resolve_generation_backend_id(config) == CODEX_CLI_BACKEND_ID:
+        if resolve_generation_backend_id(config) in LOCAL_CLI_GENERATION_BACKEND_IDS:
             return True
     except GenerationError:
         pass

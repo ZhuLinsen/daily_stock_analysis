@@ -934,6 +934,8 @@ const SettingsPage: React.FC = () => {
   const firstSetupStockCode = parseSetupStockList(getConfigItem(itemsByCategory.base || [], 'STOCK_LIST')?.value)[0] || '';
   const alphasiftItem = (itemsByCategory.data_source || []).find((item) => item.key === 'ALPHASIFT_ENABLED');
   const alphasiftEnabled = String(alphasiftItem?.value ?? '').trim().toLowerCase() === 'true';
+  const shouldShowFirstRunSetup = activeCategory === 'base';
+  const shouldShowAlphaSiftSettings = activeCategory === 'data_source' && Boolean(alphasiftItem);
   const hasConfiguredChannels = Boolean((rawActiveItemMap.get('LLM_CHANNELS') || '').trim());
   const hasLitellmConfig = Boolean((rawActiveItemMap.get('LITELLM_CONFIG') || '').trim());
   const hasRuntimeSchedulerMismatch =
@@ -1404,22 +1406,24 @@ const SettingsPage: React.FC = () => {
           </aside>
 
           <section className="space-y-4">
-            <FirstRunSetupCard
-              status={setupStatus}
-              isLoading={isRefreshingSetupStatus}
-              error={setupStatusError}
-              firstStockCode={firstSetupStockCode}
-              isSaving={isSaving}
-              isRunningSmoke={isRunningSetupSmoke}
-              smokeError={setupSmokeError}
-              smokeSuccess={setupSmokeSuccess}
-              onRefresh={refreshSetupStatus}
-              onSelectCategory={setActiveCategory}
-              onRunSmoke={handleRunSetupSmoke}
-              listSeparator={uiLanguage === 'en' ? ', ' : '、'}
-              t={t}
-            />
-            {alphasiftItem ? (
+            {shouldShowFirstRunSetup ? (
+              <FirstRunSetupCard
+                status={setupStatus}
+                isLoading={isRefreshingSetupStatus}
+                error={setupStatusError}
+                firstStockCode={firstSetupStockCode}
+                isSaving={isSaving}
+                isRunningSmoke={isRunningSetupSmoke}
+                smokeError={setupSmokeError}
+                smokeSuccess={setupSmokeSuccess}
+                onRefresh={refreshSetupStatus}
+                onSelectCategory={setActiveCategory}
+                onRunSmoke={handleRunSetupSmoke}
+                listSeparator={uiLanguage === 'en' ? ', ' : '、'}
+                t={t}
+              />
+            ) : null}
+            {shouldShowAlphaSiftSettings ? (
               <SettingsSectionCard
                 title={t('settings.alphaSift')}
                 description={t('settings.alphaSiftDescription')}

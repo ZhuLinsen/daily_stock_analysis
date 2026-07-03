@@ -200,6 +200,7 @@ class TestLLMChannelRequest(BaseModel):
     enabled: bool = True
     timeout_seconds: float = 20.0
     capability_checks: List[LLMCapabilityCheck] = Field(default_factory=list)
+    use_saved_secret: bool = False
 
 
 class LLMCapabilityCheckResult(BaseModel):
@@ -276,6 +277,7 @@ class DiscoverLLMChannelModelsRequest(BaseModel):
     api_key: str = ""
     models: List[str] = Field(default_factory=list)
     timeout_seconds: float = 20.0
+    use_saved_secret: bool = False
 
 
 class DiscoverLLMChannelModelsResponse(BaseModel):

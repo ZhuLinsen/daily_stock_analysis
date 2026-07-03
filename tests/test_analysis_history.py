@@ -124,6 +124,18 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         auth._auth_enabled = False
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = os.path.join(self._temp_dir.name, "test_analysis_history.db")
+        self._original_env = {
+            key: os.environ.get(key)
+            for key in (
+                "ENV_FILE",
+                "DATABASE_PATH",
+            )
+        }
+        self._env_path = os.path.join(self._temp_dir.name, ".env")
+        with open(self._env_path, "w", encoding="utf-8") as env_file:
+            env_file.write("STOCK_LIST=600519,000001\n")
+
+        os.environ["ENV_FILE"] = self._env_path
         os.environ["DATABASE_PATH"] = self._db_path
 
         Config._instance = None
@@ -132,7 +144,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         """清理资源"""
+        Config._instance = None
         DatabaseManager.reset_instance()
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self._temp_dir.cleanup()
 
     def _build_result(self) -> AnalysisResult:
@@ -737,6 +755,45 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(response.items[0].action, "avoid")
         self.assertEqual(response.items[0].action_label, "回避")
 
+    def test_stock_bar_item_falls_back_to_raw_result_summary_fields(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.operation_advice = "Hold"
+        result.report_language = "en"
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_raw_fallback",
+            report_type="detailed",
+            news_content="stock report",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.session_scope() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_stock_bar_raw_fallback"
+            ).first()
+            self.assertIsNotNone(row)
+            row.sentiment_score = None
+            row.operation_advice = None
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        self.assertEqual(len(response.items), 1)
+        self.assertEqual(response.items[0].sentiment_score, 78)
+        self.assertEqual(response.items[0].operation_advice, "Hold")
+        self.assertEqual(response.items[0].action, "hold")
+        self.assertEqual(response.items[0].action_label, "Hold")
+
     def test_history_detail_uses_service_resolved_action_fields(self) -> None:
         if get_history_detail is None:
             self.skipTest("fastapi is not installed in this test environment")
@@ -1140,6 +1197,12 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                         "bottom": [],
                     }
                 },
+                "concept_boards": {
+                    "data": {
+                        "top": [{"name": "机器人概念", "change_pct": 4.2}],
+                        "bottom": [],
+                    }
+                },
                 "earnings": {
                     "data": {
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
@@ -1161,6 +1224,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.concept_rankings["top"][0]["name"], "机器人概念")
 
     def test_history_detail_uses_raw_code_for_legacy_jp_kr_fundamental_snapshot(self) -> None:
         """Legacy bare JP/KR history rows should display suffixes but read snapshots by stored code."""

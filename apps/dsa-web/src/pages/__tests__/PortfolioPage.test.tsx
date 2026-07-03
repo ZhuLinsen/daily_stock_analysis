@@ -121,6 +121,8 @@ function makeSnapshot(options: {
   accountId?: number;
   fxStale?: boolean;
   accountCount?: number;
+  dataQuality?: string;
+  limitations?: string[];
   positions?: Array<Record<string, unknown>>;
 } = {}) {
   const accountId = options.accountId ?? 1;
@@ -137,6 +139,8 @@ function makeSnapshot(options: {
     feeTotal: 0,
     taxTotal: 0,
     fxStale: options.fxStale ?? true,
+    dataQuality: options.dataQuality ?? 'ok',
+    limitations: options.limitations ?? [],
     accounts: [
       {
         accountId,
@@ -348,6 +352,21 @@ describe('PortfolioPage FX refresh', () => {
 
     expect(await screen.findByText('过期')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '刷新汇率' })).toBeInTheDocument();
+  });
+
+  it('shows aggregate partial valuation limitations near summary totals', async () => {
+    getSnapshot.mockResolvedValueOnce(makeSnapshot({
+      dataQuality: 'partial',
+      limitations: ['realtime_quote_best_effort', 'fx_and_cost_basis_partial'],
+    }));
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('组合估值限制')).toBeInTheDocument();
+    expect(screen.getByText(/实时行情为尽力获取/)).toBeInTheDocument();
+    expect(screen.getByText(/汇率与成本基础为部分口径/)).toBeInTheDocument();
   });
 
   it('renders portfolio risk drawdown labels in English UI mode', async () => {

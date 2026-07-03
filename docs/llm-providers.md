@@ -20,9 +20,13 @@
 
 优先级保持不变：`LITELLM_CONFIG` / `LITELLM_CONFIG_YAML` > `LLM_CHANNELS` > legacy provider keys。P4 只补文档，不迁移、不清空、不静默改写旧配置。
 
-Generation backend 配置是更外层的运行时选择契约。Phase 2 支持 `GENERATION_BACKEND=litellm|codex_cli`，但 `codex_cli` 是本地 CLI backend，不是 LiteLLM provider；不要配置成 `LITELLM_MODEL=codex_cli/...`。`codex_cli` preset 使用 `codex exec --output-last-message <temp-file> -` 读取最终响应；Codex CLI 仍会把同一最终响应打印到 stdout，DSA 会从 stdout 诊断预览和输出大小统计中剔除这份重复内容。诊断 stdout/stderr 与最终响应一起受 `GENERATION_BACKEND_MAX_OUTPUT_BYTES` 总上限约束，超限时返回结构化 `output_too_large`。官方依据见 [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) 与 [Codex CLI command line options](https://developers.openai.com/codex/cli/reference)；本仓库当前只验证 `codex-cli 0.142.0`，不声明更宽最低版本。`GENERATION_FALLBACK_BACKEND=` 空值会在本地 `.env` 禁用 backend-level fallback，未配置时默认回退到 `litellm`；默认 GitHub Actions workflow 未配置该变量时会显式使用 `litellm`，如需禁用 fallback 可设为 primary backend 走 self no-op。Agent 工具调用仍使用 LiteLLM；Web 设置页只暴露 `AGENT_GENERATION_BACKEND=auto|litellm`，手写 `codex_cli` 不会启用 text-only Agent mode，只会返回明确 unsupported tool-calling 诊断。
+Generation backend 配置是更外层的运行时选择契约。Phase 4 支持 `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`，但本地 CLI backend 不是 LiteLLM provider；不要配置成 `LITELLM_MODEL=codex_cli/...`、`LITELLM_MODEL=claude_code_cli/...` 或 `LITELLM_MODEL=opencode_cli/...`。`codex_cli` preset 使用 `codex exec --output-last-message <temp-file> -` 读取最终响应；`claude_code_cli` preset 使用 `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`，完整 DSA prompt 走 stdin，并只从 JSON envelope 的 `result/success` 字段提取最终文本，参数依据见 [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)；`opencode_cli` preset 使用 `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`，仅在显式配置 `OPENCODE_CLI_MODEL` 时追加 `--model`，完整 DSA prompt 走权限受控的临时文件，并只从无工具事件的 JSON event text 输出提取最终文本，参数依据见 [OpenCode CLI reference](https://opencode.ai/docs/cli)，配置合并语义见 [OpenCode config reference](https://opencode.ai/docs/config)。诊断 stdout/stderr 与最终响应一起受 `GENERATION_BACKEND_MAX_OUTPUT_BYTES` 总上限约束，超限时返回结构化 `output_too_large`。`GENERATION_FALLBACK_BACKEND=` 空值会在本地 `.env` 禁用 backend-level fallback，未配置时默认回退到 `litellm`；默认 GitHub Actions workflow 未配置该变量时会显式使用 `litellm`，如需禁用 fallback 可设为 primary backend 走 self no-op。Agent 工具调用仍使用 LiteLLM；Web 设置页只暴露 `AGENT_GENERATION_BACKEND=auto|litellm`，手写 `codex_cli|claude_code_cli|opencode_cli` 不会启用 text-only Agent mode，只会返回明确 unsupported tool-calling 诊断。
 
-本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；DSA 不读取 Codex credential 文件，但子进程可能使用 CLI 自身登录态，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。
+本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)` 与 `opencode 1.17.11`，不声明更宽最低版本。如果用户安装的 CLI 不支持这些固定 preset 参数或非交互输出契约，DSA 会返回结构化 `capability_unsupported`、`cli_contract_unsupported`、`invalid_json`、`schema_validation_failed` 或对应 backend error，并在配置 backend fallback 时回退到 `litellm`。
+
+本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；macOS 从 Finder/Dock 启动桌面端时不继承 shell PATH，打包桌面端会在启动后端时补入常见 Homebrew 路径，如果设置检查仍提示找不到 CLI 可执行文件，需要完全退出并重开 DSA。DSA 不读取 Codex/Claude/OpenCode credential 文件，也不为 OpenCode 生成或搬运 provider API key；子进程可能按 CLI 自身机制使用本机登录态或配置，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。DSA 默认只继承最小运行环境，并拒绝通配继承 `CLAUDE_*`、`ANTHROPIC_*`、`OPENCODE_*`、provider API key/token/base-url/model env 和 webhook tokens，降低父进程配置泄漏风险；`CODEX_HOME` 仅作为既有 Codex CLI 登录目录兼容的 exact-name 例外保留。
+
+`opencode_cli` 是 experimental/limited generation backend，不支持 OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`。DSA 默认使用本机 OpenCode 的默认模型；`OPENCODE_CLI_MODEL` 只是可选模型覆盖值，配置时才传给 OpenCode `--model`。DSA 会在临时 cwd 写入最小项目 `opencode.json`，但 OpenCode resolved config 仍可能包含用户本机全局配置；运行时安全边界同时依赖 `--pure`、env denylist、prompt file 权限和 event extractor fail-closed。
 
 ## Web 设置页路径
 
@@ -128,11 +132,28 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
 Ollama 默认 Base URL `http://127.0.0.1:11434` 主要面向本地、Docker 或能访问该服务的 self-hosted runner。GitHub-hosted runner 通常没有本地 Ollama 服务，直接配置 `LLM_CHANNELS=ollama` 大概率会连接失败。
+
+### Hermes 本地 HTTP generation（Phase 3）
+
+Hermes 是 reserved 本地 HTTP generation preset，只通过 `LLM_CHANNELS=hermes` 启用。默认协议为 `openai`，默认地址为 `http://127.0.0.1:8642/v1`，默认模型为 `hermes-agent`：
+
+```env
+LLM_CHANNELS=hermes
+LLM_HERMES_PROTOCOL=openai
+LLM_HERMES_BASE_URL=http://127.0.0.1:8642/v1
+LLM_HERMES_API_KEY=sk-local-hermes
+LLM_HERMES_MODELS=hermes-agent
+LITELLM_MODEL=openai/hermes-agent
+```
+
+Phase 3 只支持普通分析 / JSON generation，不支持 stream/SSE、tools、Vision、Agent tools、remote Hermes 或进程生命周期管理。`LLM_HERMES_API_KEY` 应来自本地 `.env`、运行时配置或 GitHub Secrets；不要写入仓库。Hermes 只允许 loopback `/v1` endpoint，`localhost` 会按 `127.0.0.1` 规范化，`LLM_HERMES_API_KEYS` 与 `LLM_HERMES_EXTRA_HEADERS` 不受支持。Web 设置页保存 reserved Hermes 渠道时会清空这两个旧字段并显示 warning；恢复旧值请使用 `.env` 备份、Git 历史或桌面端导出备份，但非空多 Key / Extra Headers 仍会被后端拒绝。
+
+在 GitHub Actions 中，GitHub-hosted runner 的 `127.0.0.1` 是 runner 自身，不是用户电脑。只有 self-hosted runner 或同机服务能访问本地 Hermes；否则会连接失败。
 
 ## 常见错误与处理建议
 

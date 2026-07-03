@@ -4,10 +4,21 @@ Shared data parsing and normalization helpers.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+import math
+from typing import Any, Dict, List, Optional, Tuple
 
 
 _MODEL_PLACEHOLDER_VALUES = {"unknown", "error", "none", "null", "n/a"}
+SIGNAL_ATTRIBUTION_WEIGHT_KEYS: Tuple[str, ...] = (
+    "technical_indicators",
+    "news_sentiment",
+    "fundamentals",
+    "market_conditions",
+)
+SIGNAL_ATTRIBUTION_SIGNAL_KEYS: Tuple[str, ...] = (
+    "strongest_bullish_signal",
+    "strongest_bearish_signal",
+)
 
 
 def normalize_model_used(value: Any) -> Optional[str]:
@@ -98,6 +109,11 @@ def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
         if not name_text:
             continue
         ranking_item: Dict[str, Any] = {"name": name_text}
+        for optional_field in ("code", "source", "updated_at"):
+            if item.get(optional_field) is not None:
+                optional_text = str(item.get(optional_field)).strip()
+                if optional_text:
+                    ranking_item[optional_field] = optional_text
         change_pct = _safe_float(item.get("change_pct"))
         if change_pct is not None:
             ranking_item["change_pct"] = change_pct
@@ -113,6 +129,21 @@ def _normalize_sector_rankings(value: Any) -> Optional[Dict[str, List[Dict[str, 
         "top": _normalize_sector_ranking_items(value.get("top")),
         "bottom": _normalize_sector_ranking_items(value.get("bottom")),
     }
+
+
+def _extract_ranking_payload_from_block(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return None
+    if "top" in value or "bottom" in value:
+        return value
+
+    status = value.get("status")
+    if status not in {"ok", "partial", None}:
+        return None
+    data = value.get("data")
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 def _is_empty_value(value: Any) -> bool:
@@ -245,15 +276,141 @@ def extract_board_detail_fields(
         fallback_fundamental_payload=fallback_fundamental_payload,
     )
     if not isinstance(fundamental_ctx, dict):
-        return {"belong_boards": [], "sector_rankings": None}
+        return {"belong_boards": [], "sector_rankings": None, "concept_rankings": None}
 
     boards_block = fundamental_ctx.get("boards")
-    sector_rankings = None
-    if isinstance(boards_block, dict):
-        boards_status = boards_block.get("status")
-        if boards_status in {"ok", "partial"} or boards_status is None:
-            sector_rankings = boards_block.get("data")
+    sector_rankings = _extract_ranking_payload_from_block(boards_block)
+    concept_rankings = (
+        _extract_ranking_payload_from_block(fundamental_ctx.get("concept_boards"))
+        or _extract_ranking_payload_from_block(fundamental_ctx.get("concepts"))
+        or _extract_ranking_payload_from_block(fundamental_ctx.get("concept_rankings"))
+    )
+    if concept_rankings is None and isinstance(sector_rankings, dict):
+        concept_rankings = _extract_ranking_payload_from_block(sector_rankings.get("concepts"))
     return {
         "belong_boards": _normalize_belong_boards(fundamental_ctx.get("belong_boards")),
         "sector_rankings": _normalize_sector_rankings(sector_rankings),
+        "concept_rankings": _normalize_sector_rankings(concept_rankings),
     }
+
+
+def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Normalize signal_attribution values in-place.
+
+    - Convert string percentages like "70%" to int 70
+    - Convert "N/A", "N/A%", "" to None
+    - Clamp negative numbers to 0
+    - Normalize four non-zero contributions to sum = 100 (only if all four are valid numbers)
+    - Preserve all-zero as "no effective signal"; do not fake 25/25/25/25
+    """
+    if not isinstance(signal_attr, dict):
+        return None
+
+    def _parse_contribution(raw: Any) -> Optional[float]:
+        """
+        Parse a single contribution value.
+
+        Returns:
+            - float in [0, 100] if valid
+            - None if unparsable / N/A / empty
+        """
+        if raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            val = float(raw)
+            if not math.isfinite(val):
+                return None
+            # Clamp to [0, 100] — values outside this range are invalid
+            return max(0.0, min(100.0, val))
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text or text in ("N/A", "N/A%"):
+                return None
+            text = text.rstrip("%").strip()
+            try:
+                val = float(text)
+                if not math.isfinite(val):
+                    return None
+                # Clamp to [0, 100]
+                return max(0.0, min(100.0, val))
+            except ValueError:
+                return None
+        return None
+
+    parsed: Dict[str, Optional[float]] = {}
+    for k in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
+        parsed[k] = _parse_contribution(signal_attr.get(k))
+
+    valid_values = [v for v in parsed.values() if v is not None]
+    if len(valid_values) == 4:
+        total = sum(valid_values)
+        if total > 0:
+            normalized = [(v / total) * 100.0 for v in valid_values]
+            int_values = [round(v) for v in normalized]
+            diff = 100 - sum(int_values)
+            if diff != 0:
+                max_idx = int_values.index(max(int_values))
+                int_values[max_idx] += diff
+            for i, k in enumerate(SIGNAL_ATTRIBUTION_WEIGHT_KEYS):
+                parsed[k] = int_values[i]
+        # else: total == 0 → all contributions are 0
+        #   Keep as 0 (truthful "no contribution"), do NOT fake 25/25/25/25
+        #   If LLM returned None for some fields, they stay None (meaning "unable to judge")
+
+    for k in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
+        signal_attr[k] = parsed[k]
+
+    for k in SIGNAL_ATTRIBUTION_SIGNAL_KEYS:
+        v = signal_attr.get(k)
+        if v is not None and isinstance(v, str) and v.strip() == "":
+            signal_attr[k] = None
+
+    return signal_attr
+
+
+def normalize_dashboard_signal_attribution(dashboard: Optional[Dict[str, Any]]) -> None:
+    """Normalize signal_attribution in dashboard dict (in-place)."""
+    if not isinstance(dashboard, dict):
+        return
+    signal_attr = dashboard.get("signal_attribution")
+    if signal_attr is not None:
+        if not isinstance(signal_attr, dict):
+            dashboard.pop("signal_attribution", None)
+            return
+        normalize_signal_attribution_values(signal_attr)
+
+
+def normalize_report_signal_attribution(payload: Optional[Dict[str, Any]]) -> None:
+    """Normalize signal attribution in either a dashboard dict or full report dict."""
+    if not isinstance(payload, dict):
+        return
+    normalize_dashboard_signal_attribution(payload)
+    dashboard = payload.get("dashboard")
+    if isinstance(dashboard, dict):
+        normalize_dashboard_signal_attribution(dashboard)
+
+
+def signal_attribution_weight_items(signal_attr: Any) -> List[Tuple[str, int]]:
+    """Return displayable attribution weights as (key, integer percent) pairs."""
+    if not isinstance(signal_attr, dict):
+        return []
+    items: List[Tuple[str, int]] = []
+    for key in SIGNAL_ATTRIBUTION_WEIGHT_KEYS:
+        value = signal_attr.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            number = float(value)
+            if math.isfinite(number):
+                items.append((key, int(round(number))))
+    return items
+
+
+def signal_attribution_has_content(signal_attr: Any) -> bool:
+    """Whether a signal_attribution payload has anything meaningful to render."""
+    if not isinstance(signal_attr, dict):
+        return False
+    if any(value != 0 for _, value in signal_attribution_weight_items(signal_attr)):
+        return True
+    return any(bool(signal_attr.get(key)) for key in SIGNAL_ATTRIBUTION_SIGNAL_KEYS)

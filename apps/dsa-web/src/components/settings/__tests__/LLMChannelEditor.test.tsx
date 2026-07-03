@@ -28,6 +28,11 @@ describe('LLMChannelEditor', () => {
     discoverLLMChannelModels.mockReset();
   });
 
+  function selectOptionValues(label: string): string[] {
+    const select = screen.getByLabelText(label) as HTMLSelectElement;
+    return Array.from(select.options).map((option) => option.value);
+  }
+
   it('renders API Key input with controlled visibility', async () => {
     render(
       <LLMChannelEditor
@@ -113,6 +118,142 @@ describe('LLMChannelEditor', () => {
     expect(screen.getByText(/运行时主模型 \/ 备选模型 \/ Vision \/ Temperature 仍由下方通用字段决定/i)).toBeInTheDocument();
     expect(screen.queryByText(/LiteLLM/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/LITELLM_CONFIG/i)).not.toBeInTheDocument();
+  });
+
+  it('excludes Hermes-only route from Agent and Vision runtime selects', () => {
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'hermes' },
+          { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+          { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+          { key: 'LLM_HERMES_ENABLED', value: 'true' },
+          { key: 'LLM_HERMES_API_KEY', value: '******' },
+          { key: 'LLM_HERMES_MODELS', value: 'hermes-agent' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    expect(selectOptionValues('主模型')).toContain('openai/hermes-agent');
+    expect(selectOptionValues('Agent 主模型')).not.toContain('openai/hermes-agent');
+    expect(selectOptionValues('Vision 模型')).not.toContain('openai/hermes-agent');
+  });
+
+  it('keeps mixed Hermes route for Agent but excludes it from Vision', () => {
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'hermes,remote,pure' },
+          { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+          { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+          { key: 'LLM_HERMES_ENABLED', value: 'true' },
+          { key: 'LLM_HERMES_API_KEY', value: '******' },
+          { key: 'LLM_HERMES_MODELS', value: 'shared-route' },
+          { key: 'LLM_REMOTE_PROTOCOL', value: 'openai' },
+          { key: 'LLM_REMOTE_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_REMOTE_ENABLED', value: 'true' },
+          { key: 'LLM_REMOTE_API_KEY', value: 'sk-remote' },
+          { key: 'LLM_REMOTE_MODELS', value: 'shared-route' },
+          { key: 'LLM_PURE_PROTOCOL', value: 'openai' },
+          { key: 'LLM_PURE_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_PURE_ENABLED', value: 'true' },
+          { key: 'LLM_PURE_API_KEY', value: 'sk-pure' },
+          { key: 'LLM_PURE_MODELS', value: 'pure-route' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    expect(selectOptionValues('主模型')).not.toContain('openai/shared-route');
+    expect(selectOptionValues('主模型')).toContain('openai/pure-route');
+    expect(selectOptionValues('Agent 主模型')).toContain('openai/shared-route');
+    expect(selectOptionValues('Vision 模型')).not.toContain('openai/shared-route');
+  });
+
+  it('rejects bare mixed Hermes route before saving runtime generation config', async () => {
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'hermes,remote' },
+          { key: 'LITELLM_MODEL', value: 'shared-route' },
+          { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+          { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+          { key: 'LLM_HERMES_ENABLED', value: 'true' },
+          { key: 'LLM_HERMES_API_KEY', value: 'sk-hermes' },
+          { key: 'LLM_HERMES_MODELS', value: 'shared-route' },
+          { key: 'LLM_REMOTE_PROTOCOL', value: 'openai' },
+          { key: 'LLM_REMOTE_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_REMOTE_ENABLED', value: 'true' },
+          { key: 'LLM_REMOTE_API_KEY', value: 'sk-remote' },
+          { key: 'LLM_REMOTE_MODELS', value: 'shared-route' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    fireEvent.change(screen.getByRole('slider'), { target: { value: '0.2' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    expect(await screen.findByText(/Mixed Hermes\/non-Hermes route 暂不支持作为主生成或备选模型/i)).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does not test runtime-only masked Hermes secrets from the settings UI', async () => {
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'hermes' },
+          { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+          { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+          { key: 'LLM_HERMES_ENABLED', value: 'true' },
+          { key: 'LLM_HERMES_API_KEY', value: '******', rawValueExists: false },
+          { key: 'LLM_HERMES_MODELS', value: 'hermes-agent' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Hermes/i }));
+    fireEvent.click(screen.getByRole('button', { name: '测试连接' }));
+    fireEvent.click(screen.getByRole('button', { name: '获取模型' }));
+    fireEvent.click(screen.getByLabelText('JSON'));
+    fireEvent.click(screen.getByRole('button', { name: '检测能力' }));
+
+    const messages = await screen.findAllByText(/运行时注入的 Hermes Key 不会回传/i);
+    expect(messages.length).toBeGreaterThanOrEqual(3);
+    expect(testLLMChannel).not.toHaveBeenCalled();
+    expect(discoverLLMChannelModels).not.toHaveBeenCalled();
+  });
+
+  it('keeps pure non-Hermes route in Agent and Vision runtime selects', () => {
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'remote' },
+          { key: 'LLM_REMOTE_PROTOCOL', value: 'openai' },
+          { key: 'LLM_REMOTE_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_REMOTE_ENABLED', value: 'true' },
+          { key: 'LLM_REMOTE_API_KEY', value: 'sk-remote' },
+          { key: 'LLM_REMOTE_MODELS', value: 'gpt-4o-mini' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />
+    );
+
+    expect(selectOptionValues('主模型')).toContain('openai/gpt-4o-mini');
+    expect(selectOptionValues('Agent 主模型')).toContain('openai/gpt-4o-mini');
+    expect(selectOptionValues('Vision 模型')).toContain('openai/gpt-4o-mini');
   });
 
   it('keeps minimax-prefixed models in runtime selections', () => {
@@ -359,6 +500,55 @@ describe('LLMChannelEditor', () => {
         expect.objectContaining({ key: 'LLM_MINIMAX_MODELS', value: 'MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed' }),
       ]),
     );
+  });
+
+  it('clears active Hermes unsupported multi-key and extra-header env keys on save', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_HERMES_API_KEYS', 'LLM_HERMES_EXTRA_HEADERS'],
+      warnings: [
+        '检测到已清理 Hermes Phase 3 不支持的配置项：LLM_HERMES_API_KEYS, LLM_HERMES_EXTRA_HEADERS。Hermes reserved channel 只支持单个 LLM_HERMES_API_KEY，不支持多 Key 或额外 Header；如需恢复旧值，请从 .env 备份、Git 历史或桌面端导出备份手动还原，但非空 LLM_HERMES_API_KEYS / LLM_HERMES_EXTRA_HEADERS 仍会被后端校验拒绝。',
+      ],
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'hermes' },
+          { key: 'LLM_HERMES_PROTOCOL', value: 'openai' },
+          { key: 'LLM_HERMES_BASE_URL', value: 'http://127.0.0.1:8642/v1' },
+          { key: 'LLM_HERMES_ENABLED', value: 'true' },
+          { key: 'LLM_HERMES_API_KEY', value: 'sk-hermes-test-value' },
+          { key: 'LLM_HERMES_API_KEYS', value: 'sk-old-a,sk-old-b' },
+          { key: 'LLM_HERMES_EXTRA_HEADERS', value: '{"X":"Y"}' },
+          { key: 'LLM_HERMES_MODELS', value: 'hermes-agent' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Hermes/i }));
+    fireEvent.change(screen.getByLabelText('模型（逗号分隔）'), { target: { value: 'hermes-agent,hermes-agent-2' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalled();
+    });
+
+    const updatePayload = update.mock.calls[0][0];
+    const updateItemMap = new Map(updatePayload.items.map((item: { key: string; value: string }) => [item.key, item.value]));
+
+    expect(updateItemMap.get('LLM_HERMES_API_KEY')).toBe('sk-hermes-test-value');
+    expect(updateItemMap.get('LLM_HERMES_API_KEYS')).toBe('');
+    expect(updateItemMap.get('LLM_HERMES_EXTRA_HEADERS')).toBe('');
+    expect(await screen.findByText(/已清理 Hermes Phase 3 不支持的配置项/i)).toBeInTheDocument();
+    expect(screen.getByText(/如需恢复旧值，请从 \.env 备份/i)).toBeInTheDocument();
   });
 
   it('only persists edited values for runtime-only channel keys', async () => {
@@ -622,6 +812,99 @@ describe('LLMChannelEditor', () => {
         expect.objectContaining({ key: 'LITELLM_FALLBACK_MODELS', value: 'deepseek/deepseek-v4-pro,cohere/command-r-plus' }),
         expect.objectContaining({ key: 'VISION_MODEL', value: '' }),
         expect.objectContaining({ key: 'LLM_DEEPSEEK_MODELS', value: 'deepseek-v4-flash,deepseek-v4-pro' }),
+      ]),
+    );
+  });
+
+  it('prompts when bare runtime models loosely match canonical OpenAI route aliases', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_PRIMARY_BASE_URL', 'LITELLM_MODEL', 'LITELLM_FALLBACK_MODELS'],
+      warnings: [],
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'primary' },
+          { key: 'LLM_PRIMARY_PROTOCOL', value: 'openai' },
+          { key: 'LLM_PRIMARY_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_PRIMARY_ENABLED', value: 'true' },
+          { key: 'LLM_PRIMARY_API_KEY', value: 'sk-test' },
+          { key: 'LLM_PRIMARY_MODELS', value: 'gpt-4o-mini' },
+          { key: 'LITELLM_MODEL', value: 'gpt-4o-mini' },
+          { key: 'LITELLM_FALLBACK_MODELS', value: 'gpt-4o-mini' },
+          { key: 'AGENT_LITELLM_MODEL', value: '' },
+          { key: 'VISION_MODEL', value: '' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /primary/i }));
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://api.example.com/compatible/v1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('当前运行时模型使用非规范 route alias，请从下拉框重新选择规范模型。')).toBeInTheDocument();
+    });
+
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does not treat direct-env provider models as non-canonical route aliases', async () => {
+    update.mockResolvedValue({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 1,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['LLM_PRIMARY_BASE_URL', 'LITELLM_MODEL'],
+      warnings: [],
+    });
+
+    render(
+      <LLMChannelEditor
+        items={[
+          { key: 'LLM_CHANNELS', value: 'primary' },
+          { key: 'LLM_PRIMARY_PROTOCOL', value: 'openai' },
+          { key: 'LLM_PRIMARY_BASE_URL', value: 'https://api.example.com/v1' },
+          { key: 'LLM_PRIMARY_ENABLED', value: 'true' },
+          { key: 'LLM_PRIMARY_API_KEY', value: 'sk-test' },
+          { key: 'LLM_PRIMARY_MODELS', value: 'cohere/command-r-plus' },
+          { key: 'LITELLM_MODEL', value: 'cohere/command-r-plus' },
+          { key: 'AGENT_LITELLM_MODEL', value: '' },
+          { key: 'LITELLM_FALLBACK_MODELS', value: '' },
+          { key: 'VISION_MODEL', value: '' },
+        ]}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /primary/i }));
+    fireEvent.change(screen.getByLabelText('Base URL'), {
+      target: { value: 'https://api.example.com/compatible/v1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存 AI 配置' }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalled();
+    });
+
+    const updatePayload = update.mock.calls[0][0];
+    expect(updatePayload.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'LITELLM_MODEL', value: 'cohere/command-r-plus' }),
       ]),
     );
   });

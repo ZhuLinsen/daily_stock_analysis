@@ -18,9 +18,9 @@ If you are choosing a concrete provider, setting up GitHub Actions Secrets / Var
 
 ---
 
-## Generation Backend (Phase 2)
+## Generation Backend (Phase 4)
 
-The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` is an explicit opt-in local CLI backend and is currently **experimental/limited**.
+The generation backend is the outer runtime selector for regular stock analysis, market review, and `generate_text()`. The default remains `litellm` with zero regression. `codex_cli` / `claude_code_cli` / `opencode_cli` are explicit opt-in local CLI backends and are currently **experimental/limited**.
 
 ```env
 GENERATION_BACKEND=litellm
@@ -29,27 +29,36 @@ GENERATION_BACKEND_TIMEOUT_SECONDS=300
 GENERATION_BACKEND_MAX_OUTPUT_BYTES=1048576
 GENERATION_BACKEND_MAX_CONCURRENCY=1
 LOCAL_CLI_BACKEND_MAX_CONCURRENCY=1
+# Optional: leave empty to use the local OpenCode default model; set it only to pass a --model override.
+# OPENCODE_CLI_MODEL=provider/model
 AGENT_GENERATION_BACKEND=auto
 ```
 
-- `GENERATION_BACKEND=litellm|codex_cli`. `codex_cli` is a generation backend, not a LiteLLM provider; do not set `LITELLM_MODEL=codex_cli/...`.
+- `GENERATION_BACKEND=litellm|codex_cli|claude_code_cli|opencode_cli`. Local CLI backends are generation backends, not LiteLLM providers; do not set `LITELLM_MODEL=codex_cli/...`, `LITELLM_MODEL=claude_code_cli/...`, or `LITELLM_MODEL=opencode_cli/...`.
+- With `GENERATION_BACKEND=opencode_cli`, DSA does not pass `--model` by default and lets local OpenCode use its own default model configuration. `OPENCODE_CLI_MODEL` is only an optional override; when set, DSA passes it as one OpenCode `--model` argument. Provider authentication, account state, and model availability are handled by your local OpenCode setup.
 - If `GENERATION_FALLBACK_BACKEND` is unset, it defaults to `litellm`. In local `.env`, an explicit empty value disables backend-level fallback. A fallback equal to the primary backend is treated as no-op. The bundled GitHub Actions workflow explicitly exports `litellm` when this variable is not configured; to disable backend fallback there, set the fallback to the primary backend, for example `GENERATION_BACKEND=codex_cli` + `GENERATION_FALLBACK_BACKEND=codex_cli`.
-- With `GENERATION_BACKEND=codex_cli`, regular analysis and market review do not require Gemini/OpenAI/Anthropic/DeepSeek API keys. If the `codex` executable is missing, DSA returns structured `command_not_found` instead of “API key not configured”.
-- The current `codex_cli` preset reads the final response through `codex exec --output-last-message <temp-file> -`. Codex CLI still prints the same final response to stdout; DSA removes that duplicate from stdout diagnostics previews and output-size accounting, and never uses stdout for main-analysis JSON parsing. Official references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) and [Codex CLI command line options](https://developers.openai.com/codex/cli/reference). This repository currently verifies only `codex-cli 0.142.0` and does not claim a wider minimum version range; if the installed CLI does not support a preset argument, DSA returns structured `non_zero_exit` / `cli_contract_unsupported` diagnostics and falls back to `litellm` when backend fallback is configured.
-- `codex_cli` does not support streaming. Stream requests degrade to non-stream and do not return `capability_unsupported`.
+- With `GENERATION_BACKEND=codex_cli|claude_code_cli`, regular analysis and market review do not require Gemini/OpenAI/Anthropic/DeepSeek API keys. If the corresponding executable is missing, DSA returns structured `command_not_found` instead of “API key not configured”.
+- The current `codex_cli` preset reads the final response through `codex exec --output-last-message <temp-file> -`. Codex CLI still prints the same final response to stdout; DSA removes that duplicate from stdout diagnostics previews and output-size accounting, and never uses stdout for main-analysis JSON parsing. Official references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) and [Codex CLI command line options](https://developers.openai.com/codex/cli/reference). This repository currently verifies only `codex-cli 0.142.0` and does not claim a wider minimum version range; if the installed CLI does not support a preset argument, DSA returns structured `capability_unsupported` / `cli_contract_unsupported` diagnostics and falls back to `litellm` when backend fallback is configured.
+- The current `claude_code_cli` preset uses `claude --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --no-session-persistence --output-format json -p <static instruction>`, with the full DSA prompt passed through stdin. DSA only extracts the final text from Claude's `result/success` JSON envelope. If `--json-schema` is enabled later, schema mode must extract `structured_output`, and the output still goes through DSA's existing JSON validator, minimal parser contract, `_parse_response()`, integrity retry, placeholder fill, and usage telemetry. The CLI flags are based on the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference). This PR smoke-tested `claude 2.1.177 (Claude Code)` and does not claim a wider minimum version range.
+- The current `opencode_cli` preset uses `opencode --pure run --format json [--model <OPENCODE_CLI_MODEL>] <static instruction> --file <temp prompt file>`. DSA only appends `--model` when `OPENCODE_CLI_MODEL` is explicitly set. The full DSA prompt is written to a permission-restricted temporary file and is not placed in argv. DSA only extracts text from OpenCode JSON event output that has no tool events and ends with a normal `step_finish`; `tool_use`, `error`, `question`, or `permission` events fail structurally. The CLI flags are based on the [OpenCode CLI reference](https://opencode.ai/docs/cli), and project config merge semantics are documented in the [OpenCode config reference](https://opencode.ai/docs/config). This PR smoke-tested `opencode 1.17.11` and does not claim a wider minimum version range.
+- Local CLI backends do not support streaming. Stream requests degrade to non-stream and do not return `capability_unsupported`.
 - Local CLI usage is normally unavailable. DSA does not persist fake 0-token, fake cost, or fake cache telemetry.
 - Local CLI execution has hard caps: `GENERATION_BACKEND_TIMEOUT_SECONDS` max `3600`, `GENERATION_BACKEND_MAX_OUTPUT_BYTES` max `33554432`, `GENERATION_BACKEND_MAX_CONCURRENCY` max `16`, and `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` max `4`. Diagnostic stdout/stderr plus the final response are counted together; for `--output-last-message` presets, the final response duplicated to stdout is not counted twice and is not exposed in `stdout_preview`.
 - Local CLI default concurrency is 1. Effective local CLI concurrency is `min(LOCAL_CLI_BACKEND_MAX_CONCURRENCY, GENERATION_BACKEND_MAX_CONCURRENCY)` and does not inherit `MAX_WORKERS`.
-- `AGENT_GENERATION_BACKEND=auto` does not blindly inherit `GENERATION_BACKEND=codex_cli`; Agent tool calling remains on LiteLLM. The Web settings page only exposes `auto|litellm`; a hand-written `AGENT_GENERATION_BACKEND=codex_cli` does not enable Agent text-only mode in Phase 2 and returns an explicit unsupported tool-calling diagnostic.
+- `AGENT_GENERATION_BACKEND=auto` does not inherit local CLI values from `GENERATION_BACKEND`; Agent tool calling remains on LiteLLM. The Web settings page only exposes `auto|litellm`; a hand-written `AGENT_GENERATION_BACKEND=codex_cli|claude_code_cli|opencode_cli` does not enable Agent text-only mode and returns an explicit unsupported tool-calling diagnostic.
 
-### Codex CLI Privacy And Boundaries
+### Local CLI Privacy And Boundaries
 
-- A local CLI backend is not an offline model. The service behind Codex CLI may process stock symbols, news, position context, analysis prompts, and report drafts.
+- A local CLI backend is not an offline model. The service behind Codex / Claude Code / OpenCode may process stock symbols, news, position context, analysis prompts, and report drafts.
 - Docker, cloud servers, and CI do not automatically have your local CLI login state.
-- GitHub Actions only passes configuration values through; it does not install or log in Codex CLI. If you opt into `GENERATION_BACKEND=codex_cli` in Actions, a runner without the executable or login state should return a structured failure.
-- DSA does not read Codex credential files, but the subprocess may use the CLI's own login state.
+- GitHub Actions only passes configuration values through; it does not install or log in local CLIs. If you opt into a local CLI backend in Actions, a runner without the executable or login state should return a structured failure.
+- DSA does not read Codex/Claude/OpenCode credential files, but the subprocess may use the CLI's own login state.
+- On macOS, desktop apps launched from Finder/Dock do not inherit the shell PATH. The packaged desktop app adds common Homebrew directories such as `/opt/homebrew/bin` and `/usr/local/bin` when starting the backend. If setup checks still cannot find the CLI executable, fully quit and reopen DSA; opening an interactive CLI window does not change the already-running backend PATH.
+- DSA only inherits a minimal child environment and denies wildcard inheritance of `CLAUDE_*`, `ANTHROPIC_*`, `OPENCODE_*`, `OPENAI_*`, `GOOGLE_*`, `GEMINI_*`, `AWS_*`, `AZURE_*`, `VERTEX_*`, `*_API_KEY`, `*_AUTH_TOKEN`, `*_ACCESS_TOKEN`, `*_SECRET`, and `*_PASSWORD`, reducing the risk of leaking DSA API keys, provider tokens, or webhook tokens. `CODEX_HOME` is the exact-name exception retained for existing Codex CLI login-directory compatibility; `CODEX_CLI_*` wildcard inheritance is not restored.
+- `opencode_cli` writes a minimal project `opencode.json` in the temporary cwd to disable sharing, autoupdate, snapshots, and common tool permissions, but OpenCode's resolved config may still include local global settings. Runtime safety also relies on `--pure`, the env denylist, prompt-file permissions, and the event extractor failing closed.
 - The Web settings page only exposes safe presets; it does not accept arbitrary command, argv, or shell strings.
-- `codex_cli` remains experimental/limited. If your CLI version does not support stable non-interactive `--output-last-message` output, keep `GENERATION_BACKEND=litellm`.
+- `codex_cli` / `claude_code_cli` / `opencode_cli` remain experimental/limited. If your CLI version does not support the non-interactive output contract verified by this repository, DSA returns structured `capability_unsupported`, `cli_contract_unsupported`, `invalid_json`, `schema_validation_failed`, or the corresponding backend error, and falls back to `litellm` when backend fallback is configured. If that version-drift risk is unacceptable, keep `GENERATION_BACKEND=litellm`.
+- `opencode_cli` does not support OpenCode serve / web / ACP / MCP / attach / `--dangerously-skip-permissions`, and DSA never treats OpenCode final text as Agent tool success.
 
 ## Method 1: Simple Model Config (For Beginners)
 
@@ -210,6 +219,18 @@ LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
 # 3. Specify primary model
 LITELLM_MODEL=ollama/qwen3:8b
 ```
+
+### Example: Hermes Local HTTP Generation (Phase 3)
+```env
+LLM_CHANNELS=hermes
+LLM_HERMES_PROTOCOL=openai
+LLM_HERMES_BASE_URL=http://127.0.0.1:8642/v1
+LLM_HERMES_API_KEY=sk-local-hermes
+LLM_HERMES_MODELS=hermes-agent
+LITELLM_MODEL=openai/hermes-agent
+```
+
+`hermes` is a reserved channel name for local loopback `/v1` OpenAI-compatible generation. Phase 3 only verifies regular analysis and JSON output. It does not support Stream/SSE, tools, Vision, Agent tools, remote Hermes, or process lifecycle management. Use exactly one `LLM_HERMES_API_KEY`; do not configure `LLM_HERMES_API_KEYS` or `LLM_HERMES_EXTRA_HEADERS`. If enabled Hermes config is invalid, DSA blocks legacy provider silent fallback so requests do not unexpectedly switch to an external model. When the Web settings page saves the reserved Hermes channel, it explicitly clears stale `LLM_HERMES_API_KEYS` / `LLM_HERMES_EXTRA_HEADERS` values and returns a warning. To recover previous values, restore them from a `.env` backup, Git history, or a desktop export backup, but Phase 3 will still reject non-empty multi-key or extra-header Hermes settings.
 
 ### MiniMax Model Naming in Channel Mode
 

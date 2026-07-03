@@ -24,6 +24,19 @@ class BacktestServiceTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = os.path.join(self._temp_dir.name, "test_backtest_service.db")
+        self._original_env = {
+            key: os.environ.get(key)
+            for key in (
+                "ENV_FILE",
+                "DATABASE_PATH",
+                "BACKTEST_EVAL_WINDOW_DAYS",
+            )
+        }
+        self._env_path = os.path.join(self._temp_dir.name, ".env")
+        with open(self._env_path, "w", encoding="utf-8") as env_file:
+            env_file.write("STOCK_LIST=600519,000001\n")
+
+        os.environ["ENV_FILE"] = self._env_path
         os.environ["DATABASE_PATH"] = self._db_path
         os.environ["BACKTEST_EVAL_WINDOW_DAYS"] = "3"
 
@@ -145,7 +158,13 @@ class BacktestServiceTestCase(unittest.TestCase):
             session.commit()
 
     def tearDown(self) -> None:
+        Config._instance = None
         DatabaseManager.reset_instance()
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self._temp_dir.cleanup()
 
     def _count_results(self) -> int:

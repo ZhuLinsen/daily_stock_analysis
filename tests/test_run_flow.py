@@ -732,6 +732,106 @@ class RunFlowTestCase(unittest.TestCase):
             any(event.type == "provider_run" and event.severity == "warning" for event in snapshot.events)
         )
 
+    def test_tickflow_provider_runs_map_to_run_flow_nodes_and_fallback_edges(self) -> None:
+        context_snapshot = {
+            "diagnostics": {
+                "trace_id": "trace-tickflow",
+                "task_id": "task-tickflow",
+                "query_id": "query-tickflow",
+                "stock_code": "600519",
+                "trigger_source": "api",
+                "provider_runs": [
+                    {
+                        "trace_id": "trace-tickflow",
+                        "data_type": "daily_data",
+                        "provider": "TickFlowFetcher",
+                        "operation": "get_daily_data",
+                        "success": True,
+                        "latency_ms": 504,
+                        "record_count": 30,
+                        "cache_hit": True,
+                        "created_at": "2026-06-08T10:00:01",
+                    },
+                    {
+                        "trace_id": "trace-tickflow",
+                        "data_type": "realtime_quote",
+                        "provider": "TickFlowFetcher",
+                        "operation": "get_realtime_quote",
+                        "success": False,
+                        "latency_ms": 892,
+                        "error_type": "DataFetchError",
+                        "fallback_to": "AkshareFetcher",
+                        "created_at": "2026-06-08T10:00:02",
+                    },
+                    {
+                        "trace_id": "trace-tickflow",
+                        "data_type": "realtime_quote",
+                        "provider": "AkshareFetcher",
+                        "operation": "get_realtime_quote",
+                        "success": True,
+                        "latency_ms": 8700,
+                        "record_count": 1,
+                        "fallback_from": "TickFlowFetcher",
+                        "created_at": "2026-06-08T10:00:11",
+                    },
+                ],
+            },
+            "analysis_context_pack_overview": _overview(
+                blocks=[
+                    {
+                        "key": "daily_bars",
+                        "label": "日线",
+                        "status": "available",
+                        "source": "TickFlowFetcher",
+                        "warnings": [],
+                        "missing_reasons": [],
+                    },
+                    {
+                        "key": "quote",
+                        "label": "行情",
+                        "status": "fallback",
+                        "source": "AkshareFetcher",
+                        "warnings": ["tickflow_realtime_fallback"],
+                        "missing_reasons": [],
+                    },
+                ]
+            ),
+        }
+
+        snapshot = build_history_run_flow_snapshot(_history_record(context_snapshot=context_snapshot))
+        nodes = {node.id: node for node in snapshot.nodes}
+        edges = [edge.model_dump(by_alias=True) for edge in snapshot.edges]
+
+        self.assertEqual(snapshot.status, "degraded")
+        self.assertEqual(snapshot.summary.fallback_count, 1)
+        self.assertIn("provider_daily_data_tickflowfetcher_1", nodes)
+        self.assertEqual(nodes["provider_daily_data_tickflowfetcher_1"].provider, "TickFlowFetcher")
+        self.assertEqual(nodes["provider_daily_data_tickflowfetcher_1"].status, "success")
+        self.assertEqual(nodes["provider_daily_data_tickflowfetcher_1"].record_count, 30)
+        self.assertEqual(
+            nodes["provider_daily_data_tickflowfetcher_1"].metadata.get("cache_hit"),
+            True,
+        )
+        self.assertIn("provider_realtime_quote_tickflowfetcher_1", nodes)
+        self.assertEqual(nodes["provider_realtime_quote_tickflowfetcher_1"].status, "failed")
+        self.assertIn("provider_realtime_quote_aksharefetcher_2", nodes)
+        self.assertEqual(nodes["provider_realtime_quote_aksharefetcher_2"].status, "fallback")
+        self.assertTrue(
+            any(
+                edge["from"] == "provider_realtime_quote_tickflowfetcher_1"
+                and edge["to"] == "provider_realtime_quote_aksharefetcher_2"
+                and edge["kind"] == "fallback"
+                for edge in edges
+            )
+        )
+        self.assertTrue(
+            any(
+                event.type == "provider_run"
+                and event.node_id == "provider_realtime_quote_tickflowfetcher_1"
+                and event.severity == "warning"
+                for event in snapshot.events
+            )
+        )
     def test_news_search_provider_runs_map_to_run_flow_nodes(self) -> None:
         context_snapshot = {
             "diagnostics": {

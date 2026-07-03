@@ -341,7 +341,7 @@ class RuntimeSchedulerService:
 
         def run_and_release() -> None:
             try:
-                self._run_analysis_locked()
+                self._run_analysis_locked(None)
             finally:
                 self._run_lock.release()
 

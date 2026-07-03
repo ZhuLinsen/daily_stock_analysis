@@ -9,6 +9,7 @@ import re
 from typing import Optional
 
 from data_provider.base import canonical_stock_code, is_bse_code
+from src.services.market_symbol_utils import normalize_suffix_market_symbol
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
@@ -120,8 +121,11 @@ def normalize_code(raw: str) -> Optional[str]:
         return None
     if text.isdigit() and len(text) in (5, 6):
         return text
+    suffix_symbol = normalize_suffix_market_symbol(text)
+    if suffix_symbol is not None:
+        return suffix_symbol
     if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
-        return text if _strip_exchange_suffix(text) is not None else None
+        return None
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
         return text
     stripped_suffix = _strip_exchange_suffix(text)
@@ -137,7 +141,7 @@ def normalize_code(raw: str) -> Optional[str]:
 def resolve_index_stock_code_for_analysis(raw: str) -> str:
     """Resolve bare JP/KR candidates via stock index and keep suffix forms.
 
-    For code-like inputs:
+    For code-like inputs and indexed 4-digit JP bare bases:
     - Existing index-backed entries (e.g. ``005930`` -> ``005930.KS``) are
       preferred.
     - Non-matching code-like inputs keep the canonicalized input.
@@ -149,7 +153,7 @@ def resolve_index_stock_code_for_analysis(raw: str) -> str:
     if not text:
         return ""
 
-    if is_code_like(text):
+    if is_code_like(text) or (text.isdigit() and len(text) == 4):
         from src.data.stock_index_loader import resolve_index_stock_code
 
         resolved = resolve_index_stock_code(text)

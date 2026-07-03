@@ -4,6 +4,10 @@ import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '.
 
 const requiredLocalizedKeys = [
   'TICKFLOW_API_KEY',
+  'TICKFLOW_PRIORITY',
+  'TICKFLOW_KLINE_ADJUST',
+  'TICKFLOW_BATCH_DAILY_ENABLED',
+  'TICKFLOW_BATCH_SIZE',
   'STOCK_INDEX_REMOTE_UPDATE_ENABLED',
   'SEARXNG_BASE_URLS',
   'ENABLE_REALTIME_QUOTE',
@@ -139,10 +143,6 @@ describe('systemConfigI18n option label localization', () => {
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'off', undefined, '关闭'],
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'basic', undefined, '基础'],
     ['LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 'debug', undefined, '调试'],
-    ['MARKET_REVIEW_REGION', 'cn', undefined, 'A 股'],
-    ['MARKET_REVIEW_REGION', 'hk', undefined, '港股'],
-    ['MARKET_REVIEW_REGION', 'us', undefined, '美股'],
-    ['MARKET_REVIEW_REGION', 'both', undefined, '全部市场'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'green_up', 'Green Up / Red Down', '绿涨红跌'],
     ['MARKET_REVIEW_COLOR_SCHEME', 'red_up', 'Red Up / Green Down', '红涨绿跌'],
     ['GENERATION_BACKEND', 'litellm', undefined, '默认模型配置'],
@@ -169,6 +169,11 @@ describe('systemConfigI18n option label localization', () => {
         expect(label).not.toBe(fallbackLabel);
       }
     });
+  });
+
+  it('treats free-text config keys as passthrough for option labels', () => {
+    expect(getFieldOptionLabelZh('MARKET_REVIEW_REGION', 'cn')).toBe('cn');
+    expect(getFieldOptionLabelZh('MARKET_REVIEW_REGION', 'cn,us,jp,kr')).toBe('cn,us,jp,kr');
   });
 });
 

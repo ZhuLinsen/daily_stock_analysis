@@ -531,6 +531,21 @@ class AlertApiTestCase(unittest.TestCase):
         self.assertEqual(invalid_target.status_code, 400, invalid_target.text)
         self.assertEqual(invalid_target.json()["error"], "validation_error")
 
+        for market in ("jp", "kr"):
+            with self.subTest(market=market):
+                unsupported_market = self.client.post(
+                    "/api/v1/alerts/rules",
+                    json={
+                        "target_scope": "market",
+                        "target": market,
+                        "alert_type": "market_light_status",
+                        "parameters": {"statuses": ["red"]},
+                    },
+                )
+                self.assertEqual(unsupported_market.status_code, 400, unsupported_market.text)
+                self.assertEqual(unsupported_market.json()["error"], "validation_error")
+                self.assertIn("cn, hk, us", unsupported_market.json()["message"])
+
     def test_dry_run_market_light_rule_uses_snapshot_and_does_not_write_history(self) -> None:
         rule = self._create_rule({
             "name": "Market risk-off",

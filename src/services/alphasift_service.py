@@ -40,6 +40,7 @@ DSA_ENRICHMENT_MAX_CANDIDATES = 3
 DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
 DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
 DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
+DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 3
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
@@ -794,6 +795,17 @@ def _should_return_eastmoney_hotspot_unavailable(provider_arg: Any, exc: BaseExc
     return isinstance(provider_arg, DsaEastMoneyHotspotProvider) and _is_known_eastmoney_hotspot_connectivity_error(exc)
 
 
+def _has_degraded_eastmoney_hotspot_failure(provider_arg: Any, source_errors: List[str]) -> bool:
+    if not isinstance(provider_arg, DsaEastMoneyHotspotProvider):
+        return False
+    for source_error in source_errors:
+        if source_error == DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE:
+            return True
+        if _is_known_eastmoney_hotspot_connectivity_error(RuntimeError(source_error)):
+            return True
+    return False
+
+
 class AlphaSiftStrategyResponse(BaseModel):
     id: str
     name: str = ""
@@ -822,6 +834,9 @@ class AlphaSiftService:
             "version": adapter_status.get("version"),
             "strategy_count": adapter_status.get("strategy_count"),
         }
+        source_health = _get_alphasift_source_health_snapshot()
+        if source_health:
+            payload["source_health"] = source_health
         if diagnostics:
             payload["diagnostics"] = diagnostics
         return payload
@@ -910,7 +925,7 @@ class AlphaSiftService:
         if not isinstance(items, list):
             items = []
         selected = items[:top_count]
-        source_errors = list(getattr(raw, "source_errors", []) or [])
+        source_errors = _list_text_values(getattr(raw, "source_errors", []))
         direct_hotspot_fallback_used = False
         if isinstance(provider_arg, DsaEastMoneyHotspotProvider) and _hotspot_rows_are_thin(selected, top=top_count):
             try:
@@ -934,6 +949,13 @@ class AlphaSiftService:
                 cached["fallback_used"] = True
                 cached["cache_used"] = True
                 return _attach_cached_hotspot_details(cached, provider=provider_name, top=top_count) if include_details else cached
+            if _has_degraded_eastmoney_hotspot_failure(provider_arg, source_errors):
+                return _empty_alphasift_hotspot_payload(
+                    provider=provider_name,
+                    provider_used=str(getattr(raw, "provider_used", "") or type(provider_arg).__name__),
+                    source_errors=[DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_CODE],
+                    message=DSA_ALPHASIFT_HOTSPOT_UNAVAILABLE_MESSAGE,
+                )
 
         payload = {
             "enabled": True,
@@ -1116,9 +1138,9 @@ class AlphaSiftService:
             "llm_selection_logic": raw_data.get("llm_selection_logic") or "",
             "llm_portfolio_risk": raw_data.get("llm_portfolio_risk") or "",
             "llm_coverage": raw_data.get("llm_coverage"),
-            "llm_parse_errors": raw_data.get("llm_parse_errors") or [],
-            "warnings": raw_data.get("warnings") or [],
-            "source_errors": raw_data.get("source_errors") or [],
+            "llm_parse_errors": _list_text_values(raw_data.get("llm_parse_errors")),
+            "warnings": _list_text_values(raw_data.get("warnings")),
+            "source_errors": _list_text_values(raw_data.get("source_errors")),
             "dsa_enrichment": dsa_enrichment,
             "deep_analysis_requested": raw_data.get("deep_analysis_requested"),
             "post_analyzers": raw_data.get("post_analyzers") or [],
@@ -1437,6 +1459,24 @@ def _get_alphasift_status_snapshot() -> Tuple[Dict[str, Any], bool, Optional[Dic
         return {}, False, diagnostics
 
     return adapter_status, _is_adapter_available(adapter_status), None
+
+
+def _get_alphasift_source_health_snapshot() -> Dict[str, Any]:
+    health: Dict[str, Any] = {}
+    for module_name, key, function_name in (
+        ("alphasift.snapshot", "snapshot", "snapshot_source_health_snapshot"),
+        ("alphasift.daily", "daily", "daily_source_health_snapshot"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            snapshot_func = getattr(module, function_name, None)
+            if callable(snapshot_func):
+                snapshot = _remove_non_finite_json_values(_to_plain(snapshot_func()))
+                if snapshot:
+                    health[key] = snapshot
+        except Exception as exc:
+            logger.debug("AlphaSift %s source health snapshot unavailable: %s", key, exc)
+    return health
 
 
 def _ensure_alphasift_install_access(request: Request) -> None:
@@ -1917,6 +1957,8 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
 
     put("OPENAI_BASE_URL", config.openai_base_url or _first_channel_base_url(channels, {"openai"}))
     put_default("DAILY_SOURCE", "auto")
+    put_default("DAILY_FETCH_RETRIES", str(DSA_ALPHASIFT_DAILY_FETCH_RETRIES))
+    put_default("DAILY_FETCH_MAX_WORKERS", "1")
     put("LLM_CANDIDATE_CONTEXT_ENABLED", "false")
     put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS)
     put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER))
@@ -1939,7 +1981,9 @@ def _resolve_hotspot_provider(provider: str) -> Tuple[str, Any]:
     configured = (os.getenv("INDUSTRY_PROVIDER") or "").strip()
     if configured.lower() == "akshare":
         return configured, DsaEastMoneyHotspotProvider()
-    return configured or "none", configured or "none"
+    if configured:
+        return configured, configured
+    return "akshare", DsaEastMoneyHotspotProvider()
 
 
 class DsaEastMoneyHotspotProvider:

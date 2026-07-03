@@ -51,6 +51,14 @@ const combinedMarketReviewPayload: MarketReviewPayload = {
         high: 3940.5,
         low: 3860.1,
       }],
+      sectors: {
+        top: [{ name: '半导体', changePct: 2.35 }],
+        bottom: [{ name: '煤炭', changePct: -1.1 }],
+      },
+      concepts: {
+        top: [{ name: '机器人概念', changePct: 4.2 }],
+        bottom: [{ name: '转基因', changePct: -2.05 }],
+      },
     },
     hk: {
       title: '港股市场',
@@ -136,6 +144,23 @@ describe('MarketReviewReportView', () => {
     expect(screen.getByText('680')).toBeInTheDocument();
   });
 
+  it('renders industry and concept rankings from structured market review payloads', () => {
+    render(
+      <MarketReviewReportView
+        payload={combinedMarketReviewPayload}
+        content="# 大盘复盘"
+        reportLanguage="zh"
+      />,
+    );
+
+    expect(screen.getAllByText('行业板块')).toHaveLength(2);
+    expect(screen.getAllByText('概念板块')).toHaveLength(2);
+    expect(screen.getByText('半导体')).toBeInTheDocument();
+    expect(screen.getByText('机器人概念')).toBeInTheDocument();
+    expect(screen.getByText('+4.20%')).toBeInTheDocument();
+    expect(screen.getByText('-2.05%')).toBeInTheDocument();
+  });
+
   it('localizes structured market data labels for Chinese reports', () => {
     render(
       <MarketReviewReportView
@@ -171,6 +196,9 @@ describe('MarketReviewReportView', () => {
     expect(screen.getByText('Structured Market Data')).toBeInTheDocument();
     expect(screen.getByText('No data')).toBeInTheDocument();
     expect(screen.getByText('S&P 500')).toBeInTheDocument();
+    expect(screen.getAllByText('Industry Sectors').length).toBeGreaterThan(0);
+    expect(screen.getByText('Technology')).toBeInTheDocument();
+    expect(screen.getByText('Energy')).toBeInTheDocument();
     expect(screen.queryByText('Advancers')).not.toBeInTheDocument();
     expect(screen.queryByText('Decliners')).not.toBeInTheDocument();
   });

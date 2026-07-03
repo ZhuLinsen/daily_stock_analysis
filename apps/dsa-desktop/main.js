@@ -32,6 +32,18 @@ const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${G
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 const DESKTOP_UPDATE_BACKUP_DIR = '.dsa-desktop-update-backup';
 const DESKTOP_UPDATE_BACKUP_MANIFEST_FILE = 'runtime-state.json';
+const MAC_DESKTOP_CLI_PATH_ENTRIES = Object.freeze([
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  '/opt/homebrew/sbin',
+  '/usr/local/sbin',
+]);
+const MAC_DESKTOP_SYSTEM_PATH_ENTRIES = Object.freeze([
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+]);
 const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
   '.env',
   path.join('data', 'stock_analysis.db'),
@@ -651,6 +663,61 @@ function resolveBackendPath() {
   return null;
 }
 
+function extendMacDesktopBackendPath(rawPath) {
+  if (!isMac) {
+    return rawPath;
+  }
+
+  const seen = new Set();
+  const entries = String(rawPath || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => {
+      if (seen.has(entry)) {
+        return false;
+      }
+      seen.add(entry);
+      return true;
+    });
+
+  [...MAC_DESKTOP_CLI_PATH_ENTRIES, ...MAC_DESKTOP_SYSTEM_PATH_ENTRIES].forEach((entry) => {
+    if (!seen.has(entry)) {
+      entries.push(entry);
+      seen.add(entry);
+    }
+  });
+
+  return entries.join(path.delimiter);
+}
+
+function buildBackendEnvironment({ envFile, dbPath, logDir, port = null, sourceEnv = process.env }) {
+  const selectedPort = Number(port);
+  const env = {
+    ...sourceEnv,
+    DSA_DESKTOP_MODE: 'true',
+    ENV_FILE: envFile,
+    DATABASE_PATH: dbPath,
+    LOG_DIR: logDir,
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
+    WEBUI_ENABLED: 'false',
+    BOT_ENABLED: 'false',
+    DINGTALK_STREAM_ENABLED: 'false',
+    FEISHU_STREAM_ENABLED: 'false',
+  };
+
+  if (Number.isInteger(selectedPort) && selectedPort >= 1 && selectedPort <= 65535) {
+    env.WEBUI_PORT = String(selectedPort);
+  }
+
+  if (isMac) {
+    env.PATH = extendMacDesktopBackendPath(sourceEnv.PATH);
+  }
+
+  return env;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -920,19 +987,7 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   backendStartError = null;
   const launchStartedAt = Date.now();
 
-  const env = {
-    ...process.env,
-    DSA_DESKTOP_MODE: 'true',
-    ENV_FILE: envFile,
-    DATABASE_PATH: dbPath,
-    LOG_DIR: logDir,
-    PYTHONUTF8: '1',
-    PYTHONIOENCODING: 'utf-8',
-    WEBUI_ENABLED: 'false',
-    BOT_ENABLED: 'false',
-    DINGTALK_STREAM_ENABLED: 'false',
-    FEISHU_STREAM_ENABLED: 'false',
-  };
+  const env = buildBackendEnvironment({ envFile, dbPath, logDir, port });
 
   const args = ['--serve-only', '--host', '127.0.0.1', '--port', String(port)];
   let launchMode = '';
@@ -1730,6 +1785,8 @@ module.exports = {
   checkForDesktopUpdates,
   compareVersions,
   evaluateReleaseUpdate,
+  buildBackendEnvironment,
+  extendMacDesktopBackendPath,
   extractReleaseMetadata,
   fetchLatestReleaseJson,
   buildMainPageUrl,

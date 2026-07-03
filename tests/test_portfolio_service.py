@@ -224,6 +224,131 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual(pos["price_source"], "history_close")
         self.assertTrue(pos["price_available"])
 
+    def test_current_snapshot_does_not_serialize_non_bulk_realtime_prefetch(self) -> None:
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        for symbol in ["600519", "000001", "300750"]:
+            self.service.record_trade(
+                account_id=aid,
+                symbol=symbol,
+                trade_date=today,
+                side="buy",
+                quantity=10,
+                price=100,
+                market="cn",
+                currency="CNY",
+            )
+
+        fetch_state = {"active": 0, "max_active": 0}
+        lock = threading.Lock()
+        release = threading.Event()
+        called_symbols: list[str] = []
+        manager_instances: list[object] = []
+
+        class FakeDataFetcherManager:
+            def __init__(self) -> None:
+                self._fetcher_call_lock = threading.Lock()
+                manager_instances.append(self)
+
+            def get_realtime_quote(self, symbol: str, log_final_failure: bool = True) -> SimpleNamespace:
+                del log_final_failure
+                with self._fetcher_call_lock:
+                    with lock:
+                        called_symbols.append(symbol)
+                        fetch_state["active"] += 1
+                        fetch_state["max_active"] = max(fetch_state["max_active"], fetch_state["active"])
+                        if fetch_state["active"] >= 2:
+                            release.set()
+                    release.wait(timeout=1.0)
+                    with lock:
+                        fetch_state["active"] -= 1
+                    return SimpleNamespace(price=125.0, source="unit-test")
+
+        with patch("data_provider.base.DataFetcherManager", new=FakeDataFetcherManager):
+            snapshot = self.service.get_portfolio_snapshot(account_id=aid, as_of=today, cost_method="fifo")
+
+        positions = snapshot["accounts"][0]["positions"]
+        self.assertEqual(len(positions), 3)
+        self.assertEqual(set(called_symbols), {position["symbol"] for position in positions})
+        self.assertGreaterEqual(len(manager_instances), 2)
+        self.assertGreaterEqual(fetch_state["max_active"], 2)
+        self.assertTrue(all(position["price_source"] == "realtime_quote" for position in positions))
+        self.assertTrue(all(position["price_provider"] == "unit-test" for position in positions))
+
+    def test_current_snapshot_does_not_serialize_when_bulk_prefetch_cache_misses(self) -> None:
+        """Bulk-prefetch path must not share a fetcher manager across workers.
+
+        Reproduces the #1803 regression where ``prefetch_realtime_quotes`` reports a
+        full-count result but per-symbol ``get_realtime_quote`` still issues a live
+        fetch (mixed markets / cache miss). Each worker must create its own manager
+        so manager-owned per-fetcher locks do not re-serialize the requests.
+        """
+
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        symbols = ["600519", "000001", "300750", "601318", "002594", "600036"]
+        for symbol in symbols:
+            self.service.record_trade(
+                account_id=aid,
+                symbol=symbol,
+                trade_date=today,
+                side="buy",
+                quantity=10,
+                price=100,
+                market="cn",
+                currency="CNY",
+            )
+
+        fetch_state = {"active": 0, "max_active": 0}
+        lock = threading.Lock()
+        release = threading.Event()
+        manager_instances: list[object] = []
+        prefetch_calls: list[list[str]] = []
+
+        class FakeDataFetcherManager:
+            def __init__(self) -> None:
+                # Per-instance lock mirrors DataFetcherManager._call_fetcher_method,
+                # which serializes per-fetcher access through manager-owned locks.
+                self._fetcher_call_lock = threading.Lock()
+                manager_instances.append(self)
+
+            def prefetch_realtime_quotes(self, stock_codes: list) -> int:
+                prefetch_calls.append(list(stock_codes))
+                # Report a full-count bulk prefetch, simulating the optimistic
+                # "cache fully filled" signal the previous implementation trusted.
+                return len(stock_codes)
+
+            def get_realtime_quote(self, symbol: str, log_final_failure: bool = True) -> SimpleNamespace:
+                del log_final_failure
+                with self._fetcher_call_lock:
+                    with lock:
+                        fetch_state["active"] += 1
+                        fetch_state["max_active"] = max(fetch_state["max_active"], fetch_state["active"])
+                        if fetch_state["active"] >= 2:
+                            release.set()
+                    release.wait(timeout=2.0)
+                    with lock:
+                        fetch_state["active"] -= 1
+                    return SimpleNamespace(price=125.0, source="unit-test")
+
+        with patch("data_provider.base.DataFetcherManager", new=FakeDataFetcherManager):
+            snapshot = self.service.get_portfolio_snapshot(account_id=aid, as_of=today, cost_method="fifo")
+
+        positions = snapshot["accounts"][0]["positions"]
+        self.assertEqual(len(positions), len(symbols))
+        # Bulk prefetch path must still be exercised for large batches.
+        self.assertEqual(len(prefetch_calls), 1)
+        self.assertEqual(len(prefetch_calls[0]), len(symbols))
+        # One manager warmed the cache; each per-symbol worker created its own.
+        self.assertGreaterEqual(len(manager_instances), len(symbols) + 1)
+        # Per-worker independent managers must allow real concurrency even when
+        # the bulk prefetch claims a full cache fill.
+        self.assertGreaterEqual(fetch_state["max_active"], 2)
+        self.assertTrue(all(position["price_source"] == "realtime_quote" for position in positions))
+        self.assertTrue(all(position["price_provider"] == "unit-test" for position in positions))
+
     def test_historical_snapshot_marks_missing_price_without_cost_fallback(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]
@@ -344,6 +469,74 @@ class PortfolioServiceTestCase(unittest.TestCase):
                 self.assertAlmostEqual(position["market_value_base"], close * 10, places=6)
                 self.assertAlmostEqual(position["unrealized_pnl_base"], close * 10 - 1000, places=6)
                 self.assertAlmostEqual(position["unrealized_pnl_pct"], (close * 10 - 1000) / 1000 * 100, places=6)
+                self.assertEqual(position["data_quality"], "ok")
+                self.assertEqual(position["limitations"], [])
+
+    def test_jp_kr_portfolio_snapshot_marks_partial_valuation_boundaries(self) -> None:
+        for market, currency, symbol, close in [
+            ("jp", "JPY", "7203.T", 3000.0),
+            ("kr", "KRW", "005930.KS", 70000.0),
+        ]:
+            with self.subTest(market=market):
+                aid = self._create_account_with_position(
+                    market=market,
+                    currency=currency,
+                    symbol=symbol,
+                    close=close,
+                )
+
+                snapshot = self.service.get_portfolio_snapshot(
+                    account_id=aid,
+                    as_of=date(2026, 1, 3),
+                    cost_method="fifo",
+                )
+                account = snapshot["accounts"][0]
+                position = account["positions"][0]
+
+                self.assertEqual(account["market"], market)
+                self.assertEqual(account["base_currency"], currency)
+                self.assertEqual(account["data_quality"], "partial")
+                self.assertEqual(
+                    account["limitations"],
+                    [
+                        "realtime_quote_best_effort",
+                        "fx_and_cost_basis_partial",
+                        "sector_and_risk_metrics_limited",
+                    ],
+                )
+                self.assertEqual(position["symbol"], symbol)
+                self.assertEqual(position["data_quality"], "partial")
+                self.assertIn("fx_and_cost_basis_partial", position["limitations"])
+
+    def test_aggregate_snapshot_marks_partial_when_any_account_has_limitations(self) -> None:
+        self._create_account_with_position(
+            market="cn",
+            currency="CNY",
+            symbol="600519",
+            close=120.0,
+        )
+        self._create_account_with_position(
+            market="jp",
+            currency="JPY",
+            symbol="7203.T",
+            close=3000.0,
+        )
+
+        snapshot = self.service.get_portfolio_snapshot(
+            as_of=date(2026, 1, 3),
+            cost_method="fifo",
+        )
+
+        self.assertEqual(snapshot["account_count"], 2)
+        self.assertEqual(snapshot["data_quality"], "partial")
+        self.assertEqual(
+            snapshot["limitations"],
+            [
+                "realtime_quote_best_effort",
+                "fx_and_cost_basis_partial",
+                "sector_and_risk_metrics_limited",
+            ],
+        )
 
     def test_snapshot_marks_stale_close_and_missing_price(self) -> None:
         aid = self._create_account_with_position(

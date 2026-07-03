@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Local CLI generation backend.
 
-Phase 2 exposes a restricted Codex CLI preset as an opt-in generation backend.
+Phase 4 exposes restricted local CLI presets as opt-in generation backends.
 It is intentionally process-oriented. Generic safe presets treat stdout as the
 model output; the Codex CLI preset reads its final answer from
 ``--output-last-message`` because stdout includes session diagnostics.
@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+import json
 import os
 from pathlib import Path
 import re
@@ -21,10 +22,14 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence
 from urllib.parse import parse_qsl, urlsplit
 
-from src.llm.backend_registry import CODEX_CLI_BACKEND_ID
+from src.llm.backend_registry import (
+    CLAUDE_CODE_CLI_BACKEND_ID,
+    CODEX_CLI_BACKEND_ID,
+    OPENCODE_CLI_BACKEND_ID,
+)
 from src.llm.generation_backend import (
     GenerationBackend,
     GenerationCapabilities,
@@ -50,13 +55,6 @@ _PROCESS_POLL_INTERVAL_SECONDS = 0.05
 _URL_PATTERN = re.compile(r"https?://[^\s,;)\]}]+", re.IGNORECASE)
 _SHELL_META_CHARS = ("|", ">", "<", ";", "`")
 _SHELL_META_STRINGS = ("&&", "||", "$(")
-_PRESET_CONTRACT_ARGS = (
-    "--output-last-message",
-    "--skip-git-repo-check",
-    "--sandbox",
-    "--color",
-    "--ephemeral",
-)
 _UNSUPPORTED_ARG_MARKERS = (
     "unknown option",
     "unrecognized option",
@@ -84,11 +82,6 @@ _SENSITIVE_URL_KEY_PARTS = {
 _SAFE_ENV_EXACT = {
     "PATH",
     "HOME",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "XDG_CONFIG_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_DATA_HOME",
     "TMPDIR",
     "TEMP",
     "TMP",
@@ -98,19 +91,29 @@ _SAFE_ENV_EXACT = {
     "NO_COLOR",
     "TERM",
     "CODEX_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "HOMEDRIVE",
+    "HOMEPATH",
     "SYSTEMROOT",
     "WINDIR",
     "PATHEXT",
     "COMSPEC",
     "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
 }
-_SAFE_ENV_PREFIXES = ("CODEX_CLI_",)
+_SAFE_ENV_PREFIXES = ("LC_",)
 _SENSITIVE_ENV_PATTERNS = (
+    "ACCESS_TOKEN",
     "API_KEY",
     "API_KEYS",
     "AUTHORIZATION",
+    "AUTH_TOKEN",
+    "AWS_",
+    "AZURE_",
+    "BASE_URL",
+    "CLAUDE_",
     "COOKIE",
     "DATABASE_URL",
     "DB_URL",
@@ -119,15 +122,81 @@ _SENSITIVE_ENV_PATTERNS = (
     "GITHUB_TOKEN",
     "OPENAI",
     "ANTHROPIC",
+    "OPENCODE_",
     "DEEPSEEK",
+    "GOOGLE_",
+    "MODEL",
     "SECRET",
     "SESSION",
     "TOKEN",
     "TUSHARE",
+    "VERTEX_",
     "WEBHOOK",
+)
+_CLAUDE_CODE_STATIC_INSTRUCTION = (
+    "Generate the requested DSA analysis output from stdin. "
+    "Return only the final response content. Do not call tools, read files, "
+    "use MCP, or ask for interactive approval."
+)
+_PROMPT_FILE_PLACEHOLDER = "{prompt_file}"
+_OPENCODE_STATIC_INSTRUCTION = (
+    "Generate the requested DSA output from the attached prompt file. "
+    "Follow the output format required by that prompt. Return only the final response "
+    "content. Do not use tools, do not read additional files, do not browse the web, "
+    "do not edit files, do not ask questions, and do not request approval."
+)
+_OPENCODE_ALLOWED_EVENT_TYPES = {"step_start", "text", "step_finish"}
+_OPENCODE_BLOCKED_EVENT_TYPES = {
+    "tool",
+    "tool_call",
+    "tool_result",
+    "tool_use",
+    "error",
+    "question",
+    "permission",
+}
+_OPENCODE_DISABLED_TOOL_NAMES = (
+    "bash",
+    "edit",
+    "glob",
+    "grep",
+    "list",
+    "lsp",
+    "patch",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todoread",
+    "todowrite",
+    "webfetch",
+    "websearch",
+    "write",
 )
 _CONCURRENCY_CONDITION = threading.Condition()
 _CONCURRENCY_ACTIVE = 0
+
+
+@dataclass(frozen=True)
+class LocalCliExecutionResult:
+    """Raw subprocess output passed to a preset-specific extractor."""
+
+    stdout: str
+    stderr: str
+    returncode: int
+    final_message: str = ""
+    diagnostics: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class LocalCliExtractionError(Exception):
+    """Extractor failure mapped to a structured GenerationError by the backend."""
+
+    error_code: GenerationErrorCode
+    reason: str
+    retryable: bool = True
+    fallbackable: bool = True
+    details: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -138,8 +207,12 @@ class LocalCliPreset:
     executable: str
     argv: Sequence[str]
     display_name: str
-    experimental: bool = True
     output_last_message_arg: Optional[str] = None
+    extractor: Callable[[LocalCliExecutionResult], str] = lambda result: (
+        result.final_message or result.stdout
+    ).strip()
+    contract_args: Sequence[str] = ()
+    prompt_transport: str = "stdin"
 
 
 CODEX_CLI_PRESET = LocalCliPreset(
@@ -156,12 +229,79 @@ CODEX_CLI_PRESET = LocalCliPreset(
         "-",
     ),
     display_name="Codex CLI",
-    experimental=True,
     output_last_message_arg="--output-last-message",
+    contract_args=(
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--ephemeral",
+        "--output-last-message",
+    ),
+)
+
+CLAUDE_CODE_CLI_PRESET = LocalCliPreset(
+    preset_id=CLAUDE_CODE_CLI_BACKEND_ID,
+    executable="claude",
+    argv=(
+        "--safe-mode",
+        "--tools",
+        "",
+        "--disallowedTools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "-p",
+        _CLAUDE_CODE_STATIC_INSTRUCTION,
+    ),
+    display_name="Claude Code CLI",
+    extractor=lambda result: _extract_claude_code_json(result, schema_mode=False),
+    contract_args=(
+        "--safe-mode",
+        "--tools",
+        "",
+        "--disallowedTools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "-p",
+    ),
+)
+
+OPENCODE_CLI_PRESET = LocalCliPreset(
+    preset_id=OPENCODE_CLI_BACKEND_ID,
+    executable="opencode",
+    argv=(
+        "--pure",
+        "run",
+        "--format",
+        "json",
+        _OPENCODE_STATIC_INSTRUCTION,
+        "--file",
+        _PROMPT_FILE_PLACEHOLDER,
+    ),
+    display_name="OpenCode CLI",
+    extractor=lambda result: _extract_opencode_json_events(result),
+    contract_args=(
+        "--pure",
+        "run",
+        "--format",
+        "json",
+        "--file",
+    ),
+    prompt_transport="file",
 )
 
 SAFE_LOCAL_CLI_PRESETS = {
     CODEX_CLI_BACKEND_ID: CODEX_CLI_PRESET,
+    CLAUDE_CODE_CLI_BACKEND_ID: CLAUDE_CODE_CLI_PRESET,
+    OPENCODE_CLI_BACKEND_ID: OPENCODE_CLI_PRESET,
 }
 
 
@@ -284,12 +424,256 @@ def _has_sensitive_url_params(params_text: str) -> bool:
     return False
 
 
+def _extract_claude_code_json(result: LocalCliExecutionResult, *, schema_mode: bool) -> str:
+    raw = (result.stdout or "").strip()
+    if not raw:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.EMPTY_OUTPUT,
+            "empty_output",
+        )
+    try:
+        envelope = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.INVALID_JSON,
+            "invalid_json",
+            details={"error": redact_diagnostic_text(str(exc), limit=200)},
+        ) from exc
+    if not isinstance(envelope, dict):
+        raise LocalCliExtractionError(
+            GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+            "schema_validation_failed",
+            details={"expected": "object_envelope"},
+        )
+
+    event_type = str(envelope.get("type") or "").strip()
+    subtype = str(envelope.get("subtype") or "").strip()
+    if event_type != "result":
+        raise LocalCliExtractionError(
+            GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+            "unexpected_cli_event",
+            retryable=False,
+            details={"event_type": event_type or "missing"},
+        )
+    if subtype == "error_max_structured_output_retries":
+        raise LocalCliExtractionError(
+            GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+            "structured_output_retries_exhausted",
+        )
+    if envelope.get("is_error") is True:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+            "cli_result_error",
+            retryable=False,
+            details={"subtype": subtype or "unknown"},
+        )
+    if subtype != "success":
+        raise LocalCliExtractionError(
+            GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+            "cli_result_not_success",
+            retryable=False,
+            details={"subtype": subtype or "missing"},
+        )
+
+    if schema_mode:
+        if "structured_output" not in envelope:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+                "missing_structured_output",
+            )
+        structured_output = envelope.get("structured_output")
+        return json.dumps(
+            structured_output,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    text = str(envelope.get("result") or "").strip()
+    if not text:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.EMPTY_OUTPUT,
+            "empty_result",
+        )
+    return text
+
+
+def _extract_opencode_json_events(result: LocalCliExecutionResult) -> str:
+    raw = (result.stdout or "").strip()
+    if not raw:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.EMPTY_OUTPUT,
+            "empty_output",
+        )
+
+    text_parts: list[str] = []
+    saw_finish = False
+    finish_reason = ""
+    for event in _iter_opencode_events(raw):
+        event_type = str(event.get("type") or "").strip()
+        event_type_lower = event_type.lower()
+        blocked_reason = _opencode_blocked_event_reason(event, event_type_lower)
+        if blocked_reason:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                "capability_unsupported",
+                retryable=False,
+                details={
+                    "event_type": event_type or "missing",
+                    "blocked_reason": blocked_reason,
+                },
+            )
+        if event.get("error") or event.get("is_error") is True:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                "cli_result_error",
+                retryable=False,
+                details={"event_type": event_type or "missing"},
+            )
+        if event_type_lower not in _OPENCODE_ALLOWED_EVENT_TYPES:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                "unexpected_cli_event",
+                retryable=False,
+                details={"event_type": event_type or "missing"},
+            )
+
+        if event_type_lower == "text":
+            text_value = event.get("text")
+            if text_value is None and isinstance(event.get("part"), dict):
+                text_value = event["part"].get("text")
+            if text_value:
+                text_parts.append(str(text_value))
+            continue
+
+        if event_type_lower == "step_finish":
+            saw_finish = True
+            finish_reason = str(
+                event.get("reason")
+                or (
+                    event.get("part", {}).get("reason")
+                    if isinstance(event.get("part"), dict)
+                    else ""
+                )
+                or ""
+            ).strip().lower()
+
+    if not saw_finish:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+            "missing_step_finish",
+        )
+    if finish_reason and finish_reason not in {"stop", "end_turn", "complete", "completed"}:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+            "unexpected_finish_reason",
+            retryable=False,
+            details={"finish_reason": finish_reason},
+        )
+
+    text = "".join(text_parts).strip()
+    if not text:
+        raise LocalCliExtractionError(
+            GenerationErrorCode.EMPTY_OUTPUT,
+            "empty_text",
+        )
+    return text
+
+
+def _iter_opencode_events(output_text: str) -> Iterator[Dict[str, Any]]:
+    """Yield strict OpenCode JSON events from JSONL, arrays, or raw JSON output."""
+
+    raw = str(output_text or "")
+    decoder = json.JSONDecoder()
+    index = 0
+    event_index = 0
+    length = len(raw)
+    while index < length:
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        try:
+            decoded, next_index = decoder.raw_decode(raw, index)
+        except json.JSONDecodeError as exc:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.INVALID_JSON,
+                "invalid_json",
+                details={"error": redact_diagnostic_text(str(exc), limit=200)},
+            ) from exc
+        if next_index <= index:
+            raise LocalCliExtractionError(
+                GenerationErrorCode.INVALID_JSON,
+                "invalid_json",
+                details={"error": "json_decoder_made_no_progress"},
+            )
+        index = next_index
+
+        if isinstance(decoded, list):
+            for item in decoded:
+                event_index += 1
+                yield _validate_opencode_event(item, event_index=event_index)
+            continue
+
+        event_index += 1
+        yield _validate_opencode_event(decoded, event_index=event_index)
+
+
+def _validate_opencode_event(value: Any, *, event_index: int) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise LocalCliExtractionError(
+            GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+            "schema_validation_failed",
+            details={"event_index": event_index, "expected": "object_event"},
+        )
+    event_type = value.get("type")
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise LocalCliExtractionError(
+            GenerationErrorCode.SCHEMA_VALIDATION_FAILED,
+            "schema_validation_failed",
+            details={"event_index": event_index, "expected": "event_type"},
+        )
+    return value
+
+
+def _opencode_blocked_event_reason(event: Dict[str, Any], event_type_lower: str) -> str:
+    if (
+        event_type_lower in _OPENCODE_BLOCKED_EVENT_TYPES
+        or any(blocked in event_type_lower for blocked in _OPENCODE_BLOCKED_EVENT_TYPES)
+    ):
+        return event_type_lower or "blocked_event"
+    if event_type_lower in _OPENCODE_DISABLED_TOOL_NAMES:
+        return event_type_lower
+
+    for container in (event, event.get("part") if isinstance(event.get("part"), dict) else None):
+        if not isinstance(container, dict):
+            continue
+        for key in ("name", "tool", "tool_name"):
+            value = container.get(key)
+            if isinstance(value, str) and value.strip().lower() in _OPENCODE_DISABLED_TOOL_NAMES:
+                return value.strip().lower()
+    return ""
+
+
 def _is_cli_contract_unsupported(output_text: str) -> bool:
     text = str(output_text or "").lower()
-    return (
-        any(arg in text for arg in _PRESET_CONTRACT_ARGS)
-        and any(marker in text for marker in _UNSUPPORTED_ARG_MARKERS)
-    )
+    return any(marker in text for marker in _UNSUPPORTED_ARG_MARKERS)
+
+
+def _opencode_output_has_error_event(output_text: str) -> bool:
+    try:
+        events = _iter_opencode_events(output_text)
+        for event in events:
+            event_type_lower = str(event.get("type") or "").strip().lower()
+            if (
+                _opencode_blocked_event_reason(event, event_type_lower)
+                or bool(event.get("error"))
+                or event.get("is_error") is True
+            ):
+                return True
+    except LocalCliExtractionError:
+        return False
+    return False
 
 
 def resolve_local_cli_preset(preset_id: str) -> LocalCliPreset:
@@ -316,7 +700,6 @@ def resolve_local_cli_preset(preset_id: str) -> LocalCliPreset:
 class LocalCliGenerationBackend(GenerationBackend):
     """Restricted subprocess-backed generation backend."""
 
-    backend_id = CODEX_CLI_BACKEND_ID
     capabilities = GenerationCapabilities(
         supports_json=True,
         supports_tools=False,
@@ -335,6 +718,10 @@ class LocalCliGenerationBackend(GenerationBackend):
     ) -> None:
         self._config = config
         self._preset = preset or resolve_local_cli_preset(preset_id)
+
+    @property
+    def backend_id(self) -> str:
+        return self._preset.preset_id
 
     @property
     def preset_id(self) -> str:
@@ -384,6 +771,7 @@ class LocalCliGenerationBackend(GenerationBackend):
         diagnostics: Dict[str, Any] = {
             "preset_id": self._preset.preset_id,
             "executable": executable_summary,
+            "contract_args": list(self._preset.contract_args),
             "stream_degraded": bool(stream),
             "timeout_seconds": timeout_seconds,
             "max_output_bytes": max_output_bytes,
@@ -399,23 +787,58 @@ class LocalCliGenerationBackend(GenerationBackend):
 
         with _local_cli_concurrency_slot(concurrency_limit):
             self._emit_progress(stream_progress_callback, 0)
-            child_env = build_local_cli_env()
             try:
                 with tempfile.TemporaryDirectory(prefix="dsa-local-cli-") as cwd:
+                    cwd_path = Path(cwd)
+                    try:
+                        cwd_path.chmod(0o700)
+                    except OSError:
+                        pass
                     diagnostics["cwd_kind"] = "temporary"
-                    command_argv, last_message_path = self._build_runtime_argv(argv, cwd)
-                    prompt_path = Path(cwd) / "prompt.txt"
-                    stdout_path = Path(cwd) / "stdout.txt"
-                    stderr_path = Path(cwd) / "stderr.txt"
+                    child_env = build_local_cli_env()
+                    child_env.update(self._build_preset_child_env(cwd_path, diagnostics))
+                    diagnostics["env_allowlist_names"] = sorted(child_env)
+                    diagnostics["runtime_argv_contract_checked"] = True
+                    prompt_path = cwd_path / "prompt.txt"
+                    stdout_path = cwd_path / "stdout.txt"
+                    stderr_path = cwd_path / "stderr.txt"
                     prompt_path.write_text(prompt_text, encoding="utf-8")
-                    with (
-                        prompt_path.open("r", encoding="utf-8") as prompt_handle,
-                        stdout_path.open("wb") as stdout_handle,
-                        stderr_path.open("wb") as stderr_handle,
-                    ):
+                    try:
+                        prompt_path.chmod(0o600)
+                    except OSError:
+                        pass
+                    self._prepare_preset_runtime_files(cwd_path, prompt_path, diagnostics)
+                    command_argv, last_message_path = self._build_runtime_argv(
+                        argv,
+                        cwd,
+                        prompt_path=prompt_path,
+                    )
+                    with ExitStack() as stack:
+                        if self._preset.prompt_transport == "stdin":
+                            stdin_handle = stack.enter_context(
+                                prompt_path.open("r", encoding="utf-8")
+                            )
+                        elif self._preset.prompt_transport == "file":
+                            stdin_handle = subprocess.DEVNULL
+                            diagnostics["prompt_transport"] = "file"
+                            diagnostics["prompt_file_mode"] = "0600"
+                        else:
+                            raise self._error(
+                                GenerationErrorCode.UNSAFE_CONFIG,
+                                stage="configuration",
+                                retryable=False,
+                                fallbackable=False,
+                                details={
+                                    **diagnostics,
+                                    "reason": "unsupported_prompt_transport",
+                                    "prompt_transport": self._preset.prompt_transport,
+                                },
+                            )
+                        stdout_handle = stack.enter_context(stdout_path.open("wb"))
+                        stderr_handle = stack.enter_context(stderr_path.open("wb"))
                         process = subprocess.Popen(
                             [executable, *command_argv],
-                            stdin=prompt_handle,
+                            stdin=stdin_handle,
                             stdout=stdout_handle,
                             stderr=stderr_handle,
                             cwd=cwd,
@@ -619,6 +1042,42 @@ class LocalCliGenerationBackend(GenerationBackend):
                     },
                 ) from exc
 
+        raw_result = LocalCliExecutionResult(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=0,
+            final_message=text,
+            diagnostics=diagnostics,
+        )
+        try:
+            text = self._preset.extractor(raw_result)
+        except LocalCliExtractionError as exc:
+            raise self._error(
+                exc.error_code,
+                stage="validation",
+                retryable=exc.retryable,
+                fallbackable=exc.fallbackable,
+                details={
+                    **diagnostics,
+                    "reason": exc.reason,
+                    **(exc.details or {}),
+                },
+            ) from exc
+        except GenerationError:
+            raise
+        except Exception as exc:
+            raise self._error(
+                GenerationErrorCode.UNKNOWN_BACKEND_ERROR,
+                stage="validation",
+                retryable=False,
+                fallbackable=True,
+                details={
+                    **diagnostics,
+                    "reason": "extractor_failed",
+                    "error": redact_diagnostic_text(str(exc), limit=200),
+                },
+            ) from exc
+
         total_output_bytes = stdio_output_bytes + final_output_bytes
         if total_output_bytes > max_output_bytes:
             raise self._error(
@@ -669,7 +1128,7 @@ class LocalCliGenerationBackend(GenerationBackend):
             usage={
                 "usage_available": False,
                 "usage_source": "unavailable",
-                "backend": self.backend_id,
+                "backend": self._preset.preset_id,
             },
             raw=None,
             diagnostics=diagnostics,
@@ -720,13 +1179,17 @@ class LocalCliGenerationBackend(GenerationBackend):
         self,
         argv: Sequence[str],
         cwd: str,
+        *,
+        prompt_path: Optional[Path] = None,
     ) -> tuple[list[str], Optional[Path]]:
         output_arg = self._preset.output_last_message_arg
         if not output_arg:
-            return list(argv), None
+            runtime_argv = self._replace_runtime_placeholders(list(argv), prompt_path)
+            self._validate_runtime_contract_args(runtime_argv)
+            return runtime_argv, None
 
         last_message_path = Path(cwd) / "last-message.txt"
-        runtime_argv = list(argv)
+        runtime_argv = self._replace_runtime_placeholders(list(argv), prompt_path)
         injected = [output_arg, str(last_message_path)]
         if runtime_argv and runtime_argv[-1] == "-":
             runtime_argv = [*runtime_argv[:-1], *injected, runtime_argv[-1]]
@@ -742,7 +1205,136 @@ class LocalCliGenerationBackend(GenerationBackend):
                 fallbackable=False,
                 details={"reason": "shell_metachar", "token_preview": unsafe},
             )
+        self._validate_runtime_contract_args(runtime_argv)
         return runtime_argv, last_message_path
+
+    def _replace_runtime_placeholders(
+        self,
+        argv: list[str],
+        prompt_path: Optional[Path],
+    ) -> list[str]:
+        if self._preset.preset_id != OPENCODE_CLI_BACKEND_ID:
+            return argv
+        model = self._get_opencode_cli_model()
+        if prompt_path is None:
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={"reason": "missing_prompt_file"},
+            )
+        runtime_argv = [
+            str(prompt_path) if token == _PROMPT_FILE_PLACEHOLDER else token
+            for token in argv
+        ]
+        if model:
+            try:
+                format_index = runtime_argv.index("--format")
+                insert_at = format_index + 2
+            except ValueError:
+                insert_at = 0
+            runtime_argv = [
+                *runtime_argv[:insert_at],
+                "--model",
+                model,
+                *runtime_argv[insert_at:],
+            ]
+        return runtime_argv
+
+    def _get_opencode_cli_model(self) -> str:
+        model = str(getattr(self._config, "opencode_cli_model", "") or "").strip()
+        if not model:
+            return ""
+        unsafe = _first_unsafe_token([model])
+        if unsafe or any(ch.isspace() for ch in model) or "$" in model:
+            raise self._error(
+                GenerationErrorCode.UNSAFE_CONFIG,
+                stage="configuration",
+                retryable=False,
+                fallbackable=False,
+                details={
+                    "reason": "unsafe_opencode_cli_model",
+                    "field": "OPENCODE_CLI_MODEL",
+                    "token_preview": unsafe or redact_diagnostic_text(model, limit=120),
+                },
+            )
+        return model
+
+    def _build_preset_child_env(
+        self,
+        cwd: Path,
+        diagnostics: Dict[str, Any],
+    ) -> Dict[str, str]:
+        if self._preset.preset_id != OPENCODE_CLI_BACKEND_ID:
+            return {}
+        diagnostics["opencode_child_env_hardened"] = True
+        diagnostics["opencode_provider_credentials_managed_by_dsa"] = False
+        return {
+            "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+            "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "true",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "true",
+            "OPENCODE_DISABLE_AUTOUPDATE": "true",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
+        }
+
+    def _prepare_preset_runtime_files(
+        self,
+        cwd: Path,
+        prompt_path: Path,
+        diagnostics: Dict[str, Any],
+    ) -> None:
+        if self._preset.preset_id != OPENCODE_CLI_BACKEND_ID:
+            return
+        diagnostics["opencode_model_override"] = bool(self._get_opencode_cli_model())
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "share": "disabled",
+            "autoupdate": False,
+            "snapshot": False,
+            "mcp": {},
+            "plugin": [],
+            "instructions": [],
+            "tools": {tool_name: False for tool_name in _OPENCODE_DISABLED_TOOL_NAMES},
+        }
+        config_path = cwd / "opencode.json"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            config_path.chmod(0o600)
+        except OSError:
+            pass
+        diagnostics["opencode_project_config_written"] = True
+        diagnostics["opencode_config_contains_provider_credentials"] = False
+        diagnostics["opencode_prompt_file"] = prompt_path.name
+
+    def _validate_runtime_contract_args(self, runtime_argv: Sequence[str]) -> None:
+        runtime_tokens = [str(arg) for arg in runtime_argv]
+        missing_contract_args: list[str] = []
+        search_start = 0
+        for contract_arg in self._preset.contract_args:
+            contract_token = str(contract_arg)
+            try:
+                matched_at = runtime_tokens.index(contract_token, search_start)
+            except ValueError:
+                missing_contract_args.append(contract_token)
+                continue
+            search_start = matched_at + 1
+        if missing_contract_args:
+            raise self._error(
+                GenerationErrorCode.CAPABILITY_UNSUPPORTED,
+                stage="configuration",
+                retryable=False,
+                fallbackable=True,
+                details={
+                    "reason": "missing_runtime_contract_arg",
+                    "missing_contract_args": [
+                        redact_diagnostic_text(str(arg), limit=120)
+                        for arg in missing_contract_args
+                    ],
+                    "preset_id": self._preset.preset_id,
+                },
+            )
 
     def _non_zero_exit_error(
         self,
@@ -755,7 +1347,14 @@ class LocalCliGenerationBackend(GenerationBackend):
         code = GenerationErrorCode.NON_ZERO_EXIT
         reason = "non_zero_exit"
         if _is_cli_contract_unsupported(combined):
+            code = GenerationErrorCode.CAPABILITY_UNSUPPORTED
             reason = "cli_contract_unsupported"
+        elif (
+            self._preset.preset_id == OPENCODE_CLI_BACKEND_ID
+            and _opencode_output_has_error_event(f"{stdout}\n{stderr}")
+        ):
+            code = GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+            reason = "cli_result_error"
         elif "login" in combined or "authentication" in combined or "not authenticated" in combined:
             code = GenerationErrorCode.LOGIN_REQUIRED
             reason = "login_required"

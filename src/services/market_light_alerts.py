@@ -13,7 +13,7 @@ from src.schemas.market_light import MarketLightSnapshot
 from src.services.market_light_service import (
     build_current_snapshot,
     load_previous_snapshot,
-    normalize_market_region,
+    normalize_market_alert_region,
 )
 from src.services.portfolio_alerts import RuntimeAlertPayload
 
@@ -24,6 +24,8 @@ MARKET_REGION_LABELS = {
     "cn": "A股大盘",
     "hk": "港股大盘",
     "us": "美股大盘",
+    "jp": "日股大盘",
+    "kr": "韩股大盘",
 }
 MARKET_LIGHT_DATA_SOURCE = "market_light"
 
@@ -41,7 +43,7 @@ class MarketLightAlert:
     stock_code: str = ""
 
     def __post_init__(self) -> None:
-        self.target = normalize_market_region(self.target)
+        self.target = normalize_market_alert_region(self.target)
         self.stock_code = self.target
 
 
@@ -78,7 +80,7 @@ def make_market_light_payload(
     data: Dict[str, Any],
     config: Optional[Any] = None,
 ) -> RuntimeAlertPayload:
-    region = normalize_market_region(data["target"])
+    region = normalize_market_alert_region(data["target"])
     if config is None:
         from src.config import get_config
 

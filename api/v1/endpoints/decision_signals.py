@@ -21,6 +21,8 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalOutcomeRunRequest,
     DecisionSignalOutcomeRunResponse,
     DecisionSignalOutcomeStatsResponse,
+    DecisionSignalReassessRequest,
+    DecisionSignalReassessResponse,
     DecisionSignalStatusUpdateRequest,
 )
 from src.auth import COOKIE_NAME
@@ -30,6 +32,13 @@ from src.services.decision_signal_service import (
     DecisionSignalStorageError,
 )
 from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
+from src.services.decision_signal_reassess_service import (
+    DecisionSignalReassessService,
+    DecisionSignalReassessUnsupportedOperationError,
+    DecisionSignalSourceReportNotFoundError,
+    DecisionSignalUnsupportedReportSnapshotError,
+    DecisionSignalUnsupportedReportTypeError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +69,13 @@ def _not_found(exc: Exception) -> HTTPException:
     return HTTPException(
         status_code=404,
         detail={"error": "not_found", "message": str(exc)},
+    )
+
+
+def _error(status_code: int, exc: Exception, *, error: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": error, "message": str(exc)},
     )
 
 
@@ -289,6 +305,55 @@ def get_outcome_stats(
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Get decision signal outcome stats failed", exc)
+
+
+@router.post(
+    "/reassess",
+    response_model=DecisionSignalReassessResponse,
+    responses={
+        **AUTH_RESPONSE,
+        400: {"model": ErrorResponse, "description": "重评估请求不支持或历史报告不适用"},
+        404: {"model": ErrorResponse, "description": "来源历史报告不存在"},
+        422: {"model": ErrorResponse, "description": "请求体校验失败"},
+        500: {"model": ErrorResponse, "description": "重评估失败"},
+    },
+    summary="预览决策风格重评估",
+    description=(
+        "基于 source_report_id 对应的持久化历史报告快照生成 decision_profile preview；"
+        "P3a 仅支持 persist=false，不写入 DecisionSignal。"
+    ),
+    operation_id="reassessDecisionSignalPreview",
+)
+def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalReassessResponse:
+    if request.persist:
+        raise _error(
+            400,
+            DecisionSignalReassessUnsupportedOperationError(
+                "Persisting reassessed decision_profile signals requires decision_profile "
+                "to be promoted to a first-class field."
+            ),
+            error="unsupported_operation",
+        )
+
+    service = DecisionSignalReassessService()
+    try:
+        return DecisionSignalReassessResponse(
+            **service.reassess(
+                source_report_id=request.source_report_id,
+                decision_profile=request.decision_profile,
+                persist=request.persist,
+            )
+        )
+    except DecisionSignalSourceReportNotFoundError as exc:
+        raise _error(404, exc, error="source_report_not_found")
+    except DecisionSignalUnsupportedReportTypeError as exc:
+        raise _error(400, exc, error="unsupported_report_type")
+    except DecisionSignalUnsupportedReportSnapshotError as exc:
+        raise _error(400, exc, error="unsupported_report_snapshot")
+    except DecisionSignalReassessUnsupportedOperationError as exc:
+        raise _error(400, exc, error="unsupported_operation")
+    except Exception as exc:
+        raise _internal_error("Reassess decision signal preview failed", exc)
 
 
 @router.get(

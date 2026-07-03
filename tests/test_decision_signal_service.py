@@ -267,6 +267,13 @@ def test_list_signals_lazily_backfills_analysis_history_signal(isolated_db) -> N
     assert item["reason"] == "趋势仍在，但等待量能确认。"
     assert item["watch_conditions"] == '["回踩不破支撑"]'
     assert item["status"] == "expired"
+    assert item["metadata"]["decision_profile"] == "balanced"
+    assert item["metadata"]["profile_source"] == "backfill_defaulted"
+    assert item["metadata"]["profile_policy_version"] == "decision-profile-v1"
+    assert item["metadata"]["signal_generation_version"] == "legacy-report-extractor-v1"
+    assert item["metadata"]["decision_signal_metadata_version"] == "decision-signal-metadata-v1"
+    assert "scoring_version" not in item["metadata"]
+    assert "scoring_breakdown" not in item["metadata"]
     assert datetime.fromisoformat(item["created_at"]) == expected_created_at
 
     listed_again = service.list_signals(source_type="analysis", source_report_id=record_id)

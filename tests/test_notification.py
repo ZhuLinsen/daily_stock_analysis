@@ -537,8 +537,14 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_post.assert_called_once()
         
     @mock.patch("src.notification.get_config")
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
     @mock.patch("requests.post")
-    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(
+        self,
+        mock_post: mock.MagicMock,
+        _mock_sleep: mock.MagicMock,
+        mock_get_config: mock.MagicMock,
+    ):
         cfg = _make_config(
             discord_bot_token="TOKEN",
             discord_main_channel_id="123",
@@ -1113,6 +1119,15 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
                     ],
                 },
             },
+            "concept_boards": {
+                "status": "ok",
+                "data": {
+                    "top": [
+                        {"name": "MSCI中国", "change_pct": 1.23},
+                    ],
+                    "bottom": [],
+                },
+            },
             "belong_boards": [
                 {"name": "白酒", "code": "BK0596", "type": "行业"},
                 {"name": "MSCI中国", "code": "BK0805", "type": "概念"},
@@ -1149,12 +1164,49 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("30.8760 元", out)
         self.assertIn("1.85%", out)
         self.assertIn("2024-06-26", out)
-        # 关联板块（白酒带 sector 信号；MSCI中国 不在榜单 -> "--"）
+        # 关联板块（白酒带行业信号；MSCI中国 带概念信号）
         self.assertIn("关联板块", out)
         self.assertIn("白酒", out)
         self.assertIn("领涨", out)
         self.assertIn("+3.42%", out)
         self.assertIn("MSCI中国", out)
+        self.assertIn("- 白酒 (行业板块 领涨 +3.42%)", out)
+        self.assertIn("- MSCI中国 (概念板块 领涨 +1.23%)", out)
+        self.assertIn("+1.23%", out)
+        self.assertNotIn("| 板块 | 类型 | 板块表现 | 板块涨跌幅 |", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_related_boards_uses_concept_rankings_for_concept_boards(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "boards": {"status": "ok", "data": {
+                "top": [{"name": "白酒", "change_pct": 2.31}],
+                "bottom": [],
+            }},
+            "concept_boards": {"status": "ok", "data": {
+                "top": [],
+                "bottom": [{"name": "白酒", "change_pct": -3.2}],
+            }},
+            "belong_boards": [{"name": "白酒", "type": "概念"}],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("关联板块", out)
+        self.assertIn("- 白酒 (概念板块 领跌 -3.20%)", out)
+        self.assertNotIn("| 白酒 | 概念 |", out)
+        self.assertNotIn("+2.31%", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_single_stock_report_skips_fundamental_blocks_when_missing(
@@ -1306,16 +1358,18 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         out = service.generate_single_stock_report(result)
 
         self.assertIn("关联板块", out)
+        self.assertIn("Technology / Consumer Electronics", out)
         self.assertIn("Technology", out)
         self.assertIn("Consumer Electronics", out)
         # When no sector ranking data is available, drop the 4-col layout.
         self.assertNotIn("板块表现", out)
         self.assertNotIn("板块涨跌幅", out)
-        # And no leftover "--" cells either.
+        # And no table/type noise either.
+        self.assertNotIn("| 板块 | 类型 |", out)
         self.assertNotIn("| -- | -- |", out)
 
     @mock.patch("src.notification.get_config")
-    def test_related_boards_without_type_renders_one_line(
+    def test_related_boards_without_type_infers_concepts_and_keeps_unknowns(
         self, mock_get_config: mock.MagicMock
     ):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
@@ -1348,10 +1402,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("| 白酒Ⅲ | N/A |", out)
 
     @mock.patch("src.notification.get_config")
-    def test_related_boards_keeps_signal_columns_when_any_board_has_data(
+    def test_related_boards_renders_each_board_signal_without_placeholder(
         self, mock_get_config: mock.MagicMock
     ):
-        """When at least one belong_board lines up with a sector ranking, keep 4-col layout."""
+        """Rows without a matching change_pct stay as plain board entries."""
         mock_get_config.return_value = _make_config(report_renderer_enabled=False)
         service = NotificationService()
         result = AnalysisResult(
@@ -1377,12 +1431,49 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         out = service.generate_single_stock_report(result)
 
-        self.assertIn("板块表现", out)
-        self.assertIn("板块涨跌幅", out)
+        self.assertNotIn("板块表现", out)
+        self.assertNotIn("板块涨跌幅", out)
         self.assertIn("领涨", out)
         self.assertIn("+3.42%", out)
-        # MSCI中国 falls back to "--" — that's expected for the row without rank data.
+        self.assertIn("- 白酒 (行业板块 领涨 +3.42%)", out)
         self.assertIn("MSCI中国", out)
+        self.assertIn("- MSCI中国", out)
+        self.assertNotIn("- MSCI中国 (", out)
+        self.assertNotIn("| MSCI中国 | 概念 | -- | -- |", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_related_boards_ignores_matching_signal_without_change_pct(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {}},
+            "growth": {"status": "ok", "data": {}},
+            "boards": {"status": "ok", "data": {
+                "top": [{"name": "白酒"}],
+                "bottom": [],
+            }},
+            "belong_boards": [
+                {"name": "白酒", "code": "BK0596", "type": "行业"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("关联板块", out)
+        self.assertIn("白酒", out)
+        self.assertNotIn("| 白酒 | 行业 |", out)
+        self.assertNotIn("领涨", out)
+        self.assertNotIn("板块涨跌幅", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_single_stock_report_uses_currency_for_hk(

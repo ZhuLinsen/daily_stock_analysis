@@ -560,6 +560,8 @@ describe('SettingsPage', () => {
   });
 
   it('renders first-run setup checks and routes setup actions', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
     render(<SettingsPage />);
 
     expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
@@ -578,6 +580,7 @@ describe('SettingsPage', () => {
 
   it('keeps first-run setup summary neutral while setup status is loading', async () => {
     getSetupStatus.mockImplementation(() => new Promise(() => undefined));
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
     render(<SettingsPage />);
 
@@ -590,6 +593,7 @@ describe('SettingsPage', () => {
 
   it('keeps first-run setup summary neutral when setup status fails', async () => {
     getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
     render(<SettingsPage />);
 
@@ -689,6 +693,8 @@ describe('SettingsPage', () => {
   });
 
   it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
     render(<SettingsPage />);
 
     await screen.findByText('基础配置已满足最小可用分析');
@@ -703,6 +709,60 @@ describe('SettingsPage', () => {
       selectionSource: 'manual',
     }));
     expect(await screen.findByText(/task-setup-smoke/)).toBeInTheDocument();
+  });
+
+  it('allows brief setup smoke when only the Agent channel is incomplete', async () => {
+    getSetupStatus.mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: true,
+      requiredMissingKeys: ['llm_agent'],
+      nextStepKey: 'llm_agent',
+      checks: [
+        {
+          key: 'llm_primary',
+          title: 'LLM 主渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'configured',
+          message: '已启用 Claude Code CLI 本地生成 Backend（experimental/limited）。',
+          nextStep: null,
+        },
+        {
+          key: 'llm_agent',
+          title: 'Agent 渠道',
+          category: 'agent',
+          required: true,
+          status: 'needs_action',
+          message: 'Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。',
+          nextStep: '如需使用 Ask-Stock Agent，请配置 LiteLLM 模型。',
+        },
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '已配置 1 只股票。',
+          nextStep: null,
+        },
+      ],
+    });
+
+    render(<SettingsPage />);
+
+    await screen.findByText('还缺少 1 项：Agent 渠道');
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
+
+    await waitFor(() => expect(analyzeAsync).toHaveBeenCalledWith({
+      stockCode: 'SH600000',
+      reportType: 'brief',
+      asyncMode: true,
+      notify: false,
+      originalQuery: 'SH600000',
+      selectionSource: 'manual',
+    }));
   });
 
   it('shows missing setup items and lets the user reopen the setup check', async () => {
@@ -723,6 +783,7 @@ describe('SettingsPage', () => {
         },
       ],
     });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
 
     render(<SettingsPage />);
 
@@ -1177,6 +1238,7 @@ describe('SettingsPage', () => {
   it('runs AlphaSift enable flow from the settings card', async () => {
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [
@@ -1234,6 +1296,7 @@ describe('SettingsPage', () => {
     const privateInstallSpec = 'git+https://user:token@example.com/internal/alphasift.git';
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [
@@ -1336,6 +1399,67 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('button', { name: '开启选股' })).toBeInTheDocument();
     expect(screen.queryByTestId('settings-field-ALPHASIFT_ENABLED')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-field-ALPHASIFT_INSTALL_SPEC')).toBeInTheDocument();
+  });
+
+  it('scopes setup and AlphaSift helper cards to their related categories', async () => {
+    const configState = buildSystemConfigState();
+    const dataSourceItems = [
+      {
+        key: 'ALPHASIFT_ENABLED',
+        value: 'false',
+        rawValueExists: true,
+        isMasked: false,
+        schema: {
+          key: 'ALPHASIFT_ENABLED',
+          category: 'data_source',
+          dataType: 'boolean',
+          uiControl: 'switch',
+          isSensitive: false,
+          isRequired: false,
+          isEditable: true,
+          options: [],
+          validation: {},
+          displayOrder: 16,
+        },
+      },
+    ];
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'base',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+
+    const { rerender } = render(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AlphaSift 选股' })).not.toBeInTheDocument();
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+    rerender(<SettingsPage />);
+
+    expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AlphaSift 选股' })).not.toBeInTheDocument();
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+    rerender(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'AlphaSift 选股' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
   });
 
   it('maps schedule settings to the scheduler card instead of generic raw fields', async () => {
@@ -1950,6 +2074,7 @@ describe('SettingsPage', () => {
     const configState = buildSystemConfigState();
     alphasiftEnable.mockRejectedValueOnce(new Error('config update failed'));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [

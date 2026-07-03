@@ -30,7 +30,7 @@ from src.llm.backend_registry import (
     resolve_generation_fallback_backend_id,
 )
 from src.llm.generation_backend import GenerationError
-from src.schemas.market_light import MarketLightSnapshot
+from src.schemas.market_light import MARKET_LIGHT_REGIONS, MarketLightSnapshot
 from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
@@ -101,6 +101,8 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
+    bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
 
 
 @dataclass
@@ -109,7 +111,7 @@ class MarketLightReviewResult:
 
     overview: MarketOverview
     report: str
-    market_light_snapshot: Dict[str, Any]
+    market_light_snapshot: Optional[Dict[str, Any]]
     structured_payload: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -138,29 +140,34 @@ class MarketAnalyzer:
         Args:
             search_service: 搜索服务实例
             analyzer: AI分析器实例（用于调用LLM）
-            region: 市场区域 cn=A股 us=美股
+            region: 市场区域 cn=A股 hk=港股 us=美股 jp=日本 kr=韩国
             config: 本次复盘使用的配置；未传时读取全局配置
         """
         self.config = config or get_config()
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
-        self.region = region if region in ("cn", "us", "hk") else "cn"
+        self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
 
     def _log_context(self) -> str:
         return f"component=market_review region={self.region}"
 
-    def _get_review_language(self) -> str:
+    def _get_output_language(self) -> str:
+        """Return the truthful report language (zh/en/ko) for payload and directives."""
         return normalize_report_language(
             getattr(getattr(self, "config", None), "report_language", "zh")
         )
 
+    def _get_review_language(self) -> str:
+        # Structural/template language. Korean reuses the English scaffolding;
+        # the Korean output directive is applied in the prompt builder.
+        language = self._get_output_language()
+        return "en" if language == "ko" else language
+
     def _get_template_review_language(self) -> str:
-        return normalize_report_language(
-            getattr(getattr(self, "config", None), "report_language", "zh")
-        )
+        return self._get_review_language()
 
     def _get_market_scope_name(self, review_language: str | None = None) -> str:
         review_language = review_language or self._get_review_language()
@@ -168,6 +175,10 @@ class MarketAnalyzer:
             return "US market" if review_language == "en" else "美股市场"
         if self.region == "hk":
             return "Hong Kong market" if review_language == "en" else "港股市场"
+        if self.region == "jp":
+            return "Japan market" if review_language == "en" else "日本市场"
+        if self.region == "kr":
+            return "Korea market" if review_language == "en" else "韩国市场"
         if review_language == "en":
             return "A-share market"
         return "A股市场"
@@ -178,13 +189,17 @@ class MarketAnalyzer:
             return "USD bn" if self._get_review_language() == "en" else "十亿美元"
         if self.region == "hk":
             return "HKD bn" if self._get_review_language() == "en" else "十亿港元"
+        if self.region == "jp":
+            return "JPY bn" if self._get_review_language() == "en" else "十亿日元"
+        if self.region == "kr":
+            return "KRW bn" if self._get_review_language() == "en" else "十亿韩元"
         return "CNY 100m" if self._get_review_language() == "en" else "亿"
 
     def _format_turnover_value(self, amount_raw: float) -> str:
         """Format raw turnover according to market-specific units."""
         if amount_raw == 0.0:
             return "N/A"
-        if self.region in ("us", "hk"):
+        if self.region in ("us", "hk", "jp", "kr"):
             return f"{amount_raw / 1e9:.2f}"
         if amount_raw > 1e6:
             return f"{amount_raw / 1e8:.0f}"
@@ -200,7 +215,12 @@ class MarketAnalyzer:
 
     def _get_review_title(self, date: str) -> str:
         if self._get_review_language() == "en":
-            market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
+            market_names = {
+                "us": "US Market Recap",
+                "hk": "HK Market Recap",
+                "jp": "Japan Market Recap",
+                "kr": "Korea Market Recap",
+            }
             market_name = market_names.get(self.region, "A-share Market Recap")
             return f"## {date} {market_name}"
         return f"## {date} 大盘复盘"
@@ -211,6 +231,10 @@ class MarketAnalyzer:
                 return "Analyze the key moves in the S&P 500, Nasdaq, Dow, and other major indices."
             if self.region == "hk":
                 return "Analyze the key moves in the HSI, Hang Seng Tech, HSCEI, and other major indices."
+            if self.region == "jp":
+                return "Analyze the key moves in the Nikkei 225, TOPIX, and other major Japanese indices."
+            if self.region == "kr":
+                return "Analyze the key moves in the KOSPI, KOSDAQ, and other major Korean indices."
             return "Analyze the price action in the SSE, SZSE, ChiNext, and other major indices."
         return self.profile.prompt_index_hint
 
@@ -242,6 +266,60 @@ Focus on HSI trend, southbound flow dynamics, and sector rotation to define next
 - Risk-on: broad index breakout with expanding southbound participation.
 - Neutral: mixed index signals; focus on selective relative strength.
 - Risk-off: failed breakouts and rising volatility; prioritize capital preservation."""
+        if self.region == "jp" and self._get_review_language() == "en":
+            return """## Strategy Blueprint: Japan Market Regime Strategy
+Focus on Nikkei 225, TOPIX, currency dynamics, and global risk appetite to define the next-session trading plan.
+
+### Strategy Principles
+- Read Nikkei 225 and TOPIX alignment first, then assess yen moves, semiconductor/export chains, and financials.
+- Translate index conclusions into position sizing, trading pace, and risk-control actions.
+- Base judgments only on available index data, news, and price action without inventing breadth or sector statistics.
+
+### Analysis Dimensions
+- Trend Regime: Classify Japan equities as advancing, range-bound, or defensive.
+  - Are Nikkei 225 and TOPIX directionally aligned
+  - Have key index ranges been reclaimed or lost
+  - Are large-cap weights and growth chains moving together
+- Macro & FX: Map yen, rates, and global risk appetite into equity impact.
+  - Yen direction and implications for exporters
+  - Bank of Japan and US Treasury yield narratives
+  - Overseas technology and semiconductor read-through
+- Theme Signals: Identify durable leadership and crowded areas to avoid.
+  - Semiconductor, automation, and auto-chain persistence
+  - Rotation between financials and domestic-demand stocks
+  - Whether news catalysts confirm price action
+
+### Action Framework
+- Risk-on: major indices rise together with improving external risk appetite and stronger leadership.
+- Neutral: index divergence or FX disruption; avoid chasing and wait for confirmation.
+- Risk-off: major indices weaken or external risk rises; prioritize position control."""
+        if self.region == "kr" and self._get_review_language() == "en":
+            return """## Strategy Blueprint: Korea Market Regime Strategy
+Focus on KOSPI, KOSDAQ, semiconductor heavyweights, and global technology risk appetite to define the next-session trading plan.
+
+### Strategy Principles
+- Read KOSPI and KOSDAQ alignment first, then assess heavyweight signals from Samsung Electronics, SK Hynix, and related technology leaders.
+- Separate broad index beta, semiconductor cycle exposure, and growth-stock risk appetite.
+- Base judgments only on available index data, news, and price action without inventing breadth or sector statistics.
+
+### Analysis Dimensions
+- Trend Regime: Classify Korea equities as advancing, range-bound, or defensive.
+  - Are KOSPI and KOSDAQ directionally aligned
+  - Are heavyweight technology names supporting the indices
+  - Have key support or resistance levels been reclaimed or lost
+- Technology Cycle: Map semiconductor, AI hardware, and global technology moves into Korea equity risk.
+  - Memory and semiconductor-chain catalysts
+  - US technology-market read-through
+  - Foreign investor risk appetite signals
+- Theme Signals: Identify durable leadership and crowded areas to avoid.
+  - Rotation across batteries, autos, and internet platforms
+  - KOSDAQ growth-stock risk appetite
+  - Whether news catalysts confirm price action
+
+### Action Framework
+- Risk-on: KOSPI and KOSDAQ rise together with confirmed technology leadership and improving external risk appetite.
+- Neutral: index or heavyweight divergence; keep sizing controlled and wait for confirmation.
+- Risk-off: technology heavyweights weaken or external risk rises; prioritize drawdown control."""
         if self.region == "us" and self._get_review_language() == "zh":
             return """## 美股市场三段式复盘策略
 聚焦指数趋势、宏观叙事与板块轮动，给出次日风控与仓位框架。
@@ -297,6 +375,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - **Capital Flows**: Track southbound flow direction and macro narrative for risk appetite signals.
 - **Sector Themes**: Focus on tech/internet platform persistence and financials/property policy sensitivity.
 """
+        if self.region == "jp" and review_language == "en":
+            return """### 6. Strategy Framework
+- **Trend Regime**: Classify Japan equities as advancing, range-bound, or defensive based on Nikkei 225/TOPIX alignment.
+- **Macro & FX**: Track yen, rates, and global risk appetite for exporter and financial-sector implications.
+- **Theme Signals**: Focus on semiconductor, automation, auto-chain, financial, and domestic-demand rotation.
+"""
+        if self.region == "kr" and review_language == "en":
+            return """### 6. Strategy Framework
+- **Trend Regime**: Classify Korea equities as advancing, range-bound, or defensive based on KOSPI/KOSDAQ alignment.
+- **Technology Cycle**: Track semiconductor, AI hardware, and global technology read-through for market risk appetite.
+- **Theme Signals**: Focus on battery, auto, internet-platform, and KOSDAQ growth-stock rotation.
+"""
         if self.region == "us" and review_language == "zh":
             return """### 六、策略框架
 - **趋势结构**：判断市场在进攻、震荡与防守中的状态是否一致。
@@ -351,6 +441,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # 3. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
+            self._get_concept_rankings(overview)
         
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
@@ -454,6 +545,29 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.error("[大盘] %s action=get_sector_rankings status=failed error=%s", self._log_context(), e)
+
+    def _get_concept_rankings(self, overview: MarketOverview):
+        """获取概念/题材涨跌榜（fail-open）。"""
+        try:
+            logger.info("[大盘] %s action=get_concept_rankings status=start", self._log_context())
+
+            top_concepts, bottom_concepts = self.data_manager.get_concept_rankings(5)
+
+            if top_concepts or bottom_concepts:
+                overview.top_concepts = top_concepts
+                overview.bottom_concepts = bottom_concepts
+
+                logger.info(
+                    "[大盘] %s action=get_concept_rankings status=success top=%s bottom=%s",
+                    self._log_context(),
+                    [s.get('name') for s in overview.top_concepts],
+                    [s.get('name') for s in overview.bottom_concepts],
+                )
+            else:
+                logger.warning("[大盘] %s action=get_concept_rankings status=empty", self._log_context())
+
+        except Exception as e:
+            logger.warning("[大盘] %s action=get_concept_rankings status=failed error=%s", self._log_context(), e)
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
@@ -499,6 +613,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "cn": "大盘" if review_language == "zh" else "A-share market",
             "us": "美股市场" if review_language == "zh" else "US market",
             "hk": "港股市场" if review_language == "zh" else "HK market",
+            "jp": "日本股市" if review_language == "zh" else "Japan stock market",
+            "kr": "韩国股市" if review_language == "zh" else "Korea stock market",
         }
         
         try:
@@ -644,10 +760,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         market_light_snapshot: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build the structured market-review contract consumed by API, Web, and notifications."""
-        language = self._get_review_language()
+        language = self._get_output_language()
         sections = self._split_report_sections(report)
         title = self._extract_report_title(report) or self._get_review_title(overview.date).lstrip("# ").strip()
-        light = market_light_snapshot or self.build_market_light_snapshot(overview)
+        light = (
+            market_light_snapshot or self.build_market_light_snapshot(overview)
+            if self._supports_market_light()
+            else None
+        )
         breadth_dimensions = None
         if isinstance(light, dict):
             dimensions = light.get("dimensions")
@@ -676,16 +796,22 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "generated_at": datetime.now().isoformat(),
             "date": overview.date,
             "market_scope": self._get_market_scope_name(language),
-            "market_light": light,
             "indices": [idx.to_dict() for idx in overview.indices],
             "sectors": {
                 "top": list(overview.top_sectors or []),
                 "bottom": list(overview.bottom_sectors or []),
             },
+            "concepts": {
+                "top": list(overview.top_concepts or []),
+                "bottom": list(overview.bottom_concepts or []),
+            },
             "news": [self._normalize_news_item(item) for item in (news or [])[:8]],
             "sections": sections,
             "markdown_report": report,
         }
+
+        if light is not None:
+            payload["market_light"] = light
 
         if has_breadth_data:
             payload["breadth"] = {
@@ -699,6 +825,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
 
         return payload
+
+    def _supports_market_light(self) -> bool:
+        return self.region in MARKET_LIGHT_REGIONS
 
     @staticmethod
     def _extract_report_title(report: str) -> str:
@@ -788,11 +917,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
 
         if sector_block:
+            original_review = review
             review = self._insert_after_section(
                 review,
                 patterns["sector_highlights"],
                 sector_block,
             )
+            if review == original_review and sector_block not in review:
+                fallback_heading = (
+                    "### 4. Sector Highlights"
+                    if self._get_review_language() == "en"
+                    else "### 三、板块主线"
+                )
+                review = f"{review.rstrip()}\n\n{fallback_heading}\n{sector_block}\n"
 
         return review
 
@@ -976,46 +1113,42 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         return "\n".join(lines)
 
     def _build_sector_block(self, overview: MarketOverview) -> str:
-        """Build sector ranking block."""
-        if not overview.top_sectors and not overview.bottom_sectors:
+        """Build industry and concept ranking blocks."""
+        if (
+            not overview.top_sectors
+            and not overview.bottom_sectors
+            and not overview.top_concepts
+            and not overview.bottom_concepts
+        ):
             return ""
         lines = []
-        if overview.top_sectors:
-            if self._get_review_language() == "en":
-                lines.extend([
-                    "#### Leading Sectors",
-                    "| Rank | Sector | Change |",
-                    "|------|--------|--------|",
-                ])
-            else:
-                lines.extend([
-                    "#### 领涨板块 Top 5",
-                    "| 排名 | 板块 | 涨跌幅 |",
-                    "|------|------|--------|",
-                ])
-            for rank, sector in enumerate(overview.top_sectors[:5], 1):
-                lines.append(
-                    f"| {rank} | {sector.get('name', '-')} | {self._format_signed_pct(sector.get('change_pct'))} |"
-                )
-        if overview.bottom_sectors:
+        language = self._get_review_language()
+
+        def append_ranking(title: str, name_label: str, rows: List[Dict]) -> None:
+            if not rows:
+                return
             if lines:
                 lines.append("")
-            if self._get_review_language() == "en":
-                lines.extend([
-                    "#### Lagging Sectors",
-                    "| Rank | Sector | Change |",
-                    "|------|--------|--------|",
-                ])
-            else:
-                lines.extend([
-                    "#### 领跌板块 Top 5",
-                    "| 排名 | 板块 | 涨跌幅 |",
-                    "|------|------|--------|",
-                ])
-            for rank, sector in enumerate(overview.bottom_sectors[:5], 1):
+            lines.extend([
+                title,
+                f"| {'Rank' if language == 'en' else '排名'} | {name_label} | {'Change' if language == 'en' else '涨跌幅'} |",
+                "|------|------|--------|",
+            ])
+            for rank, item in enumerate(rows[:5], 1):
                 lines.append(
-                    f"| {rank} | {sector.get('name', '-')} | {self._format_signed_pct(sector.get('change_pct'))} |"
+                    f"| {rank} | {item.get('name', '-')} | {self._format_signed_pct(item.get('change_pct'))} |"
                 )
+
+        if language == "en":
+            append_ranking("#### Leading Industry Sectors", "Sector", overview.top_sectors)
+            append_ranking("#### Lagging Industry Sectors", "Sector", overview.bottom_sectors)
+            append_ranking("#### Leading Concept Themes", "Concept", overview.top_concepts)
+            append_ranking("#### Lagging Concept Themes", "Concept", overview.bottom_concepts)
+        else:
+            append_ranking("#### 行业板块领涨 Top 5", "行业板块", overview.top_sectors)
+            append_ranking("#### 行业板块领跌 Top 5", "行业板块", overview.bottom_sectors)
+            append_ranking("#### 概念板块领涨 Top 5", "概念板块", overview.top_concepts)
+            append_ranking("#### 概念板块领跌 Top 5", "概念板块", overview.bottom_concepts)
         return "\n".join(lines)
 
     def _build_news_block(self, news: List) -> str:
@@ -1085,6 +1218,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         except (TypeError, ValueError):
             return "N/A"
         return f"{numeric_value:+.2f}%"
+
+    @classmethod
+    def _format_ranking_summary(cls, rows: List[Dict], limit: int = 3) -> str:
+        parts = []
+        for item in (rows or [])[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            parts.append(f"{name}({cls._format_signed_pct(item.get('change_pct'))})")
+        return ", ".join(parts)
 
     @staticmethod
     def _escape_markdown_link_label(value: str) -> str:
@@ -1167,9 +1312,90 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         label = str(scores["temperature_label"])
         return score, label
 
+    def _build_output_template_sections(self, review_language: str) -> str:
+        """Build LLM output sections according to market data capabilities."""
+        if review_language == "en":
+            if self.profile.has_market_stats and self.profile.has_sector_rankings:
+                return """### 3. Fund Flows
+(Interpret what turnover, participation, and flow signals imply.)
+
+### 4. Sector Highlights
+(Distinguish industry-sector moves from concept/theme moves, then analyze drivers and persistence.)
+
+### 5. Outlook
+(Provide the near-term outlook based on price action and news.)
+
+### 6. Risk Alerts
+(List the main risks to monitor.)
+
+### 7. Strategy Plan
+(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, and end with "For reference only, not investment advice.")"""
+
+            section_number = 3
+            sections: List[str] = []
+            if self.profile.has_market_stats:
+                sections.append(f"""### {section_number}. Fund Flows
+(Interpret only the provided turnover, participation, breadth, and flow signals.)""")
+                section_number += 1
+            if self.profile.has_sector_rankings:
+                sections.append(f"""### {section_number}. Sector Highlights
+(Analyze only the provided industry-sector and concept/theme rankings.)""")
+                section_number += 1
+            sections.extend([
+                f"""### {section_number}. News Catalysts
+(Connect recent news to index price action and macro/external-market clues. Do not infer unsupported breadth, fund-flow, or sector-ranking data.)""",
+                f"""### {section_number + 1}. Outlook
+(Provide the near-term outlook based on index price action and the available news.)""",
+                f"""### {section_number + 2}. Risk Alerts
+(List the main risks to monitor.)""",
+                f"""### {section_number + 3}. Strategy Plan
+(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, and end with "For reference only, not investment advice.")""",
+            ])
+            return "\n\n".join(sections)
+
+        if self.profile.has_market_stats and self.profile.has_sector_rankings:
+            return """### 三、板块主线
+（区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
+
+### 四、资金与情绪
+（解读成交额、涨跌停结构、市场宽度和风险偏好）
+
+### 五、消息催化
+（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
+
+### 六、明日交易计划
+（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
+
+### 七、风险提示
+（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）"""
+
+        numerals = ["一", "二", "三", "四", "五", "六", "七", "八"]
+        section_number = 3
+        sections: List[str] = []
+
+        def add_section(title: str, hint: str) -> None:
+            nonlocal section_number
+            sections.append(f"### {numerals[section_number - 1]}、{title}\n{hint}")
+            section_number += 1
+
+        if self.profile.has_sector_rankings:
+            add_section("板块主线", "（仅分析已提供的行业板块与概念题材榜单，不扩展未提供的数据）")
+        if self.profile.has_market_stats:
+            add_section("资金与情绪", "（仅解读已提供的成交额、涨跌停结构、市场宽度和风险偏好数据）")
+        add_section(
+            "消息催化",
+            "（结合近三日新闻和指数表现，提炼真正影响明日交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
+        )
+        add_section("明日交易计划", "（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）")
+        add_section("风险提示", "（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）")
+        return "\n\n".join(sections)
+
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         review_language = self._get_review_language()
+        # Korean reuses the English structural template but the model is told to
+        # write the entire shell, headings, guidance and conclusion in Korean.
+        shell_language_label = "Korean (한국어)" if self._get_output_language() == "ko" else "English"
 
         # 指数行情信息（简洁格式，不用emoji）
         indices_text = ""
@@ -1178,8 +1404,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
         
         # 板块信息
-        top_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
-        bottom_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
+        top_sectors_text = self._format_ranking_summary(overview.top_sectors)
+        bottom_sectors_text = self._format_ranking_summary(overview.bottom_sectors)
+        top_concepts_text = self._format_ranking_summary(overview.top_concepts)
+        bottom_concepts_text = self._format_ranking_summary(overview.bottom_concepts)
         
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
@@ -1195,39 +1423,54 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             url_line = f"\n   URL: {url}" if url else ""
             news_text += f"{i}. {title}{meta}\n   {snippet or '-'}{url_line}\n"
         
-        # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
+        # 按 region 组装市场概况与板块区块（美股/港股/日韩无涨跌家数、板块数据）
         stats_block = ""
         sector_block = ""
+        data_limits_block = ""
         if review_language == "en":
             if self.profile.has_market_stats:
                 stats_block = f"""## Market Breadth
 - Advancers: {overview.up_count} | Decliners: {overview.down_count} | Flat: {overview.flat_count}
 - Limit-up: {overview.limit_up_count} | Limit-down: {overview.limit_down_count}
 - Turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"""
-            else:
-                stats_block = "## Market Breadth\n(No equivalent advance/decline statistics are available for this market.)"
 
             if self.profile.has_sector_rankings:
-                sector_block = f"""## Sector Performance
-Leading: {top_sectors_text if top_sectors_text else "N/A"}
-Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
-            else:
-                sector_block = "## Sector Performance\n(Sector data not available for this market.)"
+                sector_block = f"""## Sector / Theme Performance
+Industry leading: {top_sectors_text if top_sectors_text else "N/A"}
+Industry lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}
+Concept leading: {top_concepts_text if top_concepts_text else "N/A"}
+Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
+
+            data_limit_lines = []
+            if not self.profile.has_market_stats:
+                data_limit_lines.append(
+                    "- Market breadth, aggregate turnover, participation, and fund-flow signals are not available for this market."
+                )
+            if not self.profile.has_sector_rankings:
+                data_limit_lines.append("- Sector/theme ranking data is not available for this market.")
+            if data_limit_lines:
+                data_limits_block = "## Data Limits\n" + "\n".join(data_limit_lines)
         else:
             if self.profile.has_market_stats:
                 stats_block = f"""## 市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元"""
-            else:
-                stats_block = "## 市场概况\n（该市场暂无涨跌家数等统计）"
 
             if self.profile.has_sector_rankings:
                 sector_block = f"""## 板块表现
-领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
-领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}"""
-            else:
-                sector_block = "## 板块表现\n（该市场暂无板块涨跌数据）"
+行业领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
+行业领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
+概念领涨: {top_concepts_text if top_concepts_text else "暂无数据"}
+概念领跌: {bottom_concepts_text if bottom_concepts_text else "暂无数据"}"""
+
+            data_limit_lines = []
+            if not self.profile.has_market_stats:
+                data_limit_lines.append("- 该市场暂无涨跌家数、涨跌停、成交额汇总、参与度或资金流信号。")
+            if not self.profile.has_sector_rankings:
+                data_limit_lines.append("- 该市场暂无行业板块/概念题材涨跌榜。")
+            if data_limit_lines:
+                data_limits_block = "## 数据边界\n" + "\n".join(data_limit_lines)
 
         data_no_indices_hint = (
             "注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。"
@@ -1242,20 +1485,52 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
             )
             indices_placeholder = indices_text if indices_text else "No index data (API error)"
             news_placeholder = news_text if news_text else "No relevant news"
+            data_boundary_requirement = (
+                "- Respect Data Limits: do not invent or over-interpret unsupported breadth, fund-flow, turnover, participation, or sector-ranking data.\n"
+                if data_limits_block
+                else ""
+            )
+            market_summary_hint = (
+                "2-3 sentences summarizing overall market tone, index moves, and liquidity."
+                if self.profile.has_market_stats
+                else "2-3 sentences summarizing overall market tone, index moves, and available news context."
+            )
         else:
             indices_placeholder = indices_text if indices_text else "暂无指数数据（接口异常）"
             news_placeholder = news_text if news_text else "暂无相关新闻"
+            data_boundary_requirement = (
+                "- 严格遵守数据边界：未提供涨跌家数、资金流、成交额汇总或板块榜时，不要编造或过度解读。\n"
+                if data_limits_block
+                else ""
+            )
+            market_summary_hint = (
+                "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
+                if self.profile.has_market_stats
+                else "2-3句话概括指数表现、新闻线索和整体风险状态，不要补写未提供的市场宽度或资金流数据"
+            )
+
+        output_template_sections = self._build_output_template_sections(review_language)
+        zh_market_scope_name = self._get_market_scope_name("zh")
+        zh_report_title = f"{overview.date} 大盘复盘"
+        if self.region in ("jp", "kr"):
+            zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
+        workflow_hint = (
+            "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
+            if self.profile.has_market_stats or self.profile.has_sector_rankings
+            else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
+        )
 
         if review_language == "en":
             report_title = self._get_review_title(overview.date).removeprefix("## ").strip()
-            return f"""You are a professional US/A/H market analyst. Please produce a concise market recap report based on the data below.
+            return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a concise market recap report based on the data below.
 
 [Requirements]
 - Output pure Markdown only
 - No JSON
 - No code blocks
 - Use emoji sparingly in headings (at most one per heading)
-- The entire fixed shell, headings, guidance, and conclusion must be in English
+- The entire fixed shell, headings, guidance, and conclusion must be in {shell_language_label}
+{data_boundary_requirement}
 
 ---
 
@@ -1271,6 +1546,8 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 
 {sector_block}
 
+{data_limits_block}
+
 ## Market News
 {news_placeholder}
 
@@ -1285,25 +1562,12 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 ## {report_title}
 
 ### 1. Market Summary
-(2-3 sentences summarizing overall market tone, index moves, and liquidity.)
+({market_summary_hint})
 
 ### 2. Index Commentary
 ({self._get_index_hint()})
 
-### 3. Fund Flows
-(Interpret what turnover, participation, and flow signals imply.)
-
-### 4. Sector Highlights
-(Analyze the drivers behind the leading and lagging sectors or themes.)
-
-### 5. Outlook
-(Provide the near-term outlook based on price action and news.)
-
-### 6. Risk Alerts
-(List the main risks to monitor.)
-
-### 7. Strategy Plan
-(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, and end with “For reference only, not investment advice.”)
+{output_template_sections}
 
 ---
 
@@ -1311,15 +1575,16 @@ Output the report content directly, no extra commentary.
 """
 
         # A 股场景使用中文提示语
-        return f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份结构化的{self._get_market_scope_name('zh')}大盘复盘报告。
+        return f"""你是一位专业的{self._get_market_scope_name('zh')}分析师，请根据以下数据生成一份结构化的{self._get_market_scope_name('zh')}大盘复盘报告。
 
 【重要】输出要求：
 - 必须输出纯 Markdown 文本格式
 - 禁止输出 JSON 格式
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
-- 报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开
+- {workflow_hint}
 - 不要重复列出已由系统注入的表格数据；正文负责解释表格背后的含义
+{data_boundary_requirement}
 
 ---
 
@@ -1335,6 +1600,8 @@ Output the report content directly, no extra commentary.
 
 {sector_block}
 
+{data_limits_block}
+
 ## 市场新闻
 {news_placeholder}
 
@@ -1346,30 +1613,17 @@ Output the report content directly, no extra commentary.
 
 # 输出格式模板（请严格按此格式输出）
 
-## {overview.date} 大盘复盘
+## {zh_report_title}
 
 > 一句话给出今日市场状态、核心矛盾和明日优先观察方向。
 
 ### 一、盘面总览
-（2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断）
+（{market_summary_hint}）
 
 ### 二、指数结构
 （{self._get_index_hint()}，说明谁在护盘、谁在拖累，以及关键支撑/压力）
 
-### 三、板块主线
-（分析领涨/领跌板块背后的逻辑、持续性和是否形成主线）
-
-### 四、资金与情绪
-（解读成交额、涨跌停结构、市场宽度和风险偏好）
-
-### 五、消息催化
-（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
-
-### 六、明日交易计划
-（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
-
-### 七、风险提示
-（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）
+{output_template_sections}
 
 ---
 
@@ -1413,6 +1667,8 @@ Output the report content directly, no extra commentary.
         separator = ", " if template_language == "en" else "、"
         top_text = separator.join([s['name'] for s in overview.top_sectors[:3]])
         bottom_text = separator.join([s['name'] for s in overview.bottom_sectors[:3]])
+        top_concept_text = separator.join([s['name'] for s in overview.top_concepts[:3]])
+        bottom_concept_text = separator.join([s['name'] for s in overview.bottom_concepts[:3]])
 
         if template_language == "en":
             stats_section = ""
@@ -1428,13 +1684,20 @@ Output the report content directly, no extra commentary.
 | Turnover ({self._get_turnover_unit_label()}) | {overview.total_amount:.0f} |
 """
             sector_section = ""
-            if self.profile.has_sector_rankings and (top_text or bottom_text):
+            if self.profile.has_sector_rankings and (top_text or bottom_text or top_concept_text or bottom_concept_text):
                 sector_section = f"""
-### 4. Sector Highlights
-- **Leaders**: {top_text or "N/A"}
-- **Laggards**: {bottom_text or "N/A"}
+### 4. Sector / Theme Highlights
+- **Industry Leaders**: {top_text or "N/A"}
+- **Industry Laggards**: {bottom_text or "N/A"}
+- **Concept Leaders**: {top_concept_text or "N/A"}
+- **Concept Laggards**: {bottom_concept_text or "N/A"}
 """
-            market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
+            market_names = {
+                "us": "US Market Recap",
+                "hk": "HK Market Recap",
+                "jp": "Japan Market Recap",
+                "kr": "Korea Market Recap",
+            }
             market_name = market_names.get(self.region, "A-share Market Recap")
             report = f"""## {overview.date} {market_name}
 
@@ -1455,26 +1718,52 @@ Market conditions can change quickly. The data above is for reference only and d
 """
             return report
 
-        market_labels = {"cn": "A股", "us": "美股", "hk": "港股"}
+        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股"}
         market_label = market_labels.get(self.region, "A股")
-        dashboard_block = self._build_stats_block(overview)
+        dashboard_block = self._build_stats_block(overview) if self.profile.has_market_stats else ""
         indices_block = self._build_indices_block(overview)
-        sector_block = self._build_sector_block(overview)
+        sector_block = self._build_sector_block(overview) if self.profile.has_sector_rankings else ""
+        summary_focus = (
+            "指数承接、成交额变化和板块持续性"
+            if self.profile.has_market_stats and self.profile.has_sector_rankings
+            else "指数承接、消息催化和整体风险状态"
+        )
+        market_summary_block = (
+            dashboard_block
+            if dashboard_block
+            else (
+                "暂无市场宽度数据。"
+                if self.profile.has_market_stats
+                else "- 当前以主要指数与可用新闻线索评估整体风险状态。"
+            )
+        )
+        sector_section = (
+            f"""
+### 三、板块主线
+{sector_block or "- 暂无板块涨跌榜数据。"}
+"""
+            if self.profile.has_sector_rankings
+            else ""
+        )
+        funds_section = (
+            """
+### 四、资金与情绪
+- 结合成交额和涨跌家数看，当前更适合等待确认，避免仅凭单一热点追高。
+"""
+            if self.profile.has_market_stats
+            else ""
+        )
         return f"""## {overview.date} 大盘复盘
 
-> 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察指数承接、成交额变化和板块持续性。
+> 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
 
 ### 一、盘面总览
-{dashboard_block or "暂无市场宽度数据。"}
+{market_summary_block}
 
 ### 二、指数结构
 {indices_block or indices_text or "暂无指数数据。"}
-
-### 三、板块主线
-{sector_block or "- 暂无板块涨跌榜数据。"}
-
-### 四、资金与情绪
-- 结合成交额和涨跌家数看，当前更适合等待确认，避免仅凭单一热点追高。
+{sector_section}
+{funds_section}
 
 ### 五、消息催化
 - 暂无可用新闻时，应降低对题材持续性的确定性判断。
@@ -1501,7 +1790,7 @@ Market conditions can change quickly. The data above is for reference only and d
 
         # 3. 生成复盘报告
         report = self.generate_market_review(overview, news)
-        snapshot = self.build_market_light_snapshot(overview)
+        snapshot = self.build_market_light_snapshot(overview) if self._supports_market_light() else None
         structured_payload = self.build_market_review_payload(
             overview,
             news,

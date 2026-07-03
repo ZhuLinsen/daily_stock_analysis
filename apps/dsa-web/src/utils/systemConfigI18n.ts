@@ -63,6 +63,10 @@ const fieldTitleMap: Record<string, string> = {
   NEWS_MAX_AGE_DAYS: '新闻最大时效（天）',
   REALTIME_SOURCE_PRIORITY: '实时数据源优先级',
   TICKFLOW_API_KEY: 'TickFlow API Key',
+  TICKFLOW_PRIORITY: 'TickFlow 日 K 优先级',
+  TICKFLOW_KLINE_ADJUST: 'TickFlow 日 K 复权模式',
+  TICKFLOW_BATCH_DAILY_ENABLED: 'TickFlow 批量日 K 预取',
+  TICKFLOW_BATCH_SIZE: 'TickFlow 批量大小',
   ENABLE_REALTIME_QUOTE: '启用实时行情',
   ENABLE_REALTIME_TECHNICAL_INDICATORS: '盘中实时技术面',
   ENABLE_CHIP_DISTRIBUTION: '启用筹码分布分析',
@@ -72,6 +76,7 @@ const fieldTitleMap: Record<string, string> = {
   BIAS_THRESHOLD: 'BIAS 阈值',
   GENERATION_BACKEND: '分析生成方式',
   GENERATION_FALLBACK_BACKEND: '备用生成方式',
+  OPENCODE_CLI_MODEL: 'OpenCode CLI 模型',
   GENERATION_BACKEND_TIMEOUT_SECONDS: '生成超时（秒）',
   GENERATION_BACKEND_MAX_OUTPUT_BYTES: '最大输出大小（字节）',
   GENERATION_BACKEND_MAX_CONCURRENCY: '模型生成最大并发',
@@ -224,6 +229,10 @@ const fieldDescriptionMap: Record<string, string> = {
   NEWS_MAX_AGE_DAYS: '新闻最大时效上限。实际窗口 = min(策略档位天数, NEWS_MAX_AGE_DAYS)。例如 ultra_short + 7 仍为 1 天。',
   REALTIME_SOURCE_PRIORITY: '按逗号分隔填写数据源调用优先级。',
   TICKFLOW_API_KEY: '用于接入 TickFlow 数据服务的 API 密钥。',
+  TICKFLOW_PRIORITY: '控制 TickFlow 在 A 股日 K 数据源回退链中的尝试顺序；不控制实时行情，实时行情顺序由 REALTIME_SOURCE_PRIORITY 决定。',
+  TICKFLOW_KLINE_ADJUST: '控制 TickFlow 日 K 线的复权口径，默认 none 保持未复权技术指标基线。',
+  TICKFLOW_BATCH_DAILY_ENABLED: '批量分析前是否使用 TickFlow 批量日 K 接口预热缓存；权限不足时会继续回退。',
+  TICKFLOW_BATCH_SIZE: '控制 TickFlow 日 K 和实时行情批量请求的单批最大标的数。',
   ENABLE_REALTIME_QUOTE: '控制是否启用实时行情数据获取。',
   ENABLE_REALTIME_TECHNICAL_INDICATORS: '盘中分析时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘。',
   ENABLE_CHIP_DISTRIBUTION: '控制是否启用筹码分布分析；关闭后可减少外部请求和失败噪音。',
@@ -231,9 +240,10 @@ const fieldDescriptionMap: Record<string, string> = {
   PYTDX_PORT: 'Pytdx 单节点端口，需与主机配置配套。',
   PYTDX_SERVERS: 'Pytdx 自定义节点列表，支持 host:port 逗号分隔。',
   BIAS_THRESHOLD: 'BIAS 偏离阈值，超过后用于增强超买超卖提示。',
-  GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。Codex CLI 需要本机已安装并登录，仍可能调用对应云服务，不是离线模型。',
-  GENERATION_FALLBACK_BACKEND: '本地 Codex 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
-  GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于 Codex CLI 这类本地命令行方式。',
+  GENERATION_BACKEND: '用于个股分析、大盘复盘和普通文本生成。本地 CLI 生成方式需要本机已安装并登录对应 CLI，仍可能调用对应云服务，不是离线模型。',
+  GENERATION_FALLBACK_BACKEND: '本地 CLI 生成失败后的处理方式：禁用表示直接报错，默认模型配置表示再尝试普通模型。',
+  OPENCODE_CLI_MODEL: 'OpenCode CLI 的可选模型覆盖；留空时使用本机 OpenCode 默认模型。认证和模型可用性由本机 OpenCode 配置负责。',
+  GENERATION_BACKEND_TIMEOUT_SECONDS: '单次生成最多等待多少秒，默认 300；主要用于本地 CLI 这类命令行方式。',
   GENERATION_BACKEND_MAX_OUTPUT_BYTES: '单次本地命令行生成可读取的输出大小上限，默认 1048576 字节。',
   GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；使用默认模型配置时不改变分析任务线程数。',
   LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '同时允许启动多少个本地命令行生成进程，默认 1；最终不会超过“模型生成最大并发”。',
@@ -328,7 +338,7 @@ const fieldDescriptionMap: Record<string, string> = {
   RUN_IMMEDIATELY: '程序启动后立即执行一次分析任务。',
   MARKET_REVIEW_ENABLED: '是否启用大盘复盘流程。',
   DAILY_MARKET_CONTEXT_ENABLED: '默认开启。开启后会把当日大盘摘要注入个股分析，并在高风险或退潮环境下软化激进买入建议；关闭后仍可运行大盘复盘。',
-  MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/us/hk）。',
+  MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/hk/us/jp/kr/both），支持逗号分隔子集，如 `cn,us,jp`。',
   MARKET_REVIEW_COLOR_SCHEME: '控制大盘复盘指数涨跌幅图标颜色：green_up 为绿涨红跌，red_up 为红涨绿跌。',
   ANALYSIS_DELAY: '启动任务前的延迟秒数，可用于等待依赖服务就绪。',
   SAVE_CONTEXT_SNAPSHOT: '控制是否持久化整份分析历史 context_snapshot；关闭后不会保存低敏输入概览、市场阶段摘要和增强上下文，但不影响当次分析的 pack 构建或 Prompt 摘要。',
@@ -404,6 +414,8 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
   GENERATION_BACKEND: {
     litellm: '默认模型配置',
     codex_cli: 'Codex CLI（实验）',
+    claude_code_cli: 'Claude Code CLI（实验）',
+    opencode_cli: 'OpenCode CLI（实验）',
   },
   GENERATION_FALLBACK_BACKEND: {
     '': '禁用',
@@ -412,7 +424,6 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
   AGENT_GENERATION_BACKEND: {
     auto: '自动',
     litellm: '默认模型配置',
-    codex_cli: 'Codex CLI（不支持工具）',
   },
   LOG_LEVEL: {
     debug: '调试',
@@ -425,12 +436,6 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
     off: '关闭',
     basic: '基础',
     debug: '调试',
-  },
-  MARKET_REVIEW_REGION: {
-    cn: 'A 股',
-    hk: '港股',
-    us: '美股',
-    both: '全部市场',
   },
   AGENT_ARCH: {
     single: '单 Agent',
@@ -487,6 +492,8 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
   GENERATION_BACKEND: {
     litellm: 'Default model settings',
     codex_cli: 'Codex CLI (experimental)',
+    claude_code_cli: 'Claude Code CLI (experimental)',
+    opencode_cli: 'OpenCode CLI (experimental)',
   },
   GENERATION_FALLBACK_BACKEND: {
     '': 'Disabled',
@@ -495,7 +502,6 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
   AGENT_GENERATION_BACKEND: {
     auto: 'Auto',
     litellm: 'Default model settings',
-    codex_cli: 'Codex CLI (tools unsupported)',
   },
   LOG_LEVEL: {
     debug: 'Debug',
@@ -508,12 +514,6 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
     off: 'Off',
     basic: 'Basic',
     debug: 'Debug',
-  },
-  MARKET_REVIEW_REGION: {
-    cn: 'A-shares',
-    hk: 'Hong Kong',
-    us: 'US',
-    both: 'All markets',
   },
   AGENT_ARCH: {
     single: 'Single Agent',

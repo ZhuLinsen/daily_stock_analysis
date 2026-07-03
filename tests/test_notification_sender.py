@@ -136,6 +136,94 @@ class TestDiscordSender(unittest.TestCase):
         call_kw = mock_post.call_args[1]
         self.assertEqual(call_kw["headers"]["Authorization"], "Bot TOKEN")
 
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_sends_all_chunks(self, mock_post, mock_sleep):
+        mock_post.return_value = _response(204)
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertTrue(result)
+        self.assertGreater(mock_post.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, mock_post.call_count - 1)
+        payload_lengths = [len(call.kwargs["json"]["content"]) for call in mock_post.call_args_list]
+        self.assertTrue(all(length <= 2000 for length in payload_lengths))
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_retries_429_and_continues(self, mock_post, mock_sleep):
+        mock_post.side_effect = [
+            _response(204),
+            _response(429, {"retry_after": 0}),
+            _response(204),
+            _response(204),
+            _response(204),
+        ]
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 5)
+        mock_sleep.assert_any_call(0.0)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_does_not_short_circuit_after_failed_chunk(self, mock_post, _mock_sleep):
+        mock_post.side_effect = [
+            _response(204),
+            _response(400),
+            _response(204),
+            _response(204),
+        ]
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 6000)
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 4)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_webhook_long_content_continues_after_request_exception(self, mock_post, _mock_sleep):
+        cfg = _config(discord_webhook_url="https://discord.com/webhook/1", discord_max_words=2000)
+        sender = DiscordSender(cfg)
+        content = "A" * 6000
+        chunk_count = len(sender._split_discord_content(content))
+        request_error = requests.exceptions.ChunkedEncodingError("broken response")
+        mock_post.side_effect = (
+            [_response(204)]
+            + [request_error] * 3
+            + [_response(204)] * (chunk_count - 2)
+        )
+
+        result = sender.send_to_discord(content)
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, chunk_count + 2)
+
+    @mock.patch("src.notification_sender.discord_sender.time.sleep", return_value=None)
+    @mock.patch("src.notification_sender.discord_sender.requests.post")
+    def test_send_bot_clamps_configured_limit_to_discord_content_limit(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200)
+        cfg = _config(
+            discord_bot_token="TOKEN",
+            discord_main_channel_id="CH123",
+            discord_max_words=5000,
+        )
+        sender = DiscordSender(cfg)
+
+        result = sender.send_to_discord("A" * 4500)
+
+        self.assertTrue(result)
+        self.assertGreater(mock_post.call_count, 1)
+        payload_lengths = [len(call.kwargs["json"]["content"]) for call in mock_post.call_args_list]
+        self.assertTrue(all(length <= 2000 for length in payload_lengths))
+
 
 class TestWechatSender(unittest.TestCase):
     """Unit tests for WechatSender."""

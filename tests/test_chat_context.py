@@ -312,6 +312,93 @@ def test_bundle_trace_is_replayed_only_for_matching_fallback_attempt() -> None:
     assert fallback_messages[-1]["content"] == "a1-final"
 
 
+def test_bundle_does_not_match_hermes_only_fallback_trace() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-hermes-fallback"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-hermes-fallback",
+        provider="openai",
+        model="openai/hermes-agent",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "content": "hermes-trace"}],
+        contains_reasoning=False,
+        contains_tool_calls=False,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = "openai/test-model"
+    config.litellm_model = "openai/test-model"
+    config.litellm_fallback_models = ["openai/hermes-agent"]
+    config.llm_model_list = [
+        {
+            "model_name": "openai/test-model",
+            "litellm_params": {"model": "openai/test-model", "api_key": "sk-openai"},
+        },
+        {
+            "model_name": "openai/hermes-agent",
+            "litellm_params": {
+                "model": "openai/hermes-agent",
+                "api_key": "sk-hermes",
+                "api_base": "http://127.0.0.1:8642/v1",
+            },
+            "model_info": {"dsa_channel": "hermes"},
+        },
+    ]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is False
+    assert bundle.diagnostics["model_mismatch"] == 1
+    assert [msg["content"] for msg in bundle.context_messages] == ["u1", "a1-final"]
+
+
+def test_bundle_does_not_fallback_to_unfiltered_try_order_for_hermes_only_agent() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-hermes-only-agent"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-hermes-only-agent",
+        provider="openai",
+        model="openai/hermes-agent",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "content": "hermes-trace"}],
+        contains_reasoning=False,
+        contains_tool_calls=False,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = ""
+    config.litellm_model = "openai/hermes-agent"
+    config.litellm_fallback_models = []
+    config.llm_model_list = [
+        {
+            "model_name": "openai/hermes-agent",
+            "litellm_params": {
+                "model": "openai/hermes-agent",
+                "api_key": "sk-hermes",
+                "api_base": "http://127.0.0.1:8642/v1",
+            },
+            "model_info": {"dsa_channel": "hermes"},
+        },
+    ]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is False
+    assert bundle.diagnostics["model_mismatch"] == 1
+
+
 def test_bundle_matches_slashless_router_alias_fallback_by_resolved_provider() -> None:
     db = _reset_db()
     session_id = "chat-trace-router-alias"

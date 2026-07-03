@@ -5,11 +5,18 @@ import asyncio
 from concurrent.futures import Future
 from datetime import datetime
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
+
+_ORIGINAL_ENVIRON = dict(os.environ)
+_MODULE_TEMP_DIR = tempfile.TemporaryDirectory()
+_MODULE_ENV_FILE = Path(_MODULE_TEMP_DIR.name) / ".env"
+_MODULE_ENV_FILE.write_text("STOCK_LIST=600519,000001\n", encoding="utf-8")
+os.environ["ENV_FILE"] = str(_MODULE_ENV_FILE)
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -42,6 +49,19 @@ from src.enums import ReportType
 from src.services.analysis_service import AnalysisService
 from src.services.image_stock_extractor import _call_litellm_vision
 from src.services.task_queue import AnalysisTaskQueue, TaskStatus
+
+
+def tearDownModule() -> None:
+    current_test = os.environ.get("PYTEST_CURRENT_TEST")
+    for key in list(os.environ):
+        if key == "PYTEST_CURRENT_TEST":
+            continue
+        if key not in _ORIGINAL_ENVIRON:
+            os.environ.pop(key, None)
+    os.environ.update(_ORIGINAL_ENVIRON)
+    if current_test is not None:
+        os.environ["PYTEST_CURRENT_TEST"] = current_test
+    _MODULE_TEMP_DIR.cleanup()
 
 
 def _analysis_context_pack_overview() -> dict:
@@ -2294,6 +2314,46 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             stock_codes=["005930.KS"],
             stock_name=None,
             original_query="005930",
+            selection_source="manual",
+            report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_resolves_bare_4_digit_jp_code_before_name_resolution(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_index_stock_code_for_analysis", return_value="7203.T") as resolve_index_mock, \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="7203",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="7203",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_index_mock.assert_called_once_with("7203")
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["7203.T"],
+            stock_name=None,
+            original_query="7203",
             selection_source="manual",
             report_type="detailed",
             analysis_phase="auto",

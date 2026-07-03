@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,8 +31,9 @@ def test_dockerfile_bundles_default_alphasift_adapter() -> None:
     requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     assert "git \\" in dockerfile
-    assert "git+https://github.com/ZhuLinsen/alphasift.git@377049857cc04175dc3cca62121ee41adec6cdb8#egg=alphasift" in requirements
-    assert "pip install --no-cache-dir -r requirements.txt" in dockerfile
+    assert f"{DEFAULT_ALPHASIFT_INSTALL_SPEC}#egg=alphasift" in requirements
+    assert "pip install -r requirements.txt" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
     assert "import alphasift.dsa_adapter" in dockerfile
 
 

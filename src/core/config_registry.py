@@ -18,7 +18,7 @@ from src.config import (
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
-SCHEMA_VERSION = "2026-06-23-local-cli-backend"
+SCHEMA_VERSION = "2026-06-29-claude-code-cli-backend"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -129,11 +129,44 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [
             {"label": "Default model settings", "value": "litellm"},
             {"label": "Codex CLI (experimental)", "value": "codex_cli"},
+            {"label": "Claude Code CLI (experimental)", "value": "claude_code_cli"},
+            {"label": "OpenCode CLI (experimental)", "value": "opencode_cli"},
         ],
-        "validation": {"enum": ["litellm", "codex_cli"]},
+        "validation": {"enum": ["litellm", "codex_cli", "claude_code_cli", "opencode_cli"]},
         "display_order": 0,
         "help_key": "settings.ai_model.GENERATION_BACKEND",
-        "examples": ["GENERATION_BACKEND=litellm", "GENERATION_BACKEND=codex_cli"],
+        "examples": [
+            "GENERATION_BACKEND=litellm",
+            "GENERATION_BACKEND=codex_cli",
+            "GENERATION_BACKEND=claude_code_cli",
+            "GENERATION_BACKEND=opencode_cli",
+        ],
+        "docs": [
+            {
+                "label": "LLM 配置指南",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "OPENCODE_CLI_MODEL": {
+        "title": "OpenCode CLI Model",
+        "description": "Optional model override passed to OpenCode CLI when GENERATION_BACKEND=opencode_cli. Leave empty to use OpenCode's default model.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "placeholder": "optional provider/model override",
+        "validation": {"pattern": r"^$|^[^\s|<>;`$]+$"},
+        "display_order": 1,
+        "help_key": "settings.ai_model.OPENCODE_CLI_MODEL",
+        "examples": [
+            "OPENCODE_CLI_MODEL=provider/model",
+            "OPENCODE_CLI_MODEL=opencode/model-name",
+        ],
         "docs": [
             {
                 "label": "LLM 配置指南",
@@ -144,7 +177,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "GENERATION_FALLBACK_BACKEND": {
         "title": "Fallback Generation Method",
-        "description": "Backend-level fallback method. Empty disables backend fallback; litellm can be used as fallback for Codex CLI.",
+        "description": "Backend-level fallback method. Empty disables backend fallback; litellm can be used as fallback for local CLI generation backends.",
         "category": "ai_model",
         "data_type": "string",
         "ui_control": "select",
@@ -748,7 +781,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "TICKFLOW_API_KEY": {
         "title": "TickFlow API Key",
-        "description": "API key for TickFlow market review enhancement (A-share indices, plus market stats when universe queries are enabled).",
+        "description": "API key for optional TickFlow A-share daily K-lines, realtime quotes, stock list/name lookup, and market review enhancement. Permission failures fail open to existing providers.",
         "category": "data_source",
         "data_type": "string",
         "ui_control": "password",
@@ -759,6 +792,62 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 15,
+    },
+    "TICKFLOW_PRIORITY": {
+        "title": "TickFlow Daily K-line Priority",
+        "description": "Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier; realtime quote order is controlled separately by REALTIME_SOURCE_PRIORITY.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "2",
+        "options": [],
+        "validation": {"min": 0, "max": 99},
+        "display_order": 16,
+    },
+    "TICKFLOW_KLINE_ADJUST": {
+        "title": "TickFlow K-line Adjust",
+        "description": "Adjustment mode for TickFlow daily K-lines. Default none preserves the existing unadjusted technical-indicator baseline.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "none",
+        "options": ["none", "forward", "backward", "forward_additive", "backward_additive"],
+        "validation": {},
+        "display_order": 17,
+    },
+    "TICKFLOW_BATCH_DAILY_ENABLED": {
+        "title": "TickFlow Batch Daily Enabled",
+        "description": "Enable TickFlow batch daily K-line prefetch when the current plan allows it. Permission failures fail open and fall back to per-stock providers.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+    },
+    "TICKFLOW_BATCH_SIZE": {
+        "title": "TickFlow Batch Size",
+        "description": "Maximum symbols per TickFlow batch request for daily K-lines and realtime quotes.",
+        "category": "data_source",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "100",
+        "options": [],
+        "validation": {"min": 1, "max": 500},
+        "display_order": 19,
     },
     "STOCK_INDEX_REMOTE_UPDATE_ENABLED": {
         "title": "Remote Stock Index Updates",
@@ -2447,8 +2536,9 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [
             {"label": "Chinese", "value": "zh"},
             {"label": "English", "value": "en"},
+            {"label": "Korean", "value": "ko"},
         ],
-        "validation": {"enum": ["zh", "en"]},
+        "validation": {"enum": ["zh", "en", "ko"]},
         "display_order": 56,
         "help_key": "settings.notification.report_output",
         "examples": [
@@ -3326,20 +3416,21 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "MARKET_REVIEW_REGION": {
         "title": "Market Review Region",
-        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), or both (all markets).",
+        "description": "Market region for review: cn (A-shares), hk (Hong Kong), us (US stocks), jp (Japan), kr (Korea), or both (all markets).",
         "category": "system",
         "data_type": "string",
-        "ui_control": "select",
+        "ui_control": "text",
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
         "default_value": "cn",
-        "options": ["cn", "hk", "us", "both"],
-        "validation": {"enum": ["cn", "hk", "us", "both"]},
+        "options": ["cn", "hk", "us", "jp", "kr", "both"],
+        "validation": {"allowed_values": ["cn", "hk", "us", "jp", "kr", "both"], "delimiter": ","},
         "display_order": 48,
         "help_key": "settings.system.market_review",
         "examples": [
             "MARKET_REVIEW_REGION=cn",
+            "MARKET_REVIEW_REGION=jp",
             "MARKET_REVIEW_REGION=both",
         ],
         "docs": [
@@ -4430,6 +4521,26 @@ _FIELD_HELP_METADATA: Dict[str, Dict[str, Any]] = {
         ],
         "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
         "warning_codes": ["secret_value"],
+    },
+    "TICKFLOW_PRIORITY": {
+        "help_key": "settings.data_source.TICKFLOW_PRIORITY",
+        "examples": ["TICKFLOW_PRIORITY=2"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_KLINE_ADJUST": {
+        "help_key": "settings.data_source.TICKFLOW_KLINE_ADJUST",
+        "examples": ["TICKFLOW_KLINE_ADJUST=none"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_BATCH_DAILY_ENABLED": {
+        "help_key": "settings.data_source.TICKFLOW_BATCH_DAILY_ENABLED",
+        "examples": ["TICKFLOW_BATCH_DAILY_ENABLED=true"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
+    },
+    "TICKFLOW_BATCH_SIZE": {
+        "help_key": "settings.data_source.TICKFLOW_BATCH_SIZE",
+        "examples": ["TICKFLOW_BATCH_SIZE=100"],
+        "docs": _DOC_FULL_GUIDE_DATA_SOURCE,
     },
     "SERPAPI_API_KEYS": {
         "help_key": "settings.data_source.search_api_keys",

@@ -189,6 +189,41 @@ def test_agent_system_prompts_require_phase_decision_contract() -> None:
 class TestAgentExecutor(unittest.TestCase):
     """Test the ReAct loop logic."""
 
+    def test_unsupported_tool_calling_response_is_not_treated_as_agent_success(self):
+        executed_calls = []
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="echo",
+                description="Echoes back the input",
+                parameters=[
+                    ToolParameter(name="message", type="string", description="Message to echo"),
+                ],
+                handler=lambda message: executed_calls.append(("echo", message)) or {"echo": message},
+            )
+        )
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="unsupported_tool_calling: local CLI generation backend does not support tools",
+            provider="error",
+            model="error",
+            tool_calls=[],
+            usage={},
+        )
+
+        result = run_agent_loop(
+            messages=[{"role": "user", "content": "请查行情"}],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=2,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.content, "")
+        self.assertIn("unsupported_tool_calling", result.error or "")
+        self.assertEqual(result.tool_calls_log, [])
+        self.assertEqual(executed_calls, [])
+
     def test_chat_injects_compressed_history_before_report_context_and_current_user(self):
         registry = _make_registry_with_echo()
         adapter = _make_mock_adapter()

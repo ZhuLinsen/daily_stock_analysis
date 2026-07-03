@@ -181,6 +181,7 @@ export interface TestLLMChannelRequest {
   enabled?: boolean;
   timeoutSeconds?: number;
   capabilityChecks?: LLMCapabilityCheck[];
+  useSavedSecret?: boolean;
 }
 
 export type LLMCapabilityCheck = 'json' | 'tools' | 'vision' | 'stream';
@@ -262,6 +263,7 @@ export interface DiscoverLLMChannelModelsRequest {
   apiKey?: string;
   models?: string[];
   timeoutSeconds?: number;
+  useSavedSecret?: boolean;
 }
 
 export interface DiscoverLLMChannelModelsResponse {

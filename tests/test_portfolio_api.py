@@ -179,6 +179,50 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertAlmostEqual(account_snapshot["total_market_value"], 11000.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_equity"], 11000.0, places=6)
 
+    def test_snapshot_exposes_partial_quality_fields_for_mixed_position_markets(self) -> None:
+        create_resp = self.client.post(
+            "/api/v1/portfolio/accounts",
+            json={"name": "Mixed", "broker": "Demo", "market": "cn", "base_currency": "CNY"},
+        )
+        self.assertEqual(create_resp.status_code, 200)
+        account_id = create_resp.json()["id"]
+
+        trade_resp = self.client.post(
+            "/api/v1/portfolio/trades",
+            json={
+                "account_id": account_id,
+                "symbol": "7203.T",
+                "trade_date": "2026-01-02",
+                "side": "buy",
+                "quantity": 10,
+                "price": 1000,
+                "fee": 0,
+                "tax": 0,
+                "market": "jp",
+                "currency": "JPY",
+            },
+        )
+        self.assertEqual(trade_resp.status_code, 200, trade_resp.text)
+        self._save_close("7203.T", date(2026, 1, 3), 1200.0)
+
+        snapshot_resp = self.client.get(
+            "/api/v1/portfolio/snapshot",
+            params={"as_of": "2026-01-03"},
+        )
+        self.assertEqual(snapshot_resp.status_code, 200)
+        payload = snapshot_resp.json()
+        self.assertEqual(payload["data_quality"], "partial")
+        self.assertIn("fx_and_cost_basis_partial", payload["limitations"])
+        account_snapshot = payload["accounts"][0]
+        position = account_snapshot["positions"][0]
+
+        self.assertEqual(account_snapshot["market"], "cn")
+        self.assertEqual(account_snapshot["data_quality"], "partial")
+        self.assertIn("fx_and_cost_basis_partial", account_snapshot["limitations"])
+        self.assertEqual(position["market"], "jp")
+        self.assertEqual(position["data_quality"], "partial")
+        self.assertIn("realtime_quote_best_effort", position["limitations"])
+
     def test_delete_account_deactivates_without_hard_deleting(self) -> None:
         create_resp = self.client.post(
             "/api/v1/portfolio/accounts",

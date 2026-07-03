@@ -22,8 +22,12 @@ from src.analyzer import GeminiAnalyzer  # noqa: E402
 from src.llm import local_cli_backend as local_cli_backend_module  # noqa: E402
 from src.llm.generation_backend import GenerationError, GenerationErrorCode  # noqa: E402
 from src.llm.local_cli_backend import (  # noqa: E402
+    CLAUDE_CODE_CLI_PRESET,
     LocalCliGenerationBackend,
+    LocalCliExecutionResult,
+    LocalCliExtractionError,
     LocalCliPreset,
+    OPENCODE_CLI_PRESET,
     build_local_cli_env,
     effective_local_cli_concurrency,
     redact_diagnostic_text,
@@ -122,6 +126,638 @@ print({final_payload!r})
     assert "OpenAI Codex" in result.diagnostics["stdout_preview"]
     assert "final-message omitted" in result.diagnostics["stdout_preview"]
     assert "last_message" not in result.diagnostics["stdout_preview"]
+
+
+def test_claude_preset_runtime_argv_contains_contract_args(tmp_path: Path) -> None:
+    argv_path = tmp_path / "argv.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+path = pathlib.Path({str(argv_path)!r})
+path.write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"sentiment_score\\": 77}}"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli",
+        executable=sys.executable,
+        argv=(script, *CLAUDE_CODE_CLI_PRESET.argv),
+        display_name="Mock Claude Code CLI",
+        extractor=CLAUDE_CODE_CLI_PRESET.extractor,
+        contract_args=CLAUDE_CODE_CLI_PRESET.contract_args,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli"),
+        preset=preset,
+    )
+
+    result = backend.generate("prompt", {}, response_validator=lambda text: json.loads(text))
+    runtime_argv = json.loads(argv_path.read_text(encoding="utf-8"))
+
+    assert json.loads(result.text)["sentiment_score"] == 77
+    for contract_arg in CLAUDE_CODE_CLI_PRESET.contract_args:
+        assert contract_arg in runtime_argv
+
+
+def test_missing_contract_arg_is_capability_unsupported(tmp_path: Path) -> None:
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli",
+        executable=sys.executable,
+        argv=(_script(tmp_path, "print('unused')"), "--safe-mode"),
+        display_name="Mock Claude Code CLI",
+        contract_args=("--safe-mode", "--strict-mcp-config"),
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+    assert exc_info.value.details["reason"] == "missing_runtime_contract_arg"
+    assert "--strict-mcp-config" in exc_info.value.details["missing_contract_args"]
+
+
+def test_contract_args_must_keep_preset_order(tmp_path: Path) -> None:
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli",
+        executable=sys.executable,
+        argv=(
+            _script(tmp_path, "print('unused')"),
+            "--strict-mcp-config",
+            "--safe-mode",
+        ),
+        display_name="Mock Claude Code CLI",
+        contract_args=("--safe-mode", "--strict-mcp-config"),
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+    assert exc_info.value.details["reason"] == "missing_runtime_contract_arg"
+    assert "--strict-mcp-config" in exc_info.value.details["missing_contract_args"]
+
+
+def test_claude_extractor_uses_structured_output_in_schema_mode() -> None:
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli",
+        executable="claude",
+        argv=(),
+        display_name="Mock Claude Code CLI",
+        extractor=lambda result: local_cli_backend_module._extract_claude_code_json(
+            result,
+            schema_mode=True,
+        ),
+    )
+
+    text = preset.extractor(
+        LocalCliExecutionResult(
+            stdout=json.dumps({
+                "type": "result",
+                "subtype": "success",
+                "structured_output": {"sentiment_score": "70"},
+            }),
+            stderr="",
+            returncode=0,
+        )
+    )
+
+    assert text == '{"sentiment_score":"70"}'
+
+
+def test_claude_extractor_rejects_tool_event() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_claude_code_json(
+            LocalCliExecutionResult(
+                stdout=json.dumps({"type": "tool_use", "result": "should not parse"}),
+                stderr="",
+                returncode=0,
+            ),
+            schema_mode=False,
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+    assert exc_info.value.reason == "unexpected_cli_event"
+
+
+def test_claude_extractor_requires_result_success_envelope() -> None:
+    with pytest.raises(LocalCliExtractionError) as missing_type:
+        local_cli_backend_module._extract_claude_code_json(
+            LocalCliExecutionResult(
+                stdout=json.dumps({"subtype": "success", "result": "should not parse"}),
+                stderr="",
+                returncode=0,
+            ),
+            schema_mode=False,
+        )
+    with pytest.raises(LocalCliExtractionError) as missing_subtype:
+        local_cli_backend_module._extract_claude_code_json(
+            LocalCliExecutionResult(
+                stdout=json.dumps({"type": "result", "result": "should not parse"}),
+                stderr="",
+                returncode=0,
+            ),
+            schema_mode=False,
+        )
+
+    assert missing_type.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+    assert missing_type.value.reason == "unexpected_cli_event"
+    assert missing_subtype.value.error_code is GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+    assert missing_subtype.value.reason == "cli_result_not_success"
+
+
+def test_claude_schema_retry_exhaustion_maps_schema_validation_failed() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_claude_code_json(
+            LocalCliExecutionResult(
+                stdout=json.dumps({
+                    "type": "result",
+                    "subtype": "error_max_structured_output_retries",
+                    "is_error": True,
+                }),
+                stderr="",
+                returncode=0,
+            ),
+            schema_mode=True,
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.SCHEMA_VALIDATION_FAILED
+
+
+def test_opencode_preset_uses_prompt_file_and_safe_argv(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-leak")
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"plugin":["leak"]}')
+    argv_path = tmp_path / "argv.json"
+    probe_path = tmp_path / "probe.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, os, pathlib, stat, sys
+argv = sys.argv[1:]
+prompt_path = pathlib.Path(argv[argv.index("--file") + 1])
+config_path = pathlib.Path.cwd() / "opencode.json"
+probe = {{
+    "argv": argv,
+    "prompt": prompt_path.read_text(encoding="utf-8"),
+    "prompt_mode": stat.S_IMODE(prompt_path.stat().st_mode),
+    "cwd_mode": stat.S_IMODE(pathlib.Path.cwd().stat().st_mode),
+    "config": config_path.read_text(encoding="utf-8"),
+    "env": {{
+        "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY"),
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
+        "OPENCODE_CONFIG_CONTENT": os.environ.get("OPENCODE_CONFIG_CONTENT"),
+        "OPENCODE_CONFIG_DIR": os.environ.get("OPENCODE_CONFIG_DIR"),
+    }},
+}}
+pathlib.Path({str(argv_path)!r}).write_text(json.dumps(argv), encoding="utf-8")
+pathlib.Path({str(probe_path)!r}).write_text(json.dumps(probe), encoding="utf-8")
+print(json.dumps({{"type": "step_start"}}))
+print(json.dumps({{"type": "text", "part": {{"text": "{{\\"sentiment_score\\": 66}}"}}}}))
+print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli"),
+        preset=preset,
+    )
+
+    result = backend.generate("prompt from dsa", {}, response_validator=lambda text: json.loads(text))
+    payload = json.loads(result.text)
+    argv = json.loads(argv_path.read_text(encoding="utf-8"))
+    probe = json.loads(probe_path.read_text(encoding="utf-8"))
+    opencode_config = json.loads(probe["config"])
+
+    assert payload["sentiment_score"] == 66
+    assert argv[:4] == ["--pure", "run", "--format", "json"]
+    assert "--model" not in argv
+    assert "--file" in argv
+    assert argv.index("--file") > argv.index("json")
+    assert "--attach" not in argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert probe["prompt"] == "prompt from dsa"
+    assert probe["prompt_mode"] == 0o600
+    assert probe["cwd_mode"] == 0o700
+    for tool_name in local_cli_backend_module._OPENCODE_DISABLED_TOOL_NAMES:
+        assert opencode_config["tools"][tool_name] is False
+    assert opencode_config["tools"]["websearch"] is False
+    assert opencode_config["tools"]["question"] is False
+    assert opencode_config["tools"]["skill"] is False
+    assert opencode_config["tools"]["todowrite"] is False
+    assert opencode_config["tools"]["lsp"] is False
+    assert "sk-should-not-leak" not in probe["config"]
+    assert "sk-openai-should-not-leak" not in probe["config"]
+    assert probe["env"]["DEEPSEEK_API_KEY"] is None
+    assert probe["env"]["OPENAI_API_KEY"] is None
+    assert probe["env"]["OPENCODE_CONFIG_CONTENT"] is None
+    assert probe["env"]["OPENCODE_CONFIG_DIR"] is None
+    assert result.diagnostics["opencode_project_config_written"] is True
+    assert "opencode_config_controlled" not in result.diagnostics
+    assert result.backend == "opencode_cli"
+    assert result.provider == "opencode_cli"
+    assert result.model == "opencode_cli"
+    assert result.usage["backend"] == "opencode_cli"
+
+
+def test_opencode_static_instruction_does_not_force_stock_json_contract() -> None:
+    instruction = " ".join(str(arg) for arg in OPENCODE_CLI_PRESET.argv)
+    normalized_instruction = instruction.lower()
+
+    assert "attached prompt file" in instruction
+    assert "json object" not in normalized_instruction
+    assert "parser contract" not in normalized_instruction
+    for field_name in (
+        "sentiment_score",
+        "trend_prediction",
+        "operation_advice",
+        "analysis_summary",
+        "dashboard",
+    ):
+        assert field_name not in instruction
+
+
+def test_opencode_preset_accepts_free_text_without_json_validator(tmp_path: Path) -> None:
+    review = "## 今日复盘\n\n市场震荡，保持观察。"
+    script = _script(
+        tmp_path,
+        f"""
+import json
+print(json.dumps({{"type": "step_start"}}))
+print(json.dumps({{"type": "text", "part": {{"text": {review!r}}}}}, ensure_ascii=False))
+print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli"),
+        preset=preset,
+    )
+
+    result = backend.generate("请生成 Markdown 复盘", {}, response_validator=None)
+
+    assert result.text == review
+
+
+def test_opencode_model_override_inserts_model_arg(tmp_path: Path) -> None:
+    argv_path = tmp_path / "argv.json"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+pathlib.Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(json.dumps({{"type": "step_start"}}))
+print(json.dumps({{"type": "text", "part": {{"text": "{{\\"sentiment_score\\": 67}}"}}}}))
+print(json.dumps({{"type": "step_finish", "reason": "stop"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli", opencode_cli_model="provider/model"),
+        preset=preset,
+    )
+
+    result = backend.generate("prompt", {}, response_validator=lambda text: json.loads(text))
+    argv = json.loads(argv_path.read_text(encoding="utf-8"))
+
+    assert json.loads(result.text)["sentiment_score"] == 67
+    assert argv[:6] == ["--pure", "run", "--format", "json", "--model", "provider/model"]
+    assert argv.index("--file") > argv.index("provider/model")
+
+
+def test_opencode_nonzero_json_event_error_maps_unknown_backend_error(tmp_path: Path) -> None:
+    script = _script(
+        tmp_path,
+        """
+import json
+print(json.dumps({"type": "error", "error": {"name": "UnknownError"}}))
+raise SystemExit(1)
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli", opencode_cli_model="provider/model"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+    assert exc_info.value.details["reason"] == "cli_result_error"
+
+
+def test_opencode_nonzero_pretty_json_error_maps_unknown_backend_error(tmp_path: Path) -> None:
+    script = _script(
+        tmp_path,
+        """
+import json
+print(json.dumps({"type": "error", "error": {"name": "UnknownError"}}, indent=2))
+raise SystemExit(1)
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli", opencode_cli_model="provider/model"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+    assert exc_info.value.details["reason"] == "cli_result_error"
+
+
+@pytest.mark.parametrize(
+    ("event", "stream_name"),
+    [
+        ({"type": "tool_use", "name": "read"}, "stdout"),
+        ({"type": "websearch", "query": "AAPL"}, "stdout"),
+        ({"type": "tool_result", "part": {"tool_name": "todowrite"}}, "stdout"),
+        ({"type": "lsp", "name": "diagnostics"}, "stdout"),
+        ({"type": "question", "text": "Continue?"}, "stdout"),
+        ({"type": "permission", "name": "read"}, "stdout"),
+        ({"type": "step_finish", "is_error": True}, "stdout"),
+        ({"type": "step_finish", "error": {"name": "StepFailed"}}, "stdout"),
+        ({"type": "error", "error": {"name": "StderrError"}}, "stderr"),
+    ],
+)
+def test_opencode_nonzero_blocked_or_error_event_maps_unknown_backend_error(
+    tmp_path: Path,
+    event: dict,
+    stream_name: str,
+) -> None:
+    target_stream = "sys.stderr" if stream_name == "stderr" else "sys.stdout"
+    script = _script(
+        tmp_path,
+        f"""
+import json, sys
+print(json.dumps({event!r}), file={target_stream})
+raise SystemExit(1)
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli", opencode_cli_model="provider/model"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.UNKNOWN_BACKEND_ERROR
+    assert exc_info.value.details["reason"] == "cli_result_error"
+
+
+def test_opencode_runtime_rejects_unsafe_model_override(tmp_path: Path) -> None:
+    script = _script(
+        tmp_path,
+        """
+print("should not execute")
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="opencode_cli",
+        executable=sys.executable,
+        argv=(script, *OPENCODE_CLI_PRESET.argv),
+        display_name="Mock OpenCode CLI",
+        extractor=OPENCODE_CLI_PRESET.extractor,
+        contract_args=OPENCODE_CLI_PRESET.contract_args,
+        prompt_transport=OPENCODE_CLI_PRESET.prompt_transport,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="opencode_cli", opencode_cli_model="provider/$MODEL"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.UNSAFE_CONFIG
+    assert exc_info.value.details["reason"] == "unsafe_opencode_cli_model"
+
+
+def test_opencode_extractor_rejects_tool_event() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout="\n".join([
+                    json.dumps({"type": "step_start"}),
+                    json.dumps({"type": "tool_use", "name": "read"}),
+                    json.dumps({"type": "step_finish", "reason": "stop"}),
+                ]),
+                stderr="",
+                returncode=0,
+            )
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "websearch", "query": "AAPL"},
+        {"type": "question", "text": "Continue?"},
+        {"type": "skill", "name": "default"},
+        {"type": "todowrite", "items": []},
+        {"type": "lsp", "name": "diagnostics"},
+        {"type": "tool_use", "name": "websearch"},
+        {"type": "tool_result", "part": {"tool_name": "todowrite"}},
+    ],
+)
+def test_opencode_extractor_rejects_default_tool_events(event: dict) -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout="\n".join([
+                    json.dumps({"type": "step_start"}),
+                    json.dumps(event),
+                    json.dumps({"type": "step_finish", "reason": "stop"}),
+                ]),
+                stderr="",
+                returncode=0,
+            )
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+
+
+def test_opencode_event_iterator_accepts_pretty_single_event_object() -> None:
+    events = list(local_cli_backend_module._iter_opencode_events(
+        json.dumps({"type": "step_start"}, indent=2)
+    ))
+
+    assert events == [{"type": "step_start"}]
+
+
+def test_opencode_extractor_accepts_json_array_event_stream() -> None:
+    result = local_cli_backend_module._extract_opencode_json_events(
+        LocalCliExecutionResult(
+            stdout=json.dumps([
+                {"type": "step_start"},
+                {"type": "text", "text": '{"sentiment_score":'},
+                {"type": "text", "part": {"text": " 68}"}},
+                {"type": "step_finish", "reason": "stop"},
+            ], indent=2),
+            stderr="",
+            returncode=0,
+        )
+    )
+
+    assert json.loads(result)["sentiment_score"] == 68
+
+
+def test_opencode_extractor_accepts_concatenated_event_stream() -> None:
+    stdout = "".join([
+        json.dumps({"type": "step_start"}),
+        json.dumps({"type": "text", "text": '{"sentiment_score":'}),
+        json.dumps({"type": "text", "part": {"text": " 69}"}}),
+        json.dumps({"type": "step_finish", "reason": "end_turn"}),
+    ])
+
+    result = local_cli_backend_module._extract_opencode_json_events(
+        LocalCliExecutionResult(stdout=stdout, stderr="", returncode=0)
+    )
+
+    assert json.loads(result)["sentiment_score"] == 69
+
+
+def test_opencode_extractor_rejects_trailing_non_json_garbage() -> None:
+    stdout = json.dumps({"type": "step_start"}) + " trailing"
+
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(stdout=stdout, stderr="", returncode=0)
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.INVALID_JSON
+
+
+def test_opencode_extractor_rejects_non_event_json_shape() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(stdout=json.dumps({"message": "not an event"}), stderr="", returncode=0)
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.SCHEMA_VALIDATION_FAILED
+
+
+def test_opencode_extractor_rejects_array_without_step_finish() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout=json.dumps([
+                    {"type": "step_start"},
+                    {"type": "text", "text": "hello"},
+                ]),
+                stderr="",
+                returncode=0,
+            )
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.SCHEMA_VALIDATION_FAILED
+    assert exc_info.value.reason == "missing_step_finish"
+
+
+def test_opencode_extractor_rejects_later_error_after_step_finish() -> None:
+    with pytest.raises(LocalCliExtractionError) as exc_info:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout=json.dumps([
+                    {"type": "step_start"},
+                    {"type": "text", "text": "hello"},
+                    {"type": "step_finish", "reason": "stop"},
+                    {"type": "error", "error": {"name": "LaterError"}},
+                ]),
+                stderr="",
+                returncode=0,
+            )
+        )
+
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+
+
+def test_opencode_extractor_requires_step_finish_and_text() -> None:
+    with pytest.raises(LocalCliExtractionError) as missing_finish:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout=json.dumps({"type": "text", "text": "hello"}),
+                stderr="",
+                returncode=0,
+            )
+        )
+    with pytest.raises(LocalCliExtractionError) as empty_text:
+        local_cli_backend_module._extract_opencode_json_events(
+            LocalCliExecutionResult(
+                stdout="\n".join([
+                    json.dumps({"type": "step_start"}),
+                    json.dumps({"type": "step_finish", "reason": "stop"}),
+                ]),
+                stderr="",
+                returncode=0,
+            )
+        )
+
+    assert missing_finish.value.error_code is GenerationErrorCode.SCHEMA_VALIDATION_FAILED
+    assert empty_text.value.error_code is GenerationErrorCode.EMPTY_OUTPUT
 
 
 def test_output_last_message_stdout_duplicate_is_not_double_counted(tmp_path: Path) -> None:
@@ -547,11 +1183,53 @@ raise SystemExit(2)
     with pytest.raises(GenerationError) as exc_info:
         backend.generate("prompt", {})
 
-    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
     assert exc_info.value.fallbackable is True
     assert exc_info.value.details["reason"] == "cli_contract_unsupported"
     assert exc_info.value.details["returncode"] == 2
     assert "--output-last-message" in exc_info.value.details["stderr_preview"]
+
+
+def test_claude_unknown_contract_arg_is_capability_unsupported_without_retry(tmp_path: Path) -> None:
+    argv_path = tmp_path / "argv.json"
+    count_path = tmp_path / "count.txt"
+    script = _script(
+        tmp_path,
+        f"""
+import json, pathlib, sys
+argv_path = pathlib.Path({str(argv_path)!r})
+count_path = pathlib.Path({str(count_path)!r})
+count = int(count_path.read_text(encoding="utf-8")) if count_path.exists() else 0
+count_path.write_text(str(count + 1), encoding="utf-8")
+argv = sys.argv[1:]
+argv_path.write_text(json.dumps(argv), encoding="utf-8")
+if "--strict-mcp-config" in argv:
+    print("error: unknown option '--strict-mcp-config'", file=sys.stderr)
+    raise SystemExit(2)
+print(json.dumps({{"type": "result", "subtype": "success", "result": "{{\\"sentiment_score\\": 90}}"}}))
+""",
+    )
+    preset = LocalCliPreset(
+        preset_id="claude_code_cli",
+        executable=sys.executable,
+        argv=(script, *CLAUDE_CODE_CLI_PRESET.argv),
+        display_name="Mock Claude Code CLI",
+        extractor=CLAUDE_CODE_CLI_PRESET.extractor,
+        contract_args=CLAUDE_CODE_CLI_PRESET.contract_args,
+    )
+    backend = LocalCliGenerationBackend(
+        _config(generation_backend="claude_code_cli"),
+        preset=preset,
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    runtime_argv = json.loads(argv_path.read_text(encoding="utf-8"))
+    assert exc_info.value.error_code is GenerationErrorCode.CAPABILITY_UNSUPPORTED
+    assert exc_info.value.details["reason"] == "cli_contract_unsupported"
+    assert "--strict-mcp-config" in runtime_argv
+    assert count_path.read_text(encoding="utf-8") == "1"
 
 
 def test_non_zero_exit_mentions_preset_arg_without_unknown_marker_stays_generic(tmp_path: Path) -> None:
@@ -680,7 +1358,14 @@ time.sleep(30)
 def test_env_allowlist_and_denylist(monkeypatch) -> None:
     monkeypatch.setenv("PATH", "/bin")
     monkeypatch.setenv("HOME", "/tmp/home")
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+    monkeypatch.setenv("LC_MESSAGES", "C")
     monkeypatch.setenv("UNRELATED_VALUE", "leak")
+    monkeypatch.setenv("CODEX_CLI_TOKEN", "codex-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/claude")
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", "{}")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
     monkeypatch.setenv("WEBHOOK_TOKEN", "token")
     monkeypatch.setenv("AUTHORIZATION", "Bearer token")
@@ -689,7 +1374,14 @@ def test_env_allowlist_and_denylist(monkeypatch) -> None:
 
     assert child_env["PATH"] == "/bin"
     assert child_env["HOME"] == "/tmp/home"
+    assert child_env["CODEX_HOME"] == "/tmp/codex-home"
+    assert child_env["LC_MESSAGES"] == "C"
     assert "UNRELATED_VALUE" not in child_env
+    assert "CODEX_CLI_TOKEN" not in child_env
+    assert "ANTHROPIC_API_KEY" not in child_env
+    assert "ANTHROPIC_MODEL" not in child_env
+    assert "CLAUDE_CONFIG_DIR" not in child_env
+    assert "OPENCODE_CONFIG_CONTENT" not in child_env
     assert "OPENAI_API_KEY" not in child_env
     assert "WEBHOOK_TOKEN" not in child_env
     assert "AUTHORIZATION" not in child_env
@@ -720,12 +1412,12 @@ def test_env_allowlist_preserves_windows_runtime_context() -> None:
         "PATHEXT",
         "ComSpec",
         "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
         "HOMEDRIVE",
         "HOMEPATH",
     ):
         assert child_env[key] == source[key]
+    assert "APPDATA" not in child_env
+    assert "LOCALAPPDATA" not in child_env
     assert "OPENAI_API_KEY" not in child_env
     assert "UNRELATED_VALUE" not in child_env
 
@@ -737,13 +1429,13 @@ def test_generate_passes_allowlisted_windows_context_to_child_env(monkeypatch, t
         "PATHEXT": ".COM;.EXE;.BAT;.CMD",
         "ComSpec": r"C:\Windows\System32\cmd.exe",
         "USERPROFILE": r"C:\Users\tester",
-        "APPDATA": r"C:\Users\tester\AppData\Roaming",
-        "LOCALAPPDATA": r"C:\Users\tester\AppData\Local",
         "HOMEDRIVE": "C:",
         "HOMEPATH": r"\Users\tester",
     }
     for key, value in windows_context.items():
         monkeypatch.setenv(key, value)
+    monkeypatch.setenv("APPDATA", r"C:\Users\tester\AppData\Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
     monkeypatch.setenv("UNRELATED_VALUE", "leak")
 
@@ -773,6 +1465,8 @@ print(json.dumps({key: os.environ.get(key) for key in keys}, ensure_ascii=False)
 
     for key, value in windows_context.items():
         assert payload[key] == value
+    assert payload["APPDATA"] is None
+    assert payload["LOCALAPPDATA"] is None
     assert payload["OPENAI_API_KEY"] is None
     assert payload["UNRELATED_VALUE"] is None
 

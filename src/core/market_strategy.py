@@ -163,10 +163,80 @@ HK_BLUEPRINT = MarketStrategyBlueprint(
 )
 
 
+JP_BLUEPRINT = MarketStrategyBlueprint(
+    region="jp",
+    title="日本市场三段式复盘策略",
+    positioning="聚焦日经225、东证指数、汇率与全球风险偏好，形成次日交易计划。",
+    principles=[
+        "先看日经225与TOPIX是否同向，再看日元、半导体/出口链与金融股表现。",
+        "把指数结论映射到仓位、节奏与风险控制动作。",
+        "只基于可得指数、新闻和价格行为判断，不臆造市场广度或板块统计。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断日本市场处于上攻、震荡还是防守阶段。",
+            checkpoints=["日经225/TOPIX是否同向", "指数是否突破或跌破关键区间", "大盘权重与成长链是否共振"],
+        ),
+        StrategyDimension(
+            name="宏观与汇率",
+            objective="识别日元、利率和全球风险偏好对权益市场的影响。",
+            checkpoints=["日元方向对出口链的影响", "日本央行和美债利率叙事", "海外科技股与半导体链映射"],
+        ),
+        StrategyDimension(
+            name="主题线索",
+            objective="提炼可延续主线与需要规避的拥挤方向。",
+            checkpoints=["半导体/自动化/汽车链持续性", "金融与内需股是否轮动", "新闻催化是否支撑价格行为"],
+        ),
+    ],
+    action_framework=[
+        "进攻：主要指数共振上行 + 外部风险偏好改善 + 主线强化。",
+        "均衡：指数分化或汇率扰动，降低追涨并等待确认。",
+        "防守：主要指数转弱或外部风险升温，优先控制仓位。",
+    ],
+)
+
+KR_BLUEPRINT = MarketStrategyBlueprint(
+    region="kr",
+    title="韩国市场三段式复盘策略",
+    positioning="聚焦 KOSPI、KOSDAQ、半导体权重与全球科技风险偏好，形成次日交易计划。",
+    principles=[
+        "先看 KOSPI/KOSDAQ 是否同向，再看三星电子、SK 海力士等权重线索。",
+        "区分指数 beta、半导体周期和成长股风险偏好的贡献。",
+        "只基于可得指数、新闻和价格行为判断，不臆造市场广度或板块统计。",
+    ],
+    dimensions=[
+        StrategyDimension(
+            name="趋势结构",
+            objective="判断韩国市场处于上攻、震荡还是防守阶段。",
+            checkpoints=["KOSPI/KOSDAQ 是否同向", "权重股是否支撑指数", "关键支撑阻力是否被突破"],
+        ),
+        StrategyDimension(
+            name="科技周期",
+            objective="识别半导体、AI 硬件和全球科技股对韩国市场的映射。",
+            checkpoints=["存储/半导体链新闻催化", "美股科技方向联动", "外资风险偏好变化"],
+        ),
+        StrategyDimension(
+            name="主题线索",
+            objective="提炼可延续主线与需要规避的拥挤方向。",
+            checkpoints=["电池/汽车/互联网是否轮动", "KOSDAQ 成长股风险偏好", "新闻催化是否支撑价格行为"],
+        ),
+    ],
+    action_framework=[
+        "进攻：KOSPI/KOSDAQ 共振上行 + 科技权重确认 + 外部风险偏好改善。",
+        "均衡：指数或权重股分化，控制仓位并等待确认。",
+        "防守：科技权重转弱或外部风险升温，优先控制回撤。",
+    ],
+)
+
 def get_market_strategy_blueprint(region: str) -> MarketStrategyBlueprint:
     """Return strategy blueprint by market region."""
     if region == "us":
         return US_BLUEPRINT
     if region == "hk":
         return HK_BLUEPRINT
+    if region == "jp":
+        return JP_BLUEPRINT
+    if region == "kr":
+        return KR_BLUEPRINT
     return CN_BLUEPRINT

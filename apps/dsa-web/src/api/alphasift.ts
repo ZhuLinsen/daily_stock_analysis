@@ -14,6 +14,7 @@ export type AlphaSiftStatus = {
   contractVersion?: string | null;
   version?: string | null;
   strategyCount?: number | null;
+  sourceHealth?: Record<string, Record<string, Record<string, unknown>>>;
   diagnostics?: Record<string, string>;
 };
 

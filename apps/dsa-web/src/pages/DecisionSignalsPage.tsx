@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, BarChart3, RefreshCw, Search } from 'lucide-react';
+import { Activity, BarChart3, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 import { decisionSignalsApi } from '../api/decisionSignals';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import {
@@ -18,6 +18,7 @@ import {
   DecisionSignalCard,
   DecisionSignalDetails,
 } from '../components/decision-signals/DecisionSignalDisplay';
+import { DecisionSignalTimeline } from '../components/decision-signals/DecisionSignalTimeline';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { UiTextKey } from '../i18n/uiText';
 import type { DecisionAction, MarketPhaseValue } from '../types/analysis';
@@ -29,8 +30,10 @@ import type {
   DecisionSignalMarket,
   DecisionSignalOutcomeItem,
   DecisionSignalOutcomeStatsResponse,
+  DecisionSignalReassessResponse,
   DecisionSignalSourceType,
   DecisionSignalStatus,
+  DecisionProfile,
 } from '../types/decisionSignals';
 import { cn } from '../utils/cn';
 import { buildDecisionActionLabelMap } from '../utils/decisionAction';
@@ -41,6 +44,8 @@ import {
 } from '../utils/decisionSignalLabels';
 
 const PAGE_SIZE = 20;
+const TIMELINE_PAGE_SIZE = 100;
+const DAY_MS = 86400_000;
 
 type ListFilters = {
   market: '' | DecisionSignalMarket;
@@ -52,6 +57,16 @@ type ListFilters = {
   status: '' | DecisionSignalStatus;
 };
 
+type TimelineRange = '30d' | '90d' | '180d';
+type TimelineStatusFilter = 'all' | 'active';
+
+type TimelineFilters = {
+  market: '' | DecisionSignalMarket;
+  stockCode: string;
+  range: TimelineRange;
+  status: TimelineStatusFilter;
+};
+
 type PendingStatusChange = {
   item: DecisionSignalItem;
   status: Extract<DecisionSignalStatus, 'closed' | 'invalidated' | 'archived'>;
@@ -60,8 +75,12 @@ type PendingStatusChange = {
 
 type SelectedSignal = {
   item: DecisionSignalItem;
-  source: 'list' | 'latest';
+  source: 'list' | 'latest' | 'timeline';
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 const MARKET_OPTIONS: DecisionSignalMarket[] = ['cn', 'hk', 'us', 'jp', 'kr', 'tw'];
 const ACTION_OPTIONS: DecisionAction[] = ['buy', 'add', 'hold', 'reduce', 'sell', 'watch', 'avoid', 'alert'];
@@ -70,6 +89,7 @@ const SOURCE_OPTIONS: DecisionSignalSourceType[] = ['analysis', 'agent', 'alert'
 const STATUS_OPTIONS: DecisionSignalStatus[] = ['active', 'expired', 'invalidated', 'closed', 'archived'];
 
 const STATUS_ACTIONS: Array<PendingStatusChange['status']> = ['closed', 'invalidated', 'archived'];
+const REASSESS_PROFILES: DecisionProfile[] = ['conservative', 'balanced', 'aggressive'];
 
 const STATUS_LABEL_KEYS: Record<DecisionSignalStatus, UiTextKey> = {
   active: 'decisionSignals.active',
@@ -99,6 +119,19 @@ const DEFAULT_LIST_FILTERS: ListFilters = {
   sourceType: '',
   sourceReportId: '',
   status: 'active',
+};
+
+const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
+  market: '',
+  stockCode: '',
+  range: '90d',
+  status: 'all',
+};
+
+const TIMELINE_RANGE_DAYS: Record<TimelineRange, number> = {
+  '30d': 30,
+  '90d': 90,
+  '180d': 180,
 };
 
 function parseSourceReportId(value: string): number | undefined {
@@ -150,6 +183,30 @@ function refreshLatestSelection(
   return refreshed ? { source: 'latest', item: refreshed } : null;
 }
 
+function refreshTimelineSelection(
+  current: SelectedSignal | null,
+  timelineItems: DecisionSignalItem[],
+): SelectedSignal | null {
+  if (!current || current.source !== 'timeline') return current;
+  const refreshed = timelineItems.find((item) => item.id === current.item.id);
+  return refreshed ? { source: 'timeline', item: refreshed } : null;
+}
+
+function toTimelineParams(filters: TimelineFilters): DecisionSignalListParams {
+  const days = TIMELINE_RANGE_DAYS[filters.range];
+  const createdTo = new Date();
+  const createdFrom = new Date(createdTo.getTime() - days * DAY_MS);
+  return {
+    market: filters.market || undefined,
+    stockCode: filters.stockCode.trim(),
+    createdFrom: createdFrom.toISOString(),
+    createdTo: createdTo.toISOString(),
+    status: filters.status === 'active' ? 'active' : undefined,
+    page: 1,
+    pageSize: TIMELINE_PAGE_SIZE,
+  };
+}
+
 function formatStatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '-';
   return Number(value).toFixed(2).replace(/\.?0+$/, '');
@@ -181,6 +238,13 @@ const DecisionSignalsPage: React.FC = () => {
   const [latestSearched, setLatestSearched] = useState(false);
   const [latestLoading, setLatestLoading] = useState(false);
   const [latestError, setLatestError] = useState<ParsedApiError | null>(null);
+  const [timelineFilters, setTimelineFilters] = useState<TimelineFilters>(DEFAULT_TIMELINE_FILTERS);
+  const [appliedTimelineFilters, setAppliedTimelineFilters] = useState<TimelineFilters>(DEFAULT_TIMELINE_FILTERS);
+  const [timelineItems, setTimelineItems] = useState<DecisionSignalItem[]>([]);
+  const [timelineSearched, setTimelineSearched] = useState(false);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState<ParsedApiError | null>(null);
+  const [timelineTruncated, setTimelineTruncated] = useState(false);
   const [selectedOutcomes, setSelectedOutcomes] = useState<DecisionSignalOutcomeItem[]>([]);
   const [selectedOutcomesLoading, setSelectedOutcomesLoading] = useState(false);
   const [selectedOutcomesError, setSelectedOutcomesError] = useState<ParsedApiError | null>(null);
@@ -188,10 +252,16 @@ const DecisionSignalsPage: React.FC = () => {
   const [selectedFeedbackLoading, setSelectedFeedbackLoading] = useState(false);
   const [selectedFeedbackError, setSelectedFeedbackError] = useState<ParsedApiError | null>(null);
   const [feedbackSaving, setFeedbackSaving] = useState(false);
+  const [reassessProfile, setReassessProfile] = useState<DecisionProfile>('balanced');
+  const [reassessResponse, setReassessResponse] = useState<DecisionSignalReassessResponse | null>(null);
+  const [reassessLoading, setReassessLoading] = useState(false);
+  const [reassessError, setReassessError] = useState<ParsedApiError | null>(null);
   const requestIdRef = useRef(0);
   const statsRequestIdRef = useRef(0);
   const latestRequestIdRef = useRef(0);
+  const timelineRequestIdRef = useRef(0);
   const detailRequestIdRef = useRef(0);
+  const reassessRequestIdRef = useRef(0);
   const selectedSignalIdRef = useRef<number | null>(null);
   const statusUpdateInFlightRef = useRef(false);
 
@@ -275,6 +345,10 @@ const DecisionSignalsPage: React.FC = () => {
     latestRequestIdRef.current += 1;
   }, []);
 
+  useEffect(() => () => {
+    timelineRequestIdRef.current += 1;
+  }, []);
+
   useEffect(() => {
     selectedSignalIdRef.current = selected?.item.id ?? null;
     if (!selected) {
@@ -328,6 +402,47 @@ const DecisionSignalsPage: React.FC = () => {
       });
   }, [selected]);
 
+  const appliedSourceReportId = parseSourceReportId(appliedFilters.sourceReportId);
+  const selectedSourceReportId = selected?.item.sourceReportId ?? undefined;
+  const reassessSourceReportId = selected ? selectedSourceReportId : appliedSourceReportId;
+  const reassessContextKey = [
+    selected ? `selected:${selected.item.id}` : 'source',
+    reassessSourceReportId ?? '',
+    reassessProfile,
+  ].join(':');
+
+  useEffect(() => {
+    reassessRequestIdRef.current += 1;
+    setReassessResponse(null);
+    setReassessError(null);
+    setReassessLoading(false);
+  }, [reassessContextKey]);
+
+  const handleReassess = useCallback(async () => {
+    if (!reassessSourceReportId) return;
+    const requestId = reassessRequestIdRef.current + 1;
+    reassessRequestIdRef.current = requestId;
+    setReassessLoading(true);
+    setReassessError(null);
+    try {
+      const response = await decisionSignalsApi.reassess({
+        sourceReportId: reassessSourceReportId,
+        decisionProfile: reassessProfile,
+        persist: false,
+      });
+      if (reassessRequestIdRef.current !== requestId) return;
+      setReassessResponse(response);
+    } catch (err) {
+      if (reassessRequestIdRef.current !== requestId) return;
+      setReassessResponse(null);
+      setReassessError(getParsedApiError(err));
+    } finally {
+      if (reassessRequestIdRef.current === requestId) {
+        setReassessLoading(false);
+      }
+    }
+  }, [reassessProfile, reassessSourceReportId]);
+
   const handleApplyFilters = (event: React.FormEvent) => {
     event.preventDefault();
     setAppliedFilters(filters);
@@ -363,6 +478,49 @@ const DecisionSignalsPage: React.FC = () => {
     }
   };
 
+  const resetTimelineView = useCallback(() => {
+    timelineRequestIdRef.current += 1;
+    setTimelineItems([]);
+    setTimelineSearched(false);
+    setTimelineLoading(false);
+    setTimelineError(null);
+    setTimelineTruncated(false);
+    setSelected((current) => (current?.source === 'timeline' ? null : current));
+  }, []);
+
+  const handleTimelineSearch = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const stockCode = timelineFilters.stockCode.trim();
+    if (!stockCode) return;
+    const requestId = timelineRequestIdRef.current + 1;
+    timelineRequestIdRef.current = requestId;
+    setTimelineLoading(true);
+    setTimelineError(null);
+    setTimelineSearched(true);
+    const nextAppliedFilters = {
+      ...timelineFilters,
+      stockCode,
+    };
+    try {
+      const response = await decisionSignalsApi.list(toTimelineParams(nextAppliedFilters));
+      if (timelineRequestIdRef.current !== requestId) return;
+      setAppliedTimelineFilters(nextAppliedFilters);
+      setTimelineItems(response.items);
+      setTimelineTruncated(response.total > response.items.length);
+      setSelected((current) => refreshTimelineSelection(current, response.items));
+    } catch (err) {
+      if (timelineRequestIdRef.current !== requestId) return;
+      setTimelineItems([]);
+      setTimelineTruncated(false);
+      setSelected((current) => refreshTimelineSelection(current, []));
+      setTimelineError(getParsedApiError(err));
+    } finally {
+      if (timelineRequestIdRef.current === requestId) {
+        setTimelineLoading(false);
+      }
+    }
+  };
+
   const handleStatusUpdate = async () => {
     if (!pendingStatus || statusUpdateInFlightRef.current) return;
     statusUpdateInFlightRef.current = true;
@@ -376,10 +534,19 @@ const DecisionSignalsPage: React.FC = () => {
         if (item.id !== updated.id) return [item];
         return updated.status === 'active' ? [updated] : [];
       }));
+      setTimelineItems((current) => current.flatMap((item) => {
+        if (item.id !== updated.id) return [item];
+        return appliedTimelineFilters.status === 'active' && updated.status !== 'active' ? [] : [updated];
+      }));
       setSelected((current) => {
         if (!current || current.item.id !== updated.id) return current;
         if (current.source === 'latest') {
           return updated.status === 'active' ? { source: 'latest', item: updated } : null;
+        }
+        if (current.source === 'timeline') {
+          return appliedTimelineFilters.status === 'active' && updated.status !== 'active'
+            ? null
+            : { source: 'timeline', item: updated };
         }
         if (!parseSourceReportId(appliedFilters.sourceReportId) && appliedFilters.status && updated.status !== appliedFilters.status) return null;
         return { source: 'list', item: updated };
@@ -415,6 +582,136 @@ const DecisionSignalsPage: React.FC = () => {
       setFeedbackSaving(false);
     }
   }, [feedbackSaving, selected]);
+
+  const renderReassessPanel = () => {
+    const preview = reassessResponse?.preview ?? null;
+    const metadata = preview?.metadata ?? {};
+    const guardrail = isRecord(metadata.guardrail_result) ? metadata.guardrail_result : null;
+    const rawAction = typeof guardrail?.raw_action === 'string' ? guardrail.raw_action : null;
+    const finalAction = typeof guardrail?.final_action === 'string' ? guardrail.final_action : null;
+    const passed = typeof guardrail?.passed === 'boolean' ? guardrail.passed : null;
+    return (
+      <div className="rounded-xl border border-border/60 bg-elevated/30 p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">{t('decisionSignals.reassessTitle')}</h3>
+            </div>
+            <p className="mt-1 text-xs text-secondary-text">
+              {reassessSourceReportId
+                ? t('decisionSignals.reassessSource', { id: reassessSourceReportId })
+                : t('decisionSignals.reassessUnsupported')}
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <select
+              className="input-surface input-focus-glow h-10 rounded-xl border bg-transparent px-3 text-sm"
+              value={reassessProfile}
+              onChange={(event) => setReassessProfile(event.target.value as DecisionProfile)}
+              aria-label={t('decisionSignals.reassessProfile')}
+              disabled={!reassessSourceReportId || reassessLoading}
+            >
+              {REASSESS_PROFILES.map((profile) => (
+                <option key={profile} value={profile}>
+                  {t(`decisionSignals.profile.${profile}` as UiTextKey)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-10 items-center justify-center gap-2"
+              onClick={() => void handleReassess()}
+              disabled={!reassessSourceReportId || reassessLoading}
+            >
+              <RefreshCw className={cn('h-4 w-4', reassessLoading ? 'animate-spin' : '')} />
+              {t('decisionSignals.reassessPreview')}
+            </button>
+          </div>
+        </div>
+
+        {!reassessSourceReportId ? (
+          <InlineAlert
+            className="mt-3"
+            variant="warning"
+            title={t('decisionSignals.reassessUnsupportedTitle')}
+            message={t('decisionSignals.reassessUnsupported')}
+          />
+        ) : null}
+        {reassessError ? <ApiErrorAlert className="mt-3" error={reassessError} /> : null}
+        {preview ? (
+          <div className="mt-4 space-y-3">
+            {reassessResponse?.blockedReason ? (
+              <InlineAlert
+                variant="warning"
+                title={t('decisionSignals.reassessBlockedTitle')}
+                message={reassessResponse.blockedReason}
+              />
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.action')}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{actionLabels[preview.action]}</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.score')}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{preview.score ?? '-'}</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.confidence')}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{preview.confidence ?? '-'}</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.horizon')}</p>
+                <p className="mt-1 text-sm font-semibold text-foreground">{preview.horizon ?? '-'}</p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.entryRange')}</p>
+                <p className="mt-1 text-sm text-foreground">
+                  {preview.entryLow || preview.entryHigh
+                    ? `${preview.entryLow ?? '-'} ~ ${preview.entryHigh ?? '-'}`
+                    : '-'}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.stopLoss')}</p>
+                <p className="mt-1 text-sm text-foreground">{preview.stopLoss ?? '-'}</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.targetPrice')}</p>
+                <p className="mt-1 text-sm text-foreground">{preview.targetPrice ?? '-'}</p>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <p className="text-xs text-secondary-text">{t('decisionSignals.reassessRawFinal')}</p>
+                <p className="mt-1 text-sm text-foreground">{rawAction ?? '-'} {'->'} {finalAction ?? '-'}</p>
+              </div>
+            </div>
+            <div className="space-y-2 text-sm text-secondary-text">
+              {passed === false ? (
+                <p className="font-medium text-warning">{t('decisionSignals.reassessBlockedNote')}</p>
+              ) : null}
+              {preview.invalidation ? <p><span className="text-foreground">{t('decisionSignals.invalidation')}:</span> {preview.invalidation}</p> : null}
+              {preview.reason ? <p><span className="text-foreground">{t('decisionSignals.reason')}:</span> {preview.reason}</p> : null}
+              {preview.riskSummary ? <p><span className="text-foreground">{t('decisionSignals.riskSummary')}:</span> {preview.riskSummary}</p> : null}
+              {preview.watchConditions ? <p><span className="text-foreground">{t('decisionSignals.watchConditions')}:</span> {preview.watchConditions}</p> : null}
+            </div>
+            {reassessResponse?.warnings.length ? (
+              <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-warning">{t('decisionSignals.reassessWarnings')}</p>
+                <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-secondary-text">
+                  {reassessResponse.warnings.map((warning, index) => (
+                    <li key={`${warning.code}-${index}`}>{warning.message || warning.code}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -521,6 +818,12 @@ const DecisionSignalsPage: React.FC = () => {
           </form>
         </Card>
 
+        {!selected && appliedSourceReportId ? (
+          <Card padding="md">
+            {renderReassessPanel()}
+          </Card>
+        ) : null}
+
         <Card title={t('decisionSignals.statsTitle')} subtitle={t('decisionSignals.statsDescription')} padding="md">
           {statsError ? (
             <ApiErrorAlert
@@ -600,6 +903,81 @@ const DecisionSignalsPage: React.FC = () => {
           ) : null}
         </Card>
 
+        <Card title={t('decisionSignals.timelineTitle')} subtitle={t('decisionSignals.timelineDescription')} padding="md">
+          <form className="grid gap-3 md:grid-cols-5" onSubmit={handleTimelineSearch}>
+            <select
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
+              value={timelineFilters.market}
+              onChange={(event) => setTimelineFilters((current) => ({ ...current, market: event.target.value as TimelineFilters['market'] }))}
+              aria-label={t('decisionSignals.timelineMarket')}
+            >
+              <option value="">{t('decisionSignals.allMarkets')}</option>
+              {MARKET_OPTIONS.map((market) => (
+                <option key={market} value={market}>{getDecisionSignalMarketLabel(market, t)}</option>
+              ))}
+            </select>
+            <input
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm md:col-span-2"
+              value={timelineFilters.stockCode}
+              onChange={(event) => {
+                const stockCode = event.target.value;
+                setTimelineFilters((current) => ({ ...current, stockCode }));
+                if (!stockCode.trim()) {
+                  resetTimelineView();
+                }
+              }}
+              placeholder={t('decisionSignals.timelineStockPlaceholder')}
+              aria-label={t('decisionSignals.timelineStockCode')}
+            />
+            <select
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
+              value={timelineFilters.range}
+              onChange={(event) => setTimelineFilters((current) => ({ ...current, range: event.target.value as TimelineRange }))}
+              aria-label={t('decisionSignals.timelineRange')}
+            >
+              <option value="30d">{t('decisionSignals.timelineRange.30d')}</option>
+              <option value="90d">{t('decisionSignals.timelineRange.90d')}</option>
+              <option value="180d">{t('decisionSignals.timelineRange.180d')}</option>
+            </select>
+            <select
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
+              value={timelineFilters.status}
+              onChange={(event) => setTimelineFilters((current) => ({ ...current, status: event.target.value as TimelineStatusFilter }))}
+              aria-label={t('decisionSignals.timelineStatus')}
+            >
+              <option value="all">{t('decisionSignals.timelineStatus.all')}</option>
+              <option value="active">{t('decisionSignals.timelineStatus.active')}</option>
+            </select>
+            <button
+              type="submit"
+              className="btn-secondary inline-flex h-11 items-center justify-center gap-2 md:col-start-5"
+              disabled={timelineLoading || !timelineFilters.stockCode.trim()}
+            >
+              <Search className="h-4 w-4" />
+              {t('decisionSignals.timelineSearch')}
+            </button>
+          </form>
+          <div className="mt-4">
+            {!timelineSearched ? (
+              <EmptyState
+                className="border-none bg-transparent py-6 shadow-none"
+                title={t('decisionSignals.timelineGuideTitle')}
+                description={t('decisionSignals.timelineGuideDescription')}
+                icon={<Activity className="h-6 w-6" />}
+              />
+            ) : (
+              <DecisionSignalTimeline
+                items={timelineItems}
+                selectedId={selected?.item.id ?? null}
+                loading={timelineLoading}
+                error={timelineError?.message ?? null}
+                truncated={timelineTruncated}
+                onSelect={(selectedItem) => setSelected({ source: 'timeline', item: selectedItem })}
+              />
+            )}
+          </div>
+        </Card>
+
         {error ? (
           <ApiErrorAlert
             error={{ ...error, title: t('decisionSignals.errorTitle') }}
@@ -642,32 +1020,35 @@ const DecisionSignalsPage: React.FC = () => {
         width="max-w-3xl"
       >
         {selected ? (
-          <DecisionSignalDetails
-            item={selected.item}
-            outcomes={selectedOutcomes}
-            outcomesLoading={selectedOutcomesLoading}
-            outcomesError={selectedOutcomesError?.message ?? null}
-            feedback={selectedFeedback}
-            feedbackLoading={selectedFeedbackLoading}
-            feedbackSaving={feedbackSaving}
-            feedbackError={selectedFeedbackError?.message ?? null}
-            onFeedbackSubmit={handleFeedbackSubmit}
-            actions={STATUS_ACTIONS.map((status) => (
-              <button
-                key={status}
-                type="button"
-                className="btn-secondary !px-3 !py-1.5 !text-xs"
-                onClick={() => setPendingStatus({
-                  item: selected.item,
-                  status,
-                  message: t(STATUS_ACTION_CONFIRM_KEYS[status]),
-                })}
-                disabled={statusUpdating || selected.item.status === status}
-              >
-                {t(STATUS_ACTION_LABEL_KEYS[status])}
-              </button>
-            ))}
-          />
+          <div className="space-y-4">
+            {renderReassessPanel()}
+            <DecisionSignalDetails
+              item={selected.item}
+              outcomes={selectedOutcomes}
+              outcomesLoading={selectedOutcomesLoading}
+              outcomesError={selectedOutcomesError?.message ?? null}
+              feedback={selectedFeedback}
+              feedbackLoading={selectedFeedbackLoading}
+              feedbackSaving={feedbackSaving}
+              feedbackError={selectedFeedbackError?.message ?? null}
+              onFeedbackSubmit={handleFeedbackSubmit}
+              actions={STATUS_ACTIONS.map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  className="btn-secondary !px-3 !py-1.5 !text-xs"
+                  onClick={() => setPendingStatus({
+                    item: selected.item,
+                    status,
+                    message: t(STATUS_ACTION_CONFIRM_KEYS[status]),
+                  })}
+                  disabled={statusUpdating || selected.item.status === status}
+                >
+                  {t(STATUS_ACTION_LABEL_KEYS[status])}
+                </button>
+              ))}
+            />
+          </div>
         ) : null}
       </Drawer>
 

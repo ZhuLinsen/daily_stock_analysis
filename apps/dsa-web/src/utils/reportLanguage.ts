@@ -1,7 +1,7 @@
 import type { ReportLanguage } from '../types/analysis';
 
 export const normalizeReportLanguage = (value?: string | null): ReportLanguage =>
-  value === 'en' ? 'en' : 'zh';
+  value === 'en' ? 'en' : value === 'ko' ? 'ko' : 'zh';
 
 const REPORT_TEXT = {
   zh: {
@@ -95,6 +95,52 @@ const REPORT_TEXT = {
     laggingBoard: 'Lagging',
     neutralBoard: 'Neutral',
     reanalyze: 'Reanalyze',
+  },
+  ko: {
+    keyInsights: '핵심 인사이트',
+    noAnalysisSummary: '분석 결론 없음',
+    actionAdvice: '대응 전략',
+    noAdvice: '제안 없음',
+    trendPrediction: '추세 전망',
+    noPrediction: '예측 없음',
+    marketSentiment: '시장 심리',
+    strategyPoints: '전략 가격대',
+    sniperLevels: '대응 가격대',
+    idealBuy: '이상적 매수가',
+    secondaryBuy: '추가 매수가',
+    stopLoss: '손절가',
+    takeProfit: '목표가',
+    noValue: '—',
+    newsFeed: '뉴스 피드',
+    relatedNews: '관련 뉴스',
+    refresh: '새로고침',
+    retry: '다시 시도',
+    dismiss: '닫기',
+    details: '상세 보기',
+    loadingNews: '뉴스 불러오는 중...',
+    noNews: '관련 뉴스 없음',
+    noNewsDescription: '잠시 후 새로고침하여 최신 소식을 확인하세요.',
+    openLink: '열기',
+    transparency: '투명성',
+    traceability: '데이터 추적',
+    rawResult: '원본 분석 결과',
+    analysisSnapshot: '분석 스냅샷',
+    copy: '복사',
+    copied: '복사됨!',
+    recordId: '레코드 ID',
+    fullReport: '전체 분석 리포트',
+    loadingReport: '리포트 불러오는 중...',
+    loadReportFailed: '리포트 불러오기 실패',
+    copyMarkdownSource: 'Markdown 소스 복사',
+    copyPlainText: '일반 텍스트 복사',
+    analysisModel: '분석 모델',
+    fearGreedIndex: '공포·탐욕 지수',
+    boardLinkage: '섹터 연동',
+    relatedBoards: '관련 섹터',
+    leadingBoard: '강세',
+    laggingBoard: '약세',
+    neutralBoard: '중립',
+    reanalyze: '재분석',
   },
 } as const;
 

@@ -44,6 +44,7 @@ export function useHomeDashboardState() {
       clearError: state.clearError,
       loadInitialHistory: state.loadInitialHistory,
       refreshHistory: state.refreshHistory,
+      refreshHistoryForCompletedTask: state.refreshHistoryForCompletedTask,
       loadMoreHistory: state.loadMoreHistory,
       loadMarketReviewHistory: state.loadMarketReviewHistory,
       refreshMarketReviewHistory: state.refreshMarketReviewHistory,

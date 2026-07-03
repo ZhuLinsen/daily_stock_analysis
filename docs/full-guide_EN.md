@@ -115,7 +115,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `SINGLE_STOCK_NOTIFY` | Single stock push mode: set to `true` to push immediately after each stock analysis | Optional |
 | `REPORT_TYPE` | Report type: `simple` (concise), `full` (complete), `brief` (3-5 sentences), Docker recommended: `full` | Optional |
-| `REPORT_LANGUAGE` | Report output language: `zh` (default Chinese) / `en` (English); also updates prompt instructions, templates, notification fallbacks, and fixed copy in the Web report view. The bundled `00-daily-analysis.yml` already maps this variable, so setting it in Actions Secrets/Variables works out of the box | Optional |
+| `REPORT_LANGUAGE` | Report output language: `zh` (default Chinese) / `en` (English) / `ko` (Korean); also updates prompt instructions, templates, notification fallbacks, and fixed copy in the Web report view. `ko` reuses the English structural scaffolding and constrains the model to Korean output via an output-language directive; notifications render localized labels by report language. The bundled `00-daily-analysis.yml` already maps this variable, so setting it in Actions Secrets/Variables works out of the box | Optional |
 | `REPORT_SHOW_LLM_MODEL` | Whether notification report footers show the LLM model used for analysis. Defaults to `true`; set to `false` to hide runtime model metadata. This switch only affects presentation and does not change provider/model/Base URL, LiteLLM routing, or runtime model save/migration/cleanup behavior. | Optional |
 | `REPORT_TEMPLATES_DIR` | Jinja2 template directory (relative to project root, default `templates`) | Optional |
 | `REPORT_RENDERER_ENABLED` | Enable Jinja2 template rendering (default `false`, zero regression) | Optional |
@@ -153,7 +153,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty the app auto-discovers public instances | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
-| `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for CN market review index enhancement; market breadth also uses TickFlow when the plan supports universe queries | Optional |
+| `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement; permission or entitlement failures fall back to existing providers | Optional |
 
 #### ✅ Minimum Configuration Example
 
@@ -192,20 +192,25 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 
 > Full details: [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) (three-tier config, channels, Vision, Agent, troubleshooting).
 > Compatibility note for Issue #1306: this change only persists and exposes existing market-review output via history paths, and does not alter model name, provider, base URL, LiteLLM cleanup rules, or `.env` runtime migration semantics. Rollback is to revert this change set. Runtime compatibility references are `requirements.txt` (`litellm` constraints), `docs/LLM_CONFIG_GUIDE_EN.md`, and regression tests in `tests/test_analysis_api_contract.py`, `tests/test_analysis_history.py`, `tests/test_market_review.py`; official references: [LiteLLM OpenAI-compatible](https://docs.litellm.ai/docs/providers/openai_compatible), [OpenAI Chat Completion API](https://platform.openai.com/docs/api-reference/chat).
+> Phase 3 compatibility note for #1815: this change only narrows JP/KR vs Market Light runtime boundaries. It does not add new provider/model/base URL migration logic, and it does not change `.env` model persistence semantics. `MarketSymbol`, alert market enums, and snapshot `data_quality/limitations` are boundary-contract updates only.
 
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
-| `GENERATION_BACKEND` | Generation backend for regular analysis. Supports `litellm` or explicit opt-in `codex_cli` (experimental/limited) | `litellm` | No |
+| `GENERATION_BACKEND` | Generation backend for regular analysis. Supports `litellm` or explicit opt-in `codex_cli` / `claude_code_cli` / `opencode_cli` (experimental/limited) | `litellm` | No |
+| `OPENCODE_CLI_MODEL` | Optional model override passed to OpenCode `--model` when `GENERATION_BACKEND=opencode_cli`; leave empty to use the local OpenCode default model. Authentication and model availability are handled by the local OpenCode setup | Empty | No |
 | `GENERATION_FALLBACK_BACKEND` | Backend-level fallback. Unset defaults to `litellm`; an empty value disables fallback; self fallback resolves to no-op | `litellm` | No |
 | `GENERATION_BACKEND_TIMEOUT_SECONDS` | Per-call generation backend timeout in seconds, mainly for local CLI backends; range `1-3600` | `300` | No |
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | Total captured diagnostic stdout/stderr plus final-response size limit for one local CLI backend call; final responses duplicated to stdout by `--output-last-message` are not counted twice; range `1-33554432` | `1048576` | No |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | Global generation backend concurrency cap; range `1-16`, does not change LiteLLM Router or `MAX_WORKERS` behavior | `1` | No |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
-| `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written `codex_cli` returns an unsupported tool-calling diagnostic | `auto` | No |
+| `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional Agent-only primary model; when empty it inherits the primary model, and bare names are normalized to `openai/<model>` | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
 | `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
+| `LLM_HERMES_API_KEY` | Single API key for the reserved Hermes local HTTP generation channel; provide it through `.env`, runtime config, or Secrets only | - | Required for Hermes |
+| `LLM_HERMES_BASE_URL` | Hermes local loopback `/v1` endpoint; defaults to `http://127.0.0.1:8642/v1`; remote endpoints are not supported | `http://127.0.0.1:8642/v1` | No |
+| `LLM_HERMES_MODELS` | Raw Hermes model list; Phase 3 defaults to `hermes-agent`, maps to runtime route `openai/hermes-agent`, and does not support Vision, stream, tools, or Agent tools | `hermes-agent` | No |
 | `LITELLM_CONFIG` | Advanced model routing YAML path (expert use) | - | No |
 | `LLM_USAGE_HMAC_SECRET` | Secret for LLM usage telemetry message HMACs; leave empty to use a generated local data-dir secret file | - | No |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Version label for the LLM usage HMAC key; update it when rotating the secret | `local-v1` | No |
@@ -241,7 +246,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `DISCORD_BOT_TOKEN` | Discord Bot Token (choose one with Webhook) | Optional |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID (required when using Bot) | Optional |
 | `DISCORD_INTERACTIONS_PUBLIC_KEY` | Discord Public Key (required only for inbound Interaction/Webhook signature verification) | Optional |
-| `DISCORD_MAX_WORDS` | Discord Word Limit (default 2000 for un-upgraded servers) | Optional |
+| `DISCORD_MAX_WORDS` | Discord per-message content limit (default 2000; runtime never exceeds Discord's 2000-character content limit, long reports are chunked, and 429 rate limits are retried a limited number of times) | Optional |
 | `SLACK_BOT_TOKEN` | Slack Bot Token (recommended, supports image upload; takes priority over Webhook when both set) | Optional |
 | `SLACK_CHANNEL_ID` | Slack Channel ID (required when using Bot) | Optional |
 | `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL (text only, no image support) | Optional |
@@ -315,12 +320,16 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
-| `TICKFLOW_API_KEY` | TickFlow API key; CN market review indices prefer TickFlow when configured, and market breadth does so only when the plan supports universe queries | - | Optional |
+| `TICKFLOW_API_KEY` | TickFlow API key; enables optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement. Permission failures fall back to existing providers. | - | Optional |
+| `TICKFLOW_PRIORITY` | TickFlow daily K-line provider priority; lower values are tried earlier. No effect unless `TICKFLOW_API_KEY` is configured. Does not affect realtime quotes, which are ordered by `REALTIME_SOURCE_PRIORITY`. | `2` | Optional |
+| `TICKFLOW_KLINE_ADJUST` | TickFlow daily K-line adjustment mode: `none`, `forward`, `backward`, `forward_additive`, or `backward_additive`. | `none` | Optional |
+| `TICKFLOW_BATCH_DAILY_ENABLED` | Enable TickFlow batch daily K-line prefetch when the current plan supports it; permission failures are negative-cached and fall back to per-stock providers. | `true` | Optional |
+| `TICKFLOW_BATCH_SIZE` | Maximum symbols per TickFlow batch request for daily K-lines and realtime quotes. | `100` | Optional |
 | `ENABLE_REALTIME_QUOTE` | Enable real-time quotes (if disabled, uses historical closing prices for analysis) | `true` | Optional |
 | `ENABLE_REALTIME_TECHNICAL_INDICATORS` | Intraday real-time technicals: Calculate MA5/MA10/MA20 and bull trends using real-time prices when enabled (Issue #234); uses yesterday's close if disabled. | `true` | Optional |
 | `ENABLE_CHIP_DISTRIBUTION` | Enable chip distribution analysis (this API is unstable, recommended to disable for cloud deployment). GitHub Actions users must set `ENABLE_CHIP_DISTRIBUTION=true` in Repository Variables to enable; disabled by default in workflows. | `true` | Optional |
 | `ENABLE_EASTMONEY_PATCH` | Eastmoney API patch: Recommended to set to `true` when Eastmoney APIs fail frequently (e.g., RemoteDisconnected, connection closed). Injects NID tokens and random User-Agents to reduce rate limiting probability. | `false` | Optional |
-| `REALTIME_SOURCE_PRIORITY` | Real-time quote source priority (comma-separated), e.g., `tencent,akshare_sina,efinance,akshare_em` | See .env.example | Optional |
+| `REALTIME_SOURCE_PRIORITY` | Real-time quote source priority (comma-separated), e.g., `tencent,akshare_sina,efinance,akshare_em`; add `tickflow` explicitly to use TickFlow realtime quotes | See .env.example | Optional |
 | `ENABLE_FUNDAMENTAL_PIPELINE` | Master switch for fundamental aggregation; when disabled, returns `not_supported` block only, without altering the original analysis pipeline. | `true` | Optional |
 | `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | Total latency budget for the fundamental stage (seconds) | `8.0` | Optional |
 | `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | Timeout for a single capability source call (seconds) | `3.0` | Optional |
@@ -333,10 +342,12 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 > - **ETFs**: Returns available items, marks missing capabilities as `not_supported`, and does not affect the original flow overall.
 > - **US/HK stocks**: Returns `valuation/growth/earnings/belong_boards` (sourced from `info.sector`/`info.industry`) via the yfinance adapter; `institution/capital_flow/dragon_tiger/boards` stay `not_supported` because no offshore data feed exists today. Falls back to a full `not_supported` block if yfinance is unavailable or returns empty payloads. Still fail-open.
 > - **Japanese/Korean stocks**: Current MVP uses Yfinance daily/basic quote coverage only; `institution`, `capital_flow`, `dragon_tiger`, and `boards` are not fully supported and degrade to `not_supported` (see [market boundaries](market-support.md)).
+> - **Taiwan stocks**: On top of the US/HK offshore base path, the `institution` block additionally surfaces raw 三大法人 (institutional) net buy/sell figures (TWSE T86 / TPEx, default-on, fail-open — stays `not_supported` when data is unavailable); `capital_flow`, `dragon_tiger`, and `boards` remain `not_supported`.
 > - Any exception uses fail-open logic, only logs errors without affecting the main technical/news/chip pipeline.
 > - **Field contracts**:
 >   - `fundamental_context.belong_boards` = related board list for the stock; A-shares are sourced from AkShare board membership, US/HK from yfinance `info.sector`/`info.industry`, `[]` when unavailable;
 >   - `fundamental_context.boards.data` = `sector_rankings` (sector rise/fall leaderboard, structure `{top, bottom}`; not provided for US/HK today);
+>   - `fundamental_context.concept_boards.data` = `concept_rankings` (concept/theme rise/fall leaderboard, structure `{top, bottom}`; currently A-share only and omitted or empty on fail-open);
 >   - `fundamental_context.earnings.data.financial_report.currency` = financial statement currency (`info.financialCurrency`; HK ADRs commonly report CNY here);
 >   - `fundamental_context.earnings.data.dividend.currency` = trading / dividend currency (`info.currency`; HK ADRs use HKD here even when the statement currency is CNY). The renderer reads each block's own currency rather than assuming a single global currency;
 >   - `fundamental_context.earnings.data.dividend.ttm_dividend_yield_pct` = `ttm_cash_dividend_per_share / latest_price * 100`, both sides in the trading currency. Falls back to `info.trailingAnnualDividendYield` (decimal) or `info.dividendYield` (already-percent passthrough) only when TTM cash or latest price is unavailable;
@@ -345,6 +356,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 >   - `get_stock_info.sector_rankings` stays consistent with `fundamental_context.boards.data`.
 >   - `AnalysisReport.details.belong_boards` = related board list in structured report details;
 >   - `AnalysisReport.details.sector_rankings` = sector leaderboard in structured report details for board-linkage display.
+>   - `AnalysisReport.details.concept_rankings` = concept/theme leaderboard in structured report details for Web related-board signal matching and notification table type labels.
 > - **Sector leaderboard** uses a fixed fallback order: consistent with global priority.
 > - **Timeout control** is a `best-effort` soft timeout: the stage will quickly degrade and continue execution based on the budget, but does not guarantee a hard interrupt of underlying third-party network calls.
 > - `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS=8.0` indicates the target budget for the newly added fundamental stage, not a strict hard SLA; Windows, Docker, or rate-limited free data sources can raise it to `12-15s`.
@@ -358,7 +370,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `MAX_WORKERS` | Concurrent threads | `3` |
 | `MARKET_REVIEW_ENABLED` | Enable market review | `true` |
 | `DAILY_MARKET_CONTEXT_ENABLED` | Inject the daily market context into stock-analysis prompts and soften aggressive buy advice in high-risk/risk-off markets; enabled by default, and market review can still run when this is set to `false` | `true` |
-| `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), both (all three markets) | `cn` |
+| `MARKET_REVIEW_REGION` | Market review region: cn (A-shares), hk (HK stocks), us (US stocks), jp (JP stocks), kr (KR stocks), both (all five markets) | `cn` |
 | `MARKET_REVIEW_COLOR_SCHEME` | Index change color style in market reviews: `green_up` = green gains/red losses (default), `red_up` = red gains/green losses | `green_up` |
 | `SCHEDULE_ENABLED` | Enable scheduled tasks | `false` |
 | `SCHEDULE_TIME` | Scheduled execution time | `18:00` |
@@ -369,11 +381,20 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `SAVE_CONTEXT_SNAPSHOT` | Persist analysis-history `context_snapshot`. When false, new history records do not save enhanced_context, market_phase_summary, AnalysisContextPack overview, or diagnostic snapshots, but current-run prompt summaries remain enabled | `true` |
 
 > Behavior notes:
-> - When `TICKFLOW_API_KEY` is configured, CN market review first tries TickFlow for main indices. Market breadth also tries TickFlow only when the current TickFlow plan supports universe queries.
-> - TickFlow behavior is capability-based rather than just key-based: limited plans can still enhance main CN indices, while plans with `CN_Equity_A` universe query support also enhance market breadth.
+> - When `TICKFLOW_API_KEY` is configured, TickFlow is instantiated as an optional A-share daily K-line data source and CN market-review enhancer. `TICKFLOW_PRIORITY` only affects the daily K-line/general provider fallback chain. Realtime quote priority is controlled separately by `REALTIME_SOURCE_PRIORITY`; TickFlow realtime quotes are used only when that list explicitly includes `tickflow`, and any source listed before `tickflow` is tried first.
+> - TickFlow daily K-lines default to `TICKFLOW_KLINE_ADJUST=none`; daily `volume` is converted from lots to shares, while `amount` remains in yuan.
+> - TickFlow daily K-line range requests pass explicit `start_time` / `end_time` / `count`. Because the official quickstart documents that time-range queries are still limited by `count`, non-empty count-capped responses whose first returned trading date is later than the requested start trading date are rejected before normalization or cache writes, allowing manager fallback to continue.
+> - Batch analysis can warm the per-process TickFlow daily K-line cache through `prefetch_daily_klines()` before per-stock `get_daily_data()` calls. Only validated frames are cached; batch permission failures are negative-cached and degrade to single-stock requests or existing providers.
+> - TickFlow behavior is capability-based rather than just key-based: limited plans can still enhance main CN indices, while plans with `CN_Equity_A` universe query support also enhance market breadth and stock-list/name lookups.
 > - The official quickstart documents `quotes.get(universes=["CN_Equity_A"])`, but online smoke tests confirmed two additional real-world constraints: universe access depends on plan permissions, and `quotes.get(symbols=[...])` has a per-request symbol limit.
-> - TickFlow currently returns `change_pct` / `amplitude` as ratio values; this integration normalizes them to the project's percent convention so they match AkShare / Tushare / efinance semantics.
+> - TickFlow currently returns `change_pct` / `amplitude` / `turnover_rate` as ratio values; this integration normalizes them to the project's percent convention so they match AkShare / Tushare / efinance semantics.
 > - In scheduler mode, if runtime env explicitly sets `RUN_IMMEDIATELY` but does not set `SCHEDULE_RUN_IMMEDIATELY`, the scheduler keeps inheriting the legacy runtime override instead of being pulled back to a persisted `.env` alias value.
+
+> Compatibility note (Issue #1815): `MARKET_REVIEW_REGION=cn|hk|us|jp|kr|both` only expands the market set used by market review; `jp`/`kr` are for recap scope and do not open JP/KR for Market Light alerts.
+> - Changes in `src/config.py`, `src/core/config_registry.py`, and `src/services/system_config_service.py` are configuration-contract updates only, and do not alter runtime provider/model/base URL routing semantics or trigger provider migration/cleanup logic.
+> - Affected config keys are `MARKET_REVIEW_REGION` and `MARKET_REVIEW_COLOR_SCHEME`; existing model/runtime keys (`LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `VISION_MODEL`, `OPENAI_BASE_URL`, etc.) remain unchanged under the existing atomic upsert semantics and are not silently cleared when this scope is changed.
+> - Verifiable evidence summary: official provider / Base URL / model-name sources remain the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md#official-references-for-provider-presets--base-urls--model-naming), and the locked runtime dependency window remains `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0` in `requirements.txt`; this scope adds no migration script or cleanup branch, and save/import still writes only submitted keys. `tests/test_system_config_service.py::SystemConfigServiceTestCase::test_update_market_review_region_does_not_trigger_runtime_model_cleanup` covers saving `MARKET_REVIEW_REGION` without clearing or rewriting existing `LITELLM_CONFIG`, `LLM_CHANNELS`, `LLM_OPENAI_*`, `LITELLM_MODEL`, `AGENT_LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `VISION_MODEL`, `OPENAI_*`, and related runtime settings.
+> - Rollback is a restore-and-recover path: apply pre-PR `.env` / config backup for the above keys, restore `MARKET_REVIEW_REGION`, and restart the runtime; or revert this PR directly.
 > - CN market review reports now use a post-market workstation layout with market signal, index detail, sector Top tables, news catalysts, next-session plan, and risk sections. The market signal uses a plain-text score such as `66/100 (constructive, risk-on)` instead of block bars so it renders consistently across terminals and notification clients. News catalysts list only headline, source, and link instead of search snippets to reduce mixed-language noise. Missing data sources degrade by omitting or simplifying only the affected block.
 > - Per-stock analysis, realtime quote priority, and sector rankings fallback remain unchanged.
 
@@ -643,7 +664,7 @@ The phase labels describe regular-session state:
 | `premarket` | Before the regular session opens; does not mean extended-hours quotes were fetched |
 | `intraday` | Inside the regular session and outside lunch break or the near-close window |
 | `lunch_break` | Lunch break window supplied by the market calendar; markets without lunch breaks skip this phase |
-| `closing_auction` | Near-close heuristic window: 3 minutes for CN, 10 minutes for HK, and 5 minutes for US; this is not a full exchange auction model |
+| `closing_auction` | Near-close heuristic window: 3 minutes for CN, 10 minutes for HK, 5 minutes for US, and 5 minutes for TW (13:25–13:30); this is not a full exchange auction model |
 | `postmarket` | After the regular session closes; does not mean post-market quotes were fetched |
 | `non_trading` | The current market-local date is not a trading session |
 | `unknown` | Unknown market, calendar unavailable, or calendar error, so the phase cannot be inferred reliably |
@@ -739,11 +760,30 @@ P5 adds a phase-aware decision block under `dashboard.phase_decision` for indivi
 
 Regular analysis and Agent analysis now apply lightweight guardrails before history is saved, using the current `market_phase_summary` and `analysis_context_pack_overview.data_quality`. If core quote / daily_bars / technical data is stale, fallback, missing, fetch_failed, partial, or estimated, high-confidence conclusions are capped. Pre-market, non-trading, or unknown phases must not emit high-confidence intraday buy/sell actions. Intraday, lunch-break, and near-close outputs are scanned for post-market recap wording such as "after today's close" or "focus tomorrow" in the main conclusion and action fields, and obvious violations are replaced with phase-safe wait/watch wording. The guardrail only fills low-sensitivity `phase_context` and data limitations; it does not invent watch conditions or next-check times. Notification summaries, alerts, holdings, and backtest linkage remain later P6 work.
 
+### Signal Attribution Analysis (Issue #1742)
+
+Issue #1742 adds a signal attribution analysis block under `dashboard.signal_attribution` for individual stock analysis reports: `technical_indicators`, `news_sentiment`, `fundamentals`, `market_conditions` (four contribution values; valid non-zero values are normalized to 100; all-zero means no effective signal), `strongest_bullish_signal`, and `strongest_bearish_signal`. This field explains the composition of recommendation reasons, helping users understand the attribution weights of AI decisions.
+
+Signal attribution analysis is rendered in all report paths:
+- `generate_dashboard_report()` (default notification report)
+- `generate_single_stock_report()` (single-stock push report)
+- `templates/report_markdown.j2` (Jinja2 template)
+- `HistoryService._generate_single_stock_markdown()` (Web history drawer)
+
+Normalization functions are explicitly called in `_parse_response()` and `parse_dashboard_json()` to ensure:
+- String percentages are converted to int (e.g., `"35%"` → `35`)
+- Negative numbers are clamped to 0
+- Non-zero valid values with sum ≠ 100 are normalized to sum = 100
+- All-zero values are preserved as 0 to mean no effective signal
+- Values are clamped to [0, 100]
+
+`signal_attribution` is an optional display field, not a required integrity field. Missing it does not fail integrity checks, is not recorded in the `missing` list, and does not trigger a completion prompt; when present, it is normalized and rendered by supported report paths.
+
 ### Alerts, Portfolio, and History Linkage (Issue #1386 P6)
 
 P6 reuses the existing `market_phase_summary` and `analysis_context_pack_overview` across alerts, portfolio, history, backtesting, and notifications. It does not introduce a new phase/pack protocol and does not require a database migration. Alert trigger rows keep using the existing text `diagnostics` field; when diagnostics can be represented as JSON, the worker merges `analysis_visibility.market_phase_summary`, `analysis_visibility.analysis_context_pack_overview`, and `analysis_visibility.source` into triggered rows. Legacy plain-text diagnostics remain readable; Alert API derived fields stay empty and `analysis_visibility_source=legacy_text`.
 
-Alert phase summaries are generated from trigger-time context: symbol targets infer the stock market, `target_scope=market` uses the `cn|hk|us` region directly, and account-level targets that cannot map to a single market may fall back to `unknown`. The pack overview only comes from an evaluator-provided overview or a recent low-sensitivity history snapshot from the last 30 days. Missing data returns `null`; the alert worker does not fabricate packs and does not automatically run a lightweight LLM analysis. Public source values are `alert_trigger_market_context`, `analysis_history_snapshot`, `evaluator_snapshot`, `legacy_text`, or `null`.
+Alert phase summaries are generated from trigger-time context: symbol targets infer the stock market, `target_scope=market` uses the `cn|hk|us|jp|kr` region directly, and account-level targets that cannot map to a single market may fall back to `unknown`. The pack overview only comes from an evaluator-provided overview or a recent low-sensitivity history snapshot from the last 30 days. Missing data returns `null`; the alert worker does not fabricate packs and does not automatically run a lightweight LLM analysis. Public source values are `alert_trigger_market_context`, `analysis_history_snapshot`, `evaluator_snapshot`, `legacy_text`, or `null`.
 
 The portfolio page adds a manual per-position analysis action backed by `POST /api/v1/portfolio/positions/{symbol}/analysis`. The request accepts `account_id`, `analysis_phase=auto|premarket|intraday|postmarket`, and `force`. Only non-zero current holdings can be submitted; missing holdings return 404, and the same symbol held in multiple accounts without `account_id` returns `400 ambiguous_position_account`. The endpoint keeps the existing async accepted / duplicate semantics, and `force` only controls refresh behavior; it does not bypass in-flight duplicate detection. The backend passes only a low-sensitivity `portfolio_context` internally into the pipeline and into an optional context-pack `portfolio` block. That block does not affect the six existing data-quality weights and is not exposed through task lists or SSE payloads.
 
@@ -939,6 +979,8 @@ while Gotify uses `/message` as a fixed server API.
 ### Discord
 
 Discord supports two push methods:
+
+Long reports are automatically split under Discord's 2000-character per-message `content` limit. If a chunk receives a 429 rate limit response, the sender follows Discord's `retry_after` or `Retry-After` value for a limited retry and continues attempting later chunks. `DISCORD_MAX_WORDS` can lower the chunk size, but runtime delivery will not exceed 2000.
 
 **Method 1: Webhook (Recommended, Simple)**
 
@@ -1295,7 +1337,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 
 For this feature, the product behavior is:
 
-- UI language is independent from report language: `dsa.uiLanguage` (browser persistence) controls shell/login/settings text, while `REPORT_LANGUAGE` controls report text and report-page fixed copy (`zh`/`en`).
+- UI language is independent from report language: `dsa.uiLanguage` (browser persistence) controls shell/login/settings text, while `REPORT_LANGUAGE` controls report text and report-page fixed copy (`zh`/`en`/`ko`).
 - `dsa.uiLanguage` follows local persistence -> browser language -> default `zh`.
 - This change only adds request-scope report language override parameters; it does not modify `provider`, `model`, `base_url`, or migration/cleanup behavior.
 - PR-level verification output, screenshots, and command logs are maintained in PR description, not in this usage guide.
@@ -1336,14 +1378,14 @@ For this feature, the product behavior is:
 > Note: `POST /api/v1/analysis/analyze` supports only one stock when `async_mode=false`; batch `stock_codes` requires `async_mode=true`. The async `202` response returns a single `task_id` for one stock, or an `accepted` / `duplicates` summary for batch requests.
 > Note: `POST /api/v1/analysis/analyze` accepts `skills` as an array of strategy IDs; if omitted, server defaults are used. The legacy field `strategies` is still accepted for backward compatibility.
 > Note: `POST /api/v1/analysis/analyze` accepts `analysis_phase=auto|premarket|intraday|postmarket`, defaulting to `auto`. Non-`auto` only overrides the phase and derived phase flags for this run; it does not rewrite real trading-calendar timestamps. Accepted responses, in-memory task status, task lists, and SSE echo the requested phase, while the final report phase remains `report.meta.market_phase_summary.phase`.
-> Note: `POST /api/v1/analysis/analyze` accepts `report_language=zh|en` (legacy-compatible alias `reportLanguage`). When omitted, it falls back to global `REPORT_LANGUAGE`. This parameter is request-scoped only and influences report output language for this run, including `report.meta.report_language` in responses.
+> Note: `POST /api/v1/analysis/analyze` accepts `report_language=zh|en|ko` (legacy-compatible alias `reportLanguage`). When omitted, it falls back to global `REPORT_LANGUAGE`. This parameter is request-scoped only and influences report output language for this run, including `report.meta.report_language` in responses.
 > Note: The Web Home page exposes an explicit strategy selector. When users do not pick one, `skills` is not sent and legacy behavior is preserved; when selected, it is passed through to this endpoint and persisted in task status/history snapshots.
 > Note: `POST /api/v1/analysis/market-review` follows the same runtime configuration path as CLI/Bot market review (`GeminiAnalyzer(config=...)`, search setup, and prompt/rendering pipeline). The provider compatibility path prioritizes `litellm_model` and `llm_model_list`, then falls back to existing legacy keys (`GEMINI_*`, `OPENAI_*`, `ANTHROPIC_*`, `DEEPSEEK_*`) when those are not set; provider names, Base URL, and LiteLLM routing semantics are otherwise unchanged.
-> Note: `POST /api/v1/analysis/market-review` also accepts `report_language=zh|en` / `reportLanguage` to set report language for that request. If omitted, it falls back to global `REPORT_LANGUAGE`; Bot/CLI/manual `/market-review` calls keep using global config and do not carry request-level override.
+> Note: `POST /api/v1/analysis/market-review` also accepts `report_language=zh|en|ko` / `reportLanguage` to set report language for that request. If omitted, it falls back to global `REPORT_LANGUAGE`; Bot/CLI/manual `/market-review` calls keep using global config and do not carry request-level override.
 > Note: `POST /api/v1/analysis/market-review` is the explicit Web/desktop trigger and submits a market-review task directly. It does not short-circuit because `TRADING_DAY_CHECK_ENABLED=true` or the configured markets are closed that day; scheduled jobs, GitHub Actions manual runs, and CLI defaults still follow the trading-day gate unless `--force-run` or workflow `force_run` is used.
 > Audit note: priority and fallback are defined by `Config._load_from_env()` in `src/config.py` (`LITELLM_CONFIG` > `LLM_CHANNELS` > legacy). Regression coverage is in `tests/test_llm_channel_config.py` (configuration source parsing) and `tests/test_market_review_runtime.py` (shared runtime assembly). The endpoint lock is process/host-level only; multi-instance deployments still need external distributed idempotency controls.
 > Note: Once `/api/v1/analysis/market-review` completes, the report is persisted with `report_type=market_review`; open `/api/v1/history` and `/api/v1/history/{record_id}` (or Markdown history endpoints) to view it directly without re-running analysis.
-> Note: `/api/v1/analysis/market-review` responses and persisted history include a structured `market_review_payload` with fields like `market_scope`, `sections`, `sectors`, `news`, `market_light`, `indices`, etc. Web rendering and history detail use the same structure and fall back to raw `markdown_report` only if the structure is unavailable.
+> Note: `/api/v1/analysis/market-review` responses and persisted history include a structured `market_review_payload` with fields like `market_scope`, `sections`, `sectors`, `concepts`, `news`, `market_light`, `indices`, etc. Web rendering and history detail use the same structure and fall back to raw `markdown_report` only if the structure is unavailable.
 > Note: `market_review_payload.breadth` is emitted only when breadth data is truly available. For markets/feeds without usable breadth, the field is omitted and UI should display `No data` (not a misleading zero value).
 > Note: when `/api/v1/analysis/market-review` returns a `task_id`, the WebUI polls `GET /api/v1/analysis/status/{task_id}`. The UI renders clear `pending/processing` progress, shows completion feedback when status becomes `completed`, and surfaces `error` content on `failed`.
 > Note: filter market-review-only history via `GET /api/v1/history` with `stock_code=MARKET&report_type=market_review` to avoid mixing with regular stock history.
@@ -1518,7 +1560,7 @@ AGENT_EVENT_ALERT_RULES_JSON=[{"stock_code":"600519","alert_type":"price_cross",
 
 The worker writes `triggered`, `skipped`, `degraded`, and `failed` rows to `alert_triggers` as evaluation history; normal non-triggered checks do not write history. For DB-persisted rules, `triggered` history is best-effort deduplicated by `rule_id + target + data_source + data_timestamp`: repeated hits for the same data point reuse the earliest trigger row, while records without `data_timestamp` are not deduplicated. Real triggers write per-channel attempts to `alert_notifications`, and Alert API persisted rules write business cooldown state to `alert_cooldowns`; if the persisted cooldown read fails, the worker temporarily falls back to the in-process fingerprint guard to avoid repeated notifications during the DB failure. Legacy `AGENT_EVENT_ALERT_RULES_JSON` rules continue to use the in-process fingerprint suppressor and do not write persisted cooldown state; the notification infrastructure `notification_noise.py` guard remains independent. The Web rule list uses the backend-provided `cooldown_active` flag instead of browser-local timezone parsing to decide whether a rule is cooling down.
 
-Technical indicator rules use daily-close edge triggers only. Partial-bar handling is a server-local-time + 16:00 heuristic and does not implement market-calendar precision. `watchlist` rules refresh and expand `STOCK_LIST` each worker run, `portfolio_holdings` expands non-zero snapshot positions with symbol de-duplication, and `portfolio_account` reuses the portfolio risk service for account-level aggregate evaluation. `market` rules accept only `cn|hk|us` targets and use structured `MarketLightSnapshot` data; `trade_date` comes from the current market overview, `data_quality=unavailable` skips triggering, non-trading days are skipped by the trading-day gate, and `market_light_score_drop` compares score across trading days only. The WebUI "Alerts" page can manage persisted rules, run one-shot dry-run tests, and view trigger history, notification attempts, and read-only cooldown state; cooldown on batch rules is a parent-rule summary, while child-target cooldown details are visible through trigger history. See [Real-Time Alert Center](alerts.md) for detailed boundaries.
+Technical indicator rules use daily-close edge triggers only. Partial-bar handling is a server-local-time + 16:00 heuristic and does not implement market-calendar precision. `watchlist` rules refresh and expand `STOCK_LIST` each worker run, `portfolio_holdings` expands non-zero snapshot positions with symbol de-duplication, and `portfolio_account` reuses the portfolio risk service for account-level aggregate evaluation. `market` rules accept only `cn|hk|us|jp|kr` targets and use structured `MarketLightSnapshot` data; `trade_date` comes from the current market overview, `data_quality=unavailable` skips triggering, non-trading days are skipped by the trading-day gate, and `market_light_score_drop` compares score across trading days only. The WebUI "Alerts" page can manage persisted rules, run one-shot dry-run tests, and view trigger history, notification attempts, and read-only cooldown state; cooldown on batch rules is a parent-rule summary, while child-target cooldown details are visible through trigger history. See [Real-Time Alert Center](alerts.md) for detailed boundaries.
 
 ---
 
