@@ -207,6 +207,55 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
   }];
 };
 
+const coerceFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const normalizedValue = value.trim().replace(/,/g, '');
+    const numericText = normalizedValue.endsWith('%')
+      ? normalizedValue.slice(0, -1).trim()
+      : normalizedValue;
+    const parsed = Number(numericText);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const formatMarketNumber = (value: unknown, options?: { zeroAsMissing?: boolean }): string => {
+  const numericValue = coerceFiniteNumber(value);
+  if (numericValue === null || (options?.zeroAsMissing && numericValue === 0)) {
+    return '-';
+  }
+  return numericValue.toFixed(2);
+};
+
+const formatMarketCount = (value: unknown): string => {
+  const numericValue = coerceFiniteNumber(value);
+  return numericValue === null ? '-' : numericValue.toFixed(0);
+};
+
+const formatMarketAmount = (value: unknown, unit?: string): string => {
+  const formattedValue = formatMarketNumber(value);
+  if (formattedValue === '-') {
+    return '-';
+  }
+  return unit ? `${formattedValue} ${unit}` : formattedValue;
+};
+
+const formatMarketPercent = (value: unknown): string => {
+  const formattedValue = formatMarketNumber(value);
+  return formattedValue === '-' ? '-' : `${formattedValue}%`;
+};
+
+const formatMarketHighLow = (high: unknown, low: unknown): string => {
+  const highText = formatMarketNumber(high, { zeroAsMissing: true });
+  const lowText = formatMarketNumber(low, { zeroAsMissing: true });
+  return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
+};
+
 const MARKET_REVIEW_TEXT: Record<ReportLanguage, {
   reviewSummary: string;
   noReviewSummary: string;
@@ -534,22 +583,27 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                   <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
                     <div className="rounded-lg border border-subtle p-3">
                       <p className="label-uppercase">{marketReviewText.advancers}</p>
-                      <p className="mt-1 font-semibold text-foreground">{marketData.breadth.upCount ?? '-'}</p>
+                      <p className="mt-1 font-semibold text-foreground">
+                        {formatMarketCount(marketData.breadth.upCount)}
+                      </p>
                     </div>
                     <div className="rounded-lg border border-subtle p-3">
                       <p className="label-uppercase">{marketReviewText.decliners}</p>
-                      <p className="mt-1 font-semibold text-foreground">{marketData.breadth.downCount ?? '-'}</p>
+                      <p className="mt-1 font-semibold text-foreground">
+                        {formatMarketCount(marketData.breadth.downCount)}
+                      </p>
                     </div>
                     <div className="rounded-lg border border-subtle p-3">
                       <p className="label-uppercase">{marketReviewText.limitUpDown}</p>
                       <p className="mt-1 font-semibold text-foreground">
-                        {marketData.breadth.limitUpCount ?? '-'} / {marketData.breadth.limitDownCount ?? '-'}
+                        {formatMarketCount(marketData.breadth.limitUpCount)} /{' '}
+                        {formatMarketCount(marketData.breadth.limitDownCount)}
                       </p>
                     </div>
                     <div className="rounded-lg border border-subtle p-3">
                       <p className="label-uppercase">{marketReviewText.turnover}</p>
                       <p className="mt-1 font-semibold text-foreground">
-                        {marketData.breadth.totalAmount ?? '-'} {marketData.breadth.turnoverUnit || ''}
+                        {formatMarketAmount(marketData.breadth.totalAmount, marketData.breadth.turnoverUnit)}
                       </p>
                     </div>
                   </div>
@@ -571,9 +625,9 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
                         {marketData.indices.map((index) => (
                           <tr key={index.code || index.name}>
                             <td className="px-2 py-2 font-medium text-foreground">{index.name}</td>
-                            <td className="px-2 py-2 text-secondary-text">{index.current ?? '-'}</td>
-                            <td className="px-2 py-2 text-secondary-text">{index.changePct !== undefined ? `${index.changePct}%` : '-'}</td>
-                            <td className="px-2 py-2 text-secondary-text">{index.high ?? '-'} / {index.low ?? '-'}</td>
+                            <td className="px-2 py-2 text-secondary-text">{formatMarketNumber(index.current)}</td>
+                            <td className="px-2 py-2 text-secondary-text">{formatMarketPercent(index.changePct)}</td>
+                            <td className="px-2 py-2 text-secondary-text">{formatMarketHighLow(index.high, index.low)}</td>
                           </tr>
                         ))}
                       </tbody>

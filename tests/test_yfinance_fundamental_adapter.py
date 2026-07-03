@@ -136,6 +136,32 @@ class TestYfinanceFundamentalAdapter(unittest.TestCase):
             ],
         )
 
+    def test_dividends_parsed_from_single_column_dataframe(self) -> None:
+        # yfinance 1.2.x returns Ticker.dividends as a single-column DataFrame, not a
+        # Series. Without coercion, `.items()` yields (column_name, Series), every event
+        # is dropped, and TTM silently falls back to the annual-rate estimate — the real
+        # bug seen on live US/HK/JP/KR/TW reports (24.0 / "0 次" instead of the true sum).
+        idx = pd.DatetimeIndex(
+            ["2025-08-11", "2025-11-10", "2026-02-09", "2026-05-11"],
+            tz="America/New_York",
+        )
+        dividends_df = pd.DataFrame({"Dividends": [0.26, 0.26, 0.26, 0.27]}, index=idx)
+        info = {
+            "currency": "USD",
+            "financialCurrency": "USD",
+            "currentPrice": 210,
+            "trailingAnnualDividendRate": 99.0,  # a WRONG fallback we must NOT fall back to
+        }
+        ticker = _build_mock_ticker(info, dividends=dividends_df)
+        with patch("yfinance.Ticker", return_value=ticker):
+            bundle = YfinanceFundamentalAdapter().get_fundamental_bundle("AAPL")
+
+        div = bundle["earnings"]["dividend"]
+        self.assertEqual(div["ttm_event_count"], 4)          # was 0 before the fix
+        self.assertEqual(len(div["events"]), 4)
+        # summed TTM (0.26*3 + 0.27 = 1.05), NOT the trailingAnnualDividendRate 99.0 fallback
+        self.assertAlmostEqual(div["ttm_cash_dividend_per_share"], 1.05, places=2)
+
     def test_falls_back_to_info_when_statements_only_have_4_quarters(self) -> None:
         """yfinance default is 4 quarters → statement-derived YoY refuses to use QoQ.
 

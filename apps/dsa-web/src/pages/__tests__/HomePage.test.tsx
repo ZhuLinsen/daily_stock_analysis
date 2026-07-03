@@ -868,7 +868,7 @@ describe('HomePage', () => {
     expect(marketReviewReport.className).not.toContain('overflow-y-auto');
     expect(screen.getByRole('heading', { name: '结构化大盘数据' })).toBeInTheDocument();
     expect(screen.getByText('3200')).toBeInTheDocument();
-    expect(screen.getByText('3150.2')).toBeInTheDocument();
+    expect(screen.getByText('3150.20')).toBeInTheDocument();
     expect(marketReviewReport.querySelector('h2, h3')?.textContent).not.toBe('A股市场复盘');
     expect(screen.getByRole('heading', { name: '指数概览' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '风险提示' })).toBeInTheDocument();

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.agent.stock_scope import StockScope
 from src.llm.usage import should_persist_usage_telemetry
@@ -424,6 +425,7 @@ def run_agent_loop(
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
     stock_scope: Optional[StockScope] = None,
+    emit_stage_events: bool = True,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -441,6 +443,9 @@ def run_agent_loop(
         thinking_labels: Override map of tool_name → friendly label.
         max_wall_clock_seconds: Optional overall timeout budget for the loop.
         tool_call_timeout_seconds: Optional timeout for one parallel tool batch.
+        emit_stage_events: Whether to emit the synthetic ``agent_loop``
+            stage lifecycle. Orchestrated business stages disable this so
+            ``stage_start`` / ``stage_done`` only describe real stages.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -463,6 +468,27 @@ def run_agent_loop(
     # even when the total budget is small.
     _MIN_STEP_BUDGET_S = 8.0
 
+    def _finish(result: RunLoopResult) -> RunLoopResult:
+        if progress_callback and emit_stage_events:
+            progress_callback(
+                stream_event(
+                    "stage_done",
+                    stage="agent_loop",
+                    status="completed" if result.success else "failed",
+                    duration=round(time.time() - start_time, 2),
+                )
+            )
+        return result
+
+    if progress_callback and emit_stage_events:
+        progress_callback(
+            stream_event(
+                "stage_start",
+                stage="agent_loop",
+                message="Starting agent analysis...",
+            )
+        )
+
     for step in range(max_steps):
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         timeout_exhausted = remaining_timeout is not None and remaining_timeout <= 0
@@ -480,7 +506,7 @@ def run_agent_loop(
                     remaining_timeout,
                     _MIN_STEP_BUDGET_S,
                 )
-                return _build_budget_guard_result(
+                return _finish(_build_budget_guard_result(
                     start_time=start_time,
                     step=step,
                     tool_calls_log=tool_calls_log,
@@ -490,11 +516,11 @@ def run_agent_loop(
                     messages=messages,
                     remaining_timeout_s=remaining_timeout,
                     min_step_budget_s=_MIN_STEP_BUDGET_S,
-                )
+                ))
 
             if remaining_timeout <= 0:
                 logger.warning("Agent timed out before step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step,
@@ -503,7 +529,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         logger.info("Agent step %d/%d", step + 1, max_steps)
 
@@ -515,7 +541,7 @@ def run_agent_loop(
                 last_tool = tool_calls_log[-1].get("tool", "")
                 label = labels.get(last_tool, last_tool)
                 thinking_msg = f"「{label}」已完成，继续深入分析..."
-            progress_callback({"type": "thinking", "step": step + 1, "message": thinking_msg})
+            progress_callback(stream_event("thinking", step=step + 1, message=thinking_msg))
 
         # --- LLM call ---
         response = llm_adapter.call_with_tools(
@@ -535,7 +561,7 @@ def run_agent_loop(
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
             logger.warning("Agent timed out after LLM call at step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step + 1,
@@ -544,7 +570,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         if response.tool_calls:
             # ---- tool execution branch ----
@@ -611,7 +637,7 @@ def run_agent_loop(
             remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
             if remaining_timeout is not None and remaining_timeout <= 0:
                 logger.warning("Agent timed out after tool execution at step %d", step + 1)
-                return _build_timeout_result(
+                return _finish(_build_timeout_result(
                     start_time=start_time,
                     max_wall_clock_seconds=float(max_wall_clock_seconds),
                     step=step + 1,
@@ -620,7 +646,7 @@ def run_agent_loop(
                     provider_used=provider_used,
                     models_used=models_used,
                     messages=messages,
-                )
+                ))
 
         else:
             # ---- final answer branch ----
@@ -631,12 +657,12 @@ def run_agent_loop(
                 total_tokens,
             )
             if progress_callback:
-                progress_callback({"type": "generating", "step": step + 1, "message": "正在生成最终分析..."})
+                progress_callback(stream_event("generating", step=step + 1, message="正在生成最终分析..."))
 
             final_content = response.content or ""
             is_error = response.provider == "error"
 
-            return RunLoopResult(
+            return _finish(RunLoopResult(
                 success=not is_error and bool(final_content),
                 content=final_content if not is_error else "",
                 tool_calls_log=tool_calls_log,
@@ -646,11 +672,11 @@ def run_agent_loop(
                 models_used=models_used,
                 error=final_content if is_error else None,
                 messages=messages,
-            )
+            ))
 
     # Max steps exceeded
     logger.warning("Agent hit max steps (%d)", max_steps)
-    return RunLoopResult(
+    return _finish(RunLoopResult(
         success=False,
         content="",
         tool_calls_log=tool_calls_log,
@@ -660,7 +686,7 @@ def run_agent_loop(
         models_used=models_used,
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
         messages=messages,
-    )
+    ))
 
 
 # ============================================================
@@ -727,7 +753,7 @@ def _execute_tools(
     if len(tool_calls) == 1:
         tc = tool_calls[0]
         if progress_callback:
-            progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+            progress_callback(stream_event("tool_start", step=step, tool=tc.name))
         timeout_triggered = False
         if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0:
             pool = ThreadPoolExecutor(max_workers=1)
@@ -754,7 +780,7 @@ def _execute_tools(
         else:
             _, result_str, success, dur, cached, guard_result = _exec_single(tc)
         if progress_callback:
-            progress_callback({"type": "tool_done", "step": step, "tool": tc.name, "success": success, "duration": dur})
+            progress_callback(stream_event("tool_done", step=step, tool=tc.name, success=success, duration=dur))
         log_entry = {
             "step": step, "tool": tc.name, "arguments": tc.arguments,
             "success": success, "duration": dur, "result_length": len(result_str),
@@ -778,7 +804,7 @@ def _execute_tools(
     else:
         for tc in tool_calls:
             if progress_callback:
-                progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+                progress_callback(stream_event("tool_start", step=step, tool=tc.name))
 
         pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 5))
         timeout_triggered = False
@@ -792,7 +818,7 @@ def _execute_tools(
                 pending.discard(future)
                 tc_item, result_str, success, dur, cached, guard_result = future.result()
                 if progress_callback:
-                    progress_callback({"type": "tool_done", "step": step, "tool": tc_item.name, "success": success, "duration": dur})
+                    progress_callback(stream_event("tool_done", step=step, tool=tc_item.name, success=success, duration=dur))
                 log_entry = {
                     "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
                     "success": success, "duration": dur, "result_length": len(result_str),
@@ -823,13 +849,13 @@ def _execute_tools(
                         "timeout": True,
                     })
                     if progress_callback:
-                        progress_callback({
-                            "type": "tool_done",
-                            "step": step,
-                            "tool": tc_item.name,
-                            "success": False,
-                            "duration": round(tool_wait_timeout_seconds or 0.0, 2),
-                        })
+                        progress_callback(stream_event(
+                            "tool_done",
+                            step=step,
+                            tool=tc_item.name,
+                            success=False,
+                            duration=round(tool_wait_timeout_seconds or 0.0, 2),
+                        ))
                     tool_calls_log.append({
                         "step": step,
                         "tool": tc_item.name,

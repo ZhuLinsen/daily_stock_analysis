@@ -127,18 +127,35 @@ vi.mock('../../components/settings', () => ({
   LLMChannelEditor: ({
     items,
     onSaved,
+    onDraftItemsChange,
   }: {
     items: Array<{ key: string; value: string }>;
     onSaved: (items: Array<{ key: string; value: string }>) => void;
+    onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
   }) => (
     <div>
       <div data-testid="llm-channel-editor-items">{items.map((item) => item.key).join(',')}</div>
+      <button
+        type="button"
+        onClick={() => onDraftItemsChange?.([
+          { key: 'LLM_CHANNELS', value: 'draft,backup' },
+          { key: 'LITELLM_MODEL', value: 'openai/draft-model' },
+          { key: 'GENERATION_BACKEND', value: 'codex_cli' },
+        ])}
+      >
+        emit llm draft
+      </button>
       <button
         type="button"
         onClick={() => onSaved([{ key: 'LLM_CHANNELS', value: 'primary,backup' }])}
       >
         save llm channels
       </button>
+    </div>
+  ),
+  GenerationBackendStatusPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
+    <div data-testid="generation-backend-status-items">
+      {items.map((item) => `${item.key}=${item.value}`).join('|')}
     </div>
   ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
@@ -712,6 +729,7 @@ describe('SettingsPage', () => {
   });
 
   it('allows brief setup smoke when only the Agent channel is incomplete', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
     getSetupStatus.mockResolvedValue({
       isComplete: false,
       readyForSmoke: true,
@@ -1108,6 +1126,52 @@ describe('SettingsPage', () => {
 
     expect(refreshAfterExternalSave).toHaveBeenCalledWith(['LLM_CHANNELS']);
     expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes merged generation backend draft items to the backend status panel', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      getChangedItems: () => [
+        { key: 'GENERATION_BACKEND', value: 'litellm' },
+        { key: 'LLM_CHANNELS', value: 'saved' },
+        { key: 'OPENAI_MODEL', value: 'gpt-draft' },
+        { key: 'GEMINI_MODEL', value: 'gemini-draft' },
+        { key: 'OLLAMA_API_BASE', value: 'http://localhost:11434' },
+        { key: 'WECHAT_WEBHOOK_URL', value: 'not-a-url' },
+      ],
+    }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
+
+    const statusItems = await screen.findByTestId('generation-backend-status-items');
+    await waitFor(() => {
+      expect(statusItems).toHaveTextContent('GENERATION_BACKEND=litellm');
+      expect(statusItems).toHaveTextContent('LLM_CHANNELS=draft,backup');
+      expect(statusItems).toHaveTextContent('LITELLM_MODEL=openai/draft-model');
+      expect(statusItems).toHaveTextContent('OPENAI_MODEL=gpt-draft');
+      expect(statusItems).toHaveTextContent('GEMINI_MODEL=gemini-draft');
+      expect(statusItems).toHaveTextContent('OLLAMA_API_BASE=http://localhost:11434');
+      expect(statusItems).not.toHaveTextContent('GENERATION_BACKEND=codex_cli');
+      expect(statusItems).not.toHaveTextContent('WECHAT_WEBHOOK_URL=not-a-url');
+    });
+  });
+
+  it('clears llm channel draft items after llm channel editor saves', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
+    expect(await screen.findByTestId('generation-backend-status-items')).toHaveTextContent('LLM_CHANNELS=draft,backup');
+
+    fireEvent.click(screen.getByRole('button', { name: 'save llm channels' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('generation-backend-status-items')).not.toHaveTextContent('LLM_CHANNELS=draft,backup');
+    });
+    expect(refreshAfterExternalSave).toHaveBeenCalledWith(['LLM_CHANNELS']);
   });
 
   it('keeps prompt cache settings collapsed and expandable at the bottom of AI model settings', () => {
@@ -1826,11 +1890,11 @@ describe('SettingsPage', () => {
     fireEvent.click(enabledCheckbox);
 
     expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_ENABLED', 'false');
-    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+    await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked());
 
     const refreshButton = screen.getByTestId('scheduler-refresh-status-button');
     fireEvent.click(refreshButton);
-    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+    await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked());
   });
 
   it('can reconcile runtime scheduler state when runtime is enabled but saved value is disabled', async () => {

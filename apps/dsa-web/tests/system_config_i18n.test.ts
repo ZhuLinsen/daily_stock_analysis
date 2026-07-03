@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { UI_TEXT } from '../src/i18n/uiText';
 import { getSettingsHelpContent } from '../src/locales/settingsHelp';
 import { getFieldDescriptionZh, getFieldOptionLabelZh, getFieldTitleZh } from '../src/utils/systemConfigI18n';
 
@@ -325,6 +326,25 @@ describe('generation backend settings help contract', () => {
     expect(enText).not.toContain('current available model channel');
     expect(enText).not.toContain('unsupported_tool_calling');
     expect(enText).not.toContain('run_agent_loop');
+  });
+});
+
+describe('generation backend status panel i18n contract', () => {
+  it('keeps the new status panel copy localized in both UI languages', () => {
+    expect(UI_TEXT.zh['settings.generationBackendStatus']).toBe('生成后端状态');
+    expect(UI_TEXT.zh['settings.generationBackendSmokeTest']).toBe('JSON 冒烟测试');
+    expect(UI_TEXT.zh['settings.generationBackendPrimary']).toBe('主后端');
+    expect(UI_TEXT.zh['settings.generationBackendFallback']).toBe('备用后端');
+    expect(UI_TEXT.zh['settings.generationBackendGenerationOnly']).toBe('仅生成');
+    expect(UI_TEXT.zh['settings.generationBackendStatusDescription']).toContain('快速检查');
+    expect(UI_TEXT.zh['settings.generationBackendStatusDescription']).not.toContain('cheap check');
+    expect(UI_TEXT.zh['settings.generationBackendSmokePassed']).not.toContain('Smoke test');
+
+    expect(UI_TEXT.en['settings.generationBackendStatus']).toBe('Generation backend status');
+    expect(UI_TEXT.en['settings.generationBackendSmokeTest']).toBe('JSON smoke test');
+    expect(UI_TEXT.en['settings.generationBackendPrimary']).toBe('Primary backend');
+    expect(UI_TEXT.en['settings.generationBackendFallback']).toBe('Fallback backend');
+    expect(UI_TEXT.en['settings.generationBackendGenerationOnly']).toBe('Generation only');
   });
 });
 

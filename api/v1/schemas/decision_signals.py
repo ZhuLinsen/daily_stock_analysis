@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.v1.schemas.market_phase import MarketPhaseValue
 from src.schemas.decision_action import DecisionAction
@@ -21,6 +21,7 @@ DecisionSignalOutcomeStatus = Literal["completed", "unable"]
 DecisionSignalOutcomeValue = Literal["hit", "miss", "neutral"]
 DecisionSignalFeedbackValue = Literal["useful", "not_useful"]
 DecisionSignalFeedbackSource = Literal["web", "api"]
+DecisionProfile = Literal["conservative", "balanced", "aggressive"]
 
 
 class DecisionSignalCreateRequest(BaseModel):
@@ -54,6 +55,45 @@ class DecisionSignalCreateRequest(BaseModel):
     expires_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
     report_language: Optional[Literal["zh", "en", "ko"]] = None
+
+
+class DecisionSignalReassessRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_report_id: int = Field(..., gt=0)
+    decision_profile: DecisionProfile
+    persist: bool = False
+
+
+class DecisionSignalWarning(BaseModel):
+    code: str
+    message: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+
+
+class DecisionSignalGuardrailResult(BaseModel):
+    raw_action: str
+    final_action: str
+    passed: bool
+    violations: List[str] = Field(default_factory=list)
+    adjustments: List[str] = Field(default_factory=list)
+    adjusted: bool
+
+
+class DecisionSignalPreview(BaseModel):
+    action: str
+    score: Optional[int] = None
+    confidence: Optional[float] = None
+    horizon: Optional[str] = None
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
+    stop_loss: Optional[float] = None
+    target_price: Optional[float] = None
+    invalidation: Optional[str] = None
+    reason: Optional[str] = None
+    risk_summary: Optional[str] = None
+    watch_conditions: Optional[str] = None
+    metadata: Dict[str, Any]
 
 
 class DecisionSignalStatusUpdateRequest(BaseModel):
@@ -203,6 +243,14 @@ class DecisionSignalItem(BaseModel):
 class DecisionSignalMutationResponse(BaseModel):
     item: DecisionSignalItem
     created: bool
+
+
+class DecisionSignalReassessResponse(BaseModel):
+    preview: DecisionSignalPreview
+    item: Optional[DecisionSignalItem] = None
+    created: bool = False
+    warnings: List[DecisionSignalWarning] = Field(default_factory=list)
+    blocked_reason: Optional[str] = None
 
 
 class DecisionSignalListResponse(BaseModel):

@@ -42,6 +42,7 @@ from src.agent.protocols import (
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.agent.chat_context import build_visible_chat_history
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
@@ -405,12 +406,12 @@ class AgentOrchestrator:
             if timeout_exhausted:
                 logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -429,12 +430,19 @@ class AgentOrchestrator:
                     stage_min_budget_s,
                 )
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_budget_skipped",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                        remaining=round(remaining_budget, 2),
+                        minimum=stage_min_budget_s,
+                        reason="insufficient_budget",
+                        message=(
+                            f"Skipped {agent.agent_name} analysis due to insufficient "
+                            "remaining budget"
+                        ),
+                    ))
                 return self._build_budget_skip_result(
                     stats,
                     all_tool_calls,
@@ -465,11 +473,11 @@ class AgentOrchestrator:
                 self._aggregate_skill_opinions(ctx)
 
             if progress_callback:
-                progress_callback({
-                    "type": "stage_start",
-                    "stage": agent.agent_name,
-                    "message": f"Starting {agent.agent_name} analysis...",
-                })
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
 
             remaining_timeout_s = (
                 max(0.0, timeout_s - elapsed_s)
@@ -489,15 +497,23 @@ class AgentOrchestrator:
             models_used.extend(result.meta.get("models_used", []))
 
             elapsed_s = time.time() - t0
+            if progress_callback:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=agent.agent_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+
             if timeout_s and elapsed_s >= timeout_s:
                 logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
                 if progress_callback:
-                    progress_callback({
-                        "type": "pipeline_timeout",
-                        "stage": agent.agent_name,
-                        "elapsed": round(elapsed_s, 2),
-                        "timeout": timeout_s,
-                    })
+                    progress_callback(stream_event(
+                        "pipeline_timeout",
+                        stage=agent.agent_name,
+                        elapsed=round(elapsed_s, 2),
+                        timeout=timeout_s,
+                    ))
                 return self._build_timeout_result(
                     stats,
                     all_tool_calls,
@@ -507,14 +523,6 @@ class AgentOrchestrator:
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
-
-            if progress_callback:
-                progress_callback({
-                    "type": "stage_done",
-                    "stage": agent.agent_name,
-                    "status": result.status.value,
-                    "duration": result.duration_s,
-                })
 
             if ctx.meta.get("response_mode") == "chat" and agent.agent_name == "decision":
                 final_text = result.meta.get("raw_text")

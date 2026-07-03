@@ -9,6 +9,7 @@ import type {
   DecisionSignalListResponse,
   DecisionSignalOutcomeListResponse,
   DecisionSignalOutcomeStatsResponse,
+  DecisionSignalReassessResponse,
 } from '../../types/decisionSignals';
 import DecisionSignalsPage from '../DecisionSignalsPage';
 
@@ -21,6 +22,7 @@ vi.mock('../../api/decisionSignals', () => ({
     getFeedback: vi.fn(),
     putFeedback: vi.fn(),
     updateStatus: vi.fn(),
+    reassess: vi.fn(),
   },
 }));
 
@@ -164,6 +166,35 @@ const emptyFeedback: DecisionSignalFeedbackItem = {
   source: null,
 };
 
+const reassessResponse: DecisionSignalReassessResponse = {
+  preview: {
+    action: 'watch',
+    score: 72,
+    confidence: null,
+    horizon: '3d',
+    entryLow: 1680,
+    stopLoss: 1600,
+    reason: 'preview reason',
+    metadata: {
+      decision_profile: 'balanced',
+      data_quality_level: 'medium',
+      scoring_breakdown: { raw_action: 'buy' },
+      guardrail_result: {
+        raw_action: 'buy',
+        final_action: 'watch',
+        passed: false,
+        violations: ['missing_confidence'],
+        adjustments: ['action_downgraded_by_guardrail'],
+        adjusted: true,
+      },
+    },
+  },
+  item: null,
+  created: false,
+  warnings: [{ code: 'action_blocked_by_guardrail' }],
+  blockedReason: 'actionable_signal_blocked_by_guardrail',
+};
+
 function renderPage() {
   return render(
     <UiLanguageProvider>
@@ -196,6 +227,7 @@ beforeEach(() => {
     source: 'web',
   });
   vi.mocked(decisionSignalsApi.updateStatus).mockResolvedValue({ ...signal, status: 'invalidated' });
+  vi.mocked(decisionSignalsApi.reassess).mockResolvedValue(reassessResponse);
 });
 
 describe('DecisionSignalsPage', () => {
@@ -317,6 +349,108 @@ describe('DecisionSignalsPage', () => {
         pageSize: 20,
       });
     });
+  });
+
+  it('reassesses from the selected signal source report without triggering list lookup', async () => {
+    renderPage();
+    await screen.findByText('贵州茅台');
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    expect(await screen.findByText('决策风格重评估预览')).toBeInTheDocument();
+    vi.mocked(decisionSignalsApi.list).mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成预览' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.reassess).toHaveBeenCalledWith({
+        sourceReportId: 3001,
+        decisionProfile: 'balanced',
+        persist: false,
+      });
+    });
+    expect(decisionSignalsApi.list).not.toHaveBeenCalled();
+    expect(await screen.findByText('actionable_signal_blocked_by_guardrail')).toBeInTheDocument();
+    expect(screen.getByText('buy -> watch')).toBeInTheDocument();
+    expect(screen.getByText('action_blocked_by_guardrail')).toBeInTheDocument();
+  });
+
+  it('reassesses from an existing source report id filter without a selected signal', async () => {
+    window.history.pushState({}, '', '/decision-signals?sourceReportId=3001');
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([], 0));
+
+    renderPage();
+    expect(await screen.findByText('决策风格重评估预览')).toBeInTheDocument();
+    vi.mocked(decisionSignalsApi.list).mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成预览' }));
+
+    await waitFor(() => {
+      expect(decisionSignalsApi.reassess).toHaveBeenCalledWith({
+        sourceReportId: 3001,
+        decisionProfile: 'balanced',
+        persist: false,
+      });
+    });
+    expect(decisionSignalsApi.list).not.toHaveBeenCalled();
+  });
+
+  it('disables reassess when no source report id is available', async () => {
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([
+      makeSignal({ sourceReportId: null }),
+    ]));
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: '生成预览' })).toBeDisabled();
+  });
+
+  it('does not fallback to page source report id for a selected signal without source report id', async () => {
+    window.history.pushState({}, '', '/decision-signals?sourceReportId=3001');
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([
+      makeSignal({ sourceReportId: null }),
+    ]));
+
+    renderPage();
+    await screen.findByText('决策风格重评估预览');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText('该信号不支持重评估').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: '生成预览' })).toBeDisabled();
+    expect(decisionSignalsApi.reassess).not.toHaveBeenCalled();
+  });
+
+  it('ignores stale reassess responses after switching the selected signal', async () => {
+    const nextSignal = makeSignal({
+      id: 8,
+      stockCode: '000001',
+      stockName: '平安银行',
+      sourceReportId: 3002,
+    });
+    const pending = deferredPromise<DecisionSignalReassessResponse>();
+    vi.mocked(decisionSignalsApi.list).mockResolvedValueOnce(listResponse([signal, nextSignal], 2));
+    vi.mocked(decisionSignalsApi.reassess).mockReturnValueOnce(pending.promise);
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 AI 建议详情' }));
+    fireEvent.click(await screen.findByRole('button', { name: '生成预览' }));
+    fireEvent.click(screen.getByRole('button', { name: '查看 平安银行 AI 建议详情' }));
+
+    await act(async () => {
+      pending.resolve({
+        ...reassessResponse,
+        preview: { ...reassessResponse.preview, reason: 'stale A preview' },
+      });
+    });
+
+    expect(screen.queryByText('stale A preview')).not.toBeInTheDocument();
   });
 
   it('queries latest active signals by stock code', async () => {

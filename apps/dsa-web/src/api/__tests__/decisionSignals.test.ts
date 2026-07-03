@@ -204,6 +204,69 @@ describe('decisionSignalsApi', () => {
     expect(response.items[0].stockCode).toBe('HK00700');
   });
 
+  it('reassesses preview with fixed persist false and opaque preview metadata', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        preview: {
+          action: 'watch',
+          score: 72,
+          confidence: null,
+          horizon: '3d',
+          entry_low: 1680,
+          stop_loss: 1600,
+          metadata: {
+            decision_profile: 'aggressive',
+            data_quality_level: 'medium',
+            scoring_breakdown: { raw_action: 'buy' },
+            guardrail_result: {
+              raw_action: 'buy',
+              final_action: 'watch',
+              passed: false,
+              violations: ['missing_confidence'],
+              adjustments: ['action_downgraded_by_guardrail'],
+              adjusted: true,
+            },
+          },
+        },
+        item: null,
+        created: false,
+        warnings: [
+          {
+            code: 'action_blocked_by_guardrail',
+            params: { raw_action: 'buy', final_action: 'watch' },
+          },
+        ],
+        blocked_reason: 'actionable_signal_blocked_by_guardrail',
+      },
+    });
+
+    const response = await decisionSignalsApi.reassess({
+      sourceReportId: 3001,
+      decisionProfile: 'aggressive',
+    });
+
+    expect(post).toHaveBeenCalledWith('/api/v1/decision-signals/reassess', {
+      source_report_id: 3001,
+      decision_profile: 'aggressive',
+      persist: false,
+    });
+    expect(response.preview.entryLow).toBe(1680);
+    expect(response.preview.metadata).toEqual({
+      decision_profile: 'aggressive',
+      data_quality_level: 'medium',
+      scoring_breakdown: { raw_action: 'buy' },
+      guardrail_result: {
+        raw_action: 'buy',
+        final_action: 'watch',
+        passed: false,
+        violations: ['missing_confidence'],
+        adjustments: ['action_downgraded_by_guardrail'],
+        adjusted: true,
+      },
+    });
+    expect(response.blockedReason).toBe('actionable_signal_blocked_by_guardrail');
+  });
+
   it('rejects malformed list responses instead of treating missing items as empty', async () => {
     get.mockResolvedValueOnce({
       data: {

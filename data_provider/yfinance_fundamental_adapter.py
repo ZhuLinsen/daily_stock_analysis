@@ -274,6 +274,12 @@ class YfinanceFundamentalAdapter:
             result["errors"].append(f"dividends:{type(exc).__name__}")
             div_series = None
         if div_series is not None and not div_series.empty:
+            # yfinance 1.2.x returns Ticker.dividends as a single-column DataFrame, not a
+            # Series; coerce so `.items()` yields (timestamp, value) rather than
+            # (column_name, Series). Otherwise every event is dropped (`_safe_float(Series)`
+            # -> None) and TTM silently falls back to the annual-rate estimate.
+            if hasattr(div_series, "columns"):
+                div_series = div_series.iloc[:, 0]
             try:
                 # Index is timezone-aware (ex-dividend date)
                 cutoff = pd.Timestamp.now(tz=div_series.index.tz) - pd.Timedelta(days=365)

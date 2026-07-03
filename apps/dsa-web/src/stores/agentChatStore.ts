@@ -14,12 +14,20 @@ const STORAGE_KEY_SESSION = 'dsa_chat_session_id';
 export interface ProgressStep {
   type: string;
   step?: number;
+  stage?: string;
   tool?: string;
   display_name?: string;
+  status?: string;
   success?: boolean;
   duration?: number;
+  elapsed?: number;
+  timeout?: number;
+  remaining?: number;
+  minimum?: number;
+  reason?: string;
   message?: string;
   content?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface Message {

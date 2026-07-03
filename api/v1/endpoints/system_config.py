@@ -13,11 +13,15 @@ from api.v1.schemas.system_config import (
     DiscoverLLMChannelModelsRequest,
     DiscoverLLMChannelModelsResponse,
     ExportSystemConfigResponse,
+    GenerationBackendStatusPreviewRequest,
+    GenerationBackendStatusResponse,
     ImportSystemConfigRequest,
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
     SetupStatusResponse,
+    TestGenerationBackendRequest,
+    TestGenerationBackendResponse,
     SystemConfigValidationErrorResponse,
     TestLLMChannelRequest,
     TestLLMChannelResponse,
@@ -180,6 +184,133 @@ def get_setup_status(
             detail={
                 "error": "internal_error",
                 "message": "Failed to load setup status",
+            },
+        )
+
+
+@router.get(
+    "/config/generation-backends/status",
+    response_model=GenerationBackendStatusResponse,
+    responses={
+        200: {"description": "Generation backend status loaded"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get generation backend status",
+    description=(
+        "Read a side-effect-free generation backend cheap-check status from "
+        "saved and runtime configuration. This endpoint does not run a model request."
+    ),
+)
+def get_generation_backend_status(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> GenerationBackendStatusResponse:
+    """Return saved/runtime generation backend status without writing config."""
+    try:
+        payload = service.get_generation_backend_status()
+        return GenerationBackendStatusResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load generation backend status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load generation backend status",
+            },
+        )
+
+
+@router.post(
+    "/config/generation-backends/status/preview",
+    response_model=GenerationBackendStatusResponse,
+    responses={
+        200: {"description": "Generation backend status preview loaded"},
+        400: {"description": "Validation failed", "model": SystemConfigValidationErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Preview generation backend status",
+    description="Run a side-effect-free cheap check against unsaved settings draft values.",
+)
+def preview_generation_backend_status(
+    request: GenerationBackendStatusPreviewRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> GenerationBackendStatusResponse:
+    """Return generation backend status for unsaved draft values."""
+    try:
+        payload = service.preview_generation_backend_status(
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+        )
+        return GenerationBackendStatusResponse.model_validate(payload)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_failed",
+                "message": "System configuration validation failed",
+                "issues": exc.issues,
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to preview generation backend status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to preview generation backend status",
+            },
+        )
+
+
+@router.post(
+    "/config/generation-backends/smoke-test",
+    response_model=TestGenerationBackendResponse,
+    responses={
+        200: {"description": "Generation backend smoke test completed"},
+        400: {"description": "Validation failed", "model": SystemConfigValidationErrorResponse},
+        422: {"description": "Invalid smoke test request", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Smoke test generation backend",
+    description="Run an explicit fixed-prompt generation backend smoke test without persisting config.",
+)
+def test_generation_backend(
+    request: TestGenerationBackendRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestGenerationBackendResponse:
+    """Run a fixed generation backend smoke test."""
+    try:
+        payload = service.test_generation_backend(
+            backend_id=request.backend_id,
+            mode=request.mode,
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return TestGenerationBackendResponse.model_validate(payload)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_failed",
+                "message": "System configuration validation failed",
+                "issues": exc.issues,
+            },
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to smoke test generation backend: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to smoke test generation backend",
             },
         )
 

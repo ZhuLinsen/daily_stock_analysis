@@ -123,6 +123,42 @@ export interface DecisionSignalMutationResponse {
   created: boolean;
 }
 
+export interface DecisionSignalWarning {
+  code: string;
+  message?: string | null;
+  params?: Record<string, unknown> | null;
+}
+
+export interface DecisionSignalReassessRequest {
+  sourceReportId: number;
+  decisionProfile: DecisionProfile;
+  persist?: false;
+}
+
+export interface DecisionSignalReassessPreview {
+  action: DecisionAction;
+  score?: number | null;
+  confidence?: number | null;
+  horizon?: DecisionSignalHorizon | null;
+  entryLow?: number | null;
+  entryHigh?: number | null;
+  stopLoss?: number | null;
+  targetPrice?: number | null;
+  invalidation?: string | null;
+  reason?: string | null;
+  riskSummary?: string | null;
+  watchConditions?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface DecisionSignalReassessResponse {
+  preview: DecisionSignalReassessPreview;
+  item?: DecisionSignalItem | null;
+  created: false;
+  warnings: DecisionSignalWarning[];
+  blockedReason?: string | null;
+}
+
 export interface DecisionSignalListResponse {
   items: DecisionSignalItem[];
   total: number;
