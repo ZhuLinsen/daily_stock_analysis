@@ -27,22 +27,22 @@ on:
 concurrency:
   group: stock-analysis
   cancel-in-progress: false
-
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
-    # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
-    environment: STOCK_LIST
-    # 添加超时限制，防止任务卡死
+    # 新增全局环境变量，Python全脚本可读取
+    env:
+      DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
-    
     steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
       - name: 随机延迟（避免固定时间访问）
         run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
       
       - name: 检出代码
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       
       - name: 设置 Python 环境
         uses: actions/setup-python@v6
