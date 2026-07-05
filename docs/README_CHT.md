@@ -126,6 +126,18 @@
 
 更多搜尋源、社交輿情和降級規則見 [搜尋服務配置](./full-guide.md#搜索服务配置)。
 
+**行情數據源配置（可選）**
+
+> 預設使用 AkShare、Baostock、YFinance 等免費數據源，日誌中「未配置」的提示不影響執行。
+> 如需更穩定的行情，可按市場配置以下 Secret：
+
+| Secret 名稱 | 適用市場 | 說明 |
+|-------------|:--------:|------|
+| `TUSHARE_TOKEN` | A 股 | 提升歷史行情穩定性 |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 補齊量比、換手率、PE 等欄位 |
+
+> 詳見 [數據源配置](./full-guide.md#数据源配置)。
+
 #### 3. 啟用 Actions
 
 `Actions` 標籤 -> `I understand my workflows, go ahead and enable them`

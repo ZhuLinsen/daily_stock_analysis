@@ -125,6 +125,18 @@
 
 更多搜索源、社交舆情和降级规则见 [搜索服务配置](docs/full-guide.md#搜索服务配置)。
 
+**行情数据源配置（可选）**
+
+> 默认使用 AkShare、Baostock、YFinance 等免费数据源，日志中"未配置"的提示不影响运行。
+> 如需更稳定的行情，可按市场配置以下 Secret：
+
+| Secret 名称 | 适用市场 | 说明 |
+|------------|:--------:|------|
+| `TUSHARE_TOKEN` | A 股 | 提升历史行情稳定性 |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | 港股/美股 | 补齐量比、换手率、PE 等字段 |
+
+> 详见 [数据源配置](docs/full-guide.md#数据源配置)。
+
 #### 3. 启用 Actions
 
 `Actions` 标签 → `I understand my workflows, go ahead and enable them`

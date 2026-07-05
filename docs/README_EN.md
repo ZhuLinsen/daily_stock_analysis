@@ -126,6 +126,18 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 
 More search providers, social sentiment, and fallback behavior are in [Search Configuration](./full-guide_EN.md#search-service-configuration).
 
+**Market data sources (optional)**
+
+> Free sources like AkShare, Baostock, and YFinance are used by default. "Not configured" messages in the logs are informational and do not affect execution.
+> For more stable data, configure the following secrets per market:
+
+| Secret Name | Market | Description |
+|-------------|:------:|-------------|
+| `TUSHARE_TOKEN` | A-shares | Improves historical data stability |
+| `LONGBRIDGE_OAUTH_CLIENT_ID` + `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | HK/US stocks | Fills in volume ratio, turnover rate, P/E, and other fields |
+
+> See [Data Source Configuration](./full-guide_EN.md#data-source-configuration).
+
 #### 3. Enable Actions
 
 Open the `Actions` tab and click `I understand my workflows, go ahead and enable them`.
