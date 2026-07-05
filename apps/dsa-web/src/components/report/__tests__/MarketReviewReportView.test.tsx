@@ -657,6 +657,43 @@ describe('MarketReviewReportView module presentation (Issue #1584)', () => {
     expect(headings.indexOf('A股市场')).toBeLessThan(headings.indexOf('美股市场'));
   });
 
+  it('keeps narrative content for a legacy-shaped market inside a mixed multi-market payload', () => {
+    // PR #1888 二轮评审回归（防御加固）：一个市场携带工作台字段、另一个
+    // 市场只有旧 sections/markdown 形态时，后者的正文不得被静默丢弃
+    const mixed: MarketReviewPayload = {
+      version: 1,
+      kind: 'market_review',
+      region: 'cn,us',
+      language: 'zh',
+      rootTitle: '大盘复盘',
+      markets: {
+        cn: { title: 'A股市场', summary: { temperatureScore: 45, marketState: '震荡分化' } },
+        us: {
+          title: '美股市场',
+          sections: [
+            { key: 'risk', title: '风险提示', markdown: '美股叙事正文不能丢。' },
+            {
+              key: 'idx',
+              title: '指数点评',
+              markdown: '指数走势叙事。\n\n| 指数 | 收盘 |\n|--|--|\n| 标普500 | 6100 |',
+            },
+          ],
+        },
+      },
+    };
+    render(
+      <MarketReviewReportView payload={mixed} content="# 大盘复盘" reportLanguage="zh" />,
+    );
+
+    // cn 市场按模块渲染
+    expect(screen.getByTestId('workbench-summary')).toBeInTheDocument();
+    // us 市场（无任何结构化/工作台字段）以叙事卡兜底渲染，标题与正文都在
+    expect(screen.getByText('美股市场')).toBeInTheDocument();
+    expect(screen.getByText('美股叙事正文不能丢。')).toBeInTheDocument();
+    // 兜底市场没有模块数据表，叙事中的表格是唯一载体——不得被剥表逻辑删除
+    expect(screen.getByText('标普500')).toBeInTheDocument();
+  });
+
   it('hides insight cards in workbench mode to avoid conflicting scores', () => {
     const report: AnalysisReport = {
       meta: {

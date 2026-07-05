@@ -654,6 +654,16 @@ class DataFetcherManager:
     _concept_rankings_cache: Dict[int, Tuple[float, List[Dict], List[Dict]]] = {}
     _INDEX_HISTORY_CACHE_TTL_SECONDS = 1800.0
     _INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS = 120.0
+    # 指数历史质量门（两级），与消费方契约镜像
+    # （src/core/market_review_workbench.py：MA5/10/20 窗口、
+    # _STALE_HISTORY_DAYS=15 天新鲜度）：
+    # - full（≥20 根有效且新鲜，可算全部均线）→ 接受并终止链；
+    # - partial（≥5 根有效且新鲜，只够 MA5/10）→ 记为择优候选后继续，
+    #   避免部分历史挡住后续数据源的完整历史；
+    # - 其余（截断/停更/空）不终止链。全链无 full 时按最优候选 fail-open。
+    _INDEX_HISTORY_FULL_BARS = 20
+    _INDEX_HISTORY_MIN_USABLE_BARS = 5
+    _INDEX_HISTORY_MAX_STALE_DAYS = 15
     _index_history_cache_lock = RLock()
     _index_history_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
@@ -2513,6 +2523,37 @@ class DataFetcherManager:
         with cls._index_history_cache_lock:
             cls._index_history_cache.clear()
 
+    @classmethod
+    def _index_history_quality(cls, bars: List[Dict[str, Any]]) -> Tuple[int, str]:
+        """统计候选历史的 (有效K线数, 最后日期)，供 fallback 质量门与择优使用。"""
+        valid = 0
+        last_date = ""
+        for bar in bars:
+            if not isinstance(bar, dict):
+                continue
+            date_str = str(bar.get("date") or "")[:10]
+            try:
+                close_value = float(bar.get("close"))
+            except (TypeError, ValueError):
+                continue
+            if close_value <= 0 or len(date_str) != 10:
+                continue
+            valid += 1
+            if date_str > last_date:
+                last_date = date_str
+        return valid, last_date
+
+    @classmethod
+    def _index_history_usable(cls, valid_bars: int, last_date: str) -> bool:
+        """质量门：有效K线数达到最小均线窗口，且最后一根未过期。"""
+        if valid_bars < cls._INDEX_HISTORY_MIN_USABLE_BARS or not last_date:
+            return False
+        try:
+            last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+        except ValueError:
+            return False
+        return (datetime.now() - last_dt).days <= cls._INDEX_HISTORY_MAX_STALE_DAYS
+
     def get_index_daily_history(
         self,
         index_code: str,
@@ -2546,27 +2587,30 @@ class DataFetcherManager:
                 logger.debug("[指数历史] 命中共享缓存 key=%s", cache_key)
                 return [dict(bar) for bar in cached[1]]
 
+        # full 档相对请求窗口取整：days<20 的请求以请求条数为满配标准，
+        # 避免永远到不了 full 档导致每次全链扫描 + 短 TTL
+        full_bars_required = min(
+            self.__class__._INDEX_HISTORY_FULL_BARS, normalized_days
+        )
         bars: List[Dict[str, Any]] = []
+        usable_found = False
+        best_effort: List[Dict[str, Any]] = []
+        best_quality: Tuple[int, str, int] = (0, "", 0)
         last_error = ""
         for fetcher in self._get_fetchers_snapshot():
             if not hasattr(fetcher, 'get_index_daily_history'):
                 continue
             try:
+                # 真值判断与 list() 一并置于 try 内：行为异常的 fetcher 返回值
+                # （如 DataFrame 真值歧义）不得突破本方法"绝不抛出"的契约
                 data = fetcher.get_index_daily_history(
                     index_code,
                     region=region,
                     days=normalized_days,
                 )
-                if data:
-                    bars = list(data)
-                    logger.info(
-                        "[%s] 获取指数日线历史成功 code=%s region=%s bars=%d",
-                        fetcher.name,
-                        index_code,
-                        region,
-                        len(bars),
-                    )
-                    break
+                if not data:
+                    continue
+                candidate = list(data)
             except Exception as e:
                 error_type, error_reason = summarize_exception(e)
                 last_error = f"{fetcher.name} ({error_type}) {error_reason}"
@@ -2577,6 +2621,46 @@ class DataFetcherManager:
                     region,
                     error_reason,
                 )
+                continue
+            valid_bars, last_bar_date = self._index_history_quality(candidate)
+            fresh_usable = self._index_history_usable(valid_bars, last_bar_date)
+            if fresh_usable and valid_bars >= full_bars_required:
+                bars = candidate
+                usable_found = True
+                logger.info(
+                    "[%s] 获取指数日线历史成功 code=%s region=%s bars=%d",
+                    fetcher.name,
+                    index_code,
+                    region,
+                    len(bars),
+                )
+                break
+            # 非完整历史（partial 只够 MA5/10 / 截断 / 停更）：不终止链，
+            # 记为择优候选后继续尝试下一数据源。
+            # 择优序：新鲜可用性 > 最后日期 > 有效条数——同为新鲜档时
+            # 末根更近者优先：滞后多日的镜像即使条数更多，其历史缺少
+            # 中间交易日，消费方在 15 天容忍内会算出失真均线且无从察觉；
+            # 宁取诚实的新鲜 partial（MA20 缺失并记录说明）
+            logger.warning(
+                "[%s] 指数日线历史质量不足（有效=%d, 最后日期=%s, 新鲜可用=%s），"
+                "继续尝试下一数据源 code=%s region=%s",
+                fetcher.name,
+                valid_bars,
+                last_bar_date or '-',
+                fresh_usable,
+                index_code,
+                region,
+            )
+            candidate_quality = (1 if fresh_usable else 0, last_bar_date, valid_bars)
+            if candidate_quality > best_quality:
+                best_quality = candidate_quality
+                best_effort = candidate
+
+        if not usable_found and best_effort:
+            # 全链无完整历史时按最优候选 fail-open 返回（partial 候选消费方
+            # 照常计算 MA5/10 并记录 MA20 缺失；不可用候选判 insufficient/stale
+            # 并记入数据质量说明），不会伪造均线
+            bars = best_effort
 
         if not bars and last_error:
             logger.warning(
@@ -2586,9 +2670,11 @@ class DataFetcherManager:
                 last_error,
             )
 
+        # 仅质量达标的结果享受完整 TTL；空/降级结果用短 TTL，
+        # 避免把不可用历史锁定 30 分钟
         ttl = (
             self.__class__._INDEX_HISTORY_CACHE_TTL_SECONDS
-            if bars
+            if usable_found
             else self.__class__._INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS
         )
         with self.__class__._index_history_cache_lock:

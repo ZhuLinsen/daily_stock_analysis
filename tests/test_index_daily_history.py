@@ -47,29 +47,198 @@ def _make_manager(fetchers):
     return manager
 
 
+def _fresh_bars(n, end_offset_days=0, start_close=3000.0):
+    """生成截至（今天 - end_offset_days）的 n 根连续日线，避免固定日期时间炸弹。"""
+    from datetime import datetime, timedelta
+
+    end = datetime.now() - timedelta(days=end_offset_days)
+    return [
+        {
+            'date': (end - timedelta(days=n - 1 - i)).strftime('%Y-%m-%d'),
+            'close': start_close + i,
+        }
+        for i in range(n)
+    ]
+
+
 def test_manager_chain_fallback_and_cache():
     DataFetcherManager.clear_index_history_cache_for_tests()
     calls = {'good': 0}
+    fresh = _fresh_bars(25)
 
     def failing(code, region='cn', days=40):
         raise RuntimeError('boom')
 
     def good(code, region='cn', days=40):
         calls['good'] += 1
-        return [{'date': '2026-07-01', 'close': 3400.0}]
+        return list(fresh)
 
     manager = _make_manager([
         SimpleNamespace(name='F1', get_index_daily_history=failing),
         SimpleNamespace(name='F2', get_index_daily_history=good),
     ])
     bars = manager.get_index_daily_history('sh000001', region='cn', days=20)
-    assert bars == [{'date': '2026-07-01', 'close': 3400.0}]
+    assert bars == fresh
     assert calls['good'] == 1
 
     # 第二次命中共享缓存，不再触发抓取
     bars_cached = manager.get_index_daily_history('sh000001', region='cn', days=20)
     assert bars_cached == bars
     assert calls['good'] == 1
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_continues_fallback_when_first_source_unusable_short():
+    """PR #1888 评审回归：首源非空但条数不足以计算均线时，
+    不得终止链，应继续尝试并采纳次源的完整历史。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    full = _fresh_bars(40)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: _fresh_bars(1)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: list(full)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == full
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_continues_fallback_when_first_source_stale():
+    """首源返回停更旧数据（镜像故障）时继续 fallback，采纳新鲜历史。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    fresh = _fresh_bars(40)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: _fresh_bars(40, end_offset_days=30)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: list(fresh)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == fresh
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_prefers_full_history_over_partial_first_source():
+    """两级质量门回归：首源仅够 MA5/10 的 partial 历史（如 6 根）不得挡住
+    次源的完整历史，否则 MA20 被不必要省略——与评审指出的缺陷同类。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    full = _fresh_bars(40)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: _fresh_bars(6)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: list(full)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == full
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_partial_only_chain_returns_partial_fail_open():
+    """全链只有 partial 历史（如新指数）时按最优候选返回，
+    消费方照常计算 MA5/10 并记录 MA20 缺失。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    partial = _fresh_bars(8)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: list(partial)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: _fresh_bars(1)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == partial
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_prefers_fresh_partial_over_larger_stale():
+    """择优序回归：新鲜的 partial（可算 MA5/10）优于更长但停更的历史（什么都算不了）。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    fresh_partial = _fresh_bars(8)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: _fresh_bars(40, end_offset_days=30)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: list(fresh_partial)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == fresh_partial
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_prefers_recency_over_bar_count_within_fresh_window():
+    """对抗审查回归：同为新鲜档（15 天容忍内）时，末根更近者优先——
+    滞后 12 天的镜像即使条数更多，其历史缺少中间交易日，消费方会算出
+    失真均线且标记 ok；必须选择截至今天的诚实 partial。"""
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    fresh_today = _fresh_bars(8)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: _fresh_bars(19, end_offset_days=12)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: list(fresh_today)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == fresh_today
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_quality_gate_constants_mirror_consumer_contract():
+    """drift guard：base.py 的质量门阈值与消费方契约是手工镜像的两组常量，
+    钉住等值关系，防止一侧调整后另一侧静默漂移。"""
+    from src.core import market_review_workbench as workbench
+
+    assert (
+        DataFetcherManager._INDEX_HISTORY_MAX_STALE_DAYS
+        == workbench._STALE_HISTORY_DAYS
+    )
+    # partial 档下限 = 最小均线窗口（MA5）；full 档 = 最大均线窗口（MA20）
+    assert DataFetcherManager._INDEX_HISTORY_MIN_USABLE_BARS == 5
+    assert DataFetcherManager._INDEX_HISTORY_FULL_BARS == 20
+
+
+def test_manager_full_tier_scales_with_requested_days():
+    """days<20 的请求以请求条数为 full 标准：10 根满足 days=10 即接受并终止链，
+    不再全链扫描，且享受完整 TTL。"""
+    import time as time_module
+
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    ten = _fresh_bars(10)
+    calls = {'second': 0}
+
+    def second(*a, **k):
+        calls['second'] += 1
+        return _fresh_bars(40)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: list(ten)),
+        SimpleNamespace(name='F2', get_index_daily_history=second),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=10)
+    assert bars == ten
+    assert calls['second'] == 0
+
+    cache_entries = list(DataFetcherManager._index_history_cache.values())
+    assert len(cache_entries) == 1
+    remaining = cache_entries[0][0] - time_module.monotonic()
+    assert remaining > DataFetcherManager._INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS + 1
+    DataFetcherManager.clear_index_history_cache_for_tests()
+
+
+def test_manager_returns_best_effort_with_short_ttl_when_all_unusable():
+    """全链均不可用时按最优候选 fail-open 返回（消费方判 insufficient/stale），
+    且只用短 TTL 缓存，避免锁定降级结果 30 分钟。"""
+    import time as time_module
+
+    DataFetcherManager.clear_index_history_cache_for_tests()
+    three = _fresh_bars(3)
+
+    manager = _make_manager([
+        SimpleNamespace(name='F1', get_index_daily_history=lambda *a, **k: list(three)),
+        SimpleNamespace(name='F2', get_index_daily_history=lambda *a, **k: _fresh_bars(1)),
+    ])
+    bars = manager.get_index_daily_history('sh000001', region='cn', days=40)
+    assert bars == three
+
+    cache_entries = list(DataFetcherManager._index_history_cache.values())
+    assert len(cache_entries) == 1
+    expiry, _ = cache_entries[0]
+    remaining = expiry - time_module.monotonic()
+    assert remaining <= DataFetcherManager._INDEX_HISTORY_EMPTY_CACHE_TTL_SECONDS + 1
     DataFetcherManager.clear_index_history_cache_for_tests()
 
 
@@ -85,14 +254,15 @@ def test_manager_all_sources_fail_returns_empty_without_raising():
 
 def test_manager_skips_fetchers_without_capability():
     DataFetcherManager.clear_index_history_cache_for_tests()
+    fresh = _fresh_bars(25)
     manager = _make_manager([
         SimpleNamespace(name='NoCap'),
         SimpleNamespace(
             name='F2',
-            get_index_daily_history=lambda code, region='cn', days=40: [{'date': '2026-07-01', 'close': 1.0}],
+            get_index_daily_history=lambda code, region='cn', days=40: list(fresh),
         ),
     ])
-    assert manager.get_index_daily_history('sh000001') == [{'date': '2026-07-01', 'close': 1.0}]
+    assert manager.get_index_daily_history('sh000001') == fresh
     DataFetcherManager.clear_index_history_cache_for_tests()
 
 
@@ -236,9 +406,11 @@ def test_manager_cn_cache_key_normalized_across_code_formats():
     DataFetcherManager.clear_index_history_cache_for_tests()
     calls = {'n': 0}
 
+    fresh = _fresh_bars(25)
+
     def good(code, region='cn', days=40):
         calls['n'] += 1
-        return [{'date': '2026-07-01', 'close': 3400.0}]
+        return list(fresh)
 
     manager = _make_manager([SimpleNamespace(name='F1', get_index_daily_history=good)])
     manager.get_index_daily_history('sh000001', region='cn', days=20)

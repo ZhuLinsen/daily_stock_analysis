@@ -235,9 +235,24 @@ export const MarketReviewMarketModules: React.FC<MarketModulesGroupProps> = ({
   getNarrativeIcon,
 }) => {
   const { modules, narrative } = matchSectionsToModules(sections);
+  // 剥表只为防止被吸收叙事中的注入表与模块自身的数据表重复；
+  // 无任何结构化数据的兜底市场（混合 payload 的降级形态）没有模块表，
+  // 其叙事里的表格是唯一载体，不得剥除
+  const hasStructuredData = Boolean(
+    market.indices.length
+    || market.breadth
+    || hasRankingRows(market.sectors)
+    || hasRankingRows(market.concepts)
+    || market.summary
+    || market.catalysts?.length
+    || market.nextSessionPlan,
+  );
   const prose = (key: keyof typeof modules): string | undefined => {
     const value = modules[key];
-    return value ? stripInjectedTables(value) || undefined : undefined;
+    if (!value) {
+      return undefined;
+    }
+    return (hasStructuredData ? stripInjectedTables(value) : value.trim()) || undefined;
   };
 
   const summaryProse = prose('conclusion');

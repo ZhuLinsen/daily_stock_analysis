@@ -328,12 +328,26 @@ const getMarketModuleGroups = (payload?: MarketReviewPayload | null): MarketModu
     const markets = getStructuredMarketData(payload);
     const byId = new Map(markets.map((market) => [market.id, market]));
     return orderMarketEntries(payload.markets)
-      .filter(([region]) => byId.has(region))
-      .map(([region, marketPayload]) => ({
-        market: byId.get(region) as StructuredMarketData,
-        sections: getSingleMarketSections(marketPayload),
-        title: marketPayload.title || region.toUpperCase(),
-      }));
+      .map(([region, marketPayload]): MarketModuleGroup | null => {
+        const market = byId.get(region);
+        const sections = getSingleMarketSections(marketPayload);
+        // 防御兜底：混合 payload 中无任何结构化/工作台字段、仅有叙事
+        // sections 的市场（降级形态）不得被静默丢弃——以空结构化数据
+        // 渲染其叙事正文；两者皆无才跳过
+        if (!market && sections.length === 0) {
+          return null;
+        }
+        return {
+          market: market ?? {
+            id: region,
+            title: marketPayload.title || region.toUpperCase(),
+            indices: [],
+          },
+          sections,
+          title: marketPayload.title || region.toUpperCase(),
+        };
+      })
+      .filter((group): group is MarketModuleGroup => group !== null);
   }
   const markets = getStructuredMarketData(payload);
   if (!markets.length) {

@@ -461,6 +461,39 @@ def test_pipeline_fail_open_on_invalid_judgment_response():
     assert payload['summary']['temperature_score'] is not None
 
 
+def test_pipeline_workbench_build_crash_degrades_visibly(caplog):
+    """PR #1888 二轮评审回归：确定性工作台代码异常不得被静默吞掉——
+    最后防线降级必须 (a) exception 级日志含堆栈 (b) 报告与 payload
+    携带显式数据质量说明（LLM 判读在 generate_workbench_judgment 内部
+    自防护，能触发本路径的只有确定性代码缺陷）。"""
+    import logging
+
+    analyzer = MarketAnalyzer(search_service=None, analyzer=None, region='cn')
+    with patch.object(
+        MarketAnalyzer,
+        '_build_review_workbench',
+        side_effect=RuntimeError('deterministic bug'),
+    ):
+        with caplog.at_level(logging.ERROR):
+            result = _run_review(analyzer, _integration_overview(), _NEWS)
+
+    # 主流程存活，报告照常产出
+    assert result.report
+    # 降级原因对用户可见：报告顶部结论块 + payload 数据质量说明
+    assert '复盘工作台构建异常' in result.report
+    payload = result.structured_payload
+    assert any('复盘工作台构建异常' in note for note in payload['data_quality']['notes'])
+    # market_light 温度在工作台构建之前独立算出，崩溃降级不应丢失其展示
+    assert payload['summary']['temperature_score'] == payload['market_light']['score']
+    assert '市场温度：' in result.report
+    # 异常堆栈已被 logger.exception 记录（非无栈 warning）
+    crash_records = [
+        record for record in caplog.records
+        if record.exc_info and 'build_workbench' in record.getMessage()
+    ]
+    assert crash_records
+
+
 def test_payload_without_workbench_matches_legacy_shape():
     analyzer = MarketAnalyzer(search_service=None, analyzer=None, region='cn')
     overview = _integration_overview()

@@ -2411,17 +2411,20 @@ Market conditions can change quickly. The data above is for reference only and d
         )
         snapshot = self.build_market_light_snapshot(overview) if self._supports_market_light() else None
 
-        # 4. 复盘工作台（Issue #1584）：确定性核心 + 可选 LLM 判读；整体 fail-open
-        workbench = None
+        # 4. 复盘工作台（Issue #1584）：确定性核心 + 可选 LLM 判读。
+        #    LLM 判读在 generate_workbench_judgment 内部自防护（调用异常/解析/
+        #    校验失败一律返回 None），因此能到达本 except 的只可能是确定性代码
+        #    缺陷。作为调度/推送主流程的最后防线保留兜底，但绝不静默：
+        #    记录完整堆栈（exception 级），并以显式数据质量说明降级，
+        #    让报告/推送/payload 都能解释工作台缺失的原因。
         try:
             workbench = self._build_review_workbench(overview, news, raw_review, snapshot)
-        except Exception as exc:
-            logger.warning(
-                "[大盘] %s action=build_workbench status=failed error=%s",
+        except Exception:
+            logger.exception(
+                "[大盘] %s action=build_workbench status=failed",
                 self._log_context(),
-                exc,
             )
-            workbench = None
+            workbench = self._workbench_build_failure_fallback(snapshot)
 
         # 5. 单次注入产出完整报告：一句话结论块 + 增强数据表 + 催化表；
         #    模板兜底自带紧凑表格，只注入结论块（include_tables=False）
@@ -2452,6 +2455,34 @@ Market conditions can change quickly. The data above is for reference only and d
             market_light_snapshot=snapshot,
             structured_payload=structured_payload,
         )
+
+    def _workbench_build_failure_fallback(
+        self,
+        snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """工作台构建出现确定性代码异常时的显式降级形态。
+
+        与静默 None 的区别：notes-only 工作台会让报告顶部（render_summary_block
+        支持仅数据说明的注入）、推送与 payload 都出现明确的缺失解释；
+        异常堆栈已由调用方以 logger.exception 记录。
+        market_light 快照在工作台构建之前独立算出，其温度分数不受本次
+        异常影响，尽量保留展示（只做字面拷贝，不调用可能已损坏的工作台逻辑）。
+        """
+        note = (
+            "Workbench construction failed unexpectedly; structured judgment "
+            "omitted for this run (see server logs)."
+            if self._get_review_language() == "en"
+            else "复盘工作台构建异常，本次结构化判读已省略（详见服务日志）。"
+        )
+        fallback: Dict[str, Any] = {"data_quality": {"notes": [note]}}
+        score = (snapshot or {}).get("score") if isinstance(snapshot, dict) else None
+        if isinstance(score, (int, float)):
+            summary: Dict[str, Any] = {"temperature_score": int(score)}
+            label = snapshot.get("temperature_label") if isinstance(snapshot, dict) else None
+            if label:
+                summary["temperature_label"] = str(label)
+            fallback["summary"] = summary
+        return fallback
 
     def _build_review_workbench(
         self,
