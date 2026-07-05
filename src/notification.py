@@ -2402,6 +2402,12 @@ class NotificationService(
                 return self._send_wechat_image(image_bytes)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
+            if getattr(self, "_feishu_send_as_file", False):
+                date_str = datetime.now().strftime('%Y%m%d')
+                filepath = self.save_report_to_file(
+                    content, filename=f"report_{date_str}.md"
+                )
+                return self.send_feishu_file(filepath)
             return self.send_to_feishu(content)
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(content)
@@ -2715,6 +2721,28 @@ class NotificationService(
 
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)
+
+    def save_and_send_feishu_file(
+        self,
+        content: str,
+        filename: Optional[str] = None,
+    ) -> bool:
+        """
+        Save report content to a local markdown file and upload it to Feishu.
+
+        This is a convenience wrapper around :meth:`save_report_to_file` +
+        :meth:`send_feishu_file`.
+
+        Args:
+            content: Report content (Markdown).
+            filename: Optional file name; auto-generated from date when omitted.
+
+        Returns:
+            Whether the Feishu file upload succeeded.
+        """
+        filepath = self.save_report_to_file(content, filename=filename)
+        logger.info("将上传文件到飞书: %s", filepath)
+        return self.send_feishu_file(filepath)
 
 
 class NotificationBuilder:

@@ -3352,9 +3352,18 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
+                        def _send_feishu_report() -> bool:
+                            if getattr(self.notifier, "_feishu_send_as_file", False):
+                                date_str = datetime.now().strftime('%Y%m%d')
+                                filepath = self.notifier.save_report_to_file(
+                                    report, filename=f"dashboard_{date_str}.md"
+                                )
+                                return self.notifier.send_feishu_file(filepath)
+                            return self.notifier.send_to_feishu(report)
+
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,
-                            lambda: self.notifier.send_to_feishu(report),
+                            _send_feishu_report,
                         )
                         non_wechat_success = channel_success or non_wechat_success
                         _record_channel_result(
