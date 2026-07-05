@@ -67,7 +67,7 @@ FEISHU_SEND_AS_FILE=true
 - **Webhook 模式**：回退为发送文件内容文本（Webhook 不支持文件上传）
 - **生效范围**：仅对 `route_type="report"` 的报告推送生效；告警、系统通知等不受影响
 - **GitHub Actions 定时任务**：已通过 `.github/workflows/00-daily-analysis.yml` 映射，在 repo Settings → Secrets and variables → Actions 中添加同名变量或 secret 即可启用
-- **配置方式**：当前仅支持 `.env` 文件或 GitHub Actions Secret/Variable 配置，**未接入 Web/桌面设置页**（不在 `src/core/config_registry.py` 注册范围）。如需通过 Web UI 配置，请手动编辑运行环境的 `.env` 文件
+- **配置方式**：支持 `.env` 文件、GitHub Actions Secret/Variable 或 Web/桌面设置页配置
 
 ## Webhook 推送的正确配置步骤
 
