@@ -710,7 +710,7 @@ class TestFeishuSender(unittest.TestCase):
         payload = mock_post.call_args.kwargs["json"]
         rendered = payload["card"]["elements"][0]["text"]["content"]
         self.assertIn("📄 Markdown 文件内容: report_20260705.md", rendered)
-        self.assertIn("# Test Report", rendered)
+        self.assertIn("**Test Report**", rendered)
 
     @mock.patch("src.notification_sender.feishu_sender.Path")
     def test_send_feishu_file_webhook_unreadable_file_returns_false(self, mock_path_cls):
@@ -733,9 +733,9 @@ class TestFeishuSender(unittest.TestCase):
         result = sender.send_feishu_file("/tmp/report.md")
         self.assertFalse(result)
 
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequestBody", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequest", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.FEISHU_SDK_AVAILABLE", True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
     @mock.patch("src.notification_sender.feishu_sender.Path")
     def test_send_feishu_file_app_bot_uploads_file_and_sends_message(self, *_):
         """App Bot uploads the file via SDK and sends a file message."""
@@ -768,9 +768,9 @@ class TestFeishuSender(unittest.TestCase):
         content_json = json.loads(mock_raw.call_args[0][2])
         self.assertEqual(content_json["file_key"], "file_key_abc")
 
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequestBody", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequest", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.FEISHU_SDK_AVAILABLE", True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
     def test_send_feishu_file_app_bot_upload_failure_returns_false(self, *_):
         """App Bot returns False when the file upload fails."""
         mock_path = mock.MagicMock()
@@ -795,9 +795,9 @@ class TestFeishuSender(unittest.TestCase):
                 result = sender.send_feishu_file("/tmp/report.md")
         self.assertFalse(result)
 
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequestBody", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.CreateFileRequest", create=True)
-    @mock.patch("src.notification_sender.feishu_sender.FEISHU_SDK_AVAILABLE", True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequestBody", create=True)
+    @mock.patch("src.notification_sender.feishu_sender._CreateFileRequest", create=True)
+    @mock.patch("src.notification_sender.feishu_sender.FEISHU_FILE_SDK_AVAILABLE", True)
     def test_send_feishu_file_app_bot_missing_file_key_returns_false(self, *_):
         """App Bot returns False when upload succeeds but file_key is missing."""
         mock_path = mock.MagicMock()

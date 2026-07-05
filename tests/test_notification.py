@@ -458,19 +458,20 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
-    def test_feishu_send_as_file_route_none_uses_file(self, mock_get_config):
-        """When FEISHU_SEND_AS_FILE=true and route_type=None (legacy), use file sending."""
+    def test_feishu_send_as_file_route_none_uses_text(self, mock_get_config):
+        """When FEISHU_SEND_AS_FILE=true and route_type=None, use text (not file)."""
         cfg = _make_config(
             feishu_webhook_url="https://feishu.example/hook",
             feishu_send_as_file=True,
         )
         mock_get_config.return_value = cfg
         service = NotificationService()
-        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
-             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md"):
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
             result = service.send_with_results("report content")
         self.assertTrue(result.success)
-        mock_file.assert_called_once()
+        mock_text.assert_called_once_with("report content")
+        mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_false_uses_text_even_for_report(self, mock_get_config):

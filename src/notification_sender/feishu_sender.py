@@ -41,8 +41,6 @@ LARK_DOMAIN = "lark"
 try:
     import lark_oapi as _lark
     from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
     )
@@ -52,6 +50,20 @@ try:
     FEISHU_DOMAIN = _SDK_FEISHU_DOMAIN
     LARK_DOMAIN = _SDK_LARK_DOMAIN
     FEISHU_SDK_AVAILABLE = True
+except ImportError:
+    pass
+
+# File-upload SDK classes (isolated from the core messaging SDK availability
+# so that an older lark-oapi without file support doesn't break App Bot text).
+FEISHU_FILE_SDK_AVAILABLE = False
+_CreateFileRequest: Any = None
+_CreateFileRequestBody: Any = None
+try:
+    from lark_oapi.api.im.v1 import (
+        CreateFileRequest as _CreateFileRequest,
+        CreateFileRequestBody as _CreateFileRequestBody,
+    )
+    FEISHU_FILE_SDK_AVAILABLE = True
 except ImportError:
     pass
 
@@ -394,6 +406,10 @@ class FeishuSender:
 
     def _send_file_via_app_bot(self, path: Path) -> bool:
         """Upload *path* to Feishu via App Bot SDK and send as file message."""
+        if not FEISHU_FILE_SDK_AVAILABLE:
+            logger.warning("lark-oapi SDK does not support file upload; upgrade lark-oapi")
+            return False
+
         if not self._feishu_chat_id:
             logger.warning("FEISHU_CHAT_ID 未配置，跳过 App Bot 文件推送")
             return False
@@ -418,14 +434,14 @@ class FeishuSender:
         try:
             with path.open("rb") as f:
                 body = (
-                    CreateFileRequestBody.builder()
+                    _CreateFileRequestBody.builder()
                     .file_type(file_type)
                     .file_name(file_name)
                     .file(f)  # type: ignore[arg-type]
                     .build()
                 )
                 req = (
-                    CreateFileRequest.builder()
+                    _CreateFileRequest.builder()
                     .request_body(body)
                     .build()
                 )

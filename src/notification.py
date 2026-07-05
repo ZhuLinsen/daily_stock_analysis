@@ -2403,7 +2403,7 @@ class NotificationService(
                 return self._send_wechat_image(image_bytes)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
-            if getattr(self, "_feishu_send_as_file", False) and route_type in (None, "report"):
+            if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
                 date_str = datetime.now().strftime('%Y%m%d')
                 filepath = self.save_report_to_file(
                     content, filename=f"report_{date_str}.md"
