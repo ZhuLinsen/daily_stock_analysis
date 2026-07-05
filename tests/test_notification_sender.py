@@ -821,6 +821,12 @@ class TestFeishuSender(unittest.TestCase):
                 result = sender.send_feishu_file("/tmp/report.md")
         self.assertFalse(result)
 
+    def test_file_upload_sdk_classes_exist_non_mock(self):
+        """Smoke: lark-oapi SDK actually exports CreateFileRequest/RequestBody."""
+        from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
+        self.assertTrue(hasattr(CreateFileRequest, 'builder'))
+        self.assertTrue(hasattr(CreateFileRequestBody, 'builder'))
+
 
 class TestEmailSender(unittest.TestCase):
     """Unit tests for EmailSender (config and receiver logic; send path covered via service)."""
