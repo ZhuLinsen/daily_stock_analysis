@@ -100,7 +100,7 @@ npm run build
 
 ## 📋 优先贡献方向
 
-查看 [Roadmap](README.md#-roadmap) 了解当前需要的功能：
+查看 [Roadmap](../README.md) 了解当前需要的功能：
 
 - 🔔 新通知渠道（钉钉、飞书、Telegram）
 - 🤖 新 AI 模型支持（GPT-4、Claude）
