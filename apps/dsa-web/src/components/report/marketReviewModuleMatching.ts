@@ -185,9 +185,11 @@ export const formatSectionNumber = (index: number, title: string, language: 'zh'
   return `${index + 1}. ${title}`;
 };
 
-/** 剥掉叙事 section 标题里 LLM 自带的编号前缀，交由分组统一接续编号 */
+/** 剥掉叙事 section 标题里 LLM 自带的编号与装饰前缀（emoji 等），
+ * 交由分组统一接续编号；否则会出现"七、⚠️ 七、风险提示"式双重编号 */
 export const stripSectionNumbering = (title: string): string =>
   (title || '')
+    .replace(/^[^\u4e00-\u9fa5A-Za-z0-9]+/u, '')
     .replace(/^[一二三四五六七八九十]+、\s*/, '')
     .replace(/^\d+[.、]\s*/, '')
     .trim();

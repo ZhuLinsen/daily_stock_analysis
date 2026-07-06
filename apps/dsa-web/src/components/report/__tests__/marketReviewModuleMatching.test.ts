@@ -3,6 +3,7 @@ import {
   matchSectionsToModules,
   orderMarketEntries,
   stripInjectedTables,
+  stripSectionNumbering,
 } from '../marketReviewModuleMatching';
 
 describe('matchSectionsToModules', () => {
@@ -94,5 +95,15 @@ describe('orderMarketEntries', () => {
   it('orders known regions by backend order and appends unknown regions', () => {
     const entries = orderMarketEntries({ us: 1, xx: 3, cn: 2 });
     expect(entries.map(([region]) => region)).toEqual(['cn', 'us', 'xx']);
+  });
+});
+
+describe('stripSectionNumbering', () => {
+  it('strips emoji/decoration prefixes before numbering (real DeepSeek headings)', () => {
+    expect(stripSectionNumbering('📰 五、消息催化')).toBe('消息催化');
+    expect(stripSectionNumbering('⚠️ 七、风险提示')).toBe('风险提示');
+    expect(stripSectionNumbering('🎯 六、明日交易计划')).toBe('明日交易计划');
+    expect(stripSectionNumbering('七、风险提示')).toBe('风险提示');
+    expect(stripSectionNumbering('7. Risk Notes')).toBe('Risk Notes');
   });
 });

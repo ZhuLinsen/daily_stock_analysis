@@ -48,18 +48,22 @@ from data_provider.base import DataFetcherManager
 logger = logging.getLogger(__name__)
 
 
+# 注入锚点只按 ### 行内的标题关键词匹配，对两类真实漂移免疫：
+# (1) 编号漂移——限数据市场 section 减少导致编号前移（如 三、消息催化）；
+# (2) 装饰漂移——LLM 可能给标题加 emoji 等前缀（真实 DeepSeek 运行观测到
+#     "### 📈 二、指数结构"，钉死编号的旧模式会全部失配，指数表静默丢失）。
 _ENGLISH_SECTION_PATTERNS = {
-    "market_summary": r"###\s*(?:1\.\s*)?Market Summary",
-    "index_commentary": r"###\s*(?:2\.\s*)?(?:Index Commentary|Major Indices)",
-    "sector_highlights": r"###\s*(?:4\.\s*)?(?:Sector Highlights|Sector/Theme Highlights)",
+    "market_summary": r"###[^\n#]*?Market Summary",
+    "index_commentary": r"###[^\n#]*?(?:Index Commentary|Major Indices)",
+    "sector_highlights": r"###[^\n#]*?(?:Sector Highlights|Sector/Theme Highlights)",
 }
 
 _CHINESE_SECTION_PATTERNS = {
-    "market_summary": r"###\s*一、(?:盘面总览|市场总结)",
-    "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数)",
-    "sector_highlights": r"###\s*三、(?:板块主线|热点解读|板块表现)",
-    "funds_sentiment": r"###\s*四、(?:资金与情绪|资金动向)",
-    "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
+    "market_summary": r"###[^\n#]*?(?:盘面总览|市场总结)",
+    "index_commentary": r"###[^\n#]*?(?:指数结构|指数点评|主要指数)",
+    "sector_highlights": r"###[^\n#]*?(?:板块主线|热点解读|板块表现)",
+    "funds_sentiment": r"###[^\n#]*?(?:资金与情绪|资金动向)",
+    "news_catalysts": r"###[^\n#]*?(?:消息催化|后市展望)",
 }
 
 
@@ -1288,8 +1292,9 @@ Hard rules:
     
     # 催化表注入目标：编号无关（zh 限数据市场的段落编号会动态漂移），
     # 未命中时按板块块同款方式追加兜底段。
-    _CATALYSTS_SECTION_PATTERN_ZH = r"###\s*[一二三四五六七八九十]、\s*(?:消息催化|后市展望)"
-    _CATALYSTS_SECTION_PATTERN_EN = r"###\s*(?:\d+\.\s*)?News Catalysts"
+    # 与 _CHINESE/_ENGLISH_SECTION_PATTERNS 同款：装饰与编号双重免疫
+    _CATALYSTS_SECTION_PATTERN_ZH = r"###[^\n#]*?(?:消息催化|后市展望)"
+    _CATALYSTS_SECTION_PATTERN_EN = r"###[^\n#]*?News Catalysts"
 
     def _inject_data_into_review(
         self,

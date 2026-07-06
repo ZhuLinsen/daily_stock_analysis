@@ -444,6 +444,47 @@ def test_pipeline_with_llm_judgment():
     assert '0. 关税政策调整影响出口' in judgment_prompt
 
 
+def test_pipeline_injection_survives_emoji_decorated_headings():
+    """真实 DeepSeek 运行回归（2026-07-06）：LLM 给标题加 emoji 前缀
+    （"### 📈 二、指数结构"）时，钉死编号的旧注入模式全部失配——指数表
+    静默丢失、板块/催化表退化为报告尾部的重复标题孤儿段。注入锚点须对
+    装饰与编号漂移双重免疫。"""
+    import json
+
+    review_md = (
+        "## 2026-07-06 大盘复盘\n\n> 总览。\n\n"
+        "### 📊 一、盘面总览\n正文A\n\n### 📈 二、指数结构\n正文B\n\n"
+        "### 🔥 三、板块主线\n正文C\n\n### 📰 五、消息催化\n正文D\n"
+    )
+    judgment = {
+        'catalysts': [{'news_index': 0, 'nature': '利空', 'duration': '中期', 'digestion': '部分消化'}],
+    }
+    mock_llm = MagicMock()
+    mock_llm.is_available.return_value = True
+    mock_llm.get_generation_backend_config_error = lambda: None
+    mock_llm.generate_text.side_effect = [review_md, json.dumps(judgment, ensure_ascii=False)]
+
+    analyzer = MarketAnalyzer(search_service=None, analyzer=mock_llm, region='cn')
+    result = _run_review(analyzer, _integration_overview(), _NEWS)
+    report = result.report
+
+    # 指数表注入在 emoji 标题的指数结构 section 内（不丢失；
+    # 本 fixture 的 overview 无 MA 字段，走旧表形态，注入位置才是被测语义）
+    indices_segment = report.split('### 📈 二、指数结构')[1].split('### 🔥')[0]
+    assert '| 指数 |' in indices_segment
+    # 板块表注入原 section，不产生尾部重复标题孤儿段
+    sector_segment = report.split('### 🔥 三、板块主线')[1].split('### 📰')[0]
+    assert '行业板块' in sector_segment
+    assert report.count('三、板块主线') == 1
+    # 催化表注入原 section，同样无孤儿段
+    catalysts_segment = report.split('### 📰 五、消息催化')[1]
+    assert '| 消息 | 性质 | 影响范围 | 持续性 | 消化状态 | 点评 |' in catalysts_segment
+    assert report.count('消息催化') == 1
+    # 宽度统计块注入盘面总览 section
+    summary_segment = report.split('### 📊 一、盘面总览')[1].split('### 📈')[0]
+    assert '上涨/下跌/平盘' in summary_segment
+
+
 def test_pipeline_fail_open_on_invalid_judgment_response():
     review_md = "## 2026-07-02 大盘复盘\n\n### 一、盘面总览\n正文\n"
     mock_llm = MagicMock()
