@@ -291,6 +291,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `FEISHU_APP_ID` | Feishu App ID | Optional |
 | `FEISHU_APP_SECRET` | Feishu App Secret | Optional |
 | `FEISHU_FOLDER_TOKEN` | Feishu Cloud Drive Folder Token | Optional |
+| `FEISHU_SEND_AS_FILE` | Send reports as files via Feishu App Bot (default `false`) | Optional |
 
 > Feishu Cloud Document setup steps:
 > 1. Create an app in [Feishu Developer Console](https://open.feishu.cn/app)

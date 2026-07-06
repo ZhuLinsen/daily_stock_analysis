@@ -427,6 +427,103 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_webhook.assert_called_once_with("content")
 
     @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_route_report_calls_send_feishu_file(self, mock_get_config):
+        """When FEISHU_SEND_AS_FILE=true and route_type=report, use file sending."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md"):
+            result = service.send_with_results("report content", route_type="report")
+        self.assertTrue(result.success)
+        mock_file.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_route_alert_calls_send_to_feishu(self, mock_get_config):
+        """When FEISHU_SEND_AS_FILE=true but route_type=alert, use text sending."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results("alert content", route_type="alert")
+        self.assertTrue(result.success)
+        mock_text.assert_called_once_with("alert content")
+        mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_route_none_uses_text(self, mock_get_config):
+        """When FEISHU_SEND_AS_FILE=true and route_type=None, use text (not file)."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results("report content")
+        self.assertTrue(result.success)
+        mock_text.assert_called_once_with("report content")
+        mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_false_uses_text_even_for_report(self, mock_get_config):
+        """When FEISHU_SEND_AS_FILE=false (default), report still uses text."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=False,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results("report content", route_type="report")
+        self.assertTrue(result.success)
+        mock_text.assert_called_once_with("report content")
+        mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_alert_does_not_leak_into_other_channels(self, mock_get_config):
+        """FEISHU_SEND_AS_FILE only affects Feishu, not other channels."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            custom_webhook_urls=["https://example.com/hook"],
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom, \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md"):
+            result = service.send_with_results("content", route_type="report")
+        self.assertTrue(result.success)
+        mock_file.assert_called_once()
+        mock_custom.assert_called_once_with("content")
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_send_as_file_system_error_uses_text(self, mock_get_config):
+        """FEISHU_SEND_AS_FILE does not activate for system_error routes."""
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_text, \
+             mock.patch.object(service, "save_report_to_file") as mock_save:
+            result = service.send_with_results("error", route_type="system_error")
+        self.assertTrue(result.success)
+        mock_text.assert_called_once_with("error")
+        mock_save.assert_not_called()
+
+    @mock.patch("src.notification.get_config")
     def test_send_dedup_suppresses_static_channels_after_success(self, mock_get_config: mock.MagicMock):
         cfg = _make_config(
             custom_webhook_urls=["https://example.com/webhook"],

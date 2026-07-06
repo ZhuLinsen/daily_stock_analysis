@@ -335,6 +335,7 @@ daily_stock_analysis/
 | `FEISHU_APP_ID` | 飞书应用 ID | 可选 |
 | `FEISHU_APP_SECRET` | 飞书应用 Secret | 可选 |
 | `FEISHU_FOLDER_TOKEN` | 飞书云盘文件夹 Token | 可选 |
+| `FEISHU_SEND_AS_FILE` | 飞书 App Bot 以文件形式发送报告（默认 `false`） | 可选 |
 
 > 飞书云文档配置步骤：
 > 1. 在 [飞书开发者后台](https://open.feishu.cn/app) 创建应用
