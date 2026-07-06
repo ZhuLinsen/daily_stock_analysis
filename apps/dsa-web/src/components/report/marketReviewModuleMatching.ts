@@ -105,6 +105,60 @@ export const hasNextSessionPlanContent = (plan?: MarketReviewNextSessionPlan): b
       || plan.keyLevels?.length || plan.riskTriggers?.length),
   );
 
+
+/**
+ * 结构化数值格式化（PR #1880 引入，自 MarketReviewReportView 迁至此处共享）：
+ * 旧结构化大卡与工作台模块表必须对同一 payload 数值呈现一致的格式。
+ */
+const coerceFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    const normalizedValue = value.trim().replace(/,/g, '');
+    const numericText = normalizedValue.endsWith('%')
+      ? normalizedValue.slice(0, -1).trim()
+      : normalizedValue;
+    const parsed = Number(numericText);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+export const formatMarketNumber = (value: unknown, options?: { zeroAsMissing?: boolean }): string => {
+  const numericValue = coerceFiniteNumber(value);
+  if (numericValue === null || (options?.zeroAsMissing && numericValue === 0)) {
+    return '-';
+  }
+  return numericValue.toFixed(2);
+};
+
+export const formatMarketCount = (value: unknown): string => {
+  const numericValue = coerceFiniteNumber(value);
+  return numericValue === null ? '-' : numericValue.toFixed(0);
+};
+
+export const formatMarketAmount = (value: unknown, unit?: string): string => {
+  const formattedValue = formatMarketNumber(value);
+  if (formattedValue === '-') {
+    return '-';
+  }
+  return unit ? `${formattedValue} ${unit}` : formattedValue;
+};
+
+export const formatMarketPercent = (value: unknown): string => {
+  const formattedValue = formatMarketNumber(value);
+  return formattedValue === '-' ? '-' : `${formattedValue}%`;
+};
+
+export const formatMarketHighLow = (high: unknown, low: unknown): string => {
+  const highText = formatMarketNumber(high, { zeroAsMissing: true });
+  const lowText = formatMarketNumber(low, { zeroAsMissing: true });
+  return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
+};
+
 /** 指数成交额展示：原始币值 → 亿（zh）/ B·M 紧凑格式（en）；无值返回空 */
 export const formatIndexAmount = (amount: unknown, language: 'zh' | 'en'): string => {
   const numeric = typeof amount === 'number' ? amount : Number(amount ?? Number.NaN);

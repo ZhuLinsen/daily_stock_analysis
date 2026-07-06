@@ -19,7 +19,14 @@ import {
   MarketReviewMarketModules,
   type StructuredMarketData,
 } from './MarketReviewModules';
-import { orderMarketEntries } from './marketReviewModuleMatching';
+import {
+  formatMarketAmount,
+  formatMarketCount,
+  formatMarketHighLow,
+  formatMarketNumber,
+  formatMarketPercent,
+  orderMarketEntries,
+} from './marketReviewModuleMatching';
 
 interface MarketReviewReportViewProps {
   report?: AnalysisReport;
@@ -262,55 +269,6 @@ const getStructuredMarketData = (payload?: MarketReviewPayload | null): Structur
     nextSessionPlan: payload.nextSessionPlan,
     dataQuality: payload.dataQuality,
   }];
-};
-
-const coerceFiniteNumber = (value: unknown): number | null => {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  if (typeof value === 'string' && value.trim()) {
-    const normalizedValue = value.trim().replace(/,/g, '');
-    const numericText = normalizedValue.endsWith('%')
-      ? normalizedValue.slice(0, -1).trim()
-      : normalizedValue;
-    const parsed = Number(numericText);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
-};
-
-const formatMarketNumber = (value: unknown, options?: { zeroAsMissing?: boolean }): string => {
-  const numericValue = coerceFiniteNumber(value);
-  if (numericValue === null || (options?.zeroAsMissing && numericValue === 0)) {
-    return '-';
-  }
-  return numericValue.toFixed(2);
-};
-
-const formatMarketCount = (value: unknown): string => {
-  const numericValue = coerceFiniteNumber(value);
-  return numericValue === null ? '-' : numericValue.toFixed(0);
-};
-
-const formatMarketAmount = (value: unknown, unit?: string): string => {
-  const formattedValue = formatMarketNumber(value);
-  if (formattedValue === '-') {
-    return '-';
-  }
-  return unit ? `${formattedValue} ${unit}` : formattedValue;
-};
-
-const formatMarketPercent = (value: unknown): string => {
-  const formattedValue = formatMarketNumber(value);
-  return formattedValue === '-' ? '-' : `${formattedValue}%`;
-};
-
-const formatMarketHighLow = (high: unknown, low: unknown): string => {
-  const highText = formatMarketNumber(high, { zeroAsMissing: true });
-  const lowText = formatMarketNumber(low, { zeroAsMissing: true });
-  return highText === '-' && lowText === '-' ? '-' : `${highText} / ${lowText}`;
 };
 
 interface MarketModuleGroup {

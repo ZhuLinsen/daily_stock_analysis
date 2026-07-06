@@ -30,6 +30,9 @@ import {
 } from './MarketReviewWorkbench';
 import {
   formatIndexAmount,
+  formatMarketAmount,
+  formatMarketCount,
+  formatMarketNumber,
   formatSectionNumber,
   hasNextSessionPlanContent,
   matchSectionsToModules,
@@ -330,7 +333,7 @@ export const MarketReviewMarketModules: React.FC<MarketModulesGroupProps> = ({
                   {market.indices.map((index) => (
                     <tr key={index.code || index.name}>
                       <td className="px-2 py-2 font-medium text-foreground">{index.name}</td>
-                      <td className="px-2 py-2 font-mono text-secondary-text">{index.current ?? '-'}</td>
+                      <td className="px-2 py-2 font-mono text-secondary-text">{formatMarketNumber(index.current)}</td>
                       <td className={`px-2 py-2 font-mono ${changePctClass(index.changePct)}`}>
                         {formatChangePct(index.changePct)}
                       </td>
@@ -360,25 +363,22 @@ export const MarketReviewMarketModules: React.FC<MarketModulesGroupProps> = ({
             <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
               <div className="rounded-lg border border-subtle p-3">
                 <p className="label-uppercase">{breadthLabels.advancers}</p>
-                <p className="mt-1 font-semibold text-foreground">{market.breadth.upCount ?? '-'}</p>
+                <p className="mt-1 font-semibold text-foreground">{formatMarketCount(market.breadth.upCount)}</p>
               </div>
               <div className="rounded-lg border border-subtle p-3">
                 <p className="label-uppercase">{breadthLabels.decliners}</p>
-                <p className="mt-1 font-semibold text-foreground">{market.breadth.downCount ?? '-'}</p>
+                <p className="mt-1 font-semibold text-foreground">{formatMarketCount(market.breadth.downCount)}</p>
               </div>
               <div className="rounded-lg border border-subtle p-3">
                 <p className="label-uppercase">{breadthLabels.limitUpDown}</p>
                 <p className="mt-1 font-semibold text-foreground">
-                  {market.breadth.limitUpCount ?? '-'} / {market.breadth.limitDownCount ?? '-'}
+                  {formatMarketCount(market.breadth.limitUpCount)} / {formatMarketCount(market.breadth.limitDownCount)}
                 </p>
               </div>
               <div className="rounded-lg border border-subtle p-3">
                 <p className="label-uppercase">{breadthLabels.turnover}</p>
                 <p className="mt-1 font-semibold text-foreground">
-                  {typeof market.breadth.totalAmount === 'number'
-                    ? Math.round(market.breadth.totalAmount).toLocaleString()
-                    : market.breadth.totalAmount ?? '-'}{' '}
-                  {market.breadth.turnoverUnit || ''}
+                  {formatMarketAmount(market.breadth.totalAmount, market.breadth.turnoverUnit)}
                 </p>
               </div>
             </div>

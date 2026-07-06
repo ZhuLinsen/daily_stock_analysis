@@ -392,6 +392,8 @@ describe('MarketReviewReportView workbench (Issue #1584)', () => {
     expect(screen.getByText('均线状态')).toBeInTheDocument();
     expect(screen.getByText('站上MA5/MA10，MA20 之下')).toBeInTheDocument();
     expect(screen.getByText('权重护盘明显')).toBeInTheDocument();
+    // 模块表数值与旧结构化大卡共用 PR #1880 的格式化（收盘 2 位小数）
+    expect(screen.getByText('2700.00')).toBeInTheDocument();
   });
 
   it('renders catalysts table with nature, scope, duration and digestion', () => {
