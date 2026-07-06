@@ -3328,9 +3328,8 @@ Sector text.
 # 1f91024d). The parser raised ValueError("ambiguous_json") for any LLM
 # response that contained a <think>...</think> (or similar) envelope around a
 # single ```json``` fence, which made every analysis run by reasoning-capable
-# models (DeepSeek R1, GPT-OSS, MiniMax-M3, Claude extended thinking, ...)
-# fall through to the text-only fallback and trigger an integrity-completion
-# retry loop.
+# models fall through to the text-only fallback and trigger an
+# integrity-completion retry loop.
 #
 # The fix is _strip_cot_fences: it removes the outer CoT wrappers before the
 # existing fence_pattern and _contains_embedded_json_object checks decide
@@ -3526,3 +3525,42 @@ class TestAnalyzerCotFenceStripping:
         _json_str, data = analyzer._extract_analysis_json_object(text)
         assert data["stock_name"] == "Z"
         assert data["sentiment_score"] == 33
+
+    # ---- 4. JSON field values containing CoT-like literals must be preserved ----
+
+    def test_cot_tag_inside_fenced_json_field_value_preserved(self):
+        """A <think>private literal INSIDE a fenced JSON field value must be preserved verbatim.
+
+        Repro for chatgpt-codex-connector P2 / maintainer correctness blocker:
+        global CoT stripping would silently rewrite the field value to
+        "contains  marker". The fix scopes stripping to text outside the
+        JSON candidate boundary.
+        """
+        analyzer = self._make_analyzer()
+        text = (
+            "<think>outer reasoning that the model emitted before the fence\n"
+            "```json\n"
+            '{"stock_name": "X", "analysis_summary": "contains <think>private marker",'
+            ' "sentiment_score": 50, "trend_prediction": "震荡",'
+            ' "operation_advice": "持有", "confidence_level": "中"}\n'
+            "```\n"
+        )
+        json_str, data = analyzer._extract_analysis_json_object(text)
+        assert "<think>private" in data["analysis_summary"]
+        assert data["analysis_summary"] == "contains <think>private marker"
+        assert "<think>outer reasoning" not in json_str
+
+    def test_cot_tag_inside_plain_json_field_value_preserved(self):
+        """A <think>private literal INSIDE a plain JSON field value must be preserved verbatim."""
+        analyzer = self._make_analyzer()
+        text = (
+            "<think>outer reasoning before the plain JSON"
+            '{"stock_name": "Y", "analysis_summary": "contains <think>private marker",'
+            ' "sentiment_score": 60, "trend_prediction": "看多",'
+            ' "operation_advice": "持有", "confidence_level": "高"}'
+        )
+        json_str, data = analyzer._extract_analysis_json_object(text)
+        assert "<think>private" in data["analysis_summary"]
+        assert data["analysis_summary"] == "contains <think>private marker"
+        assert "<think>outer reasoning" not in json_str
+        assert "<think>private" in json_str

@@ -4248,13 +4248,12 @@ class GeminiAnalyzer:
         """Delegate to module-level apply_placeholder_fill."""
         apply_placeholder_fill(result, missing_fields)
 
-    # Chain-of-thought wrappers emitted by reasoning-capable LLMs (DeepSeek R1,
-    # GPT-OSS, MiniMax-M3, Claude extended thinking, ...). Stripped before JSON
-    # extraction so a single ```json``` fence wrapped in CoT still parses cleanly.
-    # The patterns target the *outer* CoT envelope only; ```json``` fences and
-    # embedded JSON objects are intentionally left untouched so the existing
-    # ambiguity checks (`len(fenced_matches) > 1`, embedded JSON detection) keep
-    # catching genuinely ambiguous payloads.
+    # Chain-of-thought wrappers observed in reasoning-model outputs (e.g.
+    # ``<think>...``, ``<|begin▁of▁thought|>...<|/thought|>``). Stripped
+    # before JSON extraction so a single ```` ```json``` ```` fence wrapped in
+    # CoT still parses cleanly. This is a parser-level robustness fix against
+    # observed wrapper formats; it does not assume, endorse, or enumerate any
+    # specific model's behavior.
     _COT_FENCE_PATTERNS: Tuple["re.Pattern[str]", ...] = (
         re.compile(r"<think>.*?</think>", flags=re.DOTALL),
         re.compile(r"<reasoning>.*?</reasoning>", flags=re.DOTALL),
@@ -4279,9 +4278,15 @@ class GeminiAnalyzer:
         return out
 
     def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
-        """Extract the single allowed JSON object from an LLM response."""
+        """Extract the single allowed JSON object from an LLM response.
 
-        text = self._strip_cot_fences(response_text or "")
+        CoT wrappers are stripped ONLY from text outside the selected JSON
+        candidate (fence body when present, else the first raw_decode-able
+        object). This keeps string literals inside JSON fields (e.g. a value
+        containing ``<think>private``) intact.
+        """
+
+        text = response_text or ""
         stripped = text.strip()
         if not stripped:
             raise ValueError("empty_response")
@@ -4293,6 +4298,7 @@ class GeminiAnalyzer:
         fenced_matches = list(fence_pattern.finditer(text))
         if len(fenced_matches) > 1:
             raise ValueError("ambiguous_json")
+
         if len(fenced_matches) == 1:
             match = fenced_matches[0]
             outside = (text[:match.start()] + text[match.end():]).strip()
@@ -4301,19 +4307,55 @@ class GeminiAnalyzer:
             fence_lang = (match.group("lang") or "").strip().lower()
             if fence_lang not in {"", "json"}:
                 raise ValueError("ambiguous_json")
+
+            cleaned_outside = self._strip_cot_fences(outside)
+            if cleaned_outside.strip():
+                raise ValueError("ambiguous_json")
+
             json_str = match.group("body").strip()
             data = self._load_analysis_json_candidate(json_str)
             return json_str, data
+
         if "```" in text:
             raise ValueError("ambiguous_json")
 
+        decoder = json.JSONDecoder()
+        candidate_start: int = -1
+        candidate_end: int = 0
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _obj, end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            candidate_start = index
+            candidate_end = index + end
+            break
+
+        if candidate_start != -1:
+            candidate = text[candidate_start:candidate_end]
+            outside = (text[:candidate_start] + text[candidate_end:]).strip()
+            cleaned_outside = self._strip_cot_fences(outside)
+            if cleaned_outside.strip():
+                raise ValueError("ambiguous_json")
+
+            candidate_for_parse = candidate.strip()
+            data = self._load_analysis_json_candidate(candidate_for_parse)
+            return candidate_for_parse, data
+
+        cleaned = self._strip_cot_fences(text)
+        cleaned_stripped = cleaned.strip()
+        if not cleaned_stripped:
+            raise ValueError("empty_response")
+
         try:
-            data = self._load_analysis_json_candidate(stripped)
+            data = self._load_analysis_json_candidate(cleaned_stripped)
         except json.JSONDecodeError as exc:
-            if self._contains_embedded_json_object(text):
+            if self._contains_embedded_json_object(cleaned):
                 raise ValueError("ambiguous_json") from exc
             raise
-        return stripped, data
+        return cleaned_stripped, data
 
     def _load_analysis_json_candidate(self, json_str: str) -> Dict[str, Any]:
         """Parse one already-selected JSON candidate, repairing common LLM JSON drift."""

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- [修复] 分析器 JSON 解析器在遇到带 `<think>`/`<reasoning>`/`<|begin▁of▁thought|>` 等 CoT 围栏的 LLM 响应时被误判为 `ambiguous_json`，导致正常返回被丢进文本兜底（DeepSeek R1、GPT-OSS、MiniMax-M3、Claude extended thinking 等推理模型会受影响）。解析前先剥离 CoT 围栏，保留"多 JSON 围栏/嵌入 JSON 仍判歧义"的硬约束。
+- [修复] 分析器 JSON 解析器在遇到带 `<think>`/`<reasoning>`/`<|begin▁of▁thought|>` 等 CoT 围栏的 LLM 响应时被误判为 `ambiguous_json`，导致正常返回被丢进文本兜底。CoT 剥离仅作用于 JSON 候选边界（fence body 或首个 `raw_decode` 出的 `{...}`）之外；JSON 字段值里的 CoT 类字面量不再被静默改写；保留"多 JSON 围栏/嵌入 JSON 仍判歧义"的硬约束。
 - [修复] Discord 长报告推送按 2000 字符上限分片逐段发送，遇到 429 限流会按 `retry_after`/`Retry-After` 有限重试，避免中途失败后只收到前半段报告。
 - [改进] #1777 台股三大法人 fetcher（`TwInstitutionalFetcher`）增加缓存防击穿：并发同 (市场, 日期) 调用合并为单次上游请求，保护 TWSE T86 ~3 req/5s 限流额度；不同 key 仍并行；新增并发单次抓取、不同 key 各抓一次、HTTP 错误 fail-open 回归测试。
 - [修复] 修复桌面端启动时 `.env` 中 `WEBUI_PORT` 与 Electron 自动选择端口不一致会导致窗口继续等待旧端口并连接超时的问题。
