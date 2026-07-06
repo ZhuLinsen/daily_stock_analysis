@@ -107,10 +107,15 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 Web 入口位于 `/decision-signals`：
 
 - 默认查询 `status=active`。
-- 支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选。
-- 新增单支股票信号时间线，复用现有 `GET /api/v1/decision-signals` list API，不新增 timeline endpoint。时间线必须输入非空 `stockCode` 后才会查询；空 `stockCode` 只显示引导态，不拉取 market-only 或 global timeline。
+- 页面顶部提供页面级“当前股票”主路径，独立于高级列表筛选。用户提交主股票、选择自动补全候选或点击候选 chip 后，latest active 与时间线共用同一个已应用股票上下文；只修改输入草稿不会触发 latest 或时间线查询。
+- 当前股票候选优先展示最近分析过的股票；如果没有历史候选，或历史候选加载失败，则降级展示股票索引中 active 且 popularity 较高的热门股票。候选只作为手动点击入口，页面加载时不会自动提交查询；历史和股票索引都不可用时仅显示无候选降级文案。
+- 当前股票上下文会显示已应用的代码、名称和可推导市场，并提供清空入口。清空会让 latest 与时间线回到引导态，不影响高级列表筛选或列表来源详情抽屉。
+- 支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态进行高级列表筛选；这些筛选不等同于当前股票上下文，也不会污染 latest active 查询。
+- 单支股票信号时间线复用现有 `GET /api/v1/decision-signals` list API，不新增 timeline endpoint。时间线必须先应用非空当前股票后才会查询；没有当前股票时只显示引导态，不拉取 market-only 或 global timeline。
 - 时间线只支持 `30d`、`90d`、`180d` 三个时间范围，默认 `90d`；每次最多请求 100 条。若返回 `total > items.length`，Web 会显示“仅展示最近 100 条信号，请缩小时间范围”，避免静默展示不完整轨迹。
+- 时间线筛选保留独立的 market、range、status 表单和查询按钮。选择新当前股票时，如果能推导市场，只在这一次初始化时间线 market；用户之后可以手动改 market，查询以按钮提交时的表单快照为准。
 - 时间线 status filter 只支持 `all` 与 `active`：`all` 不传 `status`，`active` 传 `status=active`。P1 不提供 terminal status filter，也不做前端 terminal 过滤。
+- 信号表现统计保持全局已复盘 outcome 口径，不等于当前可见信号数量，也不随当前股票或高级列表筛选变化；当已复盘样本数为 0 时，Web 显示零样本空状态而不是一组 `0/-` 指标。
 - P1 不提供 profile filter；`decision_profile` 仍只存在于 metadata 中，不能可靠 server-side 过滤。历史缺失或非法 profile 的信号在 Web 中显示为 `unknown`，不会误标为 `balanced`。
 - market filter 在 API / 服务层与 Web 前端均已支持 `cn/hk/us/jp/kr/tw`；`jp/kr/tw` 的前端本地化标签均已补齐，`tw` 信号可经 API 正常写入、按 `market=tw` 查询，并可在 Web DecisionSignal 页面通过市场筛选项选择台股（tw）；告警（大盘红绿灯）市场支持 `cn/hk/us/jp/kr`。
 - 详情抽屉展示动作、状态、评分、置信度、周期、计划质量、市场阶段、价格计划、风险、观察条件、证据、数据质量和 metadata。

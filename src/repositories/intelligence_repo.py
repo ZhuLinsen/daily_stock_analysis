@@ -38,6 +38,17 @@ class IntelligenceRepository:
                 select(IntelligenceSource).where(IntelligenceSource.name == name).limit(1)
             ).scalar_one_or_none()
 
+    def update_source_enabled(self, source_id: int, enabled: bool) -> None:
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(IntelligenceSource).where(IntelligenceSource.id == source_id).limit(1)
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            row.enabled = bool(enabled)
+            row.updated_at = datetime.now()
+            session.commit()
+
     def list_sources(
         self,
         *,

@@ -155,6 +155,8 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement; permission or entitlement failures fall back to existing providers | Optional |
 
+> **GitHub Actions:** The bundled `00-daily-analysis.yml` maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY` / `TICKFLOW_*`, and the documented `LONGBRIDGE_*` variables into the job environment. Store `TICKFLOW_API_KEY` in **Secrets**; non-sensitive TickFlow priority, adjustment, and batch switches can live in **Variables** or **Secrets**. Longbridge OAuth still requires a client id plus `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` for headless Actions runs, while the legacy `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` triplet remains supported.
+
 #### ✅ Minimum Configuration Example
 
 To get started quickly, you need at minimum:

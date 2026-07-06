@@ -1817,7 +1817,8 @@ Market conditions can change quickly. The data above is for reference only and d
             if self._get_news_field(item, "url")
         }
         try:
-            service = IntelligenceService()
+            service = IntelligenceService(config=self.config)
+            service.refresh_auto_sources()
             payload = service.list_items(
                 scope_type="market",
                 market=self.region,

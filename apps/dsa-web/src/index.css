@@ -2108,17 +2108,13 @@ textarea {
 .settings-nav-item-active {
   border-color: hsl(var(--primary) / 0.36);
   background: hsl(var(--primary) / 0.12);
-  box-shadow:
-    3px 4px 0 hsl(var(--primary) / 0.08),
-    10px 14px 26px hsl(214 24% 38% / 0.12);
+  box-shadow: inset 3px 0 0 hsl(var(--primary) / 0.74);
 }
 
 .dark .settings-nav-item-active {
   border-color: hsl(var(--primary) / 0.34);
   background: hsl(var(--primary) / 0.12);
-  box-shadow:
-    2px 3px 0 hsl(var(--primary) / 0.06),
-    8px 12px 22px hsl(190 100% 50% / 0.07);
+  box-shadow: inset 3px 0 0 hsl(var(--primary) / 0.68);
 }
 
 .settings-button-primary {

@@ -130,13 +130,13 @@ ENABLE_EASTMONEY_PATCH=true
 
 ### A 股稳定模式
 
-适合经常跑选股、批量分析或对外服务。Tushare 用于增强 A 股稳定性，TickFlow 用于增强 A 股大盘复盘；免费源继续作为兜底。
+适合经常跑选股、批量分析或对外服务。Tushare 用于增强 A 股日线与快照稳定性；TickFlow 可增强 A 股日 K、实时行情和大盘复盘（实时行情需显式加入 `REALTIME_SOURCE_PRIORITY`）；免费源继续作为兜底。
 
 ```env
 TUSHARE_TOKEN=your_tushare_token
 TICKFLOW_API_KEY=your_tickflow_key
 
-REALTIME_SOURCE_PRIORITY=tushare,tencent,akshare_sina,efinance,akshare_em
+REALTIME_SOURCE_PRIORITY=tickflow,tushare,tencent,akshare_sina,efinance,akshare_em
 SNAPSHOT_SOURCE_PRIORITY=tushare,sina,efinance,akshare_em,em_datacenter
 
 # AlphaSift 选股运行期默认值；显式配置时会保留你的值
@@ -144,7 +144,7 @@ DAILY_FETCH_RETRIES=3
 DAILY_FETCH_MAX_WORKERS=1
 ```
 
-注意：TickFlow 当前在 DSA 中是大盘复盘专用窄接口，不参与普通个股日线或实时行情；不要把它当成所有个股行情的通用替代源。
+注意：TickFlow 能力按套餐权限分层；权限不足或请求失败时会 fail-open 回退到现有免费源，不建议把它当成所有市场行情的唯一来源。
 
 ### 港股 / 美股稳定模式
 

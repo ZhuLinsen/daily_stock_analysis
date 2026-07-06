@@ -2490,7 +2490,8 @@ class StockAnalysisPipeline:
     ) -> Optional[str]:
         """Load locally persisted intelligence as fail-open evidence context."""
         try:
-            service = IntelligenceService()
+            service = IntelligenceService(config=self.config)
+            service.refresh_auto_sources()
             days = max(1, int(self.config.get_effective_news_window_days() or 1))
             collected: list[Dict[str, Any]] = []
             seen_urls: set[str] = set()
