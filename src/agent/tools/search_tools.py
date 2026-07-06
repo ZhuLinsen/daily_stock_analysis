@@ -9,9 +9,22 @@ Tools:
 
 import logging
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+_NEWS_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_write_cache"],
+    permissions=["news:read"],
+    scope_dimensions=["stock"],
+)
+_INTEL_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_write_cache"],
+    permissions=["intel:read"],
+    scope_dimensions=["stock"],
+)
 
 
 def _get_db():
@@ -128,6 +141,7 @@ search_stock_news_tool = ToolDefinition(
     ],
     handler=_handle_search_stock_news,
     category="search",
+    policy=_NEWS_READ_POLICY,
 )
 
 
@@ -202,6 +216,7 @@ search_comprehensive_intel_tool = ToolDefinition(
     ],
     handler=_handle_search_comprehensive_intel,
     category="search",
+    policy=_INTEL_READ_POLICY,
 )
 
 

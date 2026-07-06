@@ -24,6 +24,8 @@ Generation backend 配置是更外层的运行时选择契约。Phase 4 支持 `
 
 生成后端状态接口与 Web 面板会把轻量检查和冒烟测试分开展示：快速检查只读取已保存 `.env`、运行时兜底值和当前草稿，不写配置、不重载运行时，也不发起真实模型请求；只有 JSON 冒烟测试会使用固定的 JSON 提示词和 schema 发起真实请求。`health_status` 与 `last_error_code/message` 是本次计算结果，不表示历史最后错误。本地 CLI preset 的 `supports_tools=false` 仅表示不支持 DSA Agent 工具调用链路，不代表普通文本生成不可用。
 
+Phase 6a Tool Surface 只补充 AgentBackend 前置的内部工具面：统一 DSA 工具 schema、public descriptor、MCP-compatible descriptor、scope guard、结构化错误、审计摘要和脱敏诊断。stock-scoped 工具调用必须显式传入 `ToolAccessContext.stock_scope`；有 `stock_code` 参数但未声明 stock scope 的工具会 fail-closed。它不新增 provider、模型、Base URL、README、`.env`、API、Web 配置入口、MCP server 或外部 runtime adapter，也不改变 `GENERATION_BACKEND` / `AGENT_GENERATION_BACKEND` 路由。后续 Codex / Claude / OpenCode / Hermes adapter 必须消费这层 Tool Surface，不能绕过它直接拼 provider-specific tool schema；真实 Agent tools 能力仍必须由 wire-level tool call / tool result roundtrip probe 证明。
+
 本 PR smoke 验证版本为 `claude 2.1.177 (Claude Code)` 与 `opencode 1.17.11`，不声明更宽最低版本。如果用户安装的 CLI 不支持这些固定 preset 参数或非交互输出契约，DSA 会返回结构化 `capability_unsupported`、`cli_contract_unsupported`、`invalid_json`、`schema_validation_failed` 或对应 backend error，并在配置 backend fallback 时回退到 `litellm`。
 
 本地 CLI Backend 不等于离线模型。Docker、云服务器和 CI 不天然拥有本机 CLI 登录态；macOS 从 Finder/Dock 启动桌面端时不继承 shell PATH，打包桌面端会在启动后端时补入常见 Homebrew 路径，如果设置检查仍提示找不到 CLI 可执行文件，需要完全退出并重开 DSA。DSA 不读取 Codex/Claude/OpenCode credential 文件，也不为 OpenCode 生成或搬运 provider API key；子进程可能按 CLI 自身机制使用本机登录态或配置，股票代码、新闻、持仓上下文、分析 prompt 和报告草稿可能被对应 CLI 背后的服务处理。DSA 默认只继承最小运行环境，并拒绝通配继承 `CLAUDE_*`、`ANTHROPIC_*`、`OPENCODE_*`、provider API key/token/base-url/model env 和 webhook tokens，降低父进程配置泄漏风险；`CODEX_HOME` 仅作为既有 Codex CLI 登录目录兼容的 exact-name 例外保留。

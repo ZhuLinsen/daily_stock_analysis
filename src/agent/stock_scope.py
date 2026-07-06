@@ -72,7 +72,7 @@ def _normalize_stock_code(value: Any) -> str:
     if not text:
         return ""
     try:
-        from src.agent.runner import _normalize_tool_stock_code
+        from src.agent.tools.execution import _normalize_tool_stock_code
 
         normalized = _normalize_tool_stock_code(text)
     except Exception:
