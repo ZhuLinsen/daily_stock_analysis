@@ -4,7 +4,8 @@ on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
     - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
+    - cron: '5 4 * * 1-5'   
+    
   # 手动触发
   workflow_dispatch:
     inputs:
