@@ -2983,7 +2983,7 @@ class SystemConfigService:
 
         dispatch = {
             "wechat": lambda: WechatSender(config).send_to_wechat(titled_content, timeout_seconds=timeout_seconds),
-            "dingtalk": lambda: DingtalkSender(config).send_to_dingtalk(titled_content, title="Test Message", timeout_seconds=timeout_seconds),
+            "dingtalk": lambda: DingtalkSender(config).send_to_dingtalk(titled_content, title=title if title else "股票 DSA 通知测试", timeout_seconds=timeout_seconds),
             "feishu": lambda: FeishuSender(config).send_to_feishu(titled_content, timeout_seconds=timeout_seconds),
             "telegram": lambda: TelegramSender(config).send_to_telegram(titled_content, timeout_seconds=timeout_seconds),
             "email": lambda: EmailSender(config).send_to_email(content, subject=title, timeout_seconds=timeout_seconds),

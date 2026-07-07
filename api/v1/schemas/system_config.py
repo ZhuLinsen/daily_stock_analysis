@@ -13,6 +13,7 @@ GenerationBackendHealthStatus = Literal["not_tested", "passed", "failed", "skipp
 NotificationTestChannel = Literal[
     "wechat",
     "feishu",
+    "dingtalk",
     "telegram",
     "email",
     "pushover",

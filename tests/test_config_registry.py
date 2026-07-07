@@ -817,5 +817,65 @@ class TestMarketReviewFieldsRegistered(unittest.TestCase):
         self.assertIn("MARKET_REVIEW_REGION", field_keys)
 
 
+class TestDingTalkWebhookFieldsRegistered(unittest.TestCase):
+    """DingTalk group robot webhook fields must be visible in WebUI settings."""
+
+    def test_dingtalk_webhook_url_is_registered_as_notification_password(self):
+        field = get_field_definition("DINGTALK_WEBHOOK_URL")
+        self.assertEqual(field["category"], "notification")
+        self.assertEqual(field["data_type"], "string")
+        self.assertEqual(field["ui_control"], "password")
+        self.assertTrue(field["is_sensitive"])
+        self.assertFalse(field["is_required"])
+        self.assertIsNone(field["default_value"])
+        self.assertEqual(field["display_order"], 18)
+        self.assertEqual(
+            field["validation"]["allowed_schemes"],
+            ["http", "https"],
+        )
+        self.assertEqual(field["validation"]["item_type"], "url")
+
+    def test_dingtalk_secret_is_registered_as_notification_password(self):
+        field = get_field_definition("DINGTALK_SECRET")
+        self.assertEqual(field["category"], "notification")
+        self.assertEqual(field["data_type"], "string")
+        self.assertEqual(field["ui_control"], "password")
+        self.assertTrue(field["is_sensitive"])
+        self.assertFalse(field["is_required"])
+        self.assertIsNone(field["default_value"])
+        self.assertEqual(field["display_order"], 19)
+        # Secret should NOT require URL validation
+        self.assertNotIn("allowed_schemes", field["validation"])
+
+    def test_schema_response_includes_dingtalk_webhook_fields(self):
+        schema = build_schema_response()
+        notification_cat = next(
+            (c for c in schema["categories"] if c["category"] == "notification"),
+            None,
+        )
+        self.assertIsNotNone(notification_cat, "notification category missing")
+        field_keys = {f["key"] for f in notification_cat["fields"]}
+        self.assertIn("DINGTALK_WEBHOOK_URL", field_keys, "DINGTALK_WEBHOOK_URL missing from schema response")
+        self.assertIn("DINGTALK_SECRET", field_keys, "DINGTALK_SECRET missing from schema response")
+
+    def test_dingtalk_webhook_fields_not_in_hidden_ui_set(self):
+        self.assertNotIn("DINGTALK_WEBHOOK_URL", WEB_SETTINGS_HIDDEN_FROM_UI)
+        self.assertNotIn("DINGTALK_SECRET", WEB_SETTINGS_HIDDEN_FROM_UI)
+
+    def test_dingtalk_in_notification_test_channels(self):
+        from src.services.system_config_service import SystemConfigService
+        self.assertIn("dingtalk", SystemConfigService._NOTIFICATION_TEST_CHANNELS)
+
+
+class TestDingTalkNotificationTestChannel(unittest.TestCase):
+    """The dingtalk channel must be recognized by the notification test API."""
+
+    def test_notification_test_channel_literal_includes_dingtalk(self):
+        from api.v1.schemas.system_config import NotificationTestChannel
+        # Extract the literal values by introspecting the type
+        literal_args = NotificationTestChannel.__args__
+        self.assertIn("dingtalk", literal_args)
+
+
 if __name__ == "__main__":
     unittest.main()

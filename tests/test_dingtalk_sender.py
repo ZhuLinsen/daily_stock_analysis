@@ -69,3 +69,41 @@ class TestDingtalkSender(unittest.TestCase):
         mock_post.side_effect = Exception("Network Error")
         result = self.sender.send_to_dingtalk("Test content")
         self.assertFalse(result)
+
+    def test_send_returns_false_when_webhook_url_empty(self):
+        """DingTalk sender must return False when webhook URL is not configured."""
+        config = Config()
+        config.dingtalk_webhook_url = ""
+        config.dingtalk_secret = ""
+        sender = DingtalkSender(config)
+        result = sender.send_to_dingtalk("Test content")
+        self.assertFalse(result)
+
+    def test_send_without_secret_does_not_append_sign(self):
+        """When secret is empty, signing params should NOT be appended to URL."""
+        config = Config()
+        config.dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=test"
+        config.dingtalk_secret = ""
+        sender = DingtalkSender(config)
+        # The webhook URL should remain unchanged (no timestamp/sign params)
+        self.assertEqual(
+            sender.webhook_url,
+            "https://oapi.dingtalk.com/robot/send?access_token=test",
+        )
+
+    @patch("src.notification_sender.dingtalk_sender.requests.post")
+    def test_send_with_secret_appends_sign_params(self, mock_post):
+        """When secret is configured, signing params must be in the URL."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+        mock_post.return_value = mock_response
+
+        config = Config()
+        config.dingtalk_webhook_url = "https://oapi.dingtalk.com/robot/send?access_token=test"
+        config.dingtalk_secret = "mysecret"
+        sender = DingtalkSender(config)
+        sender.send_to_dingtalk("Test")
+
+        called_url = mock_post.call_args[0][0]
+        self.assertIn("timestamp=", called_url)
+        self.assertIn("sign=", called_url)
