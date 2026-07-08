@@ -4334,7 +4334,7 @@ class GeminiAnalyzer:
     ) -> str:
         """Build retry prompt using the previous response as the complement baseline."""
         complement = self._build_integrity_complement_prompt(missing_fields, report_language=report_language)
-        previous_output = previous_response.strip()
+        previous_output = self._strip_analysis_reasoning_blocks(previous_response).strip()
         if normalize_report_language(report_language) in ("en", "ko"):
             prefix = "### The previous output is below. Complete the missing fields based on that output and return the full JSON again. Do not omit existing fields:"
         else:
@@ -4353,6 +4353,40 @@ class GeminiAnalyzer:
     def _extract_analysis_json_object(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
         """Extract the single allowed JSON object from an LLM response."""
 
+        text = response_text or ""
+        try:
+            return self._extract_analysis_json_object_strict(text)
+        except (ValueError, json.JSONDecodeError) as exc:
+            if (
+                not isinstance(exc, json.JSONDecodeError)
+                and str(exc) != "ambiguous_json"
+            ):
+                raise
+            text_without_reasoning = self._strip_analysis_reasoning_blocks(text)
+            if text_without_reasoning == text:
+                raise
+            try:
+                return self._extract_analysis_json_object_strict(text_without_reasoning)
+            except (ValueError, json.JSONDecodeError):
+                raise exc
+
+    @staticmethod
+    def _strip_analysis_reasoning_blocks(response_text: str) -> str:
+        """Remove model reasoning wrappers before selecting the analysis JSON."""
+        text = response_text or ""
+        tag_pattern = re.compile(
+            r"<(?P<tag>think|thinking|reasoning)>\s*.*?\s*</(?P=tag)>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        text = tag_pattern.sub("", text)
+        fence_pattern = re.compile(
+            r"```[ \t]*(?:think|thinking|reasoning|cot|chain[-_ ]?of[-_ ]?thought)[^\n`]*\n?.*?```",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        return fence_pattern.sub("", text)
+
+    def _extract_analysis_json_object_strict(self, response_text: str) -> Tuple[str, Dict[str, Any]]:
+        """Extract one JSON object without accepting non-JSON prose."""
         text = response_text or ""
         stripped = text.strip()
         if not stripped:

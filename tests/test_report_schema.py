@@ -243,6 +243,27 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
         self.assertEqual(result.name, "贵州茅台")
         self.assertEqual(result.sentiment_score, 67)
 
+    def test_parse_response_accepts_think_block_before_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = """<think>
+draft the report privately
+</think>
+```json
+{
+  "stock_name": "TestCo",
+  "sentiment_score": 71,
+  "trend_prediction": "bullish",
+  "operation_advice": "hold",
+  "analysis_summary": "single valid JSON after reasoning"
+}
+```"""
+
+        result = analyzer._parse_response(response, "AAPL", "Apple")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 71)
+        self.assertEqual(result.analysis_summary, "single valid JSON after reasoning")
+
     def test_parse_response_repairs_nested_single_json_candidate(self) -> None:
         analyzer = GeminiAnalyzer()
         response = """```json
@@ -289,6 +310,23 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
 }
 ```""")
 
+    def test_validate_json_response_accepts_reasoning_fence_plus_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        analyzer._validate_json_response("""```thinking
+private reasoning that is not part of the response contract
+```
+```json
+{
+  "stock_name": "TestCo",
+  "sentiment_score": 66,
+  "trend_prediction": "bullish",
+  "operation_advice": "hold",
+  "analysis_summary": "final JSON"
+}
+```""")
+
     def test_validate_json_response_rejects_ambiguous_json_before_repair(self) -> None:
         analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
         analyzer._config_override = SimpleNamespace(generation_backend="litellm")
@@ -306,6 +344,19 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
             analyzer._validate_json_response("""Here is the JSON:
 ```
 {"sentiment_score": 70, "trend_prediction": "看多"}
+```""")
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")
+
+    def test_validate_json_response_still_rejects_prose_after_stripping_reasoning(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response("""<think>private draft</think>
+Here is the JSON:
+```json
+{"sentiment_score": 70, "trend_prediction": "bullish"}
 ```""")
 
         self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")

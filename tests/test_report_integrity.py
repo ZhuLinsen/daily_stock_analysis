@@ -526,3 +526,18 @@ class TestIntegrityRetryPrompt(unittest.TestCase):
         self.assertIn("原始提示", prompt)
         self.assertIn('{"analysis_summary": "已有内容"}', prompt)
         self.assertIn("dashboard.core_conclusion.one_sentence", prompt)
+
+    def test_retry_prompt_strips_reasoning_blocks_from_previous_response(self) -> None:
+        """Retry prompt should not replay model reasoning wrappers."""
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            analyzer = GeminiAnalyzer()
+        prompt = analyzer._build_integrity_retry_prompt(
+            "base prompt",
+            '<think>private draft</think>\n{"analysis_summary": "kept"}',
+            ["dashboard.core_conclusion.one_sentence"],
+        )
+
+        self.assertNotIn("<think>", prompt)
+        self.assertNotIn("private draft", prompt)
+        self.assertIn('{"analysis_summary": "kept"}', prompt)
+        self.assertIn("dashboard.core_conclusion.one_sentence", prompt)
