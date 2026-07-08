@@ -20,6 +20,44 @@ EfinanceFetcher - 优先数据源 (Priority 0)
 4. 熔断器机制：连续失败后自动冷却
 """
 
+# Honour EFINANCE_CACHE_DIR so efinance's cache lives outside its package
+# directory.  Upstream efinance (≤0.5.x) hardcodes DATA_DIR to a path
+# inside its own package directory and unconditionally mkdir()s it at
+# import time, which crashes on read-only filesystems (containers,
+# system Python installs).  We pre-register a writable stub for
+# efinance.config in sys.modules BEFORE any `import efinance as ef`
+# triggers upstream's mkdir(), so any later code path sees a writable
+# cache path driven by $EFINANCE_CACHE_DIR (default
+# /app/data/.efinance-cache, which is already a writable Volume in
+# containerized deployments).
+import os as _os
+import sys as _sys
+import types as _types
+from pathlib import Path as _Path
+
+_EFINANCE_CACHE_DIR = _Path(_os.environ.get(
+    "EFINANCE_CACHE_DIR", "/app/data/.efinance-cache"))
+_EFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+_ef_cfg_stub = _types.ModuleType("efinance.config")
+_ef_cfg_stub.DATA_DIR = _EFINANCE_CACHE_DIR
+_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH = str(
+    _EFINANCE_CACHE_DIR / "search-cache.json")
+_ef_cfg_stub.MAX_CONNECTIONS = 50
+_ef_cfg_stub.SHOW_TICKFLOW_PROMPT = True
+_ef_cfg_stub.HERE = _Path("/tmp/.efinance-config-marker")
+
+_sys.modules.setdefault("efinance.config", _ef_cfg_stub)
+
+try:
+    import efinance as _ef  # noqa: F401  -- triggers efinance/__init__.py + utils with our config stub
+    _ef.config = _ef_cfg_stub  # attribute access (ef.config) hit by downstream callers
+except ImportError:
+    # efinance not installed (test envs, partial installs).  sys.modules
+    # stub stays in place; a later `import efinance as ef` in environments
+    # where efinance IS installed will still pick it up.
+    pass
+
 import logging
 import os
 import random
