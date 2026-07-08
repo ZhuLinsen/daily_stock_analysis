@@ -12,6 +12,7 @@ interface SettingsCategoryNavProps {
   itemsByCategory: Record<string, SystemConfigItem[]>;
   activeCategory: string;
   onSelect: (category: string) => void;
+  dirtyCountByCategory?: Record<string, number>;
 }
 
 const categoryIconMap: Partial<Record<SystemConfigCategory, LucideIcon>> = {
@@ -29,6 +30,7 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
   itemsByCategory,
   activeCategory,
   onSelect,
+  dirtyCountByCategory,
 }) => {
   const { language, t } = useUiLanguage();
 
@@ -46,6 +48,7 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
         {categories.map((category) => {
           const isActive = category.category === activeCategory;
           const count = (itemsByCategory[category.category] || []).length;
+          const dirtyCount = dirtyCountByCategory?.[category.category] ?? 0;
           const title = getCategoryTitle(category.category, category.title, language);
           const description = getCategoryDescription(category.category, category.description, language);
           const Icon = categoryIconMap[category.category] ?? Layers3;
@@ -77,6 +80,15 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
                   </span>
                 ) : null}
               </span>
+              {dirtyCount > 0 ? (
+                <span
+                  className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 text-[11px] font-semibold text-amber-600 dark:text-amber-300"
+                  aria-label={t('settings.unsavedIndicator', { count: dirtyCount })}
+                  title={t('settings.unsavedIndicator', { count: dirtyCount })}
+                >
+                  {dirtyCount}
+                </span>
+              ) : null}
               <Badge
                 variant={isActive ? 'info' : 'default'}
                 size="sm"

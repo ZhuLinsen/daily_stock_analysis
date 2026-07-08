@@ -1,13 +1,13 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { useAuth, useSystemConfig } from '../hooks';
+import { useAuth, useSystemConfig, useUnsavedChangesGuard } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi } from '../api/analysis';
 import { alphasiftApi, notifyAlphaSiftConfigChanged, notifySystemConfigChanged } from '../api/alphasift';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
+import { ApiErrorAlert, Button, ConfirmDialog, EmptyState, StickyActionBar } from '../components/common';
 import {
   AuthSettingsCard,
   ChangePasswordCard,
@@ -888,6 +888,7 @@ const SettingsPage: React.FC = () => {
     activeCategory,
     setActiveCategory,
     hasDirty,
+    dirtyKeys,
     dirtyCount,
     toast,
     clearToast,
@@ -1026,6 +1027,28 @@ const SettingsPage: React.FC = () => {
     && !currentChangedItems.some((item) => item.key === 'SCHEDULE_ENABLED');
   const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft;
   const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0);
+
+  useUnsavedChangesGuard(effectiveHasDirty);
+
+  const dirtyCountByCategory = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (!dirtyKeys.length) {
+      return counts;
+    }
+    const keyToCategory: Record<string, string> = {};
+    for (const [category, items] of Object.entries(itemsByCategory)) {
+      for (const item of items) {
+        keyToCategory[item.key] = category;
+      }
+    }
+    for (const key of dirtyKeys) {
+      const category = keyToCategory[key];
+      if (category) {
+        counts[category] = (counts[category] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [dirtyKeys, itemsByCategory]);
 
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;
@@ -1494,6 +1517,7 @@ const SettingsPage: React.FC = () => {
               itemsByCategory={itemsByCategory}
               activeCategory={activeCategory}
               onSelect={setActiveCategory}
+              dirtyCountByCategory={dirtyCountByCategory}
             />
           </aside>
 
@@ -1803,6 +1827,34 @@ const SettingsPage: React.FC = () => {
           </section>
         </div>
       )}
+
+      {!isLoading && effectiveHasDirty ? (
+        <StickyActionBar>
+          <span className="mr-auto text-sm text-muted-text">
+            {t('settings.unsavedBarText', { count: effectiveDirtyCount })}
+          </span>
+          <Button
+            type="button"
+            variant="settings-secondary"
+            size="sm"
+            onClick={resetDraft}
+            disabled={isLoading || isSaving}
+          >
+            {t('settings.discardChanges')}
+          </Button>
+          <Button
+            type="button"
+            variant="settings-primary"
+            size="sm"
+            onClick={() => void handleSaveConfig()}
+            disabled={isSaving || isLoading}
+            isLoading={isSaving}
+            loadingText={t('settings.saving')}
+          >
+            {t('settings.saveConfig')}
+          </Button>
+        </StickyActionBar>
+      ) : null}
 
       {toast ? (
         <div className="fixed bottom-5 right-5 z-50 w-[320px] max-w-[calc(100vw-24px)]">
