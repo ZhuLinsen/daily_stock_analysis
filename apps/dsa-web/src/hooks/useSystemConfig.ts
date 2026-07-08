@@ -402,6 +402,7 @@ export function useSystemConfig() {
     activeCategory,
     setActiveCategory,
     hasDirty,
+    dirtyKeys,
     dirtyCount: dirtyKeys.length,
     toast,
     clearToast,
