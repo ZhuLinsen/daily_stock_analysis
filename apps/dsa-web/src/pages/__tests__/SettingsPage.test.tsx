@@ -80,6 +80,7 @@ const mockedAnchorClick = vi.fn();
 vi.mock('../../hooks', () => ({
   useAuth: () => useAuthMock(),
   useSystemConfig: () => useSystemConfigMock(),
+  useUnsavedChangesGuard: () => undefined,
 }));
 
 vi.mock('../../api/systemConfig', () => ({
@@ -286,6 +287,7 @@ type ConfigState = {
   activeCategory: string;
   setActiveCategory: typeof setActiveCategory;
   hasDirty: boolean;
+  dirtyKeys: string[];
   dirtyCount: number;
   toast: null;
   clearToast: typeof clearToast;
@@ -417,6 +419,7 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
     activeCategory: 'system',
     setActiveCategory,
     hasDirty: false,
+    dirtyKeys: [],
     dirtyCount: 0,
     toast: null,
     clearToast,
@@ -1252,7 +1255,7 @@ describe('SettingsPage', () => {
 
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存配置 (1)' }));
 
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(notifyAlphaSiftConfigChanged).toHaveBeenCalledTimes(1);
@@ -1273,7 +1276,7 @@ describe('SettingsPage', () => {
 
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存配置 (1)' }));
 
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(notifySystemConfigChanged).toHaveBeenCalledTimes(1);
@@ -1292,7 +1295,7 @@ describe('SettingsPage', () => {
 
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存配置 (1)' }));
 
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(notifySystemConfigChanged).toHaveBeenCalledTimes(1);
