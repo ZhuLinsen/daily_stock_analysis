@@ -7,6 +7,14 @@ APP_UID="1000"
 APP_GID="1000"
 WRITABLE_DIRS="/app/data /app/logs /app/reports /home/dsa/.longbridge"
 DATABASE_FILE="${DATABASE_PATH:-/app/data/stock_analysis.db}"
+# Efinance (≤0.5.x) mkdir()s into its own package directory on import, which
+# fails on this image's read-only rootfs.  Default the cache to a writable
+# volume so the official container works out-of-the-box; non-container users
+# inherit the data_provider XDG / ~/.cache fallback via the efinance_fetcher
+# contract.  Operators can still override via -e EFINANCE_CACHE_DIR=... or an
+# env_file.
+EFINANCE_CACHE_DIR="${EFINANCE_CACHE_DIR:-/app/data/.efinance-cache}"
+export EFINANCE_CACHE_DIR
 
 warn() {
     printf '%s\n' "$*" >&2

@@ -341,6 +341,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `FUNDAMENTAL_RETRY_MAX` | Retry count for fundamental capabilities (including the first attempt) | `1` | Optional |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | Fundamental aggregation cache TTL (seconds), short cache to reduce repeated API pulling. | `120` | Optional |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | Maximum entries for fundamental cache (evicted by time within TTL) | `256` | Optional |
+| `EFINANCE_CACHE_DIR` | Writable directory for efinance's internal cache files (e.g. `search-cache.json`). Upstream efinance ≤0.5.x mkdir()s into its own package directory, which fails on the image's read-only rootfs. Default resolution: `$XDG_CACHE_HOME/efinance` → `~/.cache/efinance`; the official container image injects `/app/data/.efinance-cache` via `docker/entrypoint.sh`. If the resolved path is not creatable, the fetcher logs a warning and continues; subsequent efinance writes surface a clear `OSError` handled by the data-source fallback chain. | - | Optional |
 
 > **Behavior Notes:**
 > - **A-shares**: Returns aggregated capabilities by `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards`.
