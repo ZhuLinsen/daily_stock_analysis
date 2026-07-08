@@ -14,7 +14,7 @@ import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiLanguage, UiTextKey } from '../../i18n/uiText';
 import type { DecisionSignalItem, DecisionSignalStatus } from '../../types/decisionSignals';
 import { buildDecisionActionLabelMap, getDecisionActionLabel } from '../../utils/decisionAction';
-import { getDecisionProfile } from '../../utils/decisionSignalProfile';
+import { getDecisionSignalProfileLabel } from '../../utils/decisionSignalProfile';
 import {
   getDecisionSignalHorizonLabel,
 } from '../../utils/decisionSignalLabels';
@@ -154,7 +154,7 @@ type TimelineTooltipProps = {
   payload?: Array<{ payload?: TimelineDatum }>;
 };
 
-const TimelineTooltip: React.FC<TimelineTooltipProps> = ({ active, payload }) => {
+export const TimelineTooltip: React.FC<TimelineTooltipProps> = ({ active, payload }) => {
   const { language, t } = useUiLanguage();
   const actionLabels = buildDecisionActionLabelMap(t);
   if (!active || !payload?.[0]?.payload) return null;
@@ -178,7 +178,7 @@ const TimelineTooltip: React.FC<TimelineTooltipProps> = ({ active, payload }) =>
         <span>{t('decisionSignals.horizon')}: {getDecisionSignalHorizonLabel(item.horizon, t)}</span>
         <span>{t('decisionSignals.status')}: {t(STATUS_LABEL_KEYS[item.status])}</span>
         <span>{t('decisionSignals.sourceReport')}: {item.sourceReportId ? `#${item.sourceReportId}` : '-'}</span>
-        <span>{t('decisionSignals.profile')}: {getDecisionProfile(item)}</span>
+        <span>{t('decisionSignals.profile')}: {getDecisionSignalProfileLabel(item, t)}</span>
       </div>
     </div>
   );

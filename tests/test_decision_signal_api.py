@@ -174,6 +174,8 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
     signal_id = created["item"]["id"]
     assert created["item"]["stock_code"] == "600519"
     assert created["item"]["plan_quality"] == "partial"
+    assert created["item"]["decision_profile"] == "balanced"
+    assert created["item"]["metadata"]["decision_profile"] == "balanced"
     assert created["item"]["expires_at"] is not None
 
     duplicate_resp = client.post(
@@ -213,11 +215,15 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
 
     patch_resp = client.patch(
         f"/api/v1/decision-signals/{signal_id}/status",
-        json={"status": "closed", "metadata": {"closed_by": "api-test"}},
+        json={
+            "status": "closed",
+            "metadata": {"closed_by": "api-test", "decision_profile": "aggressive"},
+        },
     )
     assert patch_resp.status_code == 200, patch_resp.text
     assert patch_resp.json()["status"] == "closed"
     assert patch_resp.json()["metadata"]["closed_by"] == "api-test"
+    assert patch_resp.json()["metadata"]["decision_profile"] == "balanced"
     assert "task_id" not in patch_resp.json()["metadata"]
 
     clear_metadata_resp = client.patch(
@@ -244,6 +250,40 @@ def test_create_duplicate_list_detail_latest_and_status_update(client_and_db) ->
 
     missing_resp = client.get("/api/v1/decision-signals/999999")
     assert missing_resp.status_code == 404
+
+
+def test_create_rejects_explicit_null_decision_profile_and_accepts_null_metadata(client_and_db) -> None:
+    client, _db = client_and_db
+
+    null_profile_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(source_report_id=3010, trace_id="trace-null-profile", decision_profile=None),
+    )
+    assert null_profile_resp.status_code == 422, null_profile_resp.text
+    assert "decision_profile" in null_profile_resp.text
+
+    null_metadata_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(source_report_id=3011, trace_id="trace-null-metadata", metadata=None),
+    )
+    assert null_metadata_resp.status_code == 200, null_metadata_resp.text
+    null_metadata_item = null_metadata_resp.json()["item"]
+    assert null_metadata_item["decision_profile"] == "balanced"
+    assert null_metadata_item["metadata"] == {"decision_profile": "balanced"}
+
+    omitted_metadata_payload = _payload(
+        source_report_id=3012,
+        trace_id="trace-omitted-metadata",
+    )
+    omitted_metadata_payload.pop("metadata")
+    omitted_metadata_resp = client.post(
+        "/api/v1/decision-signals",
+        json=omitted_metadata_payload,
+    )
+    assert omitted_metadata_resp.status_code == 200, omitted_metadata_resp.text
+    omitted_metadata_item = omitted_metadata_resp.json()["item"]
+    assert omitted_metadata_item["decision_profile"] == "balanced"
+    assert omitted_metadata_item["metadata"] == {"decision_profile": "balanced"}
 
 
 def test_create_treats_null_lifecycle_fields_as_missing(client_and_db) -> None:
@@ -933,6 +973,7 @@ def test_create_schema_and_service_validation_errors(client_and_db) -> None:
         {"entry_high": 0},
         {"stop_loss": "nan"},
         {"target_price": "inf"},
+        {"metadata": ["not-an-object"]},
     ]
     for overrides in schema_invalid_cases:
         resp = client.post("/api/v1/decision-signals", json=_payload(**overrides))
@@ -1215,6 +1256,60 @@ def test_dedup_distinguishes_market_for_same_symbol(client_and_db) -> None:
     assert hk_resp.json()["item"]["id"] != us_resp.json()["item"]["id"]
 
 
+def test_list_decision_profile_filter_distinguishes_unknown_from_omitted(client_and_db) -> None:
+    client, db = client_and_db
+
+    balanced_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=3611,
+            trace_id="trace-profile-api-balanced",
+            decision_profile="balanced",
+        ),
+    )
+    aggressive_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=3612,
+            trace_id="trace-profile-api-aggressive",
+            decision_profile="aggressive",
+        ),
+    )
+    legacy_resp = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            source_report_id=3613,
+            trace_id="trace-profile-api-legacy",
+            decision_profile="balanced",
+        ),
+    )
+    assert balanced_resp.status_code == 200, balanced_resp.text
+    assert aggressive_resp.status_code == 200, aggressive_resp.text
+    assert legacy_resp.status_code == 200, legacy_resp.text
+    legacy_id = legacy_resp.json()["item"]["id"]
+    with db.session_scope() as session:
+        row = session.query(DecisionSignalRecord).filter_by(id=legacy_id).one()
+        row.decision_profile = None
+
+    all_resp = client.get("/api/v1/decision-signals", params={"stock_code": "600519", "status": "active"})
+    unknown_resp = client.get(
+        "/api/v1/decision-signals",
+        params={"stock_code": "600519", "status": "active", "decision_profile": "unknown"},
+    )
+    aggressive_list_resp = client.get(
+        "/api/v1/decision-signals",
+        params={"stock_code": "600519", "status": "active", "decision_profile": "aggressive"},
+    )
+
+    assert all_resp.status_code == 200, all_resp.text
+    assert unknown_resp.status_code == 200, unknown_resp.text
+    assert aggressive_list_resp.status_code == 200, aggressive_list_resp.text
+    assert all_resp.json()["total"] == 3
+    assert [item["id"] for item in unknown_resp.json()["items"]] == [legacy_id]
+    assert aggressive_list_resp.json()["total"] == 1
+    assert aggressive_list_resp.json()["items"][0]["decision_profile"] == "aggressive"
+
+
 def _decision_signal_count(db: DatabaseManager) -> int:
     with db.session_scope() as session:
         return session.query(DecisionSignalRecord).count()
@@ -1317,8 +1412,7 @@ def test_reassess_persist_true_rejects_before_db_lookup(client_and_db, monkeypat
     assert response.status_code == 400, response.text
     assert response.json()["error"] == "unsupported_operation"
     assert response.json()["message"] == (
-        "Persisting reassessed decision_profile signals requires decision_profile "
-        "to be promoted to a first-class field."
+        "Persisting reassessed decision_profile signals is tracked by #1757."
     )
     assert _decision_signal_count(db) == before
 

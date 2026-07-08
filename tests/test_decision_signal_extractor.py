@@ -147,6 +147,7 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     assert payload["source_type"] == "analysis"
     assert payload["source_report_id"] == 88
     assert payload["trace_id"] == "trace-88"
+    assert payload["decision_profile"] == "balanced"
     assert payload["trigger_source"] == "api"
     assert payload["action"] == "buy"
     assert payload["confidence"] == 0.8

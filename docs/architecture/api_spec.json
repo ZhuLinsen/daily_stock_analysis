@@ -934,6 +934,24 @@
             "description": "Optional market phase filter"
           },
           {
+            "name": "decision_profile",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional decision profile filter: conservative/balanced/aggressive/unknown",
+              "title": "Decision Profile"
+            },
+            "description": "Optional decision profile filter: conservative/balanced/aggressive/unknown"
+          },
+          {
             "name": "source_type",
             "in": "query",
             "required": false,
@@ -1395,7 +1413,7 @@
           "DecisionSignals"
         ],
         "summary": "更新决策信号状态",
-        "description": "只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存。expired/invalidated/closed/archived 等 terminal 状态不能直接 PATCH 回 active。",
+        "description": "只更新合法状态和可选 metadata；省略 metadata 时保留原值，null 时清空，object 时按整包替换并保持正式 decision_profile 身份。expired/invalidated/closed/archived 等 terminal 状态不能直接 PATCH 回 active。",
         "operationId": "updateDecisionSignalStatus",
         "security": [
           {
@@ -3854,6 +3872,16 @@
             "maxLength": 64,
             "title": "Trace Id"
           },
+          "decision_profile": {
+            "type": "string",
+            "enum": [
+              "conservative",
+              "balanced",
+              "aggressive"
+            ],
+            "title": "Decision Profile",
+            "description": "Optional decision profile. Omit to use server-side default/fallback; explicit null is rejected."
+          },
           "market_phase": {
             "anyOf": [
               {
@@ -4120,7 +4148,8 @@
                 "type": "null"
               }
             ],
-            "title": "Metadata"
+            "title": "Metadata",
+            "description": "Optional metadata object. Omitted or null values are treated as absent."
           },
           "report_language": {
             "anyOf": [
@@ -4172,7 +4201,8 @@
                 "type": "null"
               }
             ],
-            "title": "Metadata"
+            "title": "Metadata",
+            "description": "Optional replacement metadata. Omit to preserve the stored value; null clears it; an object replaces it while preserving the formal decision_profile identity."
           }
         },
         "type": "object",
@@ -4242,6 +4272,22 @@
               }
             ],
             "title": "Trace Id"
+          },
+          "decision_profile": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "conservative",
+                  "balanced",
+                  "aggressive"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Profile"
           },
           "market_phase": {
             "anyOf": [

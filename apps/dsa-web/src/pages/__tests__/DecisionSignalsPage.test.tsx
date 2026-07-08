@@ -811,7 +811,7 @@ describe('DecisionSignalsPage', () => {
     expect(screen.getByRole('button', { name: '查询时间线' })).toBeDisabled();
     expect(decisionSignalsApi.list).toHaveBeenCalledTimes(1);
     expect(within(screen.getByLabelText('时间线状态')).queryByRole('option', { name: '已关闭' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('profile')).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText('时间线风格')).getByRole('option', { name: '未知' })).toHaveValue('unknown');
   });
 
   it('queries timeline with independent filters and no default status', async () => {
@@ -823,6 +823,7 @@ describe('DecisionSignalsPage', () => {
 
     fireEvent.change(screen.getByLabelText('时间线市场'), { target: { value: 'cn' } });
     fireEvent.change(screen.getByLabelText('时间范围'), { target: { value: '30d' } });
+    fireEvent.change(screen.getByLabelText('时间线风格'), { target: { value: 'unknown' } });
     fireEvent.click(screen.getByRole('button', { name: '查询时间线' }));
 
     await waitFor(() => {
@@ -834,6 +835,7 @@ describe('DecisionSignalsPage', () => {
       page: 1,
       pageSize: 100,
       status: undefined,
+      decisionProfile: 'unknown',
     }));
     const params = vi.mocked(decisionSignalsApi.list).mock.calls.at(-1)?.[0] as Record<string, string>;
     expect(params.createdFrom).toEqual(expect.any(String));
@@ -945,6 +947,7 @@ describe('DecisionSignalsPage', () => {
     fireEvent.change(screen.getByLabelText('时间线市场'), { target: { value: 'us' } });
     fireEvent.change(screen.getByLabelText('时间范围'), { target: { value: '30d' } });
     fireEvent.change(screen.getByLabelText('时间线状态'), { target: { value: 'active' } });
+    fireEvent.change(screen.getByLabelText('时间线风格'), { target: { value: 'conservative' } });
 
     expect(decisionSignalsApi.list).toHaveBeenCalledTimes(2);
 
@@ -957,6 +960,7 @@ describe('DecisionSignalsPage', () => {
       stockCode: 'AAPL',
       market: 'us',
       status: 'active',
+      decisionProfile: 'conservative',
     }));
   });
 

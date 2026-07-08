@@ -146,6 +146,7 @@ def build_decision_signal_payload_from_report(
         "source_type": "analysis",
         "source_report_id": source_report_id,
         "trace_id": trace_id,
+        "decision_profile": "balanced",
         "market_phase": _extract_market_phase(context_snapshot, result),
         "trigger_source": str(query_source or "").strip() or "system",
         "action": action,

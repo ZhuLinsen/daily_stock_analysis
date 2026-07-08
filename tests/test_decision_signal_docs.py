@@ -54,6 +54,18 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
     assert "decision-signals.md" in index_en
     assert "decision-signals.md" in alerts
     assert "decision-signals.md" in notifications
+    assert "(source_report_id, source_type, market, stock_code, decision_profile" in full_guide
+    assert "(source_report_id, source_type, market, stock_code, decision_profile" in full_guide_en
+    assert "顶层显式 `null`、空值或非法值会被拒绝" in full_guide
+    assert "top-level explicit `null`, empty value, or invalid value is rejected" in full_guide_en
+    assert "metadata 省略或显式 `null` 均按无 metadata 处理" in full_guide
+    assert "Omitted or explicit `null` metadata is treated as absent" in full_guide_en
+    assert "显式 `null` 时清空为 SQL `NULL`" in full_guide
+    assert "explicit `null` clears it to SQL `NULL`" in full_guide_en
+    assert "正式字段为 legacy `NULL` 时会移除请求 object 中的 profile key" in full_guide
+    assert "for a legacy formal `NULL`, the profile key is removed" in full_guide_en
+    assert "API 响应 schema 不变" not in full_guide
+    assert "The API response schema is unchanged" not in full_guide_en
 
     list_parameters = api_spec["paths"]["/api/v1/decision-signals"]["get"]["parameters"]
     latest_parameters = api_spec["paths"]["/api/v1/decision-signals/latest/{stock_code}"]["get"]["parameters"]

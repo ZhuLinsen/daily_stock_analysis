@@ -110,6 +110,7 @@ from api.v1.schemas.alerts import (
     AlertTriggerListResponse,
 )
 from api.v1.schemas.decision_signals import (
+    DecisionProfile,
     DecisionSignalCreateRequest,
     DecisionSignalFeedbackItem,
     DecisionSignalFeedbackRequest,
@@ -221,6 +222,7 @@ __all__ = [
     "AlertTriggerItem",
     "AlertTriggerListResponse",
     # decision signals
+    "DecisionProfile",
     "DecisionSignalCreateRequest",
     "DecisionSignalFeedbackItem",
     "DecisionSignalFeedbackRequest",
