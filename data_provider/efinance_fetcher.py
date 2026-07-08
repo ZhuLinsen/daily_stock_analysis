@@ -26,23 +26,62 @@ EfinanceFetcher - 优先数据源 (Priority 0)
 # import time, which crashes on read-only filesystems (containers,
 # system Python installs).  We pre-register a writable stub for
 # efinance.config in sys.modules BEFORE any `import efinance as ef`
-# triggers upstream's mkdir(), so any later code path sees a writable
-# cache path driven by $EFINANCE_CACHE_DIR (default
-# /app/data/.efinance-cache, which is already a writable Volume in
-# containerized deployments).
+# triggers upstream's mkdir().
+#
+# Cache directory resolution (in priority order):
+#   1. $EFINANCE_CACHE_DIR if set (user override)
+#   2. $XDG_CACHE_HOME/efinance  (Linux/macOS convention)
+#   3. ~/.cache/efinance        (fallback when XDG_CACHE_HOME unset)
+#
+# The resolved directory is created lazily and only logged-as-warning on
+# failure; importing this module never raises on an unwritable cache
+# path.  Downstream fetcher calls will surface a clear OSError if the
+# cache file can't be opened, which is handled by the normal data-source
+# fallback chain.
+import logging as _logging
 import os as _os
 import sys as _sys
 import types as _types
 from pathlib import Path as _Path
 
-_EFINANCE_CACHE_DIR = _Path(_os.environ.get(
-    "EFINANCE_CACHE_DIR", "/app/data/.efinance-cache"))
-_EFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_logger = _logging.getLogger(__name__)
+
+
+def _resolve_cache_dir() -> _Path:
+    """Resolve efinance cache directory; never raises."""
+    override = _os.environ.get("EFINANCE_CACHE_DIR", "").strip()
+    if override:
+        return _Path(override).expanduser()
+    xdg = _os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        return _Path(xdg).expanduser() / "efinance"
+    return _Path.home() / ".cache" / "efinance"
+
+
+def _ensure_cache_dir(path: _Path) -> _Path | None:
+    """Best-effort mkdir(); returns path on success, None on failure."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except OSError as e:
+        _logger.warning(
+            "EFINANCE_CACHE_DIR %s not creatable (%s); "
+            "efinance cache disabled, fetcher writes will fail",
+            path, e,
+        )
+        return None
+
+
+_EFINANCE_CACHE_DIR = _resolve_cache_dir()
+_cache_dir = _ensure_cache_dir(_EFINANCE_CACHE_DIR)
+# Even if mkdir failed we still set DATA_DIR/SEARCH_RESULT_CACHE_PATH so
+# the stub is structurally complete; subsequent efinance writes will
+# raise their own OSError which the data-source fallback handles.
+_effective = _cache_dir if _cache_dir is not None else _EFINANCE_CACHE_DIR
 
 _ef_cfg_stub = _types.ModuleType("efinance.config")
-_ef_cfg_stub.DATA_DIR = _EFINANCE_CACHE_DIR
-_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH = str(
-    _EFINANCE_CACHE_DIR / "search-cache.json")
+_ef_cfg_stub.DATA_DIR = _effective
+_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH = str(_effective / "search-cache.json")
 _ef_cfg_stub.MAX_CONNECTIONS = 50
 _ef_cfg_stub.SHOW_TICKFLOW_PROMPT = True
 _ef_cfg_stub.HERE = _Path("/tmp/.efinance-config-marker")
