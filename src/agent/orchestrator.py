@@ -32,6 +32,8 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from src.agent.chat_context import build_visible_chat_history
+from src.agent.disagreement import build_agent_disagreement_summary
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -44,7 +46,6 @@ from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
-from src.agent.chat_context import build_visible_chat_history
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
 
@@ -504,6 +505,9 @@ class AgentOrchestrator:
             if agent.agent_name == "decision" and getattr(self, "_skill_agent_names", None):
                 self._aggregate_skill_opinions(ctx)
 
+            if agent.agent_name == "decision":
+                self._prepare_decision_context(ctx)
+
             if progress_callback:
                 progress_callback(stream_event(
                     "stage_start",
@@ -583,6 +587,7 @@ class AgentOrchestrator:
                         tool_calls_log=all_tool_calls,
                     )
                 else:
+                    self._record_degraded_stage(ctx, agent.agent_name, result)
                     logger.warning("[Orchestrator] stage '%s' failed (non-critical, degrading): %s", agent.agent_name, result.error)
 
             index += 1
@@ -734,6 +739,25 @@ class AgentOrchestrator:
     def _aggregate_strategy_opinions(self, ctx: AgentContext) -> None:
         """Compatibility wrapper for legacy tests/imports."""
         self._aggregate_skill_opinions(ctx)
+
+    def _prepare_decision_context(self, ctx: AgentContext) -> None:
+        """Populate low-sensitivity summaries consumed by DecisionAgent."""
+        try:
+            ctx.set_data("agent_disagreement_summary", build_agent_disagreement_summary(ctx))
+        except Exception as exc:
+            logger.warning("[Orchestrator] failed to build agent disagreement summary: %s", exc)
+
+    @staticmethod
+    def _record_degraded_stage(ctx: AgentContext, agent_name: str, result: StageResult) -> None:
+        """Record a low-sensitivity degraded stage marker for downstream synthesis."""
+        degraded_stages = ctx.meta.setdefault("degraded_stages", [])
+        if not isinstance(degraded_stages, list):
+            degraded_stages = []
+            ctx.meta["degraded_stages"] = degraded_stages
+        degraded_stages.append({
+            "stage_name": agent_name,
+            "status": result.status.value,
+        })
 
     # -----------------------------------------------------------------
     # Helpers
