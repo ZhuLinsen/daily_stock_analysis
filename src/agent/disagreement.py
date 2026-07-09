@@ -29,8 +29,8 @@ def build_agent_disagreement_summary(ctx: AgentContext) -> Dict[str, Any]:
     }
 
     for opinion in ctx.opinions:
-        agent_summary = _summarize_opinion(opinion.agent_name, opinion.signal, opinion.confidence)
-        signal = _normalize_signal(opinion.signal)
+        signal = _effective_signal(opinion.agent_name, opinion.signal)
+        agent_summary = _summarize_opinion(opinion.agent_name, signal, opinion.confidence)
         if signal in _BULLISH_SIGNALS:
             buckets["bullish_agents"].append(agent_summary)
         elif signal in _BEARISH_SIGNALS:
@@ -75,6 +75,17 @@ def _normalize_signal(signal: Any) -> str:
     return "hold"
 
 
+def _effective_signal(agent_name: str, signal: Any) -> str:
+    normalized = _normalize_signal(signal)
+    if _is_risk_agent(agent_name) and normalized in _BULLISH_SIGNALS:
+        return "hold"
+    return normalized
+
+
+def _is_risk_agent(agent_name: str) -> bool:
+    return str(agent_name or "").strip().lower() in _RISK_AGENT_NAMES
+
+
 def _safe_confidence(confidence: Any) -> float:
     try:
         value = float(confidence)
@@ -88,7 +99,7 @@ def _has_risk_override(ctx: AgentContext) -> bool:
         return True
 
     for opinion in ctx.opinions:
-        if opinion.agent_name not in _RISK_AGENT_NAMES:
+        if not _is_risk_agent(opinion.agent_name):
             continue
         raw_data = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
         if raw_data.get("veto_buy") is True:

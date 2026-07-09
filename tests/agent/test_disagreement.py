@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tests for low-sensitivity multi-agent disagreement summaries."""
 
+import sys
 from unittest.mock import MagicMock
 
 from src.agent.disagreement import build_agent_disagreement_summary
@@ -57,6 +58,29 @@ def test_mixed_directional_signals():
     assert len(summary["neutral_agents"]) == 1
 
 
+def test_risk_agent_buy_signal_is_neutral_risk_clear_not_bullish():
+    ctx = AgentContext(query="test", stock_code="600519")
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.72))
+    ctx.add_opinion(
+        AgentOpinion(
+            agent_name="risk",
+            signal="buy",
+            confidence=0.66,
+            raw_data={"risk_level": "none", "private_payload": "private risk payload"},
+        )
+    )
+
+    summary = build_agent_disagreement_summary(ctx)
+    summary_text = str(summary)
+
+    assert [item["agent_name"] for item in summary["bullish_agents"]] == ["technical"]
+    assert [item["agent_name"] for item in summary["neutral_agents"]] == ["risk"]
+    assert summary["conflict_type"] != "aligned_bullish"
+    assert "risk_level" not in summary_text
+    assert "none" not in summary_text
+    assert "private risk payload" not in summary_text
+
+
 def test_high_severity_risk_flag_takes_override_priority():
     ctx = AgentContext(query="test", stock_code="600519")
     ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.86))
@@ -91,7 +115,12 @@ def test_degraded_stage_summary_is_low_sensitivity():
     assert "private tool payload" not in summary_text
 
 
-def test_decision_agent_prompt_includes_disagreement_summary_when_present():
+def _mock_optional_litellm(monkeypatch):
+    monkeypatch.setitem(sys.modules, "litellm", MagicMock())
+
+
+def test_decision_agent_prompt_includes_disagreement_summary_when_present(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
     from src.agent.agents.decision_agent import DecisionAgent
 
     ctx = AgentContext(query="test", stock_code="600519")
@@ -107,7 +136,8 @@ def test_decision_agent_prompt_includes_disagreement_summary_when_present():
     assert "technical" in message
 
 
-def test_decision_agent_prompt_omits_summary_when_context_lacks_it():
+def test_decision_agent_prompt_omits_summary_when_context_lacks_it(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
     from src.agent.agents.decision_agent import DecisionAgent
 
     ctx = AgentContext(query="test", stock_code="600519")
@@ -119,7 +149,8 @@ def test_decision_agent_prompt_omits_summary_when_context_lacks_it():
     assert "## Agent Disagreement Summary" not in message
 
 
-def test_orchestrator_prepare_decision_context_sets_summary_without_running_agents():
+def test_orchestrator_prepare_decision_context_sets_summary_without_running_agents(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
     from src.agent.orchestrator import AgentOrchestrator
 
     ctx = AgentContext(query="test", stock_code="600519")
