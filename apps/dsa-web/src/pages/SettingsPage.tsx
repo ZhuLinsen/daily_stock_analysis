@@ -879,6 +879,7 @@ const SettingsPage: React.FC = () => {
   const [setupSmokeError, setSetupSmokeError] = useState<ParsedApiError | null>(null);
   const [setupSmokeSuccess, setSetupSmokeSuccess] = useState('');
   const [llmChannelDraftItems, setLlmChannelDraftItems] = useState<SystemConfigUpdateItem[]>([]);
+  const [llmChannelResetToken, setLlmChannelResetToken] = useState(0);
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
   const desktopRuntimeApi = getDesktopRuntimeApi();
@@ -1038,8 +1039,15 @@ const SettingsPage: React.FC = () => {
     && schedulerOverrideFromUi !== schedulerRuntimeEnabled;
   const hasRuntimeSchedulerMismatchInDraft = hasRuntimeSchedulerMismatch
     && !currentChangedItems.some((item) => item.key === 'SCHEDULE_ENABLED');
-  const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft;
-  const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0);
+  // The AI-model channel editor owns a local draft (reported via onDraftItemsChange)
+  // with its own "save AI config" flow, so its keys never surface in `dirtyKeys`.
+  // It is still user-editable settings that #1948 promises to guard, so fold it into
+  // the same unsaved semantics as generic drafts and the scheduler override.
+  const llmChannelDirtyCount = llmChannelDraftItems.length;
+  const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft || llmChannelDirtyCount > 0;
+  const effectiveDirtyCount = dirtyCount
+    + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0)
+    + llmChannelDirtyCount;
 
   useUnsavedChangesGuard(effectiveHasDirty);
 
@@ -1065,8 +1073,13 @@ const SettingsPage: React.FC = () => {
       const schedulerCategory = keyToCategory['SCHEDULE_ENABLED'] ?? 'system';
       counts[schedulerCategory] = (counts[schedulerCategory] ?? 0) + 1;
     }
+    // The AI channel editor lives in the ai_model category; its draft keys are hidden
+    // from the generic fields, so attribute the unsaved count here explicitly.
+    if (llmChannelDirtyCount > 0) {
+      counts['ai_model'] = (counts['ai_model'] ?? 0) + llmChannelDirtyCount;
+    }
     return counts;
-  }, [dirtyKeys, itemsByCategory, hasRuntimeSchedulerMismatchInDraft]);
+  }, [dirtyKeys, itemsByCategory, hasRuntimeSchedulerMismatchInDraft, llmChannelDirtyCount]);
 
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;
@@ -1077,13 +1090,17 @@ const SettingsPage: React.FC = () => {
   }, []);
 
   // Discard must clear every source that feeds `effectiveHasDirty`, not just the
-  // system-config draft. The scheduler card keeps its own enabled override in
-  // local state, so resetting only the config draft would leave a runtime
-  // mismatch behind and keep the unsaved bar and beforeunload guard active.
+  // system-config draft. Both the scheduler card and the LLM channel editor keep
+  // their own local state, so we clear the config draft, reset the scheduler
+  // override, and bump per-child reset tokens so those subcomponents drop their
+  // in-progress drafts too; otherwise the unsaved bar and beforeunload guard would
+  // linger after a discard.
   const handleDiscardChanges = useCallback(() => {
     resetDraft();
     setSchedulerOverrideFromUi(null);
     setSchedulerOverrideResetToken((token) => token + 1);
+    setLlmChannelDraftItems([]);
+    setLlmChannelResetToken((token) => token + 1);
   }, [resetDraft]);
 
   // UI rendering rule only: hide channel-managed and legacy provider-specific
@@ -1818,6 +1835,7 @@ const SettingsPage: React.FC = () => {
                   items={rawActiveItems}
                   configVersion={configVersion}
                   maskToken={maskToken}
+                  resetToken={llmChannelResetToken}
                   onDraftItemsChange={handleLlmChannelDraftItemsChange}
                   onSaved={async (updatedItems) => {
                     setLlmChannelDraftItems([]);

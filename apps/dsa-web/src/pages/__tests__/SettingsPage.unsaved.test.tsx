@@ -88,7 +88,22 @@ vi.mock('../../components/settings', () => ({
   ChangePasswordCard: () => <div>password</div>,
   GenerationBackendStatusPanel: () => <div>backend-status</div>,
   IntelligentImport: () => <div>intelligent-import</div>,
-  LLMChannelEditor: () => <div>llm-channel-editor</div>,
+  LLMChannelEditor: ({
+    onDraftItemsChange,
+  }: {
+    onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="llm-draft-trigger"
+      onClick={() => onDraftItemsChange?.([
+        { key: 'LITELLM_MODEL', value: 'gpt-4o' },
+        { key: 'LLM_CHANNELS', value: '[]' },
+      ])}
+    >
+      llm-channel-editor
+    </button>
+  ),
   NotificationTestPanel: () => <div>notification-test</div>,
   SettingsCategoryNav: ({
     dirtyCountByCategory,
@@ -325,6 +340,41 @@ describe('SettingsPage unsaved changes bar', () => {
       expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument();
     });
     expect(resetDraft).toHaveBeenCalledTimes(1);
+    expect(unsavedGuard).toHaveBeenLastCalledWith(false);
+    expect(JSON.parse(screen.getByTestId('nav-dirty').textContent || '{}')).toEqual({});
+  });
+
+  it('folds AI channel editor drafts into the unsaved bar, nav badge and guard', async () => {
+    // The LLM channel editor keeps its own draft (no useSystemConfig dirtyKeys) and
+    // has a separate "save AI config" flow, so unsaved edits there must still drive
+    // the page-level unsaved semantics promised by #1948.
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      categories: [
+        { category: 'ai_model', title: 'AI Model', description: '', displayOrder: 1, fields: [] },
+      ],
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ai_model: [],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const trigger = await screen.findByTestId('llm-draft-trigger');
+    expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument();
+
+    // Edit AI channels without saving -> page-level unsaved state activates.
+    fireEvent.click(trigger);
+    expect(await screen.findByRole('button', { name: '放弃修改' })).toBeInTheDocument();
+    expect(unsavedGuard).toHaveBeenLastCalledWith(true);
+    expect(JSON.parse(screen.getByTestId('nav-dirty').textContent || '{}')).toEqual({ ai_model: 2 });
+
+    // Discarding must clear the editor draft too, not just system-config drafts.
+    fireEvent.click(screen.getByRole('button', { name: '放弃修改' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument();
+    });
     expect(unsavedGuard).toHaveBeenLastCalledWith(false);
     expect(JSON.parse(screen.getByTestId('nav-dirty').textContent || '{}')).toEqual({});
   });

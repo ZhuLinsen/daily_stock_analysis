@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] 飞书推送新增文件上传能力：`FeishuSender.send_feishu_file(file_path)` 通过 App Bot SDK (`im.v1.file.create`) 上传文件并发送文件消息；Webhook 模式回退为发送文件内容文本；新增 `FEISHU_SEND_AS_FILE=true` 配置开关，开启后飞书以文件形式发送报告而非文字消息。
-- [新功能] Web 设置页新增未保存修改提示：存在未保存修改时显示底部保存/放弃操作条、分类导航未保存角标，并在刷新/关闭标签页时触发浏览器离开确认；"放弃修改"会一并清除调度器 runtime 覆盖状态，避免放弃后仍残留未保存状态。
+- [新功能] Web 设置页新增未保存修改提示：存在未保存修改时显示底部保存/放弃操作条、分类导航未保存角标，并在刷新/关闭标签页时触发浏览器离开确认；未保存来源覆盖普通配置草稿、调度器 runtime 覆盖以及 AI 模型渠道编辑器本地草稿，"放弃修改"会一并清除以上各来源，避免放弃后仍残留未保存状态。
 - [新功能] 多 Agent 编排 Pipeline 新增子 Agent 独立超时钳位：支持 6 个环境变量为 TechnicalAgent、IntelAgent、RiskAgent、DecisionAgent、PortfolioAgent、SkillAgent 各自配置独立硬上限，互不挤占配额；默认 0 表示关闭钳位。
 
 ## [3.25.0] - 2026-07-03

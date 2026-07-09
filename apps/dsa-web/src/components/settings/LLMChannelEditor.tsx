@@ -160,6 +160,9 @@ interface LLMChannelEditorProps {
   maskToken: string;
   onSaved: (updatedItems: Array<{ key: string; value: string }>) => void | Promise<void>;
   onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
+  // Bumped by the parent when the user discards page-level unsaved changes, so the
+  // editor drops its in-progress channel/runtime draft and reverts to saved values.
+  resetToken?: number;
   disabled?: boolean;
 }
 
@@ -1534,6 +1537,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   maskToken,
   onSaved,
   onDraftItemsChange,
+  resetToken,
   disabled = false,
 }) => {
   const initialItemSourceByKey = useMemo(() => {
@@ -1597,6 +1601,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
   const addChannelIdRef = useRef(0);
   const lastDraftFingerprintRef = useRef<string | null>(null);
   const onDraftItemsChangeRef = useRef(onDraftItemsChange);
+  const prevResetTokenRef = useRef(resetToken);
 
   const prevChannelsRef = useRef(channelsFingerprint);
   const prevRuntimeRef = useRef(runtimeFingerprint);
@@ -1631,6 +1636,29 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     }
     setIsCollapsed(false);
   }, [channelsFingerprint, runtimeFingerprint, initialChannels, initialRuntimeConfig]);
+
+  // Discarding page-level unsaved changes bumps `resetToken`. Revert the editor's
+  // local channel/runtime draft back to the saved values so the parent's unsaved
+  // bar, nav badge and beforeunload guard clear together. Reverting flips
+  // `hasChanges` to false, which makes the draft-report effect below emit an empty
+  // draft and notify the parent.
+  useEffect(() => {
+    if (resetToken === undefined || resetToken === prevResetTokenRef.current) {
+      return;
+    }
+    prevResetTokenRef.current = resetToken;
+    setChannels(initialChannels);
+    setRuntimeConfig(initialRuntimeConfig);
+    setVisibleKeys({});
+    setTestStates({});
+    setDiscoveryStates({});
+    setCapabilityStates({});
+    setExpandedRows({});
+    discoveryNonceRef.current = {};
+    capabilityNonceRef.current = {};
+    setSaveMessage(null);
+    setSaveWarnings([]);
+  }, [resetToken, initialChannels, initialRuntimeConfig]);
 
   const routeProvenanceMap = useMemo(() => {
     if (!managesRuntimeConfig) {
