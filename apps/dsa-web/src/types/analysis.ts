@@ -653,5 +653,8 @@ export interface VisualReportRawResult {
   fundamentalSnapshot?: FundamentalSnapshot | null;
   exposureSnapshot?: DataSnapshot | null;
   valueNetworkMermaid?: string | null;
+  // Phase 25.7: optional four-masters commentary supplement (commentary-only;
+  // structured shape validated by fourMastersCommentaryAdapter before render).
+  fourMastersCommentary?: Record<string, unknown> | null;
   [key: string]: unknown;
 }

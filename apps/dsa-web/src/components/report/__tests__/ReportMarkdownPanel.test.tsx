@@ -472,4 +472,111 @@ describe('ReportMarkdownPanel', () => {
     expect(screen.queryByRole('link', { name: '在 Google Finance 查看' })).not.toBeInTheDocument();
   });
 
+  // ── Phase 25.7: four-masters commentary structured UI ──
+
+  const fourMastersDetail = (rawResult: Record<string, unknown>) => ({
+    meta: {
+      id: 9,
+      queryId: 'q-fm',
+      stockCode: '2330',
+      stockName: '台積電',
+      reportType: 'detailed',
+      createdAt: '2026-07-08T08:00:00Z',
+    },
+    summary: {
+      analysisSummary: '摘要',
+      operationAdvice: '觀望',
+      trendPrediction: '震盪',
+      sentimentScore: 59,
+    },
+    details: { rawResult },
+  }) as never;
+
+  const fourMastersMarkdown = [
+    '# 台積電分析',
+    '',
+    '## 走勢分析',
+    '',
+    '- 均線糾結。',
+    '',
+    '## 四大師視角補充',
+    '',
+    '### 巴菲特視角：價值與安全邊際',
+    '',
+    'markdown 版巴菲特點評內文',
+    '',
+    '> 本段為投資框架模擬點評，不代表任何人物本人觀點，且不覆蓋原始操作建議。',
+  ].join('\n');
+
+  const fourMastersRaw = {
+    fourMastersCommentary: {
+      buffett: { summary: '結構化巴菲特點評', supportsOriginalView: 'challenge' },
+      munger: { summary: '結構化蒙格點評', supportsOriginalView: 'mixed' },
+      duanYongping: { summary: '結構化段永平點評', supportsOriginalView: 'support' },
+      liLu: { summary: '結構化李錄點評', supportsOriginalView: 'support' },
+      synthesis: { mainDisagreement: '分歧在估值', confidenceAdjustment: 'unchanged' },
+    },
+  };
+
+  it('renders structured four-masters UI and suppresses the duplicate markdown section', async () => {
+    vi.mocked(historyApi.getMarkdown).mockResolvedValue(fourMastersMarkdown);
+
+    render(
+      <ReportMarkdownPanel
+        recordId={9}
+        stockName="台積電"
+        stockCode="2330"
+        onRequestClose={() => {}}
+        initialDetail={fourMastersDetail(fourMastersRaw)}
+      />
+    );
+
+    expect(await screen.findByTestId('four-masters-commentary')).toBeInTheDocument();
+    // 結構化內容出現
+    expect(screen.getByText('結構化巴菲特點評')).toBeInTheDocument();
+    // markdown 版四大師段被抑制（無重複）：markdown body 內不含該 heading 與內文
+    expect(screen.queryByText('markdown 版巴菲特點評內文')).not.toBeInTheDocument();
+    const markdownBody = screen.getByTestId('report-markdown-body');
+    expect(markdownBody.textContent).not.toContain('四大師視角補充');
+    // 其他 markdown 段不受影響
+    expect(screen.getByRole('heading', { name: '走勢分析' })).toBeInTheDocument();
+    // 全頁只有一份四大師標題（結構化 UI 自己的）
+    expect(screen.getAllByText(/四大師視角補充/).length).toBe(1);
+  });
+
+  it('keeps the markdown four-masters section when detail lacks structured payload', async () => {
+    vi.mocked(historyApi.getMarkdown).mockResolvedValue(fourMastersMarkdown);
+
+    render(
+      <ReportMarkdownPanel
+        recordId={10}
+        stockName="台積電"
+        stockCode="2330"
+        onRequestClose={() => {}}
+        initialDetail={fourMastersDetail({})}
+      />
+    );
+
+    expect(await screen.findByText('markdown 版巴菲特點評內文')).toBeInTheDocument();
+    expect(screen.queryByTestId('four-masters-commentary')).not.toBeInTheDocument();
+  });
+
+  it('legacy reports without four-masters content render unchanged', async () => {
+    vi.mocked(historyApi.getMarkdown).mockResolvedValue('# 舊報告\n\n## 走勢分析\n\n內文。');
+
+    render(
+      <ReportMarkdownPanel
+        recordId={11}
+        stockName="台積電"
+        stockCode="2330"
+        onRequestClose={() => {}}
+        initialDetail={fourMastersDetail({})}
+      />
+    );
+
+    expect(await screen.findByRole('heading', { name: '舊報告' })).toBeInTheDocument();
+    expect(screen.queryByTestId('four-masters-commentary')).not.toBeInTheDocument();
+    expect(screen.queryByText(/四大師/)).not.toBeInTheDocument();
+  });
+
 });

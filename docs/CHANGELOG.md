@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改進] 「四大師視角補充」功能預設值由關閉改為開啟（`ENABLE_FOUR_MASTERS_COMMENTARY` 預設 `true`，與 `value_network_mermaid` 一致採 opt-out 模式；設為 `false` 可關閉）。
+
+- [新功能] Web 完整分析報告新增結構化「四大師視角補充」UI（`FourMastersCommentarySection`）：當歷史紀錄的 `raw_result.four_masters_commentary` 存在且通過前端驗證時，於報告內容區顯示巴菲特/蒙格/段永平/李錄四張卡片與綜合觀察卡，桌面為 2x2 網格、行動裝置單欄堆疊；會抑制對應的 Markdown 版重複段落，避免同一內容出現兩次；不新增任何買賣操作按鈕、不採信 LLM 夾帶的行動類欄位，畸形或缺失資料時安全降級為不顯示；沿用既有報告卡片視覺語言，未修改原始評分/趨勢/操作建議欄位。
+
+- [新功能] 個股完整報告新增可選「四大師視角補充」段（`ENABLE_FOUR_MASTERS_COMMENTARY=true` 啟用，預設關閉）：以巴菲特/蒙格/段永平/李錄四個投資框架對主報告做模擬點評（支持/質疑/部分支持），僅為評論補充，不輸出買賣行動、不覆蓋原始 `operation_advice`/`trend_prediction`/評分/買賣區間；LLM 夾帶的行動欄位會在驗證時剝除，缺失或畸形時報告安全降級不出段。詳見 `docs/four-masters-commentary.md`。
+
 - [改進] 台股日報 `market_review` 生成時新增 FinMind 結構化快照，包含 006208、0050/006208/2330 價格變化、成交量/成交金額、PER/PBR/殖利率可用性、資料缺口與台股語意方向 metadata，供後續閱讀版面直接消費。
 
 - [改進] 台股日報改為結構化閱讀版面，將既有 FinMind `market_review` 報告分區呈現為今日重點、主要指數、法人資金、融資融券、代表標的與資料狀態，舊版不完整 Markdown 仍保留安全 fallback。

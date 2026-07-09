@@ -15,6 +15,8 @@ import {
   extractTwDailySnapshotFromReport,
   parseTwDailyReportMarkdown,
 } from './twDailyReportAdapter';
+import { FourMastersCommentarySection } from './visual/FourMastersCommentarySection';
+import { adaptFourMastersCommentary } from './visual/fourMastersCommentaryAdapter';
 import { ReportVisualSummary } from './visual/ReportVisualSummary';
 
 type CodeProps = React.ComponentProps<'code'> & ExtraProps;
@@ -99,8 +101,37 @@ const formatChecklistSection = (section: string): string => {
   return output.join('\n').trim();
 };
 
-function sanitizeReportMarkdown(markdown: string): string {
-  return splitMarkdownSections(markdown)
+// Phase 25.7: markdown heading of the backend-generated four-masters section.
+// Stripped (heading through the next h1/h2 or horizontal rule, including its
+// ### sub-sections and disclaimer) only when the structured UI renders from
+// raw_result, so the user never sees the same commentary twice.
+const FOUR_MASTERS_SECTION_HEADING_PATTERN = /^#{1,3}\s+(?:四大師視角補充|Four Masters Commentary)\s*$/u;
+
+function stripFourMastersMarkdownSection(markdown: string): string {
+  const output: string[] = [];
+  let inFence = false;
+  let skipping = false;
+
+  for (const line of markdown.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) inFence = !inFence;
+
+    if (!inFence && FOUR_MASTERS_SECTION_HEADING_PATTERN.test(trimmed)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && !inFence && (/^#{1,2}\s+\S/.test(trimmed) || /^-{3,}\s*$/.test(trimmed))) {
+      skipping = false;
+    }
+    if (!skipping) output.push(line);
+  }
+
+  return output.join('\n');
+}
+
+function sanitizeReportMarkdown(markdown: string, suppressFourMastersSection = false): string {
+  const source = suppressFourMastersSection ? stripFourMastersMarkdownSection(markdown) : markdown;
+  return splitMarkdownSections(source)
     .map((section) => section
       .split(/\r?\n/)
       .filter((line) => !shouldSuppressMarkdownLine(line))
@@ -263,7 +294,10 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
   const [detail, setDetail] = useState<AnalysisReport | null>(initialDetail ?? null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  const sanitizedContent = sanitizeReportMarkdown(content);
+  const fourMastersVM = adaptFourMastersCommentary(
+    (detail?.details?.rawResult as Record<string, unknown> | undefined)?.fourMastersCommentary
+  );
+  const sanitizedContent = sanitizeReportMarkdown(content, fourMastersVM !== null);
   const sections = splitMarkdownSections(sanitizedContent);
   const isMarketReviewReport = detail?.meta?.reportType === 'market_review' || stockCode === 'MARKET';
   const twDailyReport = isMarketReviewReport
@@ -481,22 +515,31 @@ export const ReportMarkdownPanel: React.FC<ReportMarkdownPanelProps> = ({
         {twDailyReport ? (
           <TwDailyReportView report={twDailyReport} />
         ) : (
-          <div
-            data-testid="report-markdown-body"
-            className="report-light-surface report-markdown-body report-body-paper break-words"
-          >
-            {sections.map((section, index) => (
-              <section
-                key={`${index}-${section.slice(0, 24)}`}
-                data-testid="report-body-section"
-                className="report-body-section"
-              >
-                <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-                  {section}
-                </Markdown>
-              </section>
-            ))}
-          </div>
+          <>
+            <div
+              data-testid="report-markdown-body"
+              className="report-light-surface report-markdown-body report-body-paper break-words"
+            >
+              {sections.map((section, index) => (
+                <section
+                  key={`${index}-${section.slice(0, 24)}`}
+                  data-testid="report-body-section"
+                  className="report-body-section"
+                >
+                  <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                    {section}
+                  </Markdown>
+                </section>
+              ))}
+            </div>
+            {fourMastersVM !== null && (
+              <FourMastersCommentarySection
+                rawCommentary={
+                  (detail?.details?.rawResult as Record<string, unknown> | undefined)?.fourMastersCommentary
+                }
+              />
+            )}
+          </>
         )}
         </>
       )}

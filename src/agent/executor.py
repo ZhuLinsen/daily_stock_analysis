@@ -709,6 +709,13 @@ class AgentExecutor:
         value_network_schema_field, value_network_instruction_section = _build_value_network_sections(
             context
         )
+        # Phase 25.6：四大師視角補充借用同兩個模板佔位符（附加式，不改模板）
+        from src.services.four_masters_commentary import build_four_masters_prompt_sections
+        four_masters_schema_field, four_masters_instruction_section = build_four_masters_prompt_sections(
+            getattr(get_config(), "enable_four_masters_commentary", False)
+        )
+        value_network_schema_field += four_masters_schema_field
+        value_network_instruction_section += four_masters_instruction_section
         system_prompt = prompt_template.format(
             market_role=market_role,
             market_guidelines=market_guidelines,

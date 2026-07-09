@@ -174,6 +174,9 @@ class AnalysisReportSchema(BaseModel):
     search_performed: Optional[bool] = None
     data_sources: Optional[str] = None
     value_network_mermaid: Optional[str] = None
+    # Phase 25.6: optional four-masters commentary supplement (framework-simulated
+    # commentary only; never carries actions and never overrides original advice).
+    four_masters_commentary: Optional[Dict[str, Any]] = None
 
     # Phase 19B.1: deterministic report contract field. Sourced only from
     # SymbolRecord.instrument_type (src/services/symbol_universe.py) — never

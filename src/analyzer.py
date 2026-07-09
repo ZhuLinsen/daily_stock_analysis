@@ -1563,6 +1563,8 @@ class AnalysisResult:
     search_performed: bool = False  # 是否執行了聯網搜尋
     data_sources: str = ""  # 資料來源說明
     value_network_mermaid: Optional[str] = None  # Phase 18A：可選的價值網路圖 Mermaid 原始文字（已驗證或 None）
+    # Phase 25.6：可選的四大師視角補充（點評式，不含行動、不覆蓋原始建議；渲染時再驗證/淨化）
+    four_masters_commentary: Optional[Dict[str, Any]] = None
     instrument_type: str = "unknown"  # Phase 19B.1：報告契約欄位，僅來自 SymbolRecord，非 LLM 推論
     # Phase 19B.2：股票專屬估值/基本面快照，由後端決定性組裝（FinMind/yfinance），非 LLM 推論
     valuation_snapshot: Optional[Dict[str, Any]] = None
@@ -1627,6 +1629,7 @@ class AnalysisResult:
             'change_pct': self.change_pct,
             'model_used': self.model_used,
             'value_network_mermaid': self.value_network_mermaid,
+            'four_masters_commentary': self.four_masters_commentary,
             'instrument_type': self.instrument_type,
             'valuation_snapshot': self.valuation_snapshot,
             'fundamental_snapshot': self.fundamental_snapshot,
@@ -2137,6 +2140,12 @@ class GeminiAnalyzer:
                 ',\n    "value_network_mermaid": "純 Mermaid flowchart 文字或 null；'
                 "啟用時必須出現此鍵，產生規則見後方「附錄：價值網路圖」\""
             )
+        # Phase 25.6：四大師視角補充 schema 欄位借用同一個模板佔位符（附加式，不改模板）
+        from src.services.four_masters_commentary import build_four_masters_prompt_sections
+        four_masters_schema_field, _ = build_four_masters_prompt_sections(
+            getattr(self._get_runtime_config(), 'enable_four_masters_commentary', False)
+        )
+        value_network_schema_field += four_masters_schema_field
         if use_legacy_default_prompt:
             base_prompt = self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace(
                 "{market_placeholder}", market_role
@@ -3453,6 +3462,11 @@ class GeminiAnalyzer:
 - 不要包含 ``` 圍欄、HTML（`<br/>` 除外）或任何其他文字說明，只放 Mermaid 原始語法本身，也不可包含裸網址。
 - 用語不得超出本報告主結論的強度（禁止「必買」「保證上漲」「穩賺」等用語）。
 """
+        if getattr(self._get_runtime_config(), 'enable_four_masters_commentary', False):
+            from src.services.four_masters_commentary import build_four_masters_prompt_sections
+            _, four_masters_instruction_section = build_four_masters_prompt_sections(True)
+            prompt += four_masters_instruction_section
+
         prompt += f"""
 ### ⚠️ 重要：輸出正確的股票名稱格式
 正確的股票名稱格式為“股票名稱（股票程式碼）”，例如“貴州茅臺（600519）”。
@@ -3800,6 +3814,7 @@ class GeminiAnalyzer:
                     search_performed=data.get('search_performed', False),
                     data_sources=data.get('data_sources', 'Technical data' if report_language == "en" else '技術面資料'),
                     value_network_mermaid=data.get('value_network_mermaid'),
+                    four_masters_commentary=data.get('four_masters_commentary') if isinstance(data.get('four_masters_commentary'), dict) else None,
                     success=True,
                 )
             else:

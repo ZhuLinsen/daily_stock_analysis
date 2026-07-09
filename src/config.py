@@ -931,6 +931,11 @@ class Config:
     # === Phase 18D 價值網路圖 Mermaid 附錄（預設開啟，可用 ENABLE_VALUE_NETWORK_MERMAID=false 關閉）===
     enable_value_network_mermaid: bool = True
 
+    # === Phase 25.6 四大師視角補充（預設開啟，可用 ENABLE_FOUR_MASTERS_COMMENTARY=false 關閉）===
+    # 個股完整報告附加四個具名投資框架（巴菲特/蒙格/段永平/李錄）的點評式補充段；
+    # 僅為評論，不輸出行動、不覆蓋原始 operation_advice / trend_prediction / 買賣區間。
+    enable_four_masters_commentary: bool = True
+
     # === 基本面聚合開關與降級保護 ===
     # 全域性總開關；關閉時返回 not_supported 並保持主流程無變化
     enable_fundamental_pipeline: bool = True
@@ -1756,6 +1761,7 @@ class Config:
             ).lower() == 'true',
             enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'false').lower() == 'true',
             enable_value_network_mermaid=os.getenv('ENABLE_VALUE_NETWORK_MERMAID', 'true').lower() == 'true',
+            enable_four_masters_commentary=os.getenv('ENABLE_FOUR_MASTERS_COMMENTARY', 'true').lower() == 'true',
             # 東財介面補丁開關
             enable_eastmoney_patch=os.getenv('ENABLE_EASTMONEY_PATCH', 'false').lower() == 'true',
             # 實時行情資料來源優先順序：

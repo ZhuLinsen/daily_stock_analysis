@@ -1710,6 +1710,8 @@ class StockAnalysisPipeline:
             result.dashboard = nested_dashboard or dash
             if isinstance(dash, dict):
                 result.value_network_mermaid = dash.get("value_network_mermaid")
+                fm_commentary = dash.get("four_masters_commentary")
+                result.four_masters_commentary = fm_commentary if isinstance(fm_commentary, dict) else None
             self._backfill_agent_dashboard_fields(result, trend_result, report_language)
         else:
             self._apply_trend_fallback(result, trend_result, report_language)

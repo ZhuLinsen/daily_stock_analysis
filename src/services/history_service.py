@@ -31,6 +31,7 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
+from src.services.four_masters_commentary import render_four_masters_markdown
 from src.services.value_network_mermaid import validate_value_network_mermaid
 from src.utils.data_processing import (
     extract_realtime_detail_fields,
@@ -850,6 +851,7 @@ class HistoryService:
                 change_pct=raw_result.get("change_pct"),
                 model_used=raw_result.get("model_used"),
                 value_network_mermaid=raw_result.get("value_network_mermaid"),
+                four_masters_commentary=raw_result.get("four_masters_commentary") if isinstance(raw_result.get("four_masters_commentary"), dict) else None,
                 instrument_type=raw_result.get("instrument_type", "unknown"),
                 valuation_snapshot=raw_result.get("valuation_snapshot"),
                 fundamental_snapshot=raw_result.get("fundamental_snapshot"),
@@ -1283,6 +1285,13 @@ class HistoryService:
                     f"{result.news_summary}",
                     "",
                 ])
+
+        # ========== 四大師視角補充（Phase 25.6，點評式、不覆蓋原始建議）==========
+        four_masters_lines = render_four_masters_markdown(
+            getattr(result, 'four_masters_commentary', None), report_language
+        )
+        if four_masters_lines:
+            report_lines.extend(four_masters_lines)
 
         # ========== 附錄：價值網路圖（Phase 18A PoC）==========
         validated_mermaid = validate_value_network_mermaid(getattr(result, 'value_network_mermaid', None))
