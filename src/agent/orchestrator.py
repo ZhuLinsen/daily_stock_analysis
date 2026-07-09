@@ -114,6 +114,25 @@ class AgentOrchestrator:
         except (TypeError, ValueError):
             return 0
 
+    def _get_sub_agent_timeout_map(self) -> Dict[str, float]:
+        """Return per-agent timeout clamps from config, skipping disabled (0) entries."""
+        config = self.config
+        if config is None:
+            return {}
+        entries = [
+            ("technical", "agent_technical_agent_timeout_s"),
+            ("intel", "agent_intel_agent_timeout_s"),
+            ("risk", "agent_risk_agent_timeout_s"),
+            ("decision", "agent_decision_agent_timeout_s"),
+            ("portfolio", "agent_portfolio_agent_timeout_s"),
+            ("skill", "agent_skill_agent_timeout_s"),
+        ]
+        return {
+            key: float(val)
+            for key, attr in entries
+            if (val := getattr(config, attr, None)) is not None and val > 0
+        }
+
     def _build_timeout_result(
         self,
         stats: AgentRunStats,
@@ -262,6 +281,19 @@ class AgentOrchestrator:
         timeout_seconds: Optional[float] = None,
     ) -> StageResult:
         """Run a stage agent while preserving compatibility with older call signatures."""
+        # Clamp by per-agent limit when configured.
+        # When pipeline budget is disabled (timeout_seconds is None),
+        # the sub-agent's own limit still applies as a standalone cap.
+        sub_agent_timeout_map = self._get_sub_agent_timeout_map()
+        if sub_agent_timeout_map:
+            agent_limit = sub_agent_timeout_map.get(agent.agent_name)
+            if agent_limit is None and agent.agent_name in getattr(self, "_skill_agent_names", set()):
+                agent_limit = sub_agent_timeout_map.get("skill")
+            if agent_limit is not None:
+                if timeout_seconds is not None:
+                    timeout_seconds = min(timeout_seconds, agent_limit)
+                else:
+                    timeout_seconds = agent_limit
         run_kwargs = {"progress_callback": progress_callback}
         if (
             timeout_seconds is not None

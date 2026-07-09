@@ -848,6 +848,12 @@ class Config:
     agent_arch: str = "single"     # Agent architecture: 'single' (legacy) or 'multi' (orchestrator)
     agent_orchestrator_mode: str = "standard"  # Orchestrator mode: quick/standard/full/specialist
     agent_orchestrator_timeout_s: int = 600  # Cooperative timeout budget for the whole multi-agent pipeline
+    agent_technical_agent_timeout_s: float = 0
+    agent_intel_agent_timeout_s: float = 0
+    agent_risk_agent_timeout_s: float = 0
+    agent_decision_agent_timeout_s: float = 0
+    agent_portfolio_agent_timeout_s: float = 0
+    agent_skill_agent_timeout_s: float = 0
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
@@ -1753,6 +1759,30 @@ class Config:
                 600,
                 field_name='AGENT_ORCHESTRATOR_TIMEOUT_S',
                 minimum=0,
+            ),
+            agent_technical_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_TECHNICAL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_TECHNICAL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_intel_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_INTEL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_INTEL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_risk_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_RISK_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_RISK_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_decision_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_DECISION_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_DECISION_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_portfolio_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_PORTFOLIO_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_PORTFOLIO_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_skill_agent_timeout_s=parse_env_float(
+                os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
+                field_name='AGENT_SKILL_AGENT_TIMEOUT_S', minimum=0,
             ),
             agent_risk_override=os.getenv('AGENT_RISK_OVERRIDE', 'true').lower() == 'true',
             agent_deep_research_budget=parse_env_int(

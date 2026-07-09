@@ -1137,6 +1137,121 @@ class TestOrchestratorExecution(unittest.TestCase):
             295.0,
         )
 
+    # --- Sub-agent timeout clamp regression (AGENT_*_TIMEOUT_S) ---
+
+    def _make_config_with_sub_agent_timeouts(self, **kwargs):
+        """Return a SimpleNamespace config with sub-agent timeout fields."""
+        defaults = {
+            "agent_orchestrator_timeout_s": 0,
+            "agent_technical_agent_timeout_s": 0,
+            "agent_intel_agent_timeout_s": 0,
+            "agent_risk_agent_timeout_s": 0,
+            "agent_decision_agent_timeout_s": 0,
+            "agent_portfolio_agent_timeout_s": 0,
+            "agent_skill_agent_timeout_s": 0,
+            "agent_risk_override": True,
+        }
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_run_stage_agent_no_pipeline_budget_uses_sub_agent_limit(self):
+        """When pipeline budget is 0 (timeout_seconds=None), sub-agent limit applies standalone."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=180,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=None)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 180)
+
+    def test_run_stage_agent_pipeline_budget_larger_than_agent_limit_clamps_to_agent(self):
+        """Pipeline remaining > sub-agent limit → use smaller agent limit."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=120,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 120)
+
+    def test_run_stage_agent_pipeline_budget_smaller_than_agent_limit_uses_pipeline(self):
+        """Pipeline remaining < sub-agent limit → use smaller pipeline remaining."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=300,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=60)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 60)
+
+    def test_run_stage_agent_no_sub_agent_limit_passes_pipeline_budget_through(self):
+        """No sub-agent limit configured (all 0) → pipeline budget passed through unchanged."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(),
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 300)
+
+    def test_run_stage_agent_skill_agent_fallback_applies_skill_clamp(self):
+        """Skill agents (in _skill_agent_names) use the 'skill' clamp key as fallback."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_skill_agent_timeout_s=90,
+            )
+        )
+        orch._skill_agent_names = {"bull_trend_specialist", "volume_breakout_specialist"}
+        agent = MagicMock(agent_name="bull_trend_specialist")
+        result = self._stage_result("bull_trend_specialist")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 90)
+
+    def test_run_stage_agent_skill_agent_exact_name_match_wins_over_skill_fallback(self):
+        """Exact agent_name match takes priority over _skill_agent_names fallback."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_skill_agent_timeout_s=90,
+                agent_decision_agent_timeout_s=150,
+            )
+        )
+        orch._skill_agent_names = {"decision"}
+        agent = MagicMock(agent_name="decision")
+        result = self._stage_result("decision")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        # Exact name "decision" → 150, not skill fallback 90
+        self.assertEqual(call_kwargs["timeout_seconds"], 150)
+
     def test_run_wraps_orchestrator_result(self):
         from src.agent.orchestrator import OrchestratorResult
 
