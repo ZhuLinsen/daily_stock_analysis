@@ -1,85 +1,146 @@
 #!/usr/bin/env bash
-# Smoke test for the EFINANCE_CACHE_DIR contract added in PR #1962.
+# Smoke test for the efinance cache-directory contract (PR #1962).
 #
-# Verifies that `import data_provider` succeeds inside a read-only podman
-# container for all three failure modes the maintainer review raised:
+# Each case spawns a fresh podman container with `--read-only --tmpfs
+# --user 1000:1000` (matching the production Quadlet rootfs posture),
+# bind-mounts the working copy of `efinance_fetcher.py` plus a stub for
+# `src.patches.eastmoney_patch` (image v3.12.0 predates that module),
+# and probes the values efinance's downstream consumers actually read.
 #
-#   A. EFINANCE_CACHE_DIR unset, /app is read-only
-#      -> stub falls back to /app/.cache/efinance, mkdir() fails silently,
-#         warning is logged, import succeeds.
-#   B. EFINANCE_CACHE_DIR points at a writable directory (/tmp)
-#      -> DATA_DIR resolves to that path, mkdir() succeeds.
-#   C. EFINANCE_CACHE_DIR points at an unwritable directory (/proc)
-#      -> mkdir() fails, warning is logged, import succeeds.
-#
-# This script runs out-of-the-box on any host with podman and the
-# upstream image cached locally (pull once with:
-#   podman pull ghcr.io/zhulinsen/daily_stock_analysis:latest
-# ).  It mirrors the deployment's --read-only + --tmpfs + uid 1000 shape.
-#
-# Because the patch is on branch feat/efinance-cache-dir (PR #1962, not yet
-# merged), the image's efinance_fetcher.py does not contain the new
-# EFINANCE_CACHE_DIR contract.  We bind-mount the patched file from this
-# working copy on top of /app/data_provider/efinance_fetcher.py so the
-# smoke test exercises the actual contract under review.  Remove the
-# ``-v`` line once the PR is merged and a new image is pushed.
+# Cases mirror the project's expected deployment paths:
+#   A. container default (`/app/data/.efinance-cache`, entrypoint-injected)
+#   B. explicit writable override (/tmp)
+#   C. explicit unwritable override (/proc) → mkdir fail + warning logged
+#   D. EFINANCE_CACHE_DIR unset, XDG_CACHE_HOME=/var/tmp → fallback path
 #
 # Exit code is non-zero on the first failing case.
 
-set -euo pipefail
+set -uo pipefail
 
 IMAGE="${IMAGE:-ghcr.io/zhulinsen/daily_stock_analysis:latest}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 PATCHED_FILE="$REPO_ROOT/data_provider/efinance_fetcher.py"
 
 if [[ ! -f "$PATCHED_FILE" ]]; then
-  echo "error: patched efinance_fetcher.py not found at $PATCHED_FILE" >&2
+  echo "error: efinance_fetcher.py not found at $PATCHED_FILE" >&2
   exit 2
 fi
 
-run_case() {
-  local label="$1"
-  local cache_dir="$2"
+# Stub for `src.patches.eastmoney_patch` (image v3.12.0 predates the
+# module; bind-mount it over /app/src/patches/ so the working copy of
+# efinance_fetcher.py imports cleanly).
+TESTSTUB_DIR="$(mktemp -d -t dsa-efinance-smoke.XXXXXX)"
+trap 'rm -rf -- "$TESTSTUB_DIR"' EXIT
+mkdir -p "$TESTSTUB_DIR/src/patches"
+cat > "$TESTSTUB_DIR/src/patches/__init__.py" <<'PYSTUB'
+PYSTUB
+cat > "$TESTSTUB_DIR/src/patches/eastmoney_patch.py" <<'PYSTUB'
+def eastmoney_patch():
+    """No-op shim injected by scripts/check_efinance_cache_dir.sh.
 
-  echo "=== Case $label: EFINANCE_CACHE_DIR='${cache_dir:-<unset>}' ==="
+    Image v3.12.0 predates the real `src.patches.eastmoney_patch` module;
+    the working copy of `efinance_fetcher.py` imports it unconditionally.
+    This stub satisfies the import without affecting test semantics.
+    """
+    return None
+PYSTUB
 
-  local env_args=(
-    -e "HOME=/app"
-    -e "XDG_CACHE_HOME="
-  )
-  if [[ -n "$cache_dir" ]]; then
-    env_args+=(-e "EFINANCE_CACHE_DIR=$cache_dir")
+read -r -d '' PY_PROBE <<'PY' || true
+from data_provider import efinance_fetcher as ef
+
+print("EFINANCE_CACHE_DIR=" + str(ef._EFINANCE_CACHE_DIR))
+print("DATA_DIR=" + str(ef._ef_cfg_stub.DATA_DIR))
+print("SEARCH_RESULT_CACHE_PATH=" + str(ef._ef_cfg_stub.SEARCH_RESULT_CACHE_PATH))
+print("MKDIR_OK=" + ("1" if ef._ef_cfg_stub.DATA_DIR.exists() else "0"))
+
+# Consumer-side re-exports.  efinance.shared / utils import
+# SEARCH_RESULT_CACHE_PATH from efinance.config at module load, so they
+# reflect the same string the stub registered above.
+import efinance
+print("EFINANCE_SHARED_SRCP=" + str(efinance.shared.SEARCH_RESULT_CACHE_PATH))
+print("EFINANCE_UTILS_SRCP=" + str(efinance.utils.SEARCH_RESULT_CACHE_PATH))
+PY
+
+assert_kv() {
+  local name="$1" actual="$2" expected="$3"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "  FAIL: $name expected '$expected', got '$actual'" >&2
+    return 1
   fi
+  return 0
+}
 
+run_case() {
+  local label="$1"             # A / B / C / D
+  local case_cache_dir="$2"    # exact value of EFINANCE_CACHE_DIR ("" ⇒ unset)
+  local case_xdg="$3"          # exact value of XDG_CACHE_HOME ("" ⇒ unset)
+  local expect_data_dir="$4"   # expected ef.config.DATA_DIR
+  local expect_mkdir="$5"      # "1" or "0" expected MKDIR_OK
+  local expect_warning="$6"    # "1" if 'not creatable' warning expected on stderr
+
+  echo "=== Case $label: EFINANCE_CACHE_DIR='${case_cache_dir:-<unset>}' XDG_CACHE_HOME='${case_xdg:-<unset>}' expect_DATA_DIR=$expect_data_dir ==="
+
+  local env_args=(-e "HOME=/app")
+  [[ -n "$case_cache_dir" ]] && env_args+=(-e "EFINANCE_CACHE_DIR=$case_cache_dir")
+  [[ -n "$case_xdg" ]]       && env_args+=(--env "XDG_CACHE_HOME=$case_xdg")
+
+  local tmp outF errF rc=0 prc out err
+  tmp="$(mktemp -d)"
+  outF="$tmp/out"; errF="$tmp/err"
+  set +e
   podman run --rm \
     --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,exec \
     --security-opt=no-new-privileges \
     --user 1000:1000 \
     -v "$PATCHED_FILE:/app/data_provider/efinance_fetcher.py:ro" \
+    -v "$TESTSTUB_DIR/src/patches:/app/src/patches:ro" \
     "${env_args[@]}" \
     "$IMAGE" \
-    python -c '
-import sys, types
-# Stub src.patches.eastmoney_patch so efinance_fetcher.py imports clean
-# in image v3.12.0 which predates that module (not needed for our test).
-m = types.ModuleType("eastmoney_patch")
-m.eastmoney_patch = lambda: None
-sys.modules.setdefault("src.patches.eastmoney_patch", m)
-sys.modules.setdefault("src.patches", types.ModuleType("src.patches"))
-sys.modules["src.patches"].eastmoney_patch = m
+    python -c "$PY_PROBE" \
+    > "$outF" 2> "$errF"
+  prc=$?
+  set -e
+  out="$(cat "$outF")"; err="$(cat "$errF")"
+  rm -rf -- "$tmp"
 
-import data_provider
-cfg = data_provider.efinance_fetcher._ef_cfg_stub
-print("DATA_DIR=" + str(cfg.DATA_DIR))
-print("MKDIR_OK=" + ("1" if cfg.DATA_DIR.exists() else "0"))
-'
+  if (( prc != 0 )); then
+    echo "  FAIL: podman exited $prc, stderr below" >&2
+    echo "$err" >&2
+    return 1
+  fi
 
-  echo
+  local kv_data kv_search kv_shared kv_utils kv_mkdir
+  kv_data=$(printf '%s\n' "$out" | grep -E '^DATA_DIR=' | head -1 | cut -d= -f2-)
+  kv_search=$(printf '%s\n' "$out" | grep -E '^SEARCH_RESULT_CACHE_PATH=' | head -1 | cut -d= -f2-)
+  kv_shared=$(printf '%s\n' "$out" | grep -E '^EFINANCE_SHARED_SRCP=' | head -1 | cut -d= -f2-)
+  kv_utils=$(printf '%s\n'  "$out" | grep -E '^EFINANCE_UTILS_SRCP='  | head -1 | cut -d= -f2-)
+  kv_mkdir=$(printf '%s\n'  "$out" | grep -E '^MKDIR_OK='             | head -1 | cut -d= -f2-)
+
+  assert_kv "ef.config.DATA_DIR"                      "$kv_data"   "$expect_data_dir"      || rc=1
+  assert_kv "_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH"    "$kv_search" "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "efinance.shared.SEARCH_RESULT_CACHE_PATH" "$kv_shared" "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "efinance.utils.SEARCH_RESULT_CACHE_PATH"  "$kv_utils"  "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "MKDIR_OK"                                 "$kv_mkdir"  "$expect_mkdir"        || rc=1
+  if [[ "$expect_warning" == "1" ]] && ! grep -q 'not creatable' <<<"$err"; then
+    echo "  FAIL: expected 'not creatable' warning in stderr, got:\n$err" >&2
+    rc=1
+  fi
+
+  (( rc == 0 )) && echo "  PASS"
+  return $rc
 }
 
-run_case A ""
-run_case B "/tmp/ef-smoke-test"
-run_case C "/proc/ef-test"
+# Case A: container default (entrypoint.sh sets /app/data/.efinance-cache).
+#   /app/data is not a real Volume in this test, so mkdir on it fails;
+#   the stub is structurally complete anyway.  Warning expected on stderr.
+# Case B: explicit writable /tmp override.
+# Case C: explicit unwritable /proc override → mkdir fail + warning.
+# Case D: EFINANCE_CACHE_DIR unset, XDG_CACHE_HOME=/var/tmp → fallback.
+run_case A "/app/data/.efinance-cache" ""    "/app/data/.efinance-cache" "0" "1" || exit 1
+run_case B "/tmp/ef-smoke-test"          ""    "/tmp/ef-smoke-test"        "1" "0" || exit 1
+run_case C "/proc/ef-test"               ""    "/proc/ef-test"             "0" "1" || exit 1
+run_case D ""                            "/var/tmp" "/var/tmp/efinance"    "1" "0" || exit 1
 
-echo "smoke: all 3 cases passed"
+echo
+echo "smoke: all 4 cases passed"

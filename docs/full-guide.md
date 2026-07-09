@@ -140,7 +140,6 @@ daily_stock_analysis/
 | `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 15000） | 可选 |
 | `MD2IMG_ENGINE` | 转图引擎：`wkhtmltoimage`（默认，需 wkhtmltopdf）或 `markdown-to-file`（emoji 更好，需 `npm i -g markdown-to-file`） | 可选 |
 | `PREFETCH_REALTIME_QUOTES` | 设为 `false` 可禁用实时行情预取，避免 efinance/akshare_em 全市场拉取（默认 true） | 可选 |
-| `EFINANCE_CACHE_DIR` | efinance 内部缓存目录（如 `search-cache.json`）。上游 efinance ≤0.5.x 默认在自身包目录下 `mkdir()`，在只读 rootfs 上会失败。默认解析为 `$XDG_CACHE_HOME/efinance` → `~/.cache/efinance`；官方容器镜像经 `docker/entrypoint.sh` 默认注入 `/app/data/.efinance-cache`。若解析路径不可创建，仅记 warning 并继续；后续 efinance 写入将抛出清晰 `OSError`，由数据源 fallback 链路处理。 | 可选 |
 
 > 兼容性说明：`REPORT_SHOW_LLM_MODEL` 维持默认 `true` 的原始展示语义，关闭时只影响底部模型文案输出。该配置不会变更 provider/model/Base URL、LiteLLM 路由、模型保存、迁移或清理语义；回退方式为恢复或删除该变量，并设为 `true`。
 
@@ -414,6 +413,7 @@ daily_stock_analysis/
 | `FUNDAMENTAL_RETRY_MAX` | 基本面能力重试次数（含首次） | `1` | 可选 |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | 基本面聚合缓存 TTL（秒），短缓存减轻重复拉取 | `120` | 可选 |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | 基本面缓存最大条目数（TTL 内按时间淘汰） | `256` | 可选 |
+| `EFINANCE_CACHE_DIR` | efinance 内部缓存目录（如 `search-cache.json`）。上游 efinance ≤0.5.x 默认在自身包目录下 `mkdir()`，在只读 rootfs 上会失败。默认解析为 `$XDG_CACHE_HOME/efinance` → `~/.cache/efinance`；官方容器镜像经 `docker/entrypoint.sh` 默认注入 `/app/data/.efinance-cache`。若解析路径不可创建，仅记 warning 并继续；后续 efinance 写入将抛出清晰 `OSError`，由数据源 fallback 链路处理。 | - | 可选 |
 
 > 行为说明：
 > - A 股：按 `valuation/growth/earnings/institution/capital_flow/dragon_tiger/boards` 聚合能力返回；
