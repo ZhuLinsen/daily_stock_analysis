@@ -569,6 +569,7 @@ type SchedulerSettingsCardProps = {
   disabled: boolean;
   issueByKey: Record<string, ConfigValidationIssue[]>;
   statusRefreshToken: number;
+  overrideResetToken?: number;
   onChange: (key: string, value: string) => void;
   onSchedulerStateChange?: (payload: {
     runtimeEnabled: boolean | null;
@@ -583,6 +584,7 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
   disabled,
   issueByKey,
   statusRefreshToken,
+  overrideResetToken,
   onChange,
   onSchedulerStateChange,
   t,
@@ -631,6 +633,16 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
       overrideEnabled: scheduleEnabledOverride,
     });
   }, [onSchedulerStateChange, status?.enabled, scheduleEnabledOverride]);
+
+  // Parent bumps `overrideResetToken` when the user discards changes, so the
+  // local enabled override must fall back to the runtime status. Skipping the
+  // initial token value avoids clearing a fresh override on mount.
+  useEffect(() => {
+    if (!overrideResetToken) {
+      return;
+    }
+    setScheduleEnabledOverride(null);
+  }, [overrideResetToken]);
 
   if (!hasSchedulerSettings) {
     return null;
@@ -859,6 +871,7 @@ const SettingsPage: React.FC = () => {
   const [schedulerStatusRefreshToken, setSchedulerStatusRefreshToken] = useState(0);
   const [schedulerRuntimeEnabled, setSchedulerRuntimeEnabled] = useState<boolean | null>(null);
   const [schedulerOverrideFromUi, setSchedulerOverrideFromUi] = useState<boolean | null>(null);
+  const [schedulerOverrideResetToken, setSchedulerOverrideResetToken] = useState(0);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
   const [isRefreshingSetupStatus, setIsRefreshingSetupStatus] = useState(false);
   const [setupStatusError, setSetupStatusError] = useState<ParsedApiError | null>(null);
@@ -1057,6 +1070,16 @@ const SettingsPage: React.FC = () => {
     setSchedulerRuntimeEnabled(runtimeEnabled);
     setSchedulerOverrideFromUi(overrideEnabled);
   }, []);
+
+  // Discard must clear every source that feeds `effectiveHasDirty`, not just the
+  // system-config draft. The scheduler card keeps its own enabled override in
+  // local state, so resetting only the config draft would leave a runtime
+  // mismatch behind and keep the unsaved bar and beforeunload guard active.
+  const handleDiscardChanges = useCallback(() => {
+    resetDraft();
+    setSchedulerOverrideFromUi(null);
+    setSchedulerOverrideResetToken((token) => token + 1);
+  }, [resetDraft]);
 
   // UI rendering rule only: hide channel-managed and legacy provider-specific
   // LLM keys from generic fields when channel mode is active. This does not
@@ -1462,7 +1485,7 @@ const SettingsPage: React.FC = () => {
               variant="settings-secondary"
               size="sm"
               className="px-2.5"
-              onClick={resetDraft}
+              onClick={handleDiscardChanges}
               disabled={isLoading || isSaving}
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
@@ -1595,6 +1618,7 @@ const SettingsPage: React.FC = () => {
                 disabled={isSaving || isLoading}
                 issueByKey={issueByKey}
                 statusRefreshToken={schedulerStatusRefreshToken}
+                overrideResetToken={schedulerOverrideResetToken}
                 onSchedulerStateChange={handleSchedulerRuntimeStateChange}
                 onChange={setDraftValue}
                 t={t}
@@ -1837,7 +1861,7 @@ const SettingsPage: React.FC = () => {
             type="button"
             variant="settings-secondary"
             size="sm"
-            onClick={resetDraft}
+            onClick={handleDiscardChanges}
             disabled={isLoading || isSaving}
           >
             {t('settings.discardChanges')}

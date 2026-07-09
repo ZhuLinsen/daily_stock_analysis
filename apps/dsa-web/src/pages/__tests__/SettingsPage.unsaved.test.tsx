@@ -129,6 +129,27 @@ function buildBaseItem(key: string) {
   };
 }
 
+function buildScheduleEnabledItem() {
+  return {
+    key: 'SCHEDULE_ENABLED',
+    value: 'false',
+    rawValueExists: true,
+    isMasked: false,
+    schema: {
+      key: 'SCHEDULE_ENABLED',
+      category: 'system',
+      dataType: 'boolean',
+      uiControl: 'switch',
+      isSensitive: false,
+      isRequired: false,
+      isEditable: true,
+      options: [],
+      validation: {},
+      displayOrder: 1,
+    },
+  };
+}
+
 function buildSystemConfigState(overrides: Record<string, unknown> = {}) {
   return {
     categories: [
@@ -259,5 +280,48 @@ describe('SettingsPage unsaved changes bar', () => {
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save).toHaveBeenCalledWith([{ key: 'STOCK_LIST', value: 'SH600000' }]);
     expect(notifySystemConfigChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a scheduler-only unsaved state so the bar and guard reset', async () => {
+    // Runtime scheduler is disabled; toggling the card creates a runtime/override
+    // mismatch that marks the page dirty without any system-config draft change.
+    getSchedulerStatus.mockResolvedValue({
+      enabled: false,
+      running: false,
+      scheduleTimes: [],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      categories: [
+        { category: 'system', title: 'System', description: '', displayOrder: 1, fields: [] },
+      ],
+      activeCategory: 'system',
+      itemsByCategory: {
+        system: [buildScheduleEnabledItem()],
+      },
+      // getChangedItems stays empty: SCHEDULE_ENABLED is never written to the draft.
+    }));
+
+    render(<SettingsPage />);
+
+    const checkbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument();
+
+    // Enable the scheduler in the UI only -> runtime mismatch -> unsaved bar shows.
+    fireEvent.click(checkbox);
+    expect(await screen.findByRole('button', { name: '放弃修改' })).toBeInTheDocument();
+    expect(unsavedGuard).toHaveBeenLastCalledWith(true);
+
+    // Discarding must clear the scheduler override too, not just the config draft.
+    fireEvent.click(screen.getByRole('button', { name: '放弃修改' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: '放弃修改' })).not.toBeInTheDocument();
+    });
+    expect(resetDraft).toHaveBeenCalledTimes(1);
+    expect(unsavedGuard).toHaveBeenLastCalledWith(false);
   });
 });
