@@ -1045,9 +1045,6 @@ const SettingsPage: React.FC = () => {
 
   const dirtyCountByCategory = useMemo(() => {
     const counts: Record<string, number> = {};
-    if (!dirtyKeys.length) {
-      return counts;
-    }
     const keyToCategory: Record<string, string> = {};
     for (const [category, items] of Object.entries(itemsByCategory)) {
       for (const item of items) {
@@ -1060,8 +1057,16 @@ const SettingsPage: React.FC = () => {
         counts[category] = (counts[category] ?? 0) + 1;
       }
     }
+    // The scheduler runtime override is an unsaved source that never lands in
+    // `dirtyKeys` (SCHEDULE_ENABLED is not written to the config draft). Attribute
+    // it to the category that owns SCHEDULE_ENABLED so the nav badge stays in sync
+    // with the sticky bar and the beforeunload guard.
+    if (hasRuntimeSchedulerMismatchInDraft) {
+      const schedulerCategory = keyToCategory['SCHEDULE_ENABLED'] ?? 'system';
+      counts[schedulerCategory] = (counts[schedulerCategory] ?? 0) + 1;
+    }
     return counts;
-  }, [dirtyKeys, itemsByCategory]);
+  }, [dirtyKeys, itemsByCategory, hasRuntimeSchedulerMismatchInDraft]);
 
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;

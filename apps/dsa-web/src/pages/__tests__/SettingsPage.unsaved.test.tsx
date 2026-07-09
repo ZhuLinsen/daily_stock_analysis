@@ -314,6 +314,9 @@ describe('SettingsPage unsaved changes bar', () => {
     fireEvent.click(checkbox);
     expect(await screen.findByRole('button', { name: '放弃修改' })).toBeInTheDocument();
     expect(unsavedGuard).toHaveBeenLastCalledWith(true);
+    // The scheduler-only dirty state must also surface on the owning category's
+    // nav badge, so it stays consistent with the sticky bar and guard.
+    expect(JSON.parse(screen.getByTestId('nav-dirty').textContent || '{}')).toEqual({ system: 1 });
 
     // Discarding must clear the scheduler override too, not just the config draft.
     fireEvent.click(screen.getByRole('button', { name: '放弃修改' }));
@@ -323,5 +326,6 @@ describe('SettingsPage unsaved changes bar', () => {
     });
     expect(resetDraft).toHaveBeenCalledTimes(1);
     expect(unsavedGuard).toHaveBeenLastCalledWith(false);
+    expect(JSON.parse(screen.getByTestId('nav-dirty').textContent || '{}')).toEqual({});
   });
 });
