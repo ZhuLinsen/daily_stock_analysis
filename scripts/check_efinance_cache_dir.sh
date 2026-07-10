@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Smoke test for the efinance cache-directory contract (PR #1962).
 #
+# Scope: this script is a **library-level fallback** smoke test, NOT an
+# end-to-end entrypoint test.  `docker/entrypoint.sh` is NOT executed
+# inside this podman container; we set `EFINANCE_CACHE_DIR` /
+# `XDG_CACHE_HOME` explicitly to mirror the paths the entrypoint would
+# inject, then verify the patched `data_provider/efinance_fetcher.py`
+# resolves them correctly.  End-to-end entrypoint verification happens
+# in the Quadlet/compose deployment, not here.
+#
 # Each case spawns a fresh podman container with `--read-only --tmpfs
 # --user 1000:1000` (matching the production Quadlet rootfs posture),
 # bind-mounts the working copy of `efinance_fetcher.py` plus a stub for
@@ -8,7 +16,9 @@
 # and probes the values efinance's downstream consumers actually read.
 #
 # Cases mirror the project's expected deployment paths:
-#   A. container default (`/app/data/.efinance-cache`, entrypoint-injected)
+#   A. container default (`/app/data/.efinance-cache`, set manually
+#      here because the upstream entrypoint.sh is NOT executed in this
+#      script; in production the entrypoint injects the same value)
 #   B. explicit writable override (/tmp)
 #   C. explicit unwritable override (/proc) → mkdir fail + warning logged
 #   D. EFINANCE_CACHE_DIR unset, XDG_CACHE_HOME=/var/tmp → fallback path
@@ -131,12 +141,21 @@ run_case() {
   return $rc
 }
 
-# Case A: container default (entrypoint.sh sets /app/data/.efinance-cache).
-#   /app/data is not a real Volume in this test, so mkdir on it fails;
-#   the stub is structurally complete anyway.  Warning expected on stderr.
+# Case A: container default — what `docker/entrypoint.sh` injects in
+#   the official image (`EFINANCE_CACHE_DIR=/app/data/.efinance-cache`).
+#   Note that the upstream image's entrypoint.sh is NOT run inside this
+#   smoke container (we only set env + bind-mount files); we pass the
+#   injected value directly to mirror it.  /app/data is a real writable
+#   Volume in production; in this smoke run it's part of the read-only
+#   rootfs, so mkdir() on it fails and the stub stays structurally
+#   complete (warning logged, no ImportError).  This case therefore
+#   exercises the entrypoint default path, NOT the library-only
+#   fallback path — see case D for that.
 # Case B: explicit writable /tmp override.
 # Case C: explicit unwritable /proc override → mkdir fail + warning.
-# Case D: EFINANCE_CACHE_DIR unset, XDG_CACHE_HOME=/var/tmp → fallback.
+# Case D: library-level fallback path (entrypoint NOT active):
+#   EFINANCE_CACHE_DIR unset, XDG_CACHE_HOME=/var/tmp →
+#   DATA_DIR=/var/tmp/efinance, mkdir() succeeds.
 run_case A "/app/data/.efinance-cache" ""    "/app/data/.efinance-cache" "0" "1" || exit 1
 run_case B "/tmp/ef-smoke-test"          ""    "/tmp/ef-smoke-test"        "1" "0" || exit 1
 run_case C "/proc/ef-test"               ""    "/proc/ef-test"             "0" "1" || exit 1

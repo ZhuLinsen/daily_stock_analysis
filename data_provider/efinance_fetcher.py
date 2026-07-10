@@ -86,16 +86,23 @@ _ef_cfg_stub.MAX_CONNECTIONS = 50
 _ef_cfg_stub.SHOW_TICKFLOW_PROMPT = True
 _ef_cfg_stub.HERE = _Path("/tmp/.efinance-config-marker")
 
-_sys.modules.setdefault("efinance.config", _ef_cfg_stub)
-
-try:
-    import efinance as _ef  # noqa: F401  -- triggers efinance/__init__.py + utils with our config stub
-    _ef.config = _ef_cfg_stub  # attribute access (ef.config) hit by downstream callers
-except ImportError:
-    # efinance not installed (test envs, partial installs).  sys.modules
-    # stub stays in place; a later `import efinance as ef` in environments
-    # where efinance IS installed will still pick it up.
-    pass
+# Inject the stub ONLY if efinance has not been loaded yet.  If upstream
+# code already imported `efinance` (and therefore populated
+# `efinance.config` via its own `__init__.py`), we leave that alone — that
+# path owns its own cache-dir contract and presumably is already running
+# in a writable environment.
+#
+# Module-level `import efinance as ef` is deliberately omitted.  A
+# previous revision caught only `ImportError` around that import; any
+# `OSError` raised during efinance import (reproducible regression
+# caught in PR review) propagated out of this module and broke
+# `import data_provider` at startup.  The stub in sys.modules is
+# sufficient: the first `from efinance.config import …` (whether
+# triggered by data_provider's fetcher calls or by an external caller)
+# resolves to the stub when efinance hasn't been loaded yet, and to the
+# real module when it has.
+if "efinance" not in _sys.modules:
+    _sys.modules["efinance.config"] = _ef_cfg_stub
 
 import logging
 import os

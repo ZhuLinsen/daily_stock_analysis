@@ -10,7 +10,12 @@ schedule>=1.2.0             # Scheduled task runner
 exchange-calendars>=4.13.0   # Trading calendars; 4.5.x is incompatible with pandas 3 Timedelta "T"
 
 # Data source dependencies, ordered by fallback priority
-efinance>=0.5.5             # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
+efinance>=0.5.5,<0.6        # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
+                              # Pinned to <0.6: stub block in data_provider/efinance_fetcher.py
+                              # replaces the entire private `efinance.config` module; the
+                              # replacement targets the module shape of efinance 0.5.x
+                              # (validated against 0.5.8).  Re-validate on every upstream
+                              # minor bump before relaxing the upper bound.
 akshare>=1.12.0             # Priority 1: East Money crawler data source
 tushare>=1.4.0              # Priority 2: Tushare Pro API
 pytdx>=1.72                 # Priority 2: Tongdaxin quote servers

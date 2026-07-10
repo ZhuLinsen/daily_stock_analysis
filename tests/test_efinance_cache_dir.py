@@ -246,6 +246,64 @@ def test_e_consumer_re_exports_match_stub():
 
 
 @pytest.mark.unit
+def test_import_order_efinance_first_then_data_provider_is_safe():
+    """If `efinance` is imported first, our stub-block must back off
+    instead of replacing the already-loaded module.
+
+    This is the inverse-order case for the import-order contract
+    documented at the top of `data_provider/efinance_fetcher.py`.  When
+    `efinance` is already in `sys.modules` we must NOT inject a second
+    `efinance.config` (which would mask the upstream-cached attribute
+    and silently flip SEARCH_RESULT_CACHE_PATH), and we must NOT raise
+    during `import data_provider`.
+    """
+    pytest.importorskip("pandas")
+    pytest.importorskip("efinance")
+
+    script = textwrap.dedent("""
+        import sys
+        # Load efinance FIRST in a clean sys.modules.
+        import efinance as ef
+        sys.modules["__test__efinance_pre_loaded"] = "1"  # sentinel
+        # Now load data_provider.
+        from data_provider import efinance_fetcher as fetcher
+        # data_provider.efinance_fetcher must NOT have replaced the
+        # already-loaded efinance.config (which holds the upstream
+        # module's data).
+        cfg = ef.config
+        from data_provider.efinance_fetcher import _ef_cfg_stub as stub
+        same_id = cfg is stub
+        print("EFINANCE_PRELOADED=1")
+        print("STUB_IS_EFINANCE_CONFIG=" + ("1" if same_id else "0"))
+        sys.exit(0)
+    """).strip()
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "EFINANCE_CACHE_DIR": "", "XDG_CACHE_HOME": ""},
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 0, (
+        "importing data_provider after efinance must not raise:\n" + proc.stderr
+    )
+    kv = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            kv[k] = v
+    assert kv.get("EFINANCE_PRELOADED") == "1"
+    # Crucial: stub is NOT the active efinance.config when efinance was
+    # loaded first; upstream retains control of its own cache dir.
+    assert kv.get("STUB_IS_EFINANCE_CONFIG") == "0", (
+        "stub must NOT replace a pre-loaded efinance.config (would mask "
+        "the upstream-cached attribute): " + repr(proc.stdout)
+    )
+
+
+@pytest.mark.unit
 def test_eager_import_does_not_raise():
     """`data_provider/__init__.py` imports EfinanceFetcher; must succeed
     even when the cache dir is unwritable so the production fallback
