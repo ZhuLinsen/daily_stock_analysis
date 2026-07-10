@@ -1,27 +1,34 @@
 # -*- coding: utf-8 -*-
-"""Behavioural tests for the EFINANCE_CACHE_DIR contract (PR #1962).
+"""Behavioural tests for the `EFINANCE_CACHE_DIR` resolution contract.
 
-Verifies the contract introduced on commit 6248158a and tightened across
-PR #1962's iterative reviews:
+The efinance data source uses an in-package cache directory that fails
+on read-only filesystems (containers, system Python installs).  The
+resolution contract under test:
 
   A. EFINANCE_CACHE_DIR unset, container /app read-only
      -> DATA_DIR falls back to /app/.cache/efinance (HOME=/app,
-        XDG_CACHE_HOME unset); mkdir() is best-effort and never raises;
-        the warning is logged.
+        XDG_CACHE_HOME unset); mkdir() is best-effort and never raises.
   B. EFINANCE_CACHE_DIR points at a writable directory
      -> DATA_DIR resolves to that path, mkdir() succeeds.
   C. EFINANCE_CACHE_DIR points at an unwritable directory
-     -> mkdir() fails with OSError, warning is logged, import still
-        succeeds because the stub stays structurally complete.
+     -> mkdir() fails with OSError, the warning is logged, and the
+        import still succeeds because the stub stays structurally
+        complete.
   D. Container default: EFINANCE_CACHE_DIR=/app/data/.efinance-cache
-     -> DATA_DIR matches the entrypoint-injected writable-Volume path
-        on the official image; mkdir() succeeds when /app/data is RW.
-  E. Consumer-side re-export chain (`efinance.shared.SEARCH_RESULT_CACHE_PATH`
-     and `efinance.utils.SEARCH_RESULT_CACHE_PATH`) resolves to the same
+     -> DATA_DIR matches the entrypoint-injected writable-Volume path.
+  E. Consumer-side re-export chain
+     (`efinance.shared.SEARCH_RESULT_CACHE_PATH` and
+     `efinance.utils.SEARCH_RESULT_CACHE_PATH`) resolves to the same
      string the stub registered, so downstream code that reads
-     `efinance.shared.SEARCH_RESULT_CACHE_PATH` (instead of
-     `efinance.config.SEARCH_RESULT_CACHE_PATH`) sees the configured
-     value.
+     either of those sees the configured value.
+  F. Parent-attribute contract
+     (`efinance.config.DATA_DIR` after `import efinance as ef`)
+     resolves to the stub; the stub-block sets the attribute via
+     `setattr(_ef, "config", _ef_cfg_stub)`.
+  G. EfinanceFetcher instantiation under an unwritable cache directory
+     does not raise at construction time; the data-source fallback
+     chain is the contract for the runtime call path (out of scope
+     here).
 
 Each case runs in a fresh subprocess so the import-time state set up by
 the stub block is isolated.  The pytest runner must install the
@@ -329,3 +336,68 @@ def test_eager_import_does_not_raise():
         + proc.stderr
     )
     assert "OK" in proc.stdout
+
+
+@pytest.mark.unit
+def test_f_parent_attribute_contract():
+    """`efinance.config.DATA_DIR` (parent attribute path) resolves to
+    the stub registered by data_provider, so callers using
+    `import efinance as ef; ef.config.X` see the configured cache
+    directory.  This is the contract the PR body advertises; the
+    earlier round did not satisfy it (efinance 0.5.x's __init__.py
+    does not expose `.config`).
+    """
+    pytest.importorskip("pandas")
+    pytest.importorskip("efinance")
+
+    target = "/tmp/ef-test-parent-attr-" + str(os.getpid())
+    try:
+        result = _run_case({"EFINANCE_CACHE_DIR": target})
+        assert result["returncode"] == 0, result["stderr"]
+        # The parent-attribute channel: `efinance.config.DATA_DIR`.
+        assert result["kv"]["EFINANCE_CONFIG_PARENT_DATA_DIR"] == target, (
+            f"efinance.config.DATA_DIR expected {target}, "
+            f"got {result['kv'].get('EFINANCE_CONFIG_PARENT_DATA_DIR')!r}"
+        )
+        assert result["kv"]["EFINANCE_CONFIG_PARENT_SEARCH"] == target + "/search-cache.json", (
+            f"efinance.config.SEARCH_RESULT_CACHE_PATH expected {target}/search-cache.json, "
+            f"got {result['kv'].get('EFINANCE_CONFIG_PARENT_SEARCH')!r}"
+        )
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+@pytest.mark.unit
+def test_g_efinance_fetcher_instantiation_under_unwritable_cache():
+    """Constructing `EfinanceFetcher()` under an unwritable cache dir
+    must not raise.  The data-source fallback chain is the contract
+    for the runtime call path itself; that integration is upstream's
+    responsibility and is not asserted here.
+    """
+    pytest.importorskip("pandas")
+    pytest.importorskip("efinance")
+
+    script = textwrap.dedent("""
+        from data_provider.efinance_fetcher import EfinanceFetcher
+        e = EfinanceFetcher()
+        print("CONSTRUCTED=" + type(e).__name__)
+    """).strip()
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            **os.environ,
+            "EFINANCE_CACHE_DIR": "/proc/ef-test",
+            "HOME": "/app",
+            "XDG_CACHE_HOME": "",
+        },
+        cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 0, (
+        "EfinanceFetcher() must construct under unwritable cache:\n"
+        + proc.stderr
+    )
+    assert "CONSTRUCTED=EfinanceFetcher" in proc.stdout

@@ -59,16 +59,21 @@ read -r -d '' PY_PROBE <<'PY' || true
 from data_provider import efinance_fetcher as ef
 
 print("EFINANCE_CACHE_DIR=" + str(ef._EFINANCE_CACHE_DIR))
-print("DATA_DIR=" + str(ef._ef_cfg_stub.DATA_DIR))
-print("SEARCH_RESULT_CACHE_PATH=" + str(ef._ef_cfg_stub.SEARCH_RESULT_CACHE_PATH))
+print("STUB_DATA_DIR=" + str(ef._ef_cfg_stub.DATA_DIR))
+print("STUB_SEARCH_RESULT_CACHE_PATH=" + str(ef._ef_cfg_stub.SEARCH_RESULT_CACHE_PATH))
 print("MKDIR_OK=" + ("1" if ef._ef_cfg_stub.DATA_DIR.exists() else "0"))
 
+import efinance
 # Consumer-side re-exports.  efinance.shared / utils import
 # SEARCH_RESULT_CACHE_PATH from efinance.config at module load, so they
 # reflect the same string the stub registered above.
-import efinance
 print("EFINANCE_SHARED_SRCP=" + str(efinance.shared.SEARCH_RESULT_CACHE_PATH))
 print("EFINANCE_UTILS_SRCP=" + str(efinance.utils.SEARCH_RESULT_CACHE_PATH))
+# Parent-attribute contract: efinance.config is also exposed as
+# `import efinance as ef; ef.config.<X>` (verified against efinance
+# 0.5.x; the stub-block sets the parent attribute via setattr).
+print("EFINANCE_CONFIG_PARENT_DATA_DIR=" + str(efinance.config.DATA_DIR))
+print("EFINANCE_CONFIG_PARENT_SEARCH=" + str(efinance.config.SEARCH_RESULT_CACHE_PATH))
 PY
 
 assert_kv() {
@@ -120,12 +125,32 @@ run_case() {
     return 1
   fi
 
-  local kv_data kv_search kv_shared kv_utils kv_mkdir
-  kv_data=$(printf '%s\n' "$out" | grep -E '^DATA_DIR=' | head -1 | cut -d= -f2-)
-  kv_search=$(printf '%s\n' "$out" | grep -E '^SEARCH_RESULT_CACHE_PATH=' | head -1 | cut -d= -f2-)
+  local kv_stub_data kv_stub_search kv_parent_data kv_parent_search kv_shared kv_utils kv_mkdir
+  kv_stub_data=$(printf '%s\n' "$out" | grep -E '^STUB_DATA_DIR=' | head -1 | cut -d= -f2-)
+  kv_stub_search=$(printf '%s\n' "$out" | grep -E '^STUB_SEARCH_RESULT_CACHE_PATH=' | head -1 | cut -d= -f2-)
+  kv_parent_data=$(printf '%s\n' "$out" | grep -E '^EFINANCE_CONFIG_PARENT_DATA_DIR=' | head -1 | cut -d= -f2-)
+  kv_parent_search=$(printf '%s\n' "$out" | grep -E '^EFINANCE_CONFIG_PARENT_SEARCH=' | head -1 | cut -d= -f2-)
   kv_shared=$(printf '%s\n' "$out" | grep -E '^EFINANCE_SHARED_SRCP=' | head -1 | cut -d= -f2-)
   kv_utils=$(printf '%s\n'  "$out" | grep -E '^EFINANCE_UTILS_SRCP='  | head -1 | cut -d= -f2-)
   kv_mkdir=$(printf '%s\n'  "$out" | grep -E '^MKDIR_OK='             | head -1 | cut -d= -f2-)
+
+  # Three observation channels for the same logical path:
+  #   * _ef_cfg_stub.DATA_DIR                  -- the stub object we register in sys.modules
+  #   * efinance.config.DATA_DIR               -- the parent-attribute path (ef.config in the PR body)
+  #   * efinance.shared/utils.SEARCH_RESULT_CACHE_PATH -- the consumer-side re-exports
+  # All three must agree on the resolved path; the assert labels in the
+  # PR body reflect this 3-channel contract.
+  assert_kv "_ef_cfg_stub.DATA_DIR"                    "$kv_stub_data"    "$expect_data_dir"      || rc=1
+  assert_kv "_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH"      "$kv_stub_search"  "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "efinance.config.DATA_DIR (parent)"          "$kv_parent_data"  "$expect_data_dir"      || rc=1
+  assert_kv "efinance.config.SEARCH_RESULT_CACHE_PATH (parent)" "$kv_parent_search" "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "efinance.shared.SEARCH_RESULT_CACHE_PATH"  "$kv_shared"       "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "efinance.utils.SEARCH_RESULT_CACHE_PATH"   "$kv_utils"        "$expect_data_dir/search-cache.json" || rc=1
+  assert_kv "MKDIR_OK"                                 "$kv_mkdir"        "$expect_mkdir"        || rc=1
+  if [[ "$expect_warning" == "1" ]] && ! grep -q 'not creatable' <<<"$err"; then
+    echo "  FAIL: expected 'not creatable' warning in stderr, got:\n$err" >&2
+    rc=1
+  fi
 
   assert_kv "ef.config.DATA_DIR"                      "$kv_data"   "$expect_data_dir"      || rc=1
   assert_kv "_ef_cfg_stub.SEARCH_RESULT_CACHE_PATH"    "$kv_search" "$expect_data_dir/search-cache.json" || rc=1

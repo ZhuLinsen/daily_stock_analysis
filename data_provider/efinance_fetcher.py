@@ -86,23 +86,39 @@ _ef_cfg_stub.MAX_CONNECTIONS = 50
 _ef_cfg_stub.SHOW_TICKFLOW_PROMPT = True
 _ef_cfg_stub.HERE = _Path("/tmp/.efinance-config-marker")
 
-# Inject the stub ONLY if efinance has not been loaded yet.  If upstream
-# code already imported `efinance` (and therefore populated
-# `efinance.config` via its own `__init__.py`), we leave that alone — that
-# path owns its own cache-dir contract and presumably is already running
-# in a writable environment.
+# Inject the stub for the `efinance.config` symbol.  Whether or not
+# efinance has already been imported, this places our stub where
+# downstream `from efinance.config import X` resolves.
+_sys.modules["efinance.config"] = _ef_cfg_stub
+
+# Best-effort: also bind the stub as the parent package's `config`
+# attribute.  efinance 0.5.x's `__init__.py` does not expose `.config`
+# (verified against 0.5.8); without this attribute assignment, callers
+# using `import efinance as ef; ef.config.X` raise AttributeError.
 #
-# Module-level `import efinance as ef` is deliberately omitted.  A
-# previous revision caught only `ImportError` around that import; any
-# `OSError` raised during efinance import (reproducible regression
-# caught in PR review) propagated out of this module and broke
-# `import data_provider` at startup.  The stub in sys.modules is
-# sufficient: the first `from efinance.config import …` (whether
-# triggered by data_provider's fetcher calls or by an external caller)
-# resolves to the stub when efinance hasn't been loaded yet, and to the
-# real module when it has.
-if "efinance" not in _sys.modules:
-    _sys.modules["efinance.config"] = _ef_cfg_stub
+# Wrapped in `except BaseException` because:
+#   * The eager `import efinance` half can raise OSError on cache
+#     probing (reproducible regression caught in PR review).
+#   * The parent-attribute assignment is best-effort against future
+#     upstream changes that may make the package attribute non-
+#     assignable.
+# Both halves MUST NOT propagate, or `import data_provider` breaks at
+# startup — defeating the whole point of this patch.
+try:
+    import efinance as _ef  # noqa: F401
+    setattr(_ef, "config", _ef_cfg_stub)
+except (ImportError, OSError):
+    # efinance not installed (ImportError) or raised OSError during
+    # import (reproducible regression caught in PR review; narrower
+    # catch than `except BaseException` so unrelated dependency
+    # failures surface as before).  Both must NOT propagate as
+    # `import data_provider` failures.
+    pass
+except (AttributeError, TypeError):
+    # Parent-attribute assignment is best-effort: the consumer-side
+    # re-exports via `sys.modules["efinance.config"]` already resolve
+    # correctly even when this half fails.
+    pass
 
 import logging
 import os
