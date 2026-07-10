@@ -8,19 +8,23 @@ when to compute the summary; DecisionAgent owns how to present it to the LLM.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any, Dict, List
 
 from src.agent.protocols import AgentContext
+from src.agent.risk_override import build_risk_override_plan
 
 _BULLISH_SIGNALS = {"strong_buy", "buy"}
 _BEARISH_SIGNALS = {"strong_sell", "sell"}
 _RISK_AGENT_NAMES = {"risk"}
-_NON_CRITICAL_STAGES = {"intel", "risk"}
 _SUMMARY_STAGE_LIMIT = 8
 
 
-def build_agent_disagreement_summary(ctx: AgentContext) -> Dict[str, Any]:
+def build_agent_disagreement_summary(
+    ctx: AgentContext,
+    *,
+    risk_override_enabled: bool = True,
+) -> Dict[str, Any]:
     """Build a structured, low-sensitivity summary of prior agent disagreement."""
     buckets = {
         "bullish_agents": [],
@@ -38,13 +42,16 @@ def build_agent_disagreement_summary(ctx: AgentContext) -> Dict[str, Any]:
         else:
             buckets["neutral_agents"].append(agent_summary)
 
-    risk_override_present = _has_risk_override(ctx)
+    risk_override_plan = build_risk_override_plan(
+        ctx,
+        override_enabled=risk_override_enabled,
+    )
     degraded_result = _build_degraded_result(ctx)
     conflict_type = _classify_conflict_type(
         buckets["bullish_agents"],
         buckets["bearish_agents"],
         buckets["neutral_agents"],
-        risk_override_present,
+        risk_override_plan.override_enabled and risk_override_plan.override_trigger_present,
         degraded_result,
     )
 
@@ -52,7 +59,9 @@ def build_agent_disagreement_summary(ctx: AgentContext) -> Dict[str, Any]:
         **buckets,
         "conflict_type": conflict_type,
         "decision_path_hint": _decision_path_hint(conflict_type),
-        "risk_override_present": risk_override_present,
+        "risk_override_present": risk_override_plan.override_enabled
+        and risk_override_plan.override_trigger_present,
+        "risk_control": risk_override_plan.to_low_sensitivity_dict(),
         "degraded_result": degraded_result,
     }
 
@@ -94,26 +103,9 @@ def _safe_confidence(confidence: Any) -> float:
     return round(max(0.0, min(1.0, value)), 2)
 
 
-def _has_risk_override(ctx: AgentContext) -> bool:
-    if any(str(flag.get("severity", "")).lower() == "high" for flag in ctx.risk_flags if isinstance(flag, dict)):
-        return True
-
-    for opinion in ctx.opinions:
-        if not _is_risk_agent(opinion.agent_name):
-            continue
-        raw_data = opinion.raw_data if isinstance(opinion.raw_data, dict) else {}
-        if raw_data.get("veto_buy") is True:
-            return True
-        if str(raw_data.get("signal_adjustment", "")).lower() == "veto":
-            return True
-        if str(raw_data.get("risk_level", "")).lower() == "high":
-            return True
-    return False
-
-
 def _build_degraded_result(ctx: AgentContext) -> Dict[str, Any]:
     stages = list(_iter_degraded_stages(ctx))
-    has_non_critical = any(stage.get("stage_name") in _NON_CRITICAL_STAGES for stage in stages)
+    has_non_critical = any(stage.get("non_critical") is True for stage in stages)
     return {
         "present": bool(stages),
         "non_critical_stage_present": has_non_critical,
@@ -121,32 +113,28 @@ def _build_degraded_result(ctx: AgentContext) -> Dict[str, Any]:
     }
 
 
-def _iter_degraded_stages(ctx: AgentContext) -> Iterable[Dict[str, str]]:
-    for source in (
-        ctx.get_data("degraded_stages"),
-        ctx.meta.get("degraded_stages"),
-        ctx.meta.get("stage_results"),
-        ctx.get_data("stage_results"),
-    ):
-        for item in _coerce_stage_items(source):
-            stage_name = str(item.get("stage_name") or item.get("stage") or item.get("agent_name") or "").strip()
-            status = str(item.get("status") or "").strip().lower()
-            if not stage_name or status not in {"failed", "skipped", "degraded", "partial", "timeout"}:
-                continue
-            yield {
-                "stage_name": stage_name,
-                "status": status,
-            }
+def _iter_degraded_stages(ctx: AgentContext) -> Iterable[Dict[str, Any]]:
+    source = ctx.meta.get("degraded_stages")
+    if not isinstance(source, list):
+        return
 
-
-def _coerce_stage_items(source: Any) -> Iterable[Mapping[str, Any]]:
-    if source is None:
-        return []
-    if isinstance(source, Mapping):
-        return [source]
-    if isinstance(source, Iterable) and not isinstance(source, (str, bytes)):
-        return [item for item in source if isinstance(item, Mapping)]
-    return []
+    seen = set()
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        stage_name = str(item.get("stage_name") or "").strip()
+        status = str(item.get("status") or "").strip().lower()
+        if not stage_name or status != "failed":
+            continue
+        dedupe_key = (stage_name, status)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        yield {
+            "stage_name": stage_name,
+            "status": status,
+            "non_critical": item.get("non_critical") is True,
+        }
 
 
 def _classify_conflict_type(
@@ -160,7 +148,11 @@ def _classify_conflict_type(
         return "risk_override"
     if bullish_agents and bearish_agents:
         return "mixed_directional_signals"
-    if degraded_result.get("present") and not bullish_agents and not bearish_agents:
+    if degraded_result.get("present"):
+        if bullish_agents and not bearish_agents:
+            return "partial_bullish_with_degraded_inputs"
+        if bearish_agents and not bullish_agents:
+            return "partial_bearish_with_degraded_inputs"
         return "degraded_only"
     if bullish_agents and not bearish_agents:
         return "aligned_bullish" if not neutral_agents else "bullish_with_neutral"
@@ -176,6 +168,8 @@ def _decision_path_hint(conflict_type: str) -> str:
         "risk_override": "prioritize_risk_controls_and_cap_buy_signal",
         "mixed_directional_signals": "explain_cross_agent_conflict_before_final_signal",
         "degraded_only": "state_data_limitations_before_recommendation",
+        "partial_bullish_with_degraded_inputs": "state_degraded_inputs_before_any_bullish_lean",
+        "partial_bearish_with_degraded_inputs": "state_degraded_inputs_before_any_bearish_lean",
         "aligned_bullish": "use_bullish_consensus_with_price_and_risk_checks",
         "bullish_with_neutral": "lean_bullish_but_require_confirmation",
         "aligned_bearish": "use_bearish_consensus_and_preserve_downside_controls",

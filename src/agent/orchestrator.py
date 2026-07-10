@@ -42,6 +42,7 @@ from src.agent.protocols import (
     StageStatus,
     normalize_decision_signal,
 )
+from src.agent.risk_override import build_risk_override_plan
 from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
 from src.agent.stream_events import stream_event
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
+NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
 
 
 @dataclass
@@ -573,11 +575,7 @@ class AgentOrchestrator:
             #   - intel / risk (standard support stages)
             #   - skill agents (specialist evaluation, optional)
             if result.status == StageStatus.FAILED:
-                non_critical = (
-                    agent.agent_name in ("intel", "risk")
-                    or agent.agent_name in getattr(self, "_skill_agent_names", set())
-                )
-                if not non_critical:
+                if not self._is_non_critical_stage(agent.agent_name):
                     logger.error("[Orchestrator] critical stage '%s' failed: %s", agent.agent_name, result.error)
                     return OrchestratorResult(
                         success=False,
@@ -742,14 +740,21 @@ class AgentOrchestrator:
 
     def _prepare_decision_context(self, ctx: AgentContext) -> None:
         """Populate low-sensitivity summaries consumed by DecisionAgent."""
-        try:
-            ctx.set_data("agent_disagreement_summary", build_agent_disagreement_summary(ctx))
-        except Exception as exc:
-            logger.warning("[Orchestrator] failed to build agent disagreement summary: %s", exc)
+        ctx.meta["agent_disagreement_summary"] = build_agent_disagreement_summary(
+            ctx,
+            risk_override_enabled=getattr(self.config, "agent_risk_override", True),
+        )
 
-    @staticmethod
-    def _record_degraded_stage(ctx: AgentContext, agent_name: str, result: StageResult) -> None:
+    def _record_degraded_stage(
+        self,
+        ctx: AgentContext,
+        agent_name: str,
+        result: StageResult,
+    ) -> None:
         """Record a low-sensitivity degraded stage marker for downstream synthesis."""
+        if result.status != StageStatus.FAILED:
+            raise ValueError("degraded stage markers are only produced for failed stages")
+
         degraded_stages = ctx.meta.setdefault("degraded_stages", [])
         if not isinstance(degraded_stages, list):
             degraded_stages = []
@@ -757,7 +762,16 @@ class AgentOrchestrator:
         degraded_stages.append({
             "stage_name": agent_name,
             "status": result.status.value,
+            "non_critical": self._is_non_critical_stage(agent_name),
         })
+
+    def _is_non_critical_stage(self, agent_name: str) -> bool:
+        """Return whether a failed stage should degrade instead of aborting."""
+        normalized_name = str(agent_name or "").strip()
+        return (
+            normalized_name in NON_CRITICAL_BASE_STAGES
+            or normalized_name in getattr(self, "_skill_agent_names", set())
+        )
 
     # -----------------------------------------------------------------
     # Helpers
@@ -1317,9 +1331,6 @@ class AgentOrchestrator:
         if ctx.get_data("risk_override_applied"):
             return
 
-        if not getattr(self.config, "agent_risk_override", True):
-            return
-
         dashboard = ctx.get_data("final_dashboard")
         if not isinstance(dashboard, dict):
             return
@@ -1327,22 +1338,16 @@ class AgentOrchestrator:
         risk_opinion = next((op for op in reversed(ctx.opinions) if op.agent_name == "risk"), None)
         risk_raw = risk_opinion.raw_data if risk_opinion and isinstance(risk_opinion.raw_data, dict) else {}
 
-        adjustment = str(risk_raw.get("signal_adjustment") or "").lower()
-        has_high_flag = any(str(flag.get("severity", "")).lower() == "high" for flag in ctx.risk_flags)
-        veto_buy = bool(risk_raw.get("veto_buy")) or adjustment == "veto" or has_high_flag
-
-        current_signal = normalize_decision_signal(dashboard.get("decision_type", "hold"))
-        new_signal = current_signal
-        if veto_buy and current_signal == "buy":
-            new_signal = "hold"
-        elif adjustment == "downgrade_one":
-            new_signal = _downgrade_signal(current_signal, steps=1)
-        elif adjustment == "downgrade_two":
-            new_signal = _downgrade_signal(current_signal, steps=2)
-
-        if new_signal == current_signal:
+        plan = build_risk_override_plan(
+            ctx,
+            current_signal=dashboard.get("decision_type", "hold"),
+            override_enabled=getattr(self.config, "agent_risk_override", True),
+        )
+        if not plan.will_apply or plan.target_signal is None or plan.current_signal is None:
             return
 
+        current_signal = plan.current_signal
+        new_signal = plan.target_signal
         dashboard["decision_type"] = new_signal
         dashboard["risk_warning"] = self._merge_risk_warning(
             dashboard.get("risk_warning"),
@@ -1392,7 +1397,8 @@ class AgentOrchestrator:
         ctx.set_data("risk_override_applied", {
             "from": current_signal,
             "to": new_signal,
-            "adjustment": adjustment or ("veto" if veto_buy else "none"),
+            "adjustment": plan.adjustment or ("veto" if plan.veto_buy else "none"),
+            "reason": plan.reason,
         })
 
         for opinion in reversed(ctx.opinions):
@@ -1407,8 +1413,8 @@ class AgentOrchestrator:
             "[Orchestrator] risk override applied: %s -> %s (adjustment=%s, high_flag=%s)",
             current_signal,
             new_signal,
-            adjustment or ("veto" if veto_buy else "none"),
-            has_high_flag,
+            plan.adjustment or ("veto" if plan.veto_buy else "none"),
+            plan.has_high_flag,
         )
 
     @staticmethod
@@ -1514,16 +1520,6 @@ def _extract_stock_code(text: str) -> str:
             continue
         return candidate
     return ""
-
-
-def _downgrade_signal(signal: str, steps: int = 1) -> str:
-    """Downgrade a dashboard decision signal by one or more levels."""
-    order = ["buy", "hold", "sell"]
-    try:
-        index = order.index(signal)
-    except ValueError:
-        return signal
-    return order[min(len(order) - 1, index + max(0, steps))]
 
 
 def _adjust_sentiment_score(score: int, signal: str) -> int:

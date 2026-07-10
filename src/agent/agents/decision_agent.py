@@ -195,7 +195,7 @@ should sum to 100; all-zero means no effective signal and must not be faked.
                 parts.append(f"- [{rf.get('severity', 'medium')}] {rf.get('category', '')}: {rf.get('description', '')}")
             parts.append("")
 
-        disagreement_summary = ctx.get_data("agent_disagreement_summary")
+        disagreement_summary = ctx.meta.get("agent_disagreement_summary")
         if isinstance(disagreement_summary, dict) and disagreement_summary:
             parts.append("## Agent Disagreement Summary")
             parts.append(json.dumps(disagreement_summary, ensure_ascii=False, default=str))
