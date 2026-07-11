@@ -233,6 +233,7 @@ def get_history_list(
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},
+        400: {"description": "股票代码不能为空", "model": ErrorResponse},
         404: {"description": "未找到记录", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -245,6 +246,12 @@ def delete_history_by_code(
 ) -> DeleteHistoryResponse:
     try:
         candidates = HistoryService._history_code_filter_candidates(stock_code)
+        if not candidates:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_request", "message": "stock_code 不能为空"},
+            )
+
         deleted = 0
         while True:
             records, _ = db_manager.get_analysis_history_paginated(
@@ -264,6 +271,8 @@ def delete_history_by_code(
                 break
 
         return DeleteHistoryResponse(deleted=deleted)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"按股票代码删除历史记录失败: {e}", exc_info=True)
         raise HTTPException(

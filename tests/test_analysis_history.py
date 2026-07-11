@@ -213,6 +213,32 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(remaining, {})
         self.assertEqual(db.get_analysis_history_paginated.call_count, 2)
 
+    def test_delete_history_by_code_rejects_blank_code_before_query(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        record_id = self._save_history("query_delete_blank_code")
+        with (
+            patch.object(
+                self.db,
+                "get_analysis_history_paginated",
+                wraps=self.db.get_analysis_history_paginated,
+            ) as query,
+            patch.object(
+                self.db,
+                "delete_analysis_history_records",
+                wraps=self.db.delete_analysis_history_records,
+            ) as delete,
+        ):
+            with self.assertRaises(Exception) as raised:
+                delete_history_by_code(" ", db_manager=self.db)
+
+        self.assertEqual(getattr(raised.exception, "status_code", None), 400)
+        query.assert_not_called()
+        delete.assert_not_called()
+        with self.db.get_session() as session:
+            self.assertIsNotNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first())
+
     def _build_result(self) -> AnalysisResult:
         """构造分析结果"""
         return AnalysisResult(
