@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import Config, get_config
 from src.repositories.portfolio_repo import PortfolioRepository
+from src.services.decision_signal_service import DecisionSignalService
+from src.services.decision_signal_summary import summarize_decision_signal
 from src.services.portfolio_service import PortfolioService
+
+logger = logging.getLogger(__name__)
+
+DEFENSIVE_DECISION_SIGNAL_ACTIONS = ("sell", "reduce", "alert")
 
 
 class PortfolioRiskService:
@@ -19,10 +26,12 @@ class PortfolioRiskService:
         *,
         repo: Optional[PortfolioRepository] = None,
         portfolio_service: Optional[PortfolioService] = None,
+        decision_signal_service: Optional[DecisionSignalService] = None,
         config: Optional[Config] = None,
     ):
         self.repo = repo or PortfolioRepository()
         self.portfolio_service = portfolio_service or PortfolioService(repo=self.repo)
+        self.decision_signal_service = decision_signal_service or DecisionSignalService(portfolio_repo=self.repo)
         self.config = config or get_config()
         self._data_manager = None
         self._data_manager_init_error = ""
@@ -73,6 +82,7 @@ class PortfolioRiskService:
             lookback_days=thresholds["lookback_days"],
         )
         stop_loss = self._build_stop_loss(snapshot, thresholds)
+        decision_signal_risk = self._build_decision_signal_risk(snapshot)
 
         return {
             "as_of": as_of_date.isoformat(),
@@ -84,7 +94,108 @@ class PortfolioRiskService:
             "sector_concentration": sector_concentration,
             "drawdown": drawdown,
             "stop_loss": stop_loss,
+            "decision_signal_risk": decision_signal_risk,
         }
+
+    def _build_decision_signal_risk(
+        self,
+        snapshot: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        try:
+            held_positions = self._held_position_identities(snapshot)
+            if not held_positions:
+                return self._empty_decision_signal_risk(available=True)
+            stock_identities = sorted({
+                (position["market"], position["signal_stock_code"])
+                for position in held_positions
+            })
+
+            defensive_actions = set(DEFENSIVE_DECISION_SIGNAL_ACTIONS)
+            latest_by_identity: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            page = 1
+            while True:
+                response = self.decision_signal_service.list_signals(
+                    stock_identities=stock_identities,
+                    status="active",
+                    page=page,
+                    page_size=100,
+                )
+                items = response.get("items", []) if isinstance(response, dict) else []
+                for item in items:
+                    if str(item.get("action") or "") not in defensive_actions:
+                        continue
+                    key = (
+                        str(item.get("market") or "").strip().lower(),
+                        str(item.get("stock_code") or "").strip().upper(),
+                    )
+                    if key[0] and key[1] and key not in latest_by_identity:
+                        latest_by_identity[key] = item
+                total = int(response.get("total", 0) or 0) if isinstance(response, dict) else 0
+                if page * 100 >= total or not items:
+                    break
+                page += 1
+
+            risk_items: List[Dict[str, Any]] = []
+            action_counts = {action: 0 for action in DEFENSIVE_DECISION_SIGNAL_ACTIONS}
+            seen: set[Tuple[Optional[int], str, str, int]] = set()
+            for position in held_positions:
+                signal = latest_by_identity.get((position["market"], position["signal_stock_code"]))
+                summary = summarize_decision_signal(signal)
+                if not summary:
+                    continue
+                action = str(summary.get("action") or "")
+                if action not in action_counts:
+                    continue
+                signal_id = int(summary.get("id") or 0)
+                dedupe_key = (position["account_id"], position["market"], position["signal_stock_code"], signal_id)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                action_counts[action] += 1
+                risk_items.append({
+                    "account_id": position["account_id"],
+                    "symbol": position["symbol"],
+                    "market": position["market"],
+                    "signal": summary,
+                })
+
+            return {
+                "available": True,
+                "total": len(risk_items),
+                "actions": action_counts,
+                "items": risk_items,
+            }
+        except Exception:
+            logger.exception("[PortfolioRiskService] Decision signal risk unavailable")
+            return self._empty_decision_signal_risk(available=False)
+
+    @staticmethod
+    def _empty_decision_signal_risk(*, available: bool) -> Dict[str, Any]:
+        return {
+            "available": available,
+            "total": 0,
+            "actions": {action: 0 for action in DEFENSIVE_DECISION_SIGNAL_ACTIONS},
+            "items": [],
+        }
+
+    @staticmethod
+    def _held_position_identities(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        positions: List[Dict[str, Any]] = []
+        for account in snapshot.get("accounts", []) or []:
+            account_id = account.get("account_id")
+            for pos in account.get("positions", []) or []:
+                symbol = str(pos.get("symbol") or "").strip().upper()
+                market = str(pos.get("market") or "").strip().lower()
+                if not symbol or market not in {"cn", "hk", "us"}:
+                    continue
+                signal_stock_code = DecisionSignalService.normalize_stock_code_for_signal(symbol, market=market)
+                positions.append({
+                    "account_id": account_id,
+                    "symbol": symbol,
+                    "market": market,
+                    "signal_stock_code": signal_stock_code,
+                })
+        return positions
 
     def _ensure_drawdown_snapshot_window(
         self,

@@ -115,7 +115,7 @@ class TestTickFlowMarketReviewFallback(unittest.TestCase):
             error=RuntimeError("tickflow down")
         )
 
-        data = DataFetcherManager.get_market_stats(manager)
+        data = DataFetcherManager.get_market_stats(manager, purpose="market_review:cn")
 
         self.assertEqual(data["up_count"], 1)
         self.assertEqual(fallback.stats_calls, 1)

@@ -22,7 +22,9 @@ from generate_index_from_csv import (
     determine_market,
     generate_aliases,
     normalize_name_for_pinyin,
+    normalize_stock_name_for_index,
     generate_pinyin,
+    main,
     compress_index,
     build_stock_index,
     load_tushare_data,
@@ -52,6 +54,16 @@ class TestExtractSymbol:
         """测试美股"""
         result = extract_symbol_from_ts_code("AAPL", "US")
         assert result == "AAPL"
+
+    def test_jp_stock_preserves_suffix(self):
+        """测试日股保留 Yahoo 后缀以避免裸代码冲突"""
+        result = extract_symbol_from_ts_code("7203.T", "JP")
+        assert result == "7203.T"
+
+    def test_kr_stock_preserves_suffix(self):
+        """测试韩股保留 Yahoo 后缀以避免裸代码冲突"""
+        result = extract_symbol_from_ts_code("005930.KS", "KR")
+        assert result == "005930.KS"
 
     def test_empty_ts_code(self):
         """测试空 ts_code"""
@@ -112,6 +124,21 @@ class TestDetermineMarket:
         result = determine_market("AAPL.U")
         assert result == "US"
 
+    def test_jp_stock_with_yahoo_suffix(self):
+        """测试日股 Yahoo 后缀"""
+        result = determine_market("7203.T")
+        assert result == "JP"
+
+    def test_kr_kospi_stock_with_yahoo_suffix(self):
+        """测试韩股 KOSPI Yahoo 后缀"""
+        result = determine_market("005930.KS")
+        assert result == "KR"
+
+    def test_kr_kosdaq_stock_with_yahoo_suffix(self):
+        """测试韩股 KOSDAQ Yahoo 后缀"""
+        result = determine_market("035720.KQ")
+        assert result == "KR"
+
 
 class TestGetStockName:
     """测试股票名称获取函数"""
@@ -139,6 +166,18 @@ class TestGetStockName:
         row = {'name': '', 'enname': ''}
         result = get_stock_name(row, 'CN')
         assert result is None
+
+    def test_cn_stock_name_strips_ex_rights_prefix(self):
+        """测试 A股除权除息短期前缀不会写入长期索引名称"""
+        row = {'name': 'XD西藏药', 'enname': ''}
+        result = get_stock_name(row, 'CN')
+        assert result == '西藏药'
+
+    def test_cn_stock_name_preserves_new_stock_prefix(self):
+        """测试 A股新股前缀保留，等待后续数据包刷新自然消失"""
+        row = {'name': 'N惠康', 'enname': ''}
+        result = get_stock_name(row, 'CN')
+        assert result == 'N惠康'
 
 
 class TestDataCleaning:
@@ -200,6 +239,38 @@ class TestDataCleaning:
         assert result['name'] == "BERKSHIRE HATHAWAY 'B'"
         assert result['market'] == 'US'
 
+    def test_valid_jp_stock_with_seed_aliases(self):
+        """测试有效的日股种子记录"""
+        row = {
+            'ts_code': '7203.T',
+            'name': '丰田汽车',
+            'enname': 'Toyota Motor Corporation',
+            'aliases': 'Toyota|Toyota Motor|丰田'
+        }
+        result = parse_stock_row(row, 'JP')
+        assert result is not None
+        assert result['ts_code'] == '7203.T'
+        assert result['symbol'] == '7203.T'
+        assert result['name'] == '丰田汽车'
+        assert result['market'] == 'JP'
+        assert result['aliases'] == ['Toyota', 'Toyota Motor', '丰田']
+
+    def test_valid_kr_stock_with_seed_aliases(self):
+        """测试有效的韩股种子记录"""
+        row = {
+            'ts_code': '005930.KS',
+            'name': '三星电子',
+            'enname': 'Samsung Electronics',
+            'aliases': 'Samsung|Samsung Electronics|三星'
+        }
+        result = parse_stock_row(row, 'KR')
+        assert result is not None
+        assert result['ts_code'] == '005930.KS'
+        assert result['symbol'] == '005930.KS'
+        assert result['name'] == '三星电子'
+        assert result['market'] == 'KR'
+        assert result['aliases'] == ['Samsung', 'Samsung Electronics', '三星']
+
     def test_us_dummy_filtered(self):
         """测试美股 DUMMY 记录被过滤"""
         row = {
@@ -255,6 +326,26 @@ class TestDataCleaning:
         assert get_us_delist_priority({'delist_date': ''}) == 2
         assert get_us_delist_priority({'delist_date': 'NaT'}) == 1
         assert get_us_delist_priority({'delist_date': '20250131'}) == 0
+
+
+class TestNormalizeStockNameForIndex:
+    """测试索引名称归一化"""
+
+    def test_strips_a_share_ex_rights_prefixes(self):
+        assert normalize_stock_name_for_index('XD西藏药', 'CN') == '西藏药'
+        assert normalize_stock_name_for_index('XR示例股', 'CN') == '示例股'
+        assert normalize_stock_name_for_index('DR罗曼股', 'CN') == '罗曼股'
+        assert normalize_stock_name_for_index('XD朱老六', 'BSE') == '朱老六'
+
+    def test_preserves_a_share_new_stock_and_st_prefixes(self):
+        assert normalize_stock_name_for_index('N惠康', 'CN') == 'N惠康'
+        assert normalize_stock_name_for_index('C天海', 'CN') == 'C天海'
+        assert normalize_stock_name_for_index('ST海王', 'CN') == 'ST海王'
+        assert normalize_stock_name_for_index('*ST美丽', 'CN') == '*ST美丽'
+
+    def test_does_not_strip_other_markets(self):
+        assert normalize_stock_name_for_index('DRAGONFLY ENERGY', 'US') == 'DRAGONFLY ENERGY'
+        assert normalize_stock_name_for_index('XD港股示例', 'HK') == 'XD港股示例'
 
 
 class TestAliases:
@@ -396,23 +487,47 @@ class TestIntegration:
                 'enname': 'Apple Inc.'
             })
 
+        jp_csv = tmp_path / 'stock_list_jp.csv'
+        with open(jp_csv, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['ts_code', 'name', 'enname', 'aliases'])
+            writer.writeheader()
+            writer.writerow({
+                'ts_code': '7203.T',
+                'name': '丰田汽车',
+                'enname': 'Toyota Motor Corporation',
+                'aliases': 'Toyota|丰田'
+            })
+
+        kr_csv = tmp_path / 'stock_list_kr.csv'
+        with open(kr_csv, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['ts_code', 'name', 'enname', 'aliases'])
+            writer.writeheader()
+            writer.writerow({
+                'ts_code': '005930.KS',
+                'name': '三星电子',
+                'enname': 'Samsung Electronics',
+                'aliases': 'Samsung|三星'
+            })
+
         # 加载数据
         stocks = load_tushare_data(tmp_path)
 
         # 验证数据
-        assert len(stocks) == 3
+        assert len(stocks) == 5
 
         # 构建索引
         index = build_stock_index(stocks)
 
         # 验证索引
-        assert len(index) == 3
+        assert len(index) == 5
+        assert next(item for item in index if item['canonicalCode'] == '7203.T')['aliases'] == ['Toyota', '丰田']
+        assert next(item for item in index if item['canonicalCode'] == '005930.KS')['aliases'] == ['Samsung', '三星']
 
         # 压缩索引
         compressed = compress_index(index)
 
         # 验证压缩
-        assert len(compressed) == 3
+        assert len(compressed) == 5
 
         # 验证字段数量
         for item in compressed:
@@ -518,9 +633,24 @@ class TestPinyin:
 
     def test_generate_pinyin(self):
         """测试拼音生成"""
-        # 注意：这个测试需要 pypinyin 可用
         pinyin_full, pinyin_abbr = generate_pinyin('平安银行')
-        if pinyin_full:
-            assert isinstance(pinyin_full, str)
-        if pinyin_abbr:
-            assert isinstance(pinyin_abbr, str)
+        assert pinyin_full == 'pinganyinhang'
+        assert pinyin_abbr == 'payh'
+
+    def test_generate_pinyin_requires_dependency(self, monkeypatch):
+        """测试缺少 pypinyin 时不会生成降级拼音字段"""
+        import generate_index_from_csv
+
+        monkeypatch.setattr(generate_index_from_csv, 'PYPINYIN_AVAILABLE', False)
+
+        with pytest.raises(RuntimeError, match='pypinyin is required'):
+            generate_index_from_csv.generate_pinyin('平安银行')
+
+    def test_main_fails_without_pypinyin(self, monkeypatch):
+        """测试正式生成索引前必须具备 pypinyin"""
+        import generate_index_from_csv
+
+        monkeypatch.setattr(generate_index_from_csv, 'PYPINYIN_AVAILABLE', False)
+        monkeypatch.setattr(sys, 'argv', ['generate_index_from_csv.py'])
+
+        assert main() == 1

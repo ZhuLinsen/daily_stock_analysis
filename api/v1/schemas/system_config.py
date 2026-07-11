@@ -7,12 +7,38 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+LLMCapabilityCheck = Literal["json", "tools", "vision", "stream"]
+GenerationBackendSmokeMode = Literal["text", "json"]
+GenerationBackendHealthStatus = Literal["not_tested", "passed", "failed", "skipped"]
+NotificationTestChannel = Literal[
+    "wechat",
+    "feishu",
+    "telegram",
+    "email",
+    "pushover",
+    "ntfy",
+    "gotify",
+    "pushplus",
+    "serverchan3",
+    "custom",
+    "discord",
+    "slack",
+    "astrbot",
+]
+
 
 class SystemConfigOption(BaseModel):
     """Select option metadata for frontend rendering."""
 
     label: str
     value: str
+
+
+class SystemConfigDocLink(BaseModel):
+    """Documentation link metadata for field help panels."""
+
+    label: str
+    href: str
 
 
 class SystemConfigFieldSchema(BaseModel):
@@ -31,6 +57,10 @@ class SystemConfigFieldSchema(BaseModel):
     options: List[str | SystemConfigOption] = Field(default_factory=list)
     validation: Dict[str, Any] = Field(default_factory=dict)
     display_order: int
+    help_key: Optional[str] = Field(None, description="Stable localization key for detailed help content")
+    examples: List[str] = Field(default_factory=list, description="Safe example values for help panels")
+    docs: List[SystemConfigDocLink] = Field(default_factory=list, description="Related documentation links")
+    warning_codes: List[str] = Field(default_factory=list, description="Stable warning identifiers for help panels")
 
 
 class SystemConfigCategorySchema(BaseModel):
@@ -71,8 +101,64 @@ class SystemConfigResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class SetupStatusCheck(BaseModel):
+    """One first-run setup readiness check."""
+
+    key: str
+    title: str
+    category: Literal["base", "ai_model", "agent", "notification", "system"]
+    required: bool
+    status: Literal["configured", "inherited", "optional", "needs_action"]
+    message: str
+    next_step: Optional[str] = None
+
+
+class SetupStatusResponse(BaseModel):
+    """Read-only first-run setup status."""
+
+    is_complete: bool
+    ready_for_smoke: bool
+    required_missing_keys: List[str] = Field(default_factory=list)
+    next_step_key: Optional[str] = None
+    checks: List[SetupStatusCheck] = Field(default_factory=list)
+
+
+class GenerationBackendStatus(BaseModel):
+    """Cheap status for one generation backend.
+
+    ``health_status`` and ``last_error_*`` describe the current status request
+    or the explicit smoke-test request only; they are not persisted history.
+    """
+
+    backend_id: str
+    backend_type: Literal["litellm", "local_cli"]
+    provider_id: str
+    available: bool
+    health_status: GenerationBackendHealthStatus = "not_tested"
+    supports_json: bool
+    supports_tools: bool
+    supports_stream: bool
+    supports_vision: bool
+    is_primary: bool
+    fallback_target: Optional[str] = None
+    max_concurrency: int
+    usage_available: bool
+    last_error_code: Optional[str] = None
+    last_error_message: Optional[str] = None
+
+
+class GenerationBackendStatusResponse(BaseModel):
+    """Generation backend status payload."""
+
+    primary_backend_id: str
+    fallback_backend_id: Optional[str] = None
+    primary: GenerationBackendStatus
+    fallback: Optional[GenerationBackendStatus] = None
+    backends: List[GenerationBackendStatus] = Field(default_factory=list)
+
+
 class ExportSystemConfigResponse(BaseModel):
-    """Desktop-only export payload for raw `.env` backups."""
+    """Export payload for raw `.env` backups."""
 
     content: str
     config_version: str
@@ -84,6 +170,32 @@ class SystemConfigUpdateItem(BaseModel):
 
     key: str
     value: str
+
+
+class GenerationBackendStatusPreviewRequest(BaseModel):
+    """Unsaved-draft preview request for generation backend status."""
+
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+
+
+class TestGenerationBackendRequest(BaseModel):
+    """Explicit generation backend smoke-test request."""
+
+    backend_id: Optional[str] = None
+    mode: GenerationBackendSmokeMode = "json"
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+    timeout_seconds: Optional[float] = Field(default=None, ge=1.0, le=3600.0)
+
+
+class TestGenerationBackendResponse(BaseModel):
+    """Generation backend smoke-test result."""
+
+    success: bool
+    mode: GenerationBackendSmokeMode
+    message: str
+    status: GenerationBackendStatus
 
 
 class UpdateSystemConfigRequest(BaseModel):
@@ -114,7 +226,7 @@ class ValidateSystemConfigRequest(BaseModel):
 
 
 class ImportSystemConfigRequest(BaseModel):
-    """Desktop-only import request payload."""
+    """Import request payload for raw `.env` backups."""
 
     config_version: str
     content: str
@@ -149,6 +261,20 @@ class TestLLMChannelRequest(BaseModel):
     models: List[str] = Field(default_factory=list)
     enabled: bool = True
     timeout_seconds: float = 20.0
+    capability_checks: List[LLMCapabilityCheck] = Field(default_factory=list)
+    use_saved_secret: bool = False
+
+
+class LLMCapabilityCheckResult(BaseModel):
+    """Runtime capability smoke result for one requested check."""
+
+    status: Literal["passed", "failed", "skipped"]
+    message: str
+    error_code: Optional[str] = None
+    stage: str
+    retryable: bool = False
+    latency_ms: Optional[int] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TestLLMChannelResponse(BaseModel):
@@ -157,9 +283,51 @@ class TestLLMChannelResponse(BaseModel):
     success: bool
     message: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    stage: Optional[str] = None
+    retryable: Optional[bool] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
     resolved_protocol: Optional[str] = None
     resolved_model: Optional[str] = None
     latency_ms: Optional[int] = None
+    capability_results: Dict[str, LLMCapabilityCheckResult] = Field(default_factory=dict)
+
+
+class NotificationTestAttempt(BaseModel):
+    """One notification delivery attempt result."""
+
+    channel: NotificationTestChannel
+    success: bool
+    message: str
+    target: Optional[str] = None
+    error_code: Optional[str] = None
+    stage: str = "notification_send"
+    retryable: bool = False
+    latency_ms: Optional[int] = None
+    http_status: Optional[int] = None
+
+
+class TestNotificationChannelRequest(BaseModel):
+    """Request payload for testing one notification channel."""
+
+    channel: NotificationTestChannel
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+    title: str = Field(default="DSA 通知测试", min_length=1, max_length=80)
+    content: str = Field(default="这是一条来自 DSA Web 设置页的通知测试消息。", min_length=1, max_length=1000)
+    timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
+
+
+class TestNotificationChannelResponse(BaseModel):
+    """Response payload for one notification channel connectivity test."""
+
+    success: bool
+    message: str
+    error_code: Optional[str] = None
+    stage: Optional[str] = None
+    retryable: bool = False
+    latency_ms: Optional[int] = None
+    attempts: List[NotificationTestAttempt] = Field(default_factory=list)
 
 
 class DiscoverLLMChannelModelsRequest(BaseModel):
@@ -171,6 +339,7 @@ class DiscoverLLMChannelModelsRequest(BaseModel):
     api_key: str = ""
     models: List[str] = Field(default_factory=list)
     timeout_seconds: float = 20.0
+    use_saved_secret: bool = False
 
 
 class DiscoverLLMChannelModelsResponse(BaseModel):
@@ -179,6 +348,10 @@ class DiscoverLLMChannelModelsResponse(BaseModel):
     success: bool
     message: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    stage: Optional[str] = None
+    retryable: Optional[bool] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
     resolved_protocol: Optional[str] = None
     models: List[str] = Field(default_factory=list)
     latency_ms: Optional[int] = None

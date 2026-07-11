@@ -183,7 +183,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
         with patch.object(self.db, "get_session", side_effect=[first_session, second_session]):
             with patch.object(first_session, "execute", side_effect=stmt_exc):
                 with patch("src.storage.time.sleep") as mock_sleep:
-                    saved = self.db.save_news_intel(
+                    saved_count = self.db.save_news_intel(
                         code="600519",
                         name="贵州茅台",
                         dimension="latest_news",
@@ -191,7 +191,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
                         response=response,
                     )
 
-        self.assertEqual(saved, 1)
+        self.assertEqual(saved_count, 1)
         self.assertEqual(mock_sleep.call_count, 1)
         self.assertAlmostEqual(mock_sleep.call_args.args[0], self.db._sqlite_write_retry_base_delay, places=6)
 

@@ -5,7 +5,42 @@ import threading
 import time
 import unittest
 
-from data_provider.realtime_types import CircuitBreaker
+from data_provider.realtime_types import CircuitBreaker, RealtimeSource, UnifiedRealtimeQuote
+
+
+class UnifiedRealtimeQuoteMetadataTestCase(unittest.TestCase):
+    def test_metadata_defaults_are_filtered_from_to_dict(self):
+        quote = UnifiedRealtimeQuote(code="600519", source=RealtimeSource.AKSHARE_EM)
+
+        data = quote.to_dict()
+
+        self.assertEqual(data["code"], "600519")
+        self.assertEqual(data["source"], "akshare_em")
+        self.assertNotIn("fetched_at", data)
+        self.assertNotIn("provider_timestamp", data)
+        self.assertNotIn("is_stale", data)
+        self.assertNotIn("stale_seconds", data)
+        self.assertNotIn("fallback_from", data)
+
+    def test_metadata_is_included_when_present(self):
+        quote = UnifiedRealtimeQuote(
+            code="600519",
+            source=RealtimeSource.TENCENT,
+            price=1688.0,
+            fetched_at="2026-05-31T10:00:05+00:00",
+            provider_timestamp="2026-05-31T10:00:00+00:00",
+            is_stale=False,
+            stale_seconds=5,
+            fallback_from="efinance",
+        )
+
+        data = quote.to_dict()
+
+        self.assertEqual(data["fetched_at"], "2026-05-31T10:00:05+00:00")
+        self.assertEqual(data["provider_timestamp"], "2026-05-31T10:00:00+00:00")
+        self.assertIs(data["is_stale"], False)
+        self.assertEqual(data["stale_seconds"], 5)
+        self.assertEqual(data["fallback_from"], "efinance")
 
 
 class CircuitBreakerConcurrencyTestCase(unittest.TestCase):

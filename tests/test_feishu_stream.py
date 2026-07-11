@@ -1,6 +1,5 @@
-import pytest
-
 from bot.platforms.feishu_stream import FeishuReplyClient
+from src.formatters import format_feishu_markdown
 
 
 class DummyFeishuReplyClient(FeishuReplyClient):
@@ -31,19 +30,6 @@ class DummyFeishuReplyClient(FeishuReplyClient):
         return True
 
 
-@pytest.fixture(autouse=True)
-def patch_format_feishu_markdown(monkeypatch):
-    # Keep formatting simple so byte length is predictable
-    import bot.platforms.feishu_stream as feishu_stream
-
-    monkeypatch.setattr(
-        feishu_stream,
-        "format_feishu_markdown",
-        lambda text: text,
-    )
-    yield
-
-
 def test_reply_text_chunked_keeps_reply_and_at_user(monkeypatch):
     client = DummyFeishuReplyClient(max_bytes=1000)
 
@@ -64,6 +50,16 @@ def test_reply_text_chunked_keeps_reply_and_at_user(monkeypatch):
         assert call["user_id"] == user_id
 
 
+def test_reply_text_uses_legacy_feishu_markdown_formatter():
+    client = DummyFeishuReplyClient(max_bytes=1000)
+    text = "# 日报\n\n## 📊 分析结果摘要\n\n| 股票 | 信号 |\n| --- | --- |\n| 600519 | 强势 |"
+
+    result = client.reply_text(message_id="msg_123", text=text)
+
+    assert result is True
+    assert client.calls[0]["content"] == format_feishu_markdown(text)
+
+
 def test_send_to_chat_chunked_uses_chat_id(monkeypatch):
     client = DummyFeishuReplyClient(max_bytes=1000)
 
@@ -82,3 +78,12 @@ def test_send_to_chat_chunked_uses_chat_id(monkeypatch):
         assert call["at_user"] is False
         assert call["user_id"] is None
 
+
+def test_send_to_chat_uses_legacy_feishu_markdown_formatter():
+    client = DummyFeishuReplyClient(max_bytes=1000)
+    text = "# 日报\n\n[详情](https://example.com/report)"
+
+    result = client.send_to_chat(chat_id="chat_123", text=text)
+
+    assert result is True
+    assert client.calls[0]["content"] == format_feishu_markdown(text)

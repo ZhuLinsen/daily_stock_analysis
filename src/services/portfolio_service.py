@@ -6,11 +6,12 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from data_provider.base import canonical_stock_code
+from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.repositories.portfolio_repo import (
     DuplicateTradeDedupHashError,
@@ -29,12 +30,37 @@ except Exception:  # pragma: no cover - optional dependency path
     yf = None
 
 EPS = 1e-8
-VALID_MARKETS = {"cn", "hk", "us"}
+VALID_MARKETS = {"cn", "hk", "us", "jp", "kr", "tw"}
+PARTIAL_VALUATION_MARKETS = {"jp", "kr", "tw"}
 VALID_COST_METHODS = {"fifo", "avg"}
 VALID_SIDES = {"buy", "sell"}
 VALID_CASH_DIRECTIONS = {"in", "out"}
 VALID_CORPORATE_ACTIONS = {"cash_dividend", "split_adjustment"}
 PORTFOLIO_FX_REFRESH_DISABLED_REASON = "portfolio_fx_update_disabled"
+PORTFOLIO_REALTIME_QUOTE_MAX_WORKERS = 4
+
+
+def _portfolio_limitations_for_market(market: str) -> List[str]:
+    """Return explicit snapshot limitations for markets with partial valuation semantics."""
+
+    if market not in PARTIAL_VALUATION_MARKETS:
+        return []
+    return [
+        "realtime_quote_best_effort",
+        "fx_and_cost_basis_partial",
+        "sector_and_risk_metrics_limited",
+    ]
+
+
+def _merge_portfolio_limitations(*groups: Iterable[str]) -> List[str]:
+    merged: List[str] = []
+    seen: Set[str] = set()
+    for group in groups:
+        for item in group:
+            if item and item not in seen:
+                seen.add(item)
+                merged.append(item)
+    return merged
 
 
 class PortfolioConflictError(Exception):
@@ -68,6 +94,16 @@ class PortfolioOversellError(ValueError):
 class _AvgState:
     quantity: float = 0.0
     total_cost: float = 0.0
+
+
+@dataclass(frozen=True)
+class _ResolvedPositionPrice:
+    price: float
+    source: str
+    price_date: Optional[date]
+    is_stale: bool
+    is_available: bool
+    provider: Optional[str] = None
 
 
 class PortfolioService:
@@ -171,7 +207,7 @@ class PortfolioService:
             raise ValueError("quantity and price must be > 0")
         if fee < 0 or tax < 0:
             raise ValueError("fee and tax must be >= 0")
-        symbol_norm = canonical_stock_code(symbol)
+        symbol_norm = self._normalize_symbol_for_storage(symbol)
         if not symbol_norm:
             raise ValueError("symbol is required")
         trade_uid_norm = (trade_uid or "").strip() or None
@@ -186,11 +222,11 @@ class PortfolioService:
                     trade_uid=trade_uid_norm,
                     dedup_hash=dedup_hash_norm,
                     session=session,
-                )
+                    )
                 if side_norm == "sell":
                     self._validate_sell_quantity(
                         account_id=account_id,
-                        symbol=symbol_norm,
+                        symbol=symbol,
                         market=market_norm,
                         currency=currency_norm,
                         trade_date=trade_date,
@@ -273,7 +309,7 @@ class PortfolioService:
             account = self._require_active_account_in_session(session=session, account_id=account_id)
             market_norm = self._normalize_market(market or account.market)
             currency_norm = self._normalize_currency(currency or self._default_currency_for_market(market_norm))
-            symbol_norm = canonical_stock_code(symbol)
+            symbol_norm = self._normalize_symbol_for_storage(symbol)
             if not symbol_norm:
                 raise ValueError("symbol is required")
             row = self.repo.add_corporate_action_in_session(
@@ -319,10 +355,10 @@ class PortfolioService:
         if date_from is not None and date_to is not None and date_from > date_to:
             raise ValueError("date_from must be <= date_to")
 
-        symbol_norm: Optional[str] = None
+        symbol_filters: Optional[List[str]] = None
         if symbol is not None and symbol.strip():
-            symbol_norm = canonical_stock_code(symbol)
-            if not symbol_norm:
+            symbol_filters = self._build_symbol_filter_values(symbol)
+            if not symbol_filters:
                 raise ValueError("symbol is invalid")
 
         side_norm: Optional[str] = None
@@ -335,7 +371,7 @@ class PortfolioService:
             account_id=account_id,
             date_from=date_from,
             date_to=date_to,
-            symbol=symbol_norm,
+            symbols=symbol_filters,
             side=side_norm,
             page=page,
             page_size=page_size,
@@ -401,10 +437,10 @@ class PortfolioService:
         if date_from is not None and date_to is not None and date_from > date_to:
             raise ValueError("date_from must be <= date_to")
 
-        symbol_norm: Optional[str] = None
+        symbol_filters: Optional[List[str]] = None
         if symbol is not None and symbol.strip():
-            symbol_norm = canonical_stock_code(symbol)
-            if not symbol_norm:
+            symbol_filters = self._build_symbol_filter_values(symbol)
+            if not symbol_filters:
                 raise ValueError("symbol is invalid")
 
         action_norm: Optional[str] = None
@@ -417,7 +453,7 @@ class PortfolioService:
             account_id=account_id,
             date_from=date_from,
             date_to=date_to,
-            symbol=symbol_norm,
+            symbols=symbol_filters,
             action_type=action_norm,
             page=page,
             page_size=page_size,
@@ -459,6 +495,7 @@ class PortfolioService:
             "fee_total": 0.0,
             "tax_total": 0.0,
             "fx_stale": False,
+            "limitations": [],
         }
 
         for account in account_rows:
@@ -484,6 +521,10 @@ class PortfolioService:
             )
 
             accounts_payload.append(account_snapshot["public"])
+            aggregate["limitations"] = _merge_portfolio_limitations(
+                aggregate["limitations"],
+                account_snapshot["public"].get("limitations", []),
+            )
 
             cash_cny, stale_cash, _ = self._convert_amount(
                 amount=account_snapshot["total_cash"],
@@ -560,6 +601,8 @@ class PortfolioService:
             "fee_total": round(aggregate["fee_total"], 6),
             "tax_total": round(aggregate["tax_total"], 6),
             "fx_stale": aggregate["fx_stale"],
+            "data_quality": "partial" if aggregate["limitations"] else "ok",
+            "limitations": aggregate["limitations"],
             "accounts": accounts_payload,
         }
 
@@ -628,7 +671,7 @@ class PortfolioService:
         session: Optional[Any] = None,
     ) -> None:
         key = (
-            canonical_stock_code(symbol),
+            self._normalize_symbol_for_position(symbol),
             self._normalize_market(market),
             self._normalize_currency(currency),
         )
@@ -668,7 +711,7 @@ class PortfolioService:
         events = []
         for row in corporate_actions:
             event_key = (
-                canonical_stock_code(row.symbol),
+                self._normalize_symbol_for_position(row.symbol),
                 self._normalize_market(row.market),
                 self._normalize_currency(row.currency),
             )
@@ -676,7 +719,7 @@ class PortfolioService:
                 events.append(("corp", row.effective_date, row.id, row))
         for row in trades:
             event_key = (
-                canonical_stock_code(row.symbol),
+                self._normalize_symbol_for_position(row.symbol),
                 self._normalize_market(row.market),
                 self._normalize_currency(row.currency),
             )
@@ -765,7 +808,7 @@ class PortfolioService:
 
             if event_type == "trade":
                 key = (
-                    canonical_stock_code(event.symbol),
+                    self._normalize_symbol_for_position(event.symbol),
                     self._normalize_market(event.market),
                     self._normalize_currency(event.currency),
                 )
@@ -845,7 +888,7 @@ class PortfolioService:
 
             if event_type == "corp":
                 key = (
-                    canonical_stock_code(event.symbol),
+                    self._normalize_symbol_for_position(event.symbol),
                     self._normalize_market(event.market),
                     self._normalize_currency(event.currency),
                 )
@@ -900,6 +943,15 @@ class PortfolioService:
 
         unrealized_pnl_base = market_value_base - total_cost_base
         total_equity_base = total_cash_base + market_value_base
+        position_limitations = [
+            limitation
+            for position in position_rows
+            for limitation in position.get("limitations", [])
+        ]
+        limitations = _merge_portfolio_limitations(
+            _portfolio_limitations_for_market(account.market),
+            position_limitations,
+        )
 
         account_payload = {
             "account_id": account.id,
@@ -918,6 +970,8 @@ class PortfolioService:
             "fee_total": round(fees_total_base, 6),
             "tax_total": round(taxes_total_base, 6),
             "fx_stale": fx_stale,
+            "data_quality": "partial" if limitations else "ok",
+            "limitations": limitations,
             "positions": position_rows,
         }
 
@@ -957,6 +1011,26 @@ class PortfolioService:
         else:
             keys = list(avg_state.keys())
 
+        active_symbols: List[str] = []
+        if as_of_date == date.today():
+            for key in sorted(keys):
+                symbol, _, _ = key
+                if cost_method == "fifo":
+                    qty = sum(
+                        float(lot["remaining_quantity"])
+                        for lot in fifo_lots[key]
+                        if lot["remaining_quantity"] > EPS
+                    )
+                else:
+                    qty = float(avg_state[key].quantity)
+                if qty > EPS:
+                    active_symbols.append(symbol)
+        realtime_prices = (
+            self._prefetch_realtime_position_prices(active_symbols)
+            if active_symbols
+            else None
+        )
+
         for key in sorted(keys):
             symbol, market, currency = key
 
@@ -987,25 +1061,38 @@ class PortfolioService:
                     }
                 )
 
-            last_price = self.repo.get_latest_close(symbol=symbol, as_of=as_of_date)
-            if last_price is None or last_price <= 0:
-                last_price = avg_cost
+            price_info = self._resolve_position_price(
+                symbol=symbol,
+                as_of_date=as_of_date,
+                realtime_prices=realtime_prices,
+            )
+            last_price = price_info.price
+            limitations = _portfolio_limitations_for_market(market)
 
-            local_market_value = qty * float(last_price)
-            market_base, stale_market, _ = self._convert_amount(
-                amount=local_market_value,
-                from_currency=currency,
-                to_currency=account.base_currency,
-                as_of_date=as_of_date,
-            )
-            cost_base, stale_cost, _ = self._convert_amount(
-                amount=total_cost,
-                from_currency=currency,
-                to_currency=account.base_currency,
-                as_of_date=as_of_date,
-            )
-            unrealized_base = market_base - cost_base
-            fx_stale = fx_stale or stale_market or stale_cost
+            if price_info.is_available:
+                local_market_value = qty * float(last_price)
+                market_base, stale_market, _ = self._convert_amount(
+                    amount=local_market_value,
+                    from_currency=currency,
+                    to_currency=account.base_currency,
+                    as_of_date=as_of_date,
+                )
+                cost_base, stale_cost, _ = self._convert_amount(
+                    amount=total_cost,
+                    from_currency=currency,
+                    to_currency=account.base_currency,
+                    as_of_date=as_of_date,
+                )
+                unrealized_base = market_base - cost_base
+                fx_stale = fx_stale or stale_market or stale_cost
+            else:
+                market_base = 0.0
+                cost_base = 0.0
+                unrealized_base = 0.0
+
+            unrealized_pct = None
+            if abs(cost_base) > EPS:
+                unrealized_pct = unrealized_base / cost_base * 100.0
 
             position_rows.append(
                 {
@@ -1018,7 +1105,15 @@ class PortfolioService:
                     "last_price": round(float(last_price), 8),
                     "market_value_base": round(market_base, 8),
                     "unrealized_pnl_base": round(unrealized_base, 8),
+                    "unrealized_pnl_pct": round(unrealized_pct, 8) if unrealized_pct is not None else None,
                     "valuation_currency": account.base_currency,
+                    "price_source": price_info.source,
+                    "price_provider": price_info.provider,
+                    "price_date": price_info.price_date.isoformat() if price_info.price_date else None,
+                    "price_stale": price_info.is_stale,
+                    "price_available": price_info.is_available,
+                    "data_quality": "partial" if limitations else "ok",
+                    "limitations": limitations,
                 }
             )
 
@@ -1026,6 +1121,229 @@ class PortfolioService:
             total_cost_base += cost_base
 
         return position_rows, lot_rows, market_value_base, total_cost_base, fx_stale
+
+    def _resolve_position_price(
+        self,
+        *,
+        symbol: str,
+        as_of_date: date,
+        realtime_prices: Optional[Dict[str, Tuple[Optional[float], Optional[str]]]] = None,
+    ) -> _ResolvedPositionPrice:
+        today = date.today()
+
+        if as_of_date == today:
+            if realtime_prices is None:
+                realtime_price, provider = self._fetch_realtime_position_price(symbol)
+            else:
+                realtime_price, provider = realtime_prices.get(symbol, (None, None))
+            if realtime_price is not None and realtime_price > 0:
+                return _ResolvedPositionPrice(
+                    price=float(realtime_price),
+                    source="realtime_quote",
+                    price_date=today,
+                    is_stale=False,
+                    is_available=True,
+                    provider=provider,
+                )
+
+        close = self.repo.get_latest_close_with_date(symbol=symbol, as_of=as_of_date)
+        if close is not None:
+            close_price, close_date = close
+            if close_price > 0:
+                return _ResolvedPositionPrice(
+                    price=float(close_price),
+                    source="history_close",
+                    price_date=close_date,
+                    is_stale=close_date < as_of_date,
+                    is_available=True,
+                )
+
+        return _ResolvedPositionPrice(
+            price=0.0,
+            source="missing",
+            price_date=None,
+            is_stale=True,
+            is_available=False,
+        )
+
+    def _prefetch_realtime_position_prices(
+        self,
+        symbols: Iterable[str],
+    ) -> Dict[str, Tuple[Optional[float], Optional[str]]]:
+        unique_symbols = sorted({symbol for symbol in symbols if symbol})
+        if not unique_symbols:
+            return {}
+
+        # Bulk prefetch (when applicable) only warms the fetcher-module-level realtime cache;
+        # the manager itself is discarded so per-symbol workers cannot serialize through its
+        # per-fetcher call locks when individual reads still need a live fetch (e.g. mixed
+        # markets, cache miss, or bulk source returning fewer rows than requested).
+        if len(unique_symbols) >= 5:
+            try:
+                from data_provider.base import DataFetcherManager
+
+                DataFetcherManager().prefetch_realtime_quotes(unique_symbols)
+            except Exception as exc:
+                logger.warning("Failed to prefetch realtime portfolio quotes: %s", exc)
+
+        if len(unique_symbols) == 1:
+            symbol = unique_symbols[0]
+            return {symbol: self._fetch_realtime_position_price(symbol)}
+
+        results: Dict[str, Tuple[Optional[float], Optional[str]]] = {}
+        max_workers = min(PORTFOLIO_REALTIME_QUOTE_MAX_WORKERS, len(unique_symbols))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="portfolio-quote") as executor:
+            futures = {
+                executor.submit(self._fetch_realtime_position_price, symbol): symbol
+                for symbol in unique_symbols
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    results[symbol] = future.result()
+                except Exception as exc:  # pragma: no cover - defensive guard for patched fetchers
+                    logger.warning("Failed to prefetch realtime portfolio price for %s: %s", symbol, exc)
+                    results[symbol] = (None, None)
+
+        return results
+
+    @staticmethod
+    def _fetch_realtime_position_price(symbol: str) -> Tuple[Optional[float], Optional[str]]:
+        try:
+            from data_provider.base import DataFetcherManager
+
+            fetcher_manager = DataFetcherManager()
+            quote = fetcher_manager.get_realtime_quote(symbol, log_final_failure=False)
+        except Exception as exc:
+            logger.warning("Failed to fetch realtime portfolio price for %s: %s", symbol, exc)
+            return None, None
+
+        if quote is None:
+            return None, None
+
+        price = getattr(quote, "price", None)
+        try:
+            numeric_price = float(price)
+        except (TypeError, ValueError):
+            return None, None
+
+        if numeric_price <= 0:
+            return None, None
+
+        source = getattr(quote, "source", None)
+        provider = getattr(source, "value", None) or (str(source) if source is not None else None)
+        return numeric_price, provider
+
+    @staticmethod
+    def _normalize_symbol_for_storage(symbol: str) -> str:
+        return canonical_stock_code(symbol)
+
+    @staticmethod
+    def _normalize_symbol_for_position(symbol: str) -> str:
+        if not (symbol or "").strip():
+            return ""
+
+        raw = canonical_stock_code(symbol)
+        if len(raw) >= 8 and raw[:2] in {"SH", "SZ", "BJ"} and raw[2:].isdigit():
+            return raw
+
+        if "." in raw:
+            base, suffix = raw.rsplit(".", 1)
+            if base.isdigit() and suffix in {"SH", "SS", "SZ", "BJ"}:
+                exchange = "SH" if suffix == "SS" else suffix
+                return f"{exchange}{base}"
+
+        return canonical_stock_code(normalize_stock_code(symbol))
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        """
+        Canonicalization for symbol filtering with exchange-qualified input preservation.
+
+        Keep explicit A-share exchange annotations (SH/SZ/BJ) intact to avoid collapsing
+        different exchange variants of the same 6-digit core code.
+        """
+        raw = canonical_stock_code(symbol)
+        if not raw:
+            return ""
+
+        if len(raw) >= 8 and raw[:2] in {"SH", "SZ", "BJ"} and raw[2:].isdigit():
+            return raw
+
+        if "." in raw:
+            base, suffix = raw.rsplit(".", 1)
+            if base.isdigit() and suffix in {"SH", "SS", "SZ", "BJ"}:
+                exchange = "SH" if suffix == "SS" else suffix
+                return f"{exchange}{base}"
+
+        return canonical_stock_code(normalize_stock_code(symbol))
+
+    @classmethod
+    def _build_symbol_filter_values(cls, symbol: str) -> List[str]:
+        original = (symbol or "").strip().upper()
+        normalized = cls._normalize_symbol(original)
+        if not normalized:
+            return []
+
+        seen: Set[str] = set()
+        values: List[str] = []
+
+        def _add(value: Optional[str]) -> None:
+            candidate = (value or "").strip().upper()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                values.append(candidate)
+
+        _add(original)
+        _add(normalized)
+
+        if normalized.startswith("HK"):
+            hk_digits = normalized[2:]
+            if hk_digits.isdigit() and len(hk_digits) == 5:
+                legacy_hk_digits = str(int(hk_digits))
+                _add(f"HK{hk_digits}")
+                _add(f"HK{legacy_hk_digits}")
+                _add(f"{hk_digits}.HK")
+                _add(f"{legacy_hk_digits}.HK")
+            return values
+
+        explicit_exchange: Optional[str] = None
+        if len(original) >= 8 and original[:2] in {"SH", "SZ", "BJ"} and original[2:].isdigit():
+            explicit_exchange = original[:2]
+            explicit_code = original[2:]
+        elif "." in original:
+            base, suffix = original.rsplit(".", 1)
+            if base.isdigit() and suffix in {"SH", "SS", "SZ", "BJ"}:
+                explicit_exchange = "SH" if suffix == "SS" else suffix
+                explicit_code = base
+            else:
+                explicit_code = None
+        else:
+            explicit_code = None
+
+        if normalized.isdigit():
+            if len(normalized) == 6:
+                exchanges = [explicit_exchange] if explicit_exchange else ["SH", "SZ", "BJ"]
+                for exchange in exchanges:
+                    if exchange is None:
+                        continue
+                    _add(f"{exchange}{normalized}")
+                    _add(f"{normalized}.{'SS' if exchange == 'SH' else exchange}")
+                    if exchange == "SH":
+                        _add(f"{normalized}.SH")
+            return values
+
+        if explicit_exchange is not None and explicit_code is not None and explicit_code.isdigit():
+            if len(explicit_code) == 6:
+                _add(f"{explicit_exchange}{explicit_code}")
+                _add(f"{explicit_code}.{'SS' if explicit_exchange == 'SH' else explicit_exchange}")
+                if explicit_exchange == "SH":
+                    _add(f"{explicit_code}.SH")
+            elif len(normalized) == 5:
+                _add(f"HK{normalized}")
+                _add(f"{normalized}.HK")
+
+        return values
 
     @staticmethod
     def _consume_fifo_lots(
@@ -1388,7 +1706,7 @@ class PortfolioService:
     def _normalize_market(value: str) -> str:
         market = (value or "").strip().lower()
         if market not in VALID_MARKETS:
-            raise ValueError("market must be one of: cn, hk, us")
+            raise ValueError("market must be one of: cn, hk, us, jp, kr, tw")
         return market
 
     @staticmethod

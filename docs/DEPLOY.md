@@ -59,6 +59,16 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 > 不知道怎么访问？→ [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
 
+### 3.1 资源建议
+
+默认 `docker/docker-compose.yml` 为每个服务设置 `limits.memory: 1G`、`reservations.memory: 512M`，这是完整分析场景的推荐起点。
+
+- 最低可尝试：`512M`，仅适合轻量 Web/API、单股、低并发场景，建议设置 `MAX_WORKERS=1`。
+- 推荐：`1G`，适合单独运行 `server` 或 `analyzer` 的常规分析。
+- 高负载：`2G+`，适合同时启动 `server + analyzer`、多股票、默认 `MAX_WORKERS=3`、大盘复盘、新闻扩展、图片报告或 AlphaSift。
+
+如果只能使用 `512M`，请避免同时启动 `server` 和 `analyzer`，并关闭非必要的大盘复盘、新闻扩展和图片报告能力。
+
 ### 4. 常用管理命令
 
 ```bash
@@ -74,10 +84,10 @@ docker-compose -f ./docker/docker-compose.yml build --no-cache
 docker-compose -f ./docker/docker-compose.yml up -d
 
 # 进入容器调试
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer bash
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer bash
 
 # 手动执行一次分析
-docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py --no-notify
+docker-compose -f ./docker/docker-compose.yml exec -u dsa stock-analyzer python main.py --no-notify
 ```
 
 ### 5. 数据持久化
@@ -86,6 +96,12 @@ docker-compose -f ./docker/docker-compose.yml exec stock-analyzer python main.py
 - `./data/` - 数据库文件
 - `./logs/` - 日志文件
 - `./reports/` - 分析报告
+
+### 6. 权限说明
+
+Docker 镜像启动入口会自动创建并修复 `./data`、`./logs`、`./reports` 对应挂载目录的权限，然后降权为非 root 用户 (`dsa`, UID 1000) 运行应用。普通部署不需要手动 `chown` / `chmod`。
+
+如果你显式指定了 `--user` / Compose `user:`，或使用只读挂载、rootless Docker、NFS 等不允许容器修复属主的环境，请确保实际运行用户对这些目录具备写入权限。
 
 ---
 
@@ -196,9 +212,9 @@ journalctl -u stock-analyzer -f
 
 | 配置项 | 说明 | 获取方式 |
 |--------|------|----------|
-| `GEMINI_API_KEY` | AI 分析必需 | [Google AI Studio](https://aistudio.google.com/) |
+| `ANSPIRE_API_KEYS` / `AIHUBMIX_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | AI 模型至少配置一个；推荐优先 Anspire 或 AIHubMix | 对应服务商控制台 |
 | `STOCK_LIST` | 自选股列表 | 逗号分隔的股票代码 |
-| `WECHAT_WEBHOOK_URL` | 微信推送 | 企业微信群机器人 |
+| 通知渠道 | 至少配置一个，如企业微信、飞书、Telegram 或邮件 | 对应通知平台 |
 
 ### 可选配置项
 
@@ -207,7 +223,10 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | 是否启用定时任务 |
 | `SCHEDULE_TIME` | `18:00` | 每日执行时间 |
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
-| `TAVILY_API_KEYS` | - | 新闻搜索（可选） |
+| `ANSPIRE_API_KEYS` | - | Anspire 大模型与新闻搜索（推荐） |
+| `AIHUBMIX_KEY` | - | AIHubMix 一 Key 多模型（推荐） |
+| `SERPAPI_API_KEYS` | - | SerpAPI 实时金融新闻搜索（推荐） |
+| `TAVILY_API_KEYS` | - | Tavily 新闻搜索（可选） |
 | `MINIMAX_API_KEYS` | - | MiniMax 搜索（可选） |
 
 ---
@@ -291,13 +310,17 @@ rm /opt/stock-analyzer/data/*.lock
 
 ### 4. 内存不足
 
-调整 `docker-compose.yml` 中的内存限制：
+默认 Compose 已推荐 `1G`。如果仍出现 OOM 或平台杀掉容器，请提高 `docker-compose.yml` 中的内存限制；同时跑 `server + analyzer`、多股票、大盘复盘、图片报告或 AlphaSift 时建议 `2G+`：
 ```yaml
 deploy:
   resources:
     limits:
       memory: 1G
+    reservations:
+      memory: 512M
 ```
+
+低配环境只能使用 `512M` 时，建议设置 `MAX_WORKERS=1`，只启动 `server` 或 `analyzer` 其中一个服务，并减少非必要的大盘复盘、新闻扩展和图片报告任务。
 
 ### 5. WebUI 打开后 UI 元素异常变大 / 布局错乱
 
@@ -391,7 +414,11 @@ git push -u origin main
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|------|
-| `GEMINI_API_KEY` | Gemini AI API Key | ✅ |
+| `ANSPIRE_API_KEYS` | Anspire Open API Key（一 Key 启用大模型与搜索） | 推荐 |
+| `AIHUBMIX_KEY` | AIHubMix API Key（一 Key 多模型） | 推荐 |
+| `ANTHROPIC_API_KEY` | Anthropic API Key | 可选 |
+| `GEMINI_API_KEY` | Gemini AI API Key | 可选 |
+| `OPENAI_API_KEY` | OpenAI 兼容 API Key | 可选 |
 | `WECHAT_WEBHOOK_URL` | 企业微信机器人 Webhook | 可选* |
 | `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook | 可选* |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 可选* |
@@ -402,9 +429,11 @@ git push -u origin main
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey | 可选* |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（多个逗号分隔） | 可选* |
 | `STOCK_LIST` | 自选股列表，如 `600519,300750` | ✅ |
-| `TAVILY_API_KEYS` | Tavily 搜索 API Key | 推荐 |
+| `SERPAPI_API_KEYS` | SerpAPI Key | 推荐 |
+| `TAVILY_API_KEYS` | Tavily 搜索 API Key | 可选 |
+| `BOCHA_API_KEYS` | 博查搜索 API Key | 可选 |
+| `BRAVE_API_KEYS` | Brave Search API Key | 可选 |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | 可选 |
-| `SERPAPI_API_KEYS` | SerpAPI Key | 可选 |
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
 | `TUSHARE_TOKEN` | Tushare Token | 可选 |
@@ -414,10 +443,10 @@ git push -u origin main
 
 #### 3. 验证 Workflow 文件
 
-确保 `.github/workflows/daily_analysis.yml` 文件存在且已提交：
+确保 `.github/workflows/00-daily-analysis.yml` 文件存在且已提交：
 
 ```bash
-git add .github/workflows/daily_analysis.yml
+git add .github/workflows/00-daily-analysis.yml
 git commit -m "Add GitHub Actions workflow"
 git push
 ```
@@ -443,7 +472,7 @@ git push
 
 默认配置：**周一到周五，北京时间 18:00** 自动执行
 
-修改时间：编辑 `.github/workflows/daily_analysis.yml` 中的 cron 表达式：
+修改时间：编辑 `.github/workflows/00-daily-analysis.yml` 中的 cron 表达式：
 
 ```yaml
 schedule:

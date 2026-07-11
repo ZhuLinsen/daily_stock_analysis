@@ -572,7 +572,7 @@ class PortfolioRepository:
         account_id: Optional[int],
         date_from: Optional[date],
         date_to: Optional[date],
-        symbol: Optional[str],
+        symbols: Optional[List[str]],
         side: Optional[str],
         page: int,
         page_size: int,
@@ -585,13 +585,20 @@ class PortfolioRepository:
                 conditions.append(PortfolioTrade.trade_date >= date_from)
             if date_to is not None:
                 conditions.append(PortfolioTrade.trade_date <= date_to)
-            if symbol:
-                conditions.append(PortfolioTrade.symbol == symbol)
+            if symbols:
+                conditions.append(PortfolioTrade.symbol.in_(symbols))
             if side:
                 conditions.append(PortfolioTrade.side == side)
 
-            data_query = select(PortfolioTrade)
-            count_query = select(func.count()).select_from(PortfolioTrade)
+            data_query = select(PortfolioTrade).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioTrade.account_id,
+            )
+            count_query = select(func.count()).select_from(PortfolioTrade).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioTrade.account_id,
+            )
+            conditions.append(PortfolioAccount.is_active.is_(True))
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -627,8 +634,15 @@ class PortfolioRepository:
             if direction:
                 conditions.append(PortfolioCashLedger.direction == direction)
 
-            data_query = select(PortfolioCashLedger)
-            count_query = select(func.count()).select_from(PortfolioCashLedger)
+            data_query = select(PortfolioCashLedger).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioCashLedger.account_id,
+            )
+            count_query = select(func.count()).select_from(PortfolioCashLedger).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioCashLedger.account_id,
+            )
+            conditions.append(PortfolioAccount.is_active.is_(True))
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -649,7 +663,7 @@ class PortfolioRepository:
         account_id: Optional[int],
         date_from: Optional[date],
         date_to: Optional[date],
-        symbol: Optional[str],
+        symbols: Optional[List[str]],
         action_type: Optional[str],
         page: int,
         page_size: int,
@@ -662,13 +676,20 @@ class PortfolioRepository:
                 conditions.append(PortfolioCorporateAction.effective_date >= date_from)
             if date_to is not None:
                 conditions.append(PortfolioCorporateAction.effective_date <= date_to)
-            if symbol:
-                conditions.append(PortfolioCorporateAction.symbol == symbol)
+            if symbols:
+                conditions.append(PortfolioCorporateAction.symbol.in_(symbols))
             if action_type:
                 conditions.append(PortfolioCorporateAction.action_type == action_type)
 
-            data_query = select(PortfolioCorporateAction)
-            count_query = select(func.count()).select_from(PortfolioCorporateAction)
+            data_query = select(PortfolioCorporateAction).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioCorporateAction.account_id,
+            )
+            count_query = select(func.count()).select_from(PortfolioCorporateAction).join(
+                PortfolioAccount,
+                PortfolioAccount.id == PortfolioCorporateAction.account_id,
+            )
+            conditions.append(PortfolioAccount.is_active.is_(True))
             if conditions:
                 where_clause = and_(*conditions)
                 data_query = data_query.where(where_clause)
@@ -687,6 +708,10 @@ class PortfolioRepository:
     # Price / FX
     # ------------------------------------------------------------------
     def get_latest_close(self, symbol: str, as_of: date) -> Optional[float]:
+        close = self.get_latest_close_with_date(symbol=symbol, as_of=as_of)
+        return close[0] if close is not None else None
+
+    def get_latest_close_with_date(self, symbol: str, as_of: date) -> Optional[Tuple[float, date]]:
         with self.db.get_session() as session:
             row = session.execute(
                 select(StockDaily)
@@ -701,7 +726,7 @@ class PortfolioRepository:
             ).scalar_one_or_none()
             if row is None or row.close is None:
                 return None
-            return float(row.close)
+            return float(row.close), row.date
 
     def save_fx_rate(
         self,
@@ -773,10 +798,18 @@ class PortfolioRepository:
     ) -> List[PortfolioDailySnapshot]:
         """Load snapshot rows in ascending date order for risk monitoring."""
         with self.db.get_session() as session:
-            query = select(PortfolioDailySnapshot).where(
-                and_(
-                    PortfolioDailySnapshot.snapshot_date <= as_of,
-                    PortfolioDailySnapshot.cost_method == cost_method,
+            query = (
+                select(PortfolioDailySnapshot)
+                .join(
+                    PortfolioAccount,
+                    PortfolioAccount.id == PortfolioDailySnapshot.account_id,
+                )
+                .where(
+                    and_(
+                        PortfolioDailySnapshot.snapshot_date <= as_of,
+                        PortfolioDailySnapshot.cost_method == cost_method,
+                        PortfolioAccount.is_active.is_(True),
+                    )
                 )
             )
             if account_id is not None:
@@ -792,6 +825,40 @@ class PortfolioRepository:
             # Keep only the latest N calendar days window for risk calculations.
             cutoff_ordinal = as_of.toordinal() - lookback_days
             return [row for row in rows if row.snapshot_date.toordinal() >= cutoff_ordinal]
+
+    def list_cached_position_identities(
+        self,
+        *,
+        account_id: Optional[int] = None,
+    ) -> List[Tuple[str, str]]:
+        """Return market/symbol identities from cached non-zero positions only."""
+        with self.db.get_session() as session:
+            query = (
+                select(PortfolioPosition.market, PortfolioPosition.symbol)
+                .join(PortfolioAccount, PortfolioPosition.account_id == PortfolioAccount.id)
+                .where(
+                    PortfolioPosition.quantity > 0,
+                    PortfolioAccount.is_active.is_(True),
+                )
+            )
+            if account_id is not None:
+                query = query.where(PortfolioPosition.account_id == account_id)
+            rows = session.execute(
+                query.order_by(
+                    PortfolioPosition.market.asc(),
+                    PortfolioPosition.symbol.asc(),
+                )
+            ).all()
+            seen = set()
+            identities: List[Tuple[str, str]] = []
+            for market, symbol in rows:
+                market_text = str(market or "").strip().lower()
+                symbol_text = str(symbol or "").strip()
+                identity = (market_text, symbol_text)
+                if market_text and symbol_text and identity not in seen:
+                    seen.add(identity)
+                    identities.append(identity)
+            return identities
 
     # ------------------------------------------------------------------
     # Snapshot / position cache

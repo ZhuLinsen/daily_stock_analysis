@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { agentApi } from '../api/agent';
 import type { ChatSessionItem, ChatStreamRequest } from '../api/agent';
 import {
-  createParsedApiError,
   getParsedApiError,
   isApiRequestError,
   isParsedApiError,
@@ -15,25 +14,75 @@ const STORAGE_KEY_SESSION = 'dsa_chat_session_id';
 export interface ProgressStep {
   type: string;
   step?: number;
+  stage?: string;
   tool?: string;
   display_name?: string;
+  status?: string;
   success?: boolean;
   duration?: number;
+  elapsed?: number;
+  timeout?: number;
+  remaining?: number;
+  minimum?: number;
+  reason?: string;
   message?: string;
   content?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  skills?: string[];
   skill?: string;
+  skillNames?: string[];
   skillName?: string;
   thinkingSteps?: ProgressStep[];
 }
 
 export interface StreamMeta {
+  skillNames?: string[];
   skillName?: string;
+}
+
+type StreamFailureEvent = {
+  type: string;
+  success?: boolean;
+  content?: string;
+  error?: unknown;
+  message?: unknown;
+};
+
+function getFirstMeaningfulStreamError(...candidates: Array<unknown>): unknown {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      if (candidate.trim() !== '') {
+        return candidate;
+      }
+      continue;
+    }
+
+    if (candidate != null) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function getStreamFailureError(
+  event: StreamFailureEvent,
+  fallbackMessage: string,
+): ParsedApiError {
+  return getParsedApiError(
+    getFirstMeaningfulStreamError(
+      event.error,
+      event.message,
+      event.content,
+      fallbackMessage,
+    ),
+  );
 }
 
 interface AgentChatState {
@@ -137,13 +186,21 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     if (targetSessionId === sessionId && messages.length > 0) return;
 
     abortController?.abort();
-    set({ abortController: null });
-
-    set({ messages: [], sessionId: targetSessionId });
+    set({
+      messages: [],
+      sessionId: targetSessionId,
+      loading: false,
+      progressSteps: [],
+      chatError: null,
+      abortController: null,
+    });
     localStorage.setItem(STORAGE_KEY_SESSION, targetSessionId);
 
     try {
       const msgs = await agentApi.getChatSessionMessages(targetSessionId);
+      if (get().sessionId !== targetSessionId) {
+        return;
+      }
       set({
         messages: msgs.map((m) => ({
           id: m.id,
@@ -180,13 +237,18 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     set({ abortController: ac });
 
     const streamSessionId = payload.session_id || storeSessionId;
-    const skillName = meta?.skillName ?? '通用';
+    const skillNames = meta?.skillNames?.length
+      ? meta.skillNames
+      : [meta?.skillName ?? '通用'];
+    const skillName = skillNames.join('、');
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content: payload.message,
+      skills: payload.skills,
       skill: payload.skills?.[0],
+      skillNames,
       skillName,
     };
 
@@ -216,38 +278,22 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       let buf = '';
       let finalContent: string | null = null;
       const currentProgressSteps: ProgressStep[] = [];
-      const processLine = (line: string) => {
-        if (!line.startsWith('data: ')) return;
+        const processLine = (line: string) => {
+          if (!line.startsWith('data: ')) return;
 
-        const event = JSON.parse(line.slice(6)) as ProgressStep;
-        if (event.type === 'done') {
-          const doneEvent = event as unknown as {
-            type: string;
-            success: boolean;
-            content?: string;
-            error?: string;
-          };
-          if (doneEvent.success === false) {
-            const parsedStreamError = getParsedApiError(
-              doneEvent.error ||
-                doneEvent.content ||
-                '大模型调用出错，请检查 API Key 配置',
-            );
-            throw createParsedApiError({
-              title: '问股执行失败',
-              message: parsedStreamError.message,
-              rawMessage: parsedStreamError.rawMessage,
-              status: parsedStreamError.status,
-              category: parsedStreamError.category,
-            });
+          const event = JSON.parse(line.slice(6)) as ProgressStep;
+          if (event.type === 'done') {
+            const doneEvent = event as unknown as StreamFailureEvent;
+            if (doneEvent.success === false) {
+              throw getStreamFailureError(doneEvent, '大模型调用出错，请检查 API Key 配置');
+            }
+            finalContent = doneEvent.content ?? '';
+            return;
           }
-          finalContent = doneEvent.content ?? '';
-          return;
-        }
 
-        if (event.type === 'error') {
-          throw getParsedApiError(event.message || '分析出错');
-        }
+          if (event.type === 'error') {
+            throw getStreamFailureError(event as unknown as StreamFailureEvent, '分析出错');
+          }
 
         currentProgressSteps.push(event);
         set((s) => ({ progressSteps: [...s.progressSteps, event] }));
@@ -293,7 +339,9 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
               id: (Date.now() + 1).toString(),
               role: 'assistant',
               content: finalContent || '（无内容）',
+              skills: payload.skills,
               skill: payload.skills?.[0],
+              skillNames,
               skillName,
               thinkingSteps: [...currentProgressSteps],
             },

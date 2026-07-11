@@ -6,9 +6,12 @@ import type {
   AnalyzeResponse,
   AnalyzeAsyncResponse,
   AnalysisReport,
+  MarketReviewAccepted,
+  MarketReviewRequest,
   TaskStatus,
   TaskListResponse,
 } from '../types/analysis';
+import type { RunFlowSnapshot } from '../types/runFlow';
 
 // ============ API Interfaces ============
 
@@ -25,9 +28,12 @@ export const analysisApi = {
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: data.asyncMode || false,
+      analysis_phase: data.analysisPhase || 'auto',
       stock_name: data.stockName,
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
+      skills: data.skills,
+      report_language: data.reportLanguage,
       ...(data.notify !== undefined && { notify: data.notify }),
     };
 
@@ -58,9 +64,12 @@ export const analysisApi = {
       report_type: data.reportType || 'detailed',
       force_refresh: data.forceRefresh || false,
       async_mode: true,
+      analysis_phase: data.analysisPhase || 'auto',
       stock_name: data.stockName,
       original_query: data.originalQuery,
       selection_source: data.selectionSource,
+      skills: data.skills,
+      report_language: data.reportLanguage,
       ...(data.notify !== undefined && { notify: data.notify }),
     };
 
@@ -85,6 +94,32 @@ export const analysisApi = {
     }
 
     return toCamelCase<AnalyzeAsyncResponse>(response.data);
+  },
+
+  /**
+   * Trigger market review in background mode.
+   */
+  triggerMarketReview: async (data: MarketReviewRequest = {}): Promise<MarketReviewAccepted> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/analysis/market-review',
+      {
+        send_notification: data.sendNotification ?? true,
+        report_language: data.reportLanguage,
+      },
+      {
+        validateStatus: (status) => status === 202 || status === 409,
+      }
+    );
+
+    if (response.status === 409) {
+      const detail = response.data?.detail;
+      const message = detail && typeof detail === 'object' && 'message' in detail
+        ? String((detail as { message?: unknown }).message || '')
+        : String(response.data?.message || '');
+      throw new Error(message || '大盘复盘正在执行中，请稍后再试');
+    }
+
+    return toCamelCase<MarketReviewAccepted>(response.data);
   },
 
   /**
@@ -125,6 +160,18 @@ export const analysisApi = {
     const data = toCamelCase<TaskListResponse>(response.data);
 
     return data;
+  },
+
+  /**
+   * Get a run-flow snapshot for an active analysis task.
+   * @param taskId Task ID
+   */
+  getTaskFlow: async (taskId: string): Promise<RunFlowSnapshot> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/analysis/tasks/${encodeURIComponent(taskId)}/flow`
+    );
+
+    return toCamelCase<RunFlowSnapshot>(response.data);
   },
 
   /**

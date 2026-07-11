@@ -20,6 +20,7 @@ import time
 from typing import List, Optional, Tuple
 
 from src.config import Config, get_config
+from src.llm.hermes import route_has_hermes
 
 logger = logging.getLogger(__name__)
 
@@ -208,23 +209,21 @@ def _parse_items_from_text(text: str) -> List[Tuple[str, Optional[str], str]]:
 
 
 def _resolve_vision_model() -> str:
-    """Determine the litellm model to use for vision, with gemini-3 downgrade."""
+    """Determine the litellm model to use for vision."""
     cfg = get_config()
     # Prefer explicit vision model, then OPENAI_VISION_MODEL alias, then primary litellm model
     model = (cfg.vision_model or cfg.openai_vision_model or cfg.litellm_model or "").strip()
     if not model:
         # Fallback: infer from available keys
         if cfg.gemini_api_keys:
-            model = "gemini/gemini-2.0-flash"
+            model_name = cfg.gemini_model or "gemini-3.1-pro-preview"
+            model = model_name if "/" in model_name else f"gemini/{model_name}"
         elif cfg.anthropic_api_keys:
-            model = f"anthropic/{cfg.anthropic_model or 'claude-3-5-sonnet-20241022'}"
+            model = f"anthropic/{cfg.anthropic_model or 'claude-sonnet-4-6'}"
         elif cfg.openai_api_keys:
-            model = f"openai/{cfg.openai_model or 'gpt-4o-mini'}"
+            model = f"openai/{cfg.openai_model or 'gpt-5.5'}"
         else:
             return ""
-    # Gemini 3 does not support vision; downgrade to gemini-2.0-flash
-    if "gemini-3" in model:
-        model = "gemini/gemini-2.0-flash"
     return model
 
 
@@ -244,6 +243,8 @@ def _call_litellm_vision(image_b64: str, mime_type: str, api_key: Optional[str] 
     model = _resolve_vision_model()
     if not model:
         raise ValueError("未配置 Vision API。请设置 LITELLM_MODEL 或相关 API Key。")
+    if route_has_hermes(getattr(cfg, "llm_model_list", []) or [], model):
+        raise ValueError("Hermes Vision 未验证：VISION_MODEL 不能选择包含 Hermes deployment 的 route。")
 
     keys = _get_api_keys_for_model(model, cfg)
     if not keys:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """System configuration endpoints."""
 
 from __future__ import annotations
@@ -6,48 +5,124 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from api.deps import get_system_config_service
+from api.deps import get_runtime_scheduler_service, get_system_config_service
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.system_config import (
     DiscoverLLMChannelModelsRequest,
     DiscoverLLMChannelModelsResponse,
     ExportSystemConfigResponse,
+    GenerationBackendStatusPreviewRequest,
+    GenerationBackendStatusResponse,
     ImportSystemConfigRequest,
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
+    SetupStatusResponse,
+    TestGenerationBackendRequest,
+    TestGenerationBackendResponse,
     SystemConfigValidationErrorResponse,
     TestLLMChannelRequest,
     TestLLMChannelResponse,
+    TestNotificationChannelRequest,
+    TestNotificationChannelResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
     ValidateSystemConfigRequest,
     ValidateSystemConfigResponse,
 )
+from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
     ConfigValidationError,
     SystemConfigService,
 )
+from src.services.runtime_scheduler import RuntimeSchedulerService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _ensure_desktop_mode() -> None:
-    """Restrict desktop backup/restore endpoints to desktop runtime only."""
-    if os.getenv("DSA_DESKTOP_MODE", "").strip().lower() != "true":
+@router.get(
+    "/scheduler/status",
+    summary="Get runtime scheduler status",
+    description="Return status for the in-process Web/API/Desktop scheduler.",
+)
+def get_scheduler_status(
+    scheduler: RuntimeSchedulerService = Depends(get_runtime_scheduler_service),
+) -> dict:
+    """Return runtime scheduler status."""
+    return scheduler.status()
+
+
+@router.post(
+    "/scheduler/run-now",
+    summary="Run scheduled analysis now",
+    description="Trigger one scheduled analysis run in the current process.",
+)
+def run_scheduler_now(
+    scheduler: RuntimeSchedulerService = Depends(get_runtime_scheduler_service),
+) -> dict:
+    """Trigger one runtime scheduled analysis run."""
+    result = scheduler.run_now()
+    if not result.get("accepted", False):
         raise HTTPException(
-            status_code=403,
+            status_code=409,
             detail={
-                "error": "desktop_only_feature",
-                "message": "This endpoint is only available in desktop mode",
+                "error": "scheduler_busy",
+                "message": "A scheduled analysis is already running",
+                "reason": result.get("reason", "analysis_already_running"),
             },
         )
+    return result
+
+
+class EnvBackupAccessDenied(Exception):
+    """Raised when raw `.env` backup access is not allowed for this request."""
+
+    def __init__(self, *, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+def _allow_env_backup_access(request: Request) -> None:
+    """Gate raw .env backup/restore to explicit secure modes.
+
+    - Desktop runtime keeps existing local behavior via DSA_DESKTOP_MODE.
+    - Non-desktop runtime must have admin auth enabled and a valid session.
+    """
+    if os.getenv("DSA_DESKTOP_MODE") == "true":
+        return
+
+    refresh_auth_state()
+    if not is_auth_enabled():
+        raise EnvBackupAccessDenied(
+            status_code=403,
+            message="System config backup is disabled; enable admin authentication first",
+        )
+
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    if cookie_val and verify_session(cookie_val):
+        return
+
+    raise EnvBackupAccessDenied(
+        status_code=401,
+        message="System config backup requires a valid admin session",
+    )
+
+
+def _raise_env_backup_access_error(exc: EnvBackupAccessDenied) -> None:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "error": "env_backup_access_denied",
+            "message": exc.message,
+        },
+    )
 
 
 @router.get(
@@ -59,7 +134,11 @@ def _ensure_desktop_mode() -> None:
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
     summary="Get system configuration",
-    description="Read current configuration from .env and return raw values.",
+    description=(
+        "Read current configuration and return display values. Server-masked "
+        "sensitive fields may return the mask token; clients should use "
+        "raw_value_exists and is_masked to interpret values."
+    ),
 )
 def get_system_config(
     include_schema: bool = Query(True, description="Whether to include schema metadata"),
@@ -76,6 +155,162 @@ def get_system_config(
             detail={
                 "error": "internal_error",
                 "message": "Failed to load system configuration",
+            },
+        )
+
+
+@router.get(
+    "/config/setup/status",
+    response_model=SetupStatusResponse,
+    responses={
+        200: {"description": "Setup status loaded"},
+        401: {"description": "Unauthorized", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get first-run setup status",
+    description="Read a side-effect-free setup readiness summary from saved and runtime configuration.",
+)
+def get_setup_status(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> SetupStatusResponse:
+    """Return first-run setup status without writing config or reloading runtime state."""
+    try:
+        payload = service.get_setup_status()
+        return SetupStatusResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load setup status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load setup status",
+            },
+        )
+
+
+@router.get(
+    "/config/generation-backends/status",
+    response_model=GenerationBackendStatusResponse,
+    responses={
+        200: {"description": "Generation backend status loaded"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get generation backend status",
+    description=(
+        "Read a side-effect-free generation backend cheap-check status from "
+        "saved and runtime configuration. This endpoint does not run a model request."
+    ),
+)
+def get_generation_backend_status(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> GenerationBackendStatusResponse:
+    """Return saved/runtime generation backend status without writing config."""
+    try:
+        payload = service.get_generation_backend_status()
+        return GenerationBackendStatusResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load generation backend status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load generation backend status",
+            },
+        )
+
+
+@router.post(
+    "/config/generation-backends/status/preview",
+    response_model=GenerationBackendStatusResponse,
+    responses={
+        200: {"description": "Generation backend status preview loaded"},
+        400: {"description": "Validation failed", "model": SystemConfigValidationErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Preview generation backend status",
+    description="Run a side-effect-free cheap check against unsaved settings draft values.",
+)
+def preview_generation_backend_status(
+    request: GenerationBackendStatusPreviewRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> GenerationBackendStatusResponse:
+    """Return generation backend status for unsaved draft values."""
+    try:
+        payload = service.preview_generation_backend_status(
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+        )
+        return GenerationBackendStatusResponse.model_validate(payload)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_failed",
+                "message": "System configuration validation failed",
+                "issues": exc.issues,
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to preview generation backend status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to preview generation backend status",
+            },
+        )
+
+
+@router.post(
+    "/config/generation-backends/smoke-test",
+    response_model=TestGenerationBackendResponse,
+    responses={
+        200: {"description": "Generation backend smoke test completed"},
+        400: {"description": "Validation failed", "model": SystemConfigValidationErrorResponse},
+        422: {"description": "Invalid smoke test request", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Smoke test generation backend",
+    description="Run an explicit fixed-prompt generation backend smoke test without persisting config.",
+)
+def test_generation_backend(
+    request: TestGenerationBackendRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestGenerationBackendResponse:
+    """Run a fixed generation backend smoke test."""
+    try:
+        payload = service.test_generation_backend(
+            backend_id=request.backend_id,
+            mode=request.mode,
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return TestGenerationBackendResponse.model_validate(payload)
+    except ConfigValidationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_failed",
+                "message": "System configuration validation failed",
+                "issues": exc.issues,
+            },
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to smoke test generation backend: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to smoke test generation backend",
             },
         )
 
@@ -138,29 +373,35 @@ def update_system_config(
     "/config/export",
     response_model=ExportSystemConfigResponse,
     responses={
-        200: {"description": "Desktop env exported"},
+        200: {"description": "Env exported"},
         401: {"description": "Unauthorized", "model": ErrorResponse},
-        403: {"description": "Desktop mode only", "model": ErrorResponse},
+        403: {"description": "Env backup disabled", "model": ErrorResponse},
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
-    summary="Export desktop env backup",
-    description="Desktop-only endpoint that returns the raw saved .env content.",
+    summary="Export env backup",
+    description="Return the raw saved .env content for configuration backup.",
 )
-def export_desktop_system_config(
+def export_system_config(
+    request: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> ExportSystemConfigResponse:
-    """Export the active `.env` file for desktop backup."""
-    _ensure_desktop_mode()
+    """Export the active `.env` file for config backup."""
     try:
-        payload = service.export_desktop_env()
+        _allow_env_backup_access(request)
+    except EnvBackupAccessDenied as exc:
+        logger.warning("System config export blocked: %s", exc)
+        _raise_env_backup_access_error(exc)
+
+    try:
+        payload = service.export_env()
         return ExportSystemConfigResponse.model_validate(payload)
     except Exception as exc:
-        logger.error("Failed to export desktop system configuration: %s", exc, exc_info=True)
+        logger.error("Failed to export system configuration: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "internal_error",
-                "message": "Failed to export desktop system configuration",
+                "message": "Failed to export system configuration",
             },
         )
 
@@ -169,7 +410,7 @@ def export_desktop_system_config(
     "/config/import",
     response_model=UpdateSystemConfigResponse,
     responses={
-        200: {"description": "Desktop env imported"},
+        200: {"description": "Env imported"},
         400: {
             "description": "Import failed",
             "content": {
@@ -184,21 +425,27 @@ def export_desktop_system_config(
             },
         },
         401: {"description": "Unauthorized", "model": ErrorResponse},
-        403: {"description": "Desktop mode only", "model": ErrorResponse},
+        403: {"description": "Env backup disabled", "model": ErrorResponse},
         409: {"description": "Version conflict", "model": SystemConfigConflictResponse},
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
-    summary="Import desktop env backup",
-    description="Desktop-only endpoint that merges raw .env text into the saved configuration.",
+    summary="Import env backup",
+    description="Merge raw .env text into the saved configuration with config version conflict protection.",
 )
-def import_desktop_system_config(
+def import_system_config(
     request: ImportSystemConfigRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> UpdateSystemConfigResponse:
-    """Import a desktop `.env` backup into the active config."""
-    _ensure_desktop_mode()
+    """Import a `.env` backup into the active config."""
     try:
-        payload = service.import_desktop_env(
+        _allow_env_backup_access(request_obj)
+    except EnvBackupAccessDenied as exc:
+        logger.warning("System config import blocked: %s", exc)
+        _raise_env_backup_access_error(exc)
+
+    try:
+        payload = service.import_env(
             config_version=request.config_version,
             content=request.content,
             reload_now=request.reload_now,
@@ -231,12 +478,12 @@ def import_desktop_system_config(
             },
         )
     except Exception as exc:
-        logger.error("Failed to import desktop system configuration: %s", exc, exc_info=True)
+        logger.error("Failed to import system configuration: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "internal_error",
-                "message": "Failed to import desktop system configuration",
+                "message": "Failed to import system configuration",
             },
         )
 
@@ -294,6 +541,8 @@ def test_llm_channel(
             models=request.models,
             enabled=request.enabled,
             timeout_seconds=request.timeout_seconds,
+            capability_checks=request.capability_checks,
+            use_saved_secret=request.use_saved_secret,
         )
         return TestLLMChannelResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:
@@ -311,6 +560,50 @@ def test_llm_channel(
             detail={
                 "error": "internal_error",
                 "message": "Failed to test LLM channel",
+            },
+        )
+
+
+@router.post(
+    "/config/notification/test-channel",
+    response_model=TestNotificationChannelResponse,
+    responses={
+        200: {"description": "Notification channel test completed"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Test one notification channel",
+    description="Send a short test notification using unsaved or saved notification configuration.",
+)
+def test_notification_channel(
+    request: TestNotificationChannelRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestNotificationChannelResponse:
+    """Validate and test one notification channel without writing `.env`."""
+    try:
+        payload = service.test_notification_channel(
+            channel=request.channel,
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+            title=request.title,
+            content=request.content,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return TestNotificationChannelResponse.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "validation_error",
+                "message": str(exc),
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to test notification channel: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to test notification channel",
             },
         )
 
@@ -338,6 +631,7 @@ def discover_llm_channel_models(
             api_key=request.api_key,
             models=request.models,
             timeout_seconds=request.timeout_seconds,
+            use_saved_secret=request.use_saved_secret,
         )
         return DiscoverLLMChannelModelsResponse.model_validate(payload)
     except (ValueError, TypeError) as exc:

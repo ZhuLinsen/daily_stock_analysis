@@ -16,6 +16,7 @@ PytdxFetcher - 通达信数据源 (Priority 2)
 
 import logging
 import re
+import time
 from contextlib import contextmanager
 from typing import Optional, Generator, List, Tuple
 
@@ -28,10 +29,20 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code, _is_hk_market
+from .base import (
+    BaseFetcher,
+    DataFetchError,
+    DataSourceUnavailableError,
+    STANDARD_COLUMNS,
+    is_bse_code,
+    normalize_stock_code,
+    _is_hk_market,
+)
 import os
 
 logger = logging.getLogger(__name__)
+
+_PYTDX_CONNECTION_COOLDOWN_SECONDS = 15.0
 
 
 def _parse_hosts_from_env() -> Optional[List[Tuple[str, int]]]:
@@ -139,6 +150,23 @@ class PytdxFetcher(BaseFetcher):
         self._current_host_idx = 0
         self._stock_list_cache = None  # 股票列表缓存
         self._stock_name_cache = {}    # 股票名称缓存 {code: name}
+        self._unavailable_until = 0.0
+        self._last_unavailable_reason = ""
+
+    def _is_in_connection_cooldown(self) -> bool:
+        return time.time() < self._unavailable_until
+
+    def _mark_connection_cooldown(self, reason: str) -> None:
+        self._unavailable_until = time.time() + _PYTDX_CONNECTION_COOLDOWN_SECONDS
+        self._last_unavailable_reason = str(reason or "").strip()
+        logger.info(
+            "Pytdx 连接失败，进入冷却 %.0fs: %s",
+            _PYTDX_CONNECTION_COOLDOWN_SECONDS,
+            self._last_unavailable_reason or "unknown",
+        )
+
+    def is_available_for_request(self, capability: str = "") -> bool:
+        return not self._is_in_connection_cooldown()
     
     def _get_pytdx(self):
         """
@@ -167,6 +195,11 @@ class PytdxFetcher(BaseFetcher):
             with self._pytdx_session() as api:
                 # 在这里执行数据查询
         """
+        if self._is_in_connection_cooldown():
+            raise DataSourceUnavailableError(
+                f"Pytdx temporarily unavailable: {self._last_unavailable_reason or 'connection cooldown'}"
+            )
+
         TdxHq_API = self._get_pytdx()
         if TdxHq_API is None:
             raise DataFetchError("pytdx 库未安装")
@@ -191,6 +224,7 @@ class PytdxFetcher(BaseFetcher):
                     continue
             
             if not connected:
+                self._mark_connection_cooldown("Pytdx 无法连接任何服务器")
                 raise DataFetchError("Pytdx 无法连接任何服务器")
             
             yield api
@@ -217,12 +251,26 @@ class PytdxFetcher(BaseFetcher):
         Returns:
             (market, code) 元组
         """
-        code = stock_code.strip()
-        
-        # 去除可能的前缀后缀
-        code = code.replace('.SH', '').replace('.SZ', '')
-        code = code.replace('.sh', '').replace('.sz', '')
-        code = code.replace('sh', '').replace('sz', '')
+        raw_code = stock_code.strip()
+        upper = raw_code.upper()
+        prefix, separator, suffix = raw_code.partition(".")
+        if separator and prefix:
+            prefix_upper = prefix.strip().upper()
+            if prefix_upper in ('SH', 'SS'):
+                normalized = normalize_stock_code(suffix.strip())
+                if normalized.isdigit() and len(normalized) == 6:
+                    return 1, normalized
+            if prefix_upper == 'SZ':
+                normalized = normalize_stock_code(suffix.strip())
+                if normalized.isdigit() and len(normalized) == 6:
+                    return 0, normalized
+
+        code = normalize_stock_code(raw_code)
+
+        if upper.startswith(('SH', 'SS')) or upper.endswith(('.SH', '.SS')):
+            return 1, code
+        if upper.startswith('SZ') or upper.endswith('.SZ'):
+            return 0, code
         
         # 根据代码前缀判断市场
         # 上海：60xxxx, 68xxxx（科创板）
@@ -400,7 +448,7 @@ class PytdxFetcher(BaseFetcher):
                     return name
                 
         except Exception as e:
-            logger.warning(f"Pytdx 获取股票名称失败 {stock_code}: {e}")
+            logger.debug(f"Pytdx 获取股票名称失败 {stock_code}: {e}")
         
         return None
     

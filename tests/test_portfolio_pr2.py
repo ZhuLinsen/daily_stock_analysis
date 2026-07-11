@@ -23,6 +23,7 @@ except ModuleNotFoundError:
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
+from src.services.decision_signal_service import DecisionSignalService
 from src.services.portfolio_import_service import PortfolioImportService
 from src.services.portfolio_risk_service import PortfolioRiskService
 from src.services.portfolio_service import PortfolioBusyError, PortfolioService
@@ -101,6 +102,34 @@ class PortfolioPr2TestCase(unittest.TestCase):
             ]
         )
         self.db.save_daily_data(df, code=symbol, data_source="portfolio-pr2-test")
+
+    def _create_position(self, account_id: int, symbol: str, price: float = 100.0, *, market: str = "cn") -> None:
+        self.service.record_trade(
+            account_id=account_id,
+            symbol=symbol,
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=price,
+            market=market,
+            currency="CNY" if market == "cn" else "USD",
+        )
+        self._save_close(symbol, date(2026, 1, 1), price)
+
+    def _create_signal(self, symbol: str, action: str, **overrides) -> dict:
+        payload = {
+            "stock_code": symbol,
+            "stock_name": symbol,
+            "market": "cn",
+            "source_type": "manual",
+            "trace_id": f"signal-{symbol}-{action}-{len(overrides)}",
+            "trigger_source": "api",
+            "action": action,
+            "reason": f"{symbol} {action} reason",
+            "status": "active",
+        }
+        payload.update(overrides)
+        return DecisionSignalService().create_signal(payload)["item"]
 
     @staticmethod
     def _csv_bytes(with_trade_uid: bool = True) -> bytes:
@@ -494,6 +523,160 @@ class PortfolioPr2TestCase(unittest.TestCase):
         sectors = report["sector_concentration"]["top_sectors"]
         self.assertTrue(len(sectors) >= 1)
         self.assertEqual(sectors[0]["sector"], "白酒")
+
+    def test_risk_report_aggregates_active_defensive_decision_signals_for_holdings(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=100000.0,
+            currency="CNY",
+        )
+        for symbol in ("SH600519", "300750", "000001", "000002", "000003"):
+            self._create_position(aid, symbol)
+
+        self._create_signal("600519.SH", "sell")
+        self._create_signal("300750", "reduce")
+        self._create_signal("000001", "alert")
+        self._create_signal("000002", "buy")
+        self._create_signal("000003", "watch")
+        self._create_signal("002000", "sell")
+        self._create_signal("600519", "alert", status="expired", trace_id="expired-alert-600519")
+
+        report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        block = report["decision_signal_risk"]
+        self.assertTrue(block["available"])
+        self.assertEqual(block["total"], 3)
+        self.assertEqual(block["actions"], {"sell": 1, "reduce": 1, "alert": 1})
+        symbols = {item["symbol"] for item in block["items"]}
+        self.assertEqual(symbols, {"SH600519", "300750", "000001"})
+        signal_actions = {item["symbol"]: item["signal"]["action"] for item in block["items"]}
+        self.assertNotIn("000002", signal_actions)
+        self.assertNotIn("000003", signal_actions)
+        self.assertNotIn("002000", signal_actions)
+        self.assertEqual(signal_actions["SH600519"], "sell")
+        self.assertEqual(signal_actions["300750"], "reduce")
+        self.assertEqual(signal_actions["000001"], "alert")
+
+    def test_risk_report_uses_requested_snapshot_for_decision_signal_filters(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=100000.0,
+            currency="CNY",
+        )
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", date(2026, 1, 1), 100.0)
+        self._save_close("600519", date(2026, 1, 2), 100.0)
+        self.service.record_trade(
+            account_id=aid,
+            symbol="000001",
+            trade_date=date(2026, 1, 2),
+            side="buy",
+            quantity=10,
+            price=20,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("000001", date(2026, 1, 2), 20.0)
+        self._create_signal("000001", "sell")
+
+        original = self.risk_service.decision_signal_service.list_signals
+        with patch.object(
+            self.risk_service.decision_signal_service,
+            "list_signals",
+            wraps=original,
+        ) as spy:
+            report = self.risk_service.get_risk_report(
+                account_id=aid,
+                as_of=date(2026, 1, 2),
+                cost_method="fifo",
+            )
+
+        block = report["decision_signal_risk"]
+        self.assertTrue(block["available"])
+        self.assertEqual(block["total"], 1)
+        self.assertEqual(block["items"][0]["symbol"], "000001")
+        self.assertEqual(block["items"][0]["signal"]["action"], "sell")
+        for call in spy.mock_calls:
+            self.assertIsNot(call.kwargs.get("holding_only"), True)
+        identity_calls = [
+            call.kwargs.get("stock_identities")
+            for call in spy.mock_calls
+            if call.kwargs.get("stock_identities") is not None
+        ]
+        observed_identities = {
+            identity
+            for ids in identity_calls
+            for identity in ids
+        }
+        self.assertIn(("cn", "000001"), observed_identities)
+        self.assertIn(("cn", "600519"), observed_identities)
+
+    def test_risk_report_decision_signal_fail_open(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self._create_position(aid, "600519")
+
+        class BrokenSignalService:
+            def list_signals(self, **_kwargs):
+                raise RuntimeError("decision signal unavailable")
+
+        risk_service = PortfolioRiskService(
+            portfolio_service=self.service,
+            decision_signal_service=BrokenSignalService(),
+        )
+        report = risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        self.assertFalse(report["decision_signal_risk"]["available"])
+        self.assertEqual(report["decision_signal_risk"]["total"], 0)
+        self.assertEqual(report["decision_signal_risk"]["items"], [])
+
+    def test_portfolio_risk_endpoint_returns_defensive_decision_signals(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self._create_position(aid, "600519")
+        self._create_signal("600519", "sell")
+
+        response = self.client.get(
+            "/api/v1/portfolio/risk",
+            params={"account_id": aid, "as_of": "2026-01-01", "cost_method": "fifo"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("decision_signal_risk", payload)
+        self.assertEqual(payload["decision_signal_risk"]["total"], 1)
+        self.assertEqual(payload["decision_signal_risk"]["items"][0]["signal"]["action"], "sell")
 
     def test_snapshot_does_not_trigger_online_fx_refresh(self) -> None:
         account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")

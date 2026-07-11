@@ -16,6 +16,7 @@ on:
       - 'AGENTS.md'
       - 'apps/dsa-web/**'
       - 'requirements.txt'
+      - '.github/requirements-ci.txt'
       - 'pyproject.toml'
       - 'setup.cfg'
       - '.github/PULL_REQUEST_TEMPLATE.md'
@@ -115,7 +116,7 @@ jobs:
         run: |
           BASE_REF="${{ github.base_ref || 'main' }}"
           CHANGED_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' 2>/dev/null || echo "")
-          REVIEWABLE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' '*.md' 'docs/**' 'README.md' 'AGENTS.md' 'requirements.txt' 'pyproject.toml' 'setup.cfg' '.github/PULL_REQUEST_TEMPLATE.md' '.github/workflows/**' '.github/scripts/**' 2>/dev/null || echo "")
+          REVIEWABLE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' '*.md' 'docs/**' 'README.md' 'AGENTS.md' 'requirements.txt' '.github/requirements-ci.txt' 'pyproject.toml' 'setup.cfg' '.github/PULL_REQUEST_TEMPLATE.md' '.github/workflows/**' '.github/scripts/**' 2>/dev/null || echo "")
 
           if [ -z "$REVIEWABLE_FILES" ]; then
             echo "has_reviewable_changes=false" >> $GITHUB_OUTPUT

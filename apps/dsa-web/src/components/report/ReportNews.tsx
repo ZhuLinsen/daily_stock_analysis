@@ -14,12 +14,28 @@ interface ReportNewsProps {
   language?: ReportLanguage;
 }
 
+const NEWS_SOURCE_TEXT = {
+  zh: {
+    sourceLabel: '相关资讯/后续检索',
+    sourceHint: '来源：报告页补充资讯；是否用于分析以输入数据块为准。',
+  },
+  en: {
+    sourceLabel: 'Related news / follow-up retrieval',
+    sourceHint: 'Source: supplemental report-page news; analysis input is shown in Input Blocks.',
+  },
+  ko: {
+    sourceLabel: '관련 뉴스 / 후속 검색',
+    sourceHint: '출처: 리포트 페이지 보충 뉴스이며, 분석 사용 여부는 입력 데이터 블록 기준입니다.',
+  },
+} as const;
+
 /**
  * 资讯区组件 - 终端风格
  */
 export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, language = 'zh' }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = getReportText(reportLanguage);
+  const sourceText = NEWS_SOURCE_TEXT[reportLanguage];
   const [isLoading, setIsLoading] = useState(false);
   const [items, setItems] = useState<NewsIntelItem[]>([]);
   const [error, setError] = useState<ParsedApiError | null>(null);
@@ -62,6 +78,9 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
             {isLoading ? (
               <div className="home-spinner h-3.5 w-3.5 animate-spin border-2" aria-hidden="true" />
             ) : null}
+            <span className="home-accent-chip px-2 py-0.5 text-xs text-muted-text">
+              {sourceText.sourceLabel}
+            </span>
             <button
               type="button"
               onClick={() => void fetchNews()}
@@ -73,6 +92,9 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 8, lan
           </div>
         )}
       />
+      <p className="mb-3 text-xs leading-5 text-muted-text">
+        {sourceText.sourceHint}
+      </p>
 
       {error && !isLoading && (
         <ApiErrorAlert

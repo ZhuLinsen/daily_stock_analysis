@@ -159,6 +159,7 @@ class TestTushareFetcherFollowUps(unittest.TestCase):
 
         self.assertEqual(fetcher._convert_stock_code("SZ000001"), "000001.SZ")
         self.assertEqual(fetcher._convert_stock_code("SH600519"), "600519.SH")
+        self.assertEqual(fetcher._convert_stock_code("605218"), "605218.SH")
         self.assertEqual(fetcher._convert_stock_code("600519.SS"), "600519.SH")
 
     @patch.dict(sys.modules, {"tushare": MagicMock()})

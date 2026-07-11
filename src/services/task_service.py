@@ -23,6 +23,7 @@ from typing import Optional, Dict, Any, List, Union
 from src.enums import ReportType
 from src.storage import get_db
 from bot.models import BotMessage
+from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +91,16 @@ class TaskService:
         if isinstance(report_type, str):
             report_type = ReportType.from_str(report_type)
 
-        task_id = f"{code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        normalized_code = resolve_index_stock_code_for_analysis(code)
+        if not normalized_code:
+            raise ValueError("股票代码不能为空或仅包含空白字符")
+
+        task_id = f"{normalized_code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
         # 提交到线程池
         self.executor.submit(
             self._run_analysis,
-            code,
+            normalized_code,
             task_id,
             report_type,
             source_message,
@@ -103,12 +108,15 @@ class TaskService:
             query_source
         )
 
-        logger.info(f"[TaskService] 已提交股票 {code} 的分析任务, task_id={task_id}, report_type={report_type.value}")
+        logger.info(
+            f"[TaskService] 已提交股票 {normalized_code} 的分析任务, "
+            f"task_id={task_id}, report_type={report_type.value}"
+        )
 
         return {
             "success": True,
             "message": "分析任务已提交，将异步执行并推送通知",
-            "code": code,
+            "code": normalized_code,
             "task_id": task_id,
             "report_type": report_type.value
         }
