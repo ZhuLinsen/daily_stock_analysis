@@ -120,6 +120,12 @@ class TestTushareConvertStockCode(unittest.TestCase):
         self.assertEqual(fetcher._convert_stock_code("838163"), "838163.BJ")
         self.assertEqual(fetcher._convert_stock_code("430047"), "430047.BJ")
 
+    def test_bse_explicit_exchange_hint_is_preserved(self):
+        """BSE prefix/suffix forms should keep the BJ Tushare ts_code."""
+        fetcher = TushareFetcher()
+        self.assertEqual(fetcher._convert_stock_code("920493.BJ"), "920493.BJ")
+        self.assertEqual(fetcher._convert_stock_code("BJ920493"), "920493.BJ")
+
 
 @unittest.skipIf(not _AKSHARE_IMPORTS_OK, f"akshare fetcher imports failed: {_AKSHARE_IMPORT_ERROR}")
 class TestAkshareToSinaTxSymbol(unittest.TestCase):

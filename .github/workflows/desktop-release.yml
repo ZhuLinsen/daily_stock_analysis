@@ -50,6 +50,16 @@ jobs:
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
 
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export VERSION="${RELEASE_TAG#v}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
+
       - name: Build desktop package (Windows)
         shell: pwsh
         env:
@@ -60,29 +70,57 @@ jobs:
       - name: Prepare release artifact (Windows)
         shell: pwsh
         run: |
-          $installerExe = Get-ChildItem -Path 'apps/dsa-desktop/dist' -Filter '*.exe' `
-            | Where-Object { $_.Name -match 'Setup' } `
-            | Sort-Object LastWriteTime -Descending `
-            | Select-Object -First 1
+          $expectedInstallerName = "daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $installerPath = Join-Path 'apps/dsa-desktop/dist' $expectedInstallerName
+          $installerExe = Get-Item -Path $installerPath -ErrorAction SilentlyContinue
           if (-not $installerExe) {
-            throw 'No NSIS setup .exe found under apps/dsa-desktop/dist.'
+            throw "No expected NSIS installer found under apps/dsa-desktop/dist: $expectedInstallerName"
           }
           $winUnpacked = 'apps/dsa-desktop/dist/win-unpacked'
           if (-not (Test-Path $winUnpacked)) {
             throw 'No win-unpacked directory found under apps/dsa-desktop/dist.'
           }
           New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
-          $exeTarget = "dist/release-assets/daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $exeTarget = "dist/release-assets/$expectedInstallerName"
           $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
           Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
           Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
+          Get-ChildItem -Path 'apps/dsa-desktop/dist' -File |
+            Where-Object { $_.Name -eq 'latest.yml' -or $_.Name -like '*.blockmap' } |
+            ForEach-Object {
+              Copy-Item -Path $_.FullName -Destination "dist/release-assets/$($_.Name)" -Force
+            }
+          if (-not (Test-Path 'dist/release-assets/latest.yml')) {
+            throw 'No latest.yml found under dist/release-assets.'
+          }
+          $expectedVersion = $env:RELEASE_TAG.TrimStart('v')
+          $versionPattern = '^version:\s*[''"]?' + [regex]::Escape($expectedVersion) + '[''"]?\s*$'
+          if (-not (Select-String -Path 'dist/release-assets/latest.yml' -Pattern $versionPattern)) {
+            throw "latest.yml version does not match release tag $env:RELEASE_TAG."
+          }
+          $latestText = Get-Content -Path 'dist/release-assets/latest.yml' -Raw
+          $pathMatch = [regex]::Match($latestText, '(?m)^\s*path:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if (-not $pathMatch.Success) {
+            throw 'latest.yml missing path field.'
+          }
+          $latestInstallerPath = $pathMatch.Groups[1].Value.Trim()
+          if ($latestInstallerPath -ne $expectedInstallerName) {
+            throw "latest.yml path ($latestInstallerPath) does not match release installer $expectedInstallerName."
+          }
+          $urlMatch = [regex]::Match($latestText, '(?m)^\s*-\s*url:\s*[''"]?([^''"\r\n]+)[''"]?\s*$')
+          if ($urlMatch.Success -and $urlMatch.Groups[1].Value.Trim() -ne $expectedInstallerName) {
+            throw "latest.yml file url ($($urlMatch.Groups[1].Value.Trim())) does not match release installer $expectedInstallerName."
+          }
+          $expectedBlockmapName = "$expectedInstallerName.blockmap"
+          if (-not (Get-ChildItem -Path 'dist/release-assets' -Filter $expectedBlockmapName -File)) {
+            throw "No matching blockmap found under dist/release-assets: $expectedBlockmapName"
+          }
+          Get-ChildItem -Path 'dist/release-assets' -File | Sort-Object Name | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v6
         with:
           name: desktop-windows-${{ env.RELEASE_TAG }}
-          path: |
-            dist/release-assets/*.exe
-            dist/release-assets/*.zip
+          path: dist/release-assets/*
           if-no-files-found: error
 
   build-macos:
@@ -126,6 +164,16 @@ jobs:
           cache-dependency-path: |
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
+
+      - name: Sync desktop app version from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export VERSION="${RELEASE_TAG#v}"
+          cd apps/dsa-desktop
+          npm version "${VERSION}" --no-git-tag-version --allow-same-version
+          node -e "const pkg = require('./package.json'); if (pkg.version !== process.env.VERSION) throw new Error('package version mismatch: ' + pkg.version); console.log('desktop version:', pkg.version);"
 
       - name: Cache Electron binaries
         uses: actions/cache@v5
@@ -171,19 +219,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Validate release tag and extract changelog
-        id: changelog
+      - name: Validate release tag
         run: |
           [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION="${RELEASE_TAG#v}"
-          # Extract the section for this version from CHANGELOG.md
-          BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" docs/CHANGELOG.md)
-          if [[ -z "$BODY" ]]; then
-            echo "Warning: no CHANGELOG entry found for ${VERSION}"
-            BODY="See [CHANGELOG](https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/CHANGELOG.md) for details."
-          fi
-          # Write changelog content + install instructions to file
-          echo "$BODY" > /tmp/release_body.md
 
       - uses: actions/download-artifact@v7
         with:
@@ -198,7 +236,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          body_path: /tmp/release_body.md
-          generate_release_notes: true
+          generate_release_notes: false
           files: dist/release-assets/*
           fail_on_unmatched_files: true

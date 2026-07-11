@@ -3,7 +3,7 @@
 本文只解决两类常见诉求：
 
 1. 把分析结果推送到飞书群
-2. 避免把飞书应用模式和群机器人 Webhook 模式混用
+2. 避免把飞书应用模式、App Bot 主动推送和群机器人 Webhook 模式混用
 
 ## 先分清两种模式
 
@@ -25,9 +25,10 @@ FEISHU_WEBHOOK_SECRET=your_sign_secret
 FEISHU_WEBHOOK_KEYWORD=股票日报
 ```
 
-### 模式二：飞书应用 / Stream Bot / 云文档
+### 模式二：飞书应用 / App Bot / Stream Bot / 云文档
 
 适用场景：
+- 你要用飞书 App Bot 主动向指定群或用户推送通知
 - 你要做飞书应用机器人交互
 - 你要启用 Stream 模式
 - 你要用飞书云文档能力
@@ -37,13 +38,21 @@ FEISHU_WEBHOOK_KEYWORD=股票日报
 ```env
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=xxx
+# App Bot 主动推送时必填
+FEISHU_CHAT_ID=oc_xxx
+# 私聊时设置 open_id；群聊默认 chat_id
+FEISHU_RECEIVE_ID_TYPE=chat_id
+# 事件订阅 / Stream Bot 时才开启
 FEISHU_STREAM_ENABLED=true
 ```
 
 注意：
 - `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 不会直接开启群 Webhook 推送
-- 只想收通知时，不要只填 App ID / Secret，必须优先配置 `FEISHU_WEBHOOK_URL`
+- 简单群通知优先配置 `FEISHU_WEBHOOK_URL`
+- 不用 Webhook 时，App Bot 主动推送必须同时配置 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_CHAT_ID`
+- `FEISHU_STREAM_ENABLED` 只代表事件订阅 / Stream Bot，不参与主动通知是否配置完成的判断
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
+- App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
 
 ## Webhook 推送的正确配置步骤
 
@@ -107,6 +116,17 @@ FEISHU_APP_SECRET=...
 
 也不会影响 Webhook 推送；但它们本身不能替代 `FEISHU_WEBHOOK_URL`。
 
+如果未配置 Webhook，也可以用 App Bot 主动推送：
+
+```env
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_CHAT_ID=oc_xxx
+FEISHU_RECEIVE_ID_TYPE=chat_id
+```
+
+此时 `FEISHU_STREAM_ENABLED` 不需要开启；它只用于事件订阅 / Stream Bot。
+
 ### 4. 在飞书自动化里配置 Webhook 触发器
 
 如果你在飞书自动化流程里消费本项目推送的卡片消息，请按下面配置：
@@ -152,10 +172,11 @@ FEISHU_APP_SECRET=...
 - 实际完全收不到群通知
 
 原因：
-- 这两个变量是应用模式用的，不是群 Webhook 推送入口
+- 这两个变量只是应用凭据；主动推送还需要 `FEISHU_CHAT_ID`，群 Webhook 推送则需要 `FEISHU_WEBHOOK_URL`
 
 正确做法：
-- 补 `FEISHU_WEBHOOK_URL`
+- 简单群推送：补 `FEISHU_WEBHOOK_URL`
+- App Bot 主动推送：补 `FEISHU_CHAT_ID`，并确认应用有发消息权限且机器人在目标群中
 
 ### 2. 飞书机器人开启了关键词，但本地没配 `FEISHU_WEBHOOK_KEYWORD`
 
@@ -222,10 +243,11 @@ FEISHU_WEBHOOK_KEYWORD=股票日报
 ## 排查顺序建议
 
 1. 先确认你要的是“群 Webhook 推送”还是“应用 / Stream Bot”
-2. 只做群推送时，先保证 `FEISHU_WEBHOOK_URL` 已配置
-3. 回到飞书机器人安全设置，确认是否启用了关键词或签名
-4. 若启用了，就补齐 `FEISHU_WEBHOOK_KEYWORD` / `FEISHU_WEBHOOK_SECRET`
-5. 最后再检查机器人是否在群里、是否有权限、是否命中 IP 白名单
+2. 只做简单群推送时，先保证 `FEISHU_WEBHOOK_URL` 已配置
+3. 不用 Webhook 而走 App Bot 主动推送时，确认 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` 三项齐全
+4. 回到飞书机器人安全设置，确认是否启用了关键词或签名
+5. 若启用了，就补齐 `FEISHU_WEBHOOK_KEYWORD` / `FEISHU_WEBHOOK_SECRET`
+6. 最后再检查机器人是否在群里、是否有权限、是否命中 IP 白名单
 
 ## 附：应用 / Stream Bot 原流程截图参考
 

@@ -20,6 +20,7 @@ from data_provider.realtime_types import ChipDistribution
 from src.analyzer import (
     AnalysisResult,
     fill_chip_structure_if_needed,
+    normalize_chip_structure_availability,
     _is_value_placeholder,
     _derive_chip_health,
     _build_chip_structure_from_data,
@@ -48,6 +49,7 @@ class TestIsValuePlaceholder(unittest.TestCase):
 
     def test_data_missing_is_placeholder(self) -> None:
         self.assertTrue(_is_value_placeholder("数据缺失"))
+        self.assertTrue(_is_value_placeholder("数据缺失，无法判断"))
         self.assertTrue(_is_value_placeholder("未知"))
 
     def test_valid_values_not_placeholder(self) -> None:
@@ -243,3 +245,78 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
         cs = result.dashboard["data_perspective"]["chip_structure"]
         self.assertEqual(cs["profit_ratio"], "67.0%")
         self.assertEqual(cs["custom_note"], "LLM added this")
+
+    def test_normalize_fills_repeated_missing_text_with_real_chip_data(self) -> None:
+        result = self._make_result(
+            dashboard={
+                "data_perspective": {
+                    "chip_structure": {
+                        "profit_ratio": "数据缺失，无法判断",
+                        "avg_cost": "数据缺失，无法判断",
+                        "concentration": "数据缺失，无法判断",
+                        "chip_health": "数据缺失，无法判断",
+                    }
+                }
+            }
+        )
+
+        normalize_chip_structure_availability(result, self._make_chip())
+
+        cs = result.dashboard["data_perspective"]["chip_structure"]
+        self.assertEqual(cs["profit_ratio"], "67.0%")
+        self.assertEqual(cs["avg_cost"], 1850.0)
+        self.assertEqual(cs["concentration"], "11.00%")
+        self.assertEqual(cs["chip_health"], "健康")
+
+    def test_normalize_collapses_missing_chip_placeholders_to_one_reason(self) -> None:
+        result = self._make_result(
+            dashboard={
+                "data_perspective": {
+                    "chip_structure": {
+                        "profit_ratio": "数据缺失，无法判断",
+                        "avg_cost": "数据缺失，无法判断",
+                        "concentration": "数据缺失，无法判断",
+                        "chip_health": "数据缺失，无法判断",
+                    }
+                }
+            }
+        )
+
+        normalize_chip_structure_availability(result, None)
+
+        dp = result.dashboard["data_perspective"]
+        self.assertEqual(dp["chip_structure"], {})
+        self.assertEqual(dp["chip_unavailable_reason"], "筹码分布未启用或数据源暂不可用，未纳入筹码判断。")
+
+    def test_normalize_treats_zero_chip_metrics_as_unavailable(self) -> None:
+        result = self._make_result(
+            dashboard={"data_perspective": {"chip_structure": {"profit_ratio": 0, "avg_cost": 0, "concentration": 0}}}
+        )
+        empty_chip = ChipDistribution(code="600519")
+
+        normalize_chip_structure_availability(result, empty_chip)
+
+        dp = result.dashboard["data_perspective"]
+        self.assertEqual(dp["chip_structure"], {})
+        self.assertEqual(dp["chip_unavailable_reason"], "筹码分布未启用或数据源暂不可用，未纳入筹码判断。")
+
+    def test_normalize_accepts_zero_concentration_when_avg_cost_present(self) -> None:
+        result = self._make_result(
+            dashboard={"data_perspective": {"chip_structure": {"profit_ratio": 0, "avg_cost": 0, "concentration": 0}}}
+        )
+        zero_concentration_chip = ChipDistribution(
+            code="600519",
+            profit_ratio=0.52,
+            avg_cost=1850.0,
+            concentration_90=0.0,
+            concentration_70=0.0,
+        )
+
+        normalize_chip_structure_availability(result, zero_concentration_chip)
+
+        dp = result.dashboard["data_perspective"]
+        cs = dp["chip_structure"]
+        self.assertEqual(cs["profit_ratio"], "52.0%")
+        self.assertEqual(cs["avg_cost"], 1850.0)
+        self.assertEqual(cs["concentration"], "0.00%")
+        self.assertNotIn("chip_unavailable_reason", dp)

@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+from api.v1.schemas.market_phase import MarketPhaseSummary
+from src.schemas.decision_action import DecisionAction
 
 
 class BacktestRunRequest(BaseModel):
@@ -13,6 +17,8 @@ class BacktestRunRequest(BaseModel):
     force: bool = Field(False, description="强制重新计算")
     eval_window_days: Optional[int] = Field(None, ge=1, le=120, description="评估窗口（交易日数）")
     min_age_days: Optional[int] = Field(None, ge=0, le=365, description="分析记录最小天龄（0=不限）")
+    analysis_date_from: Optional[date] = Field(None, description="分析日期起始（含）")
+    analysis_date_to: Optional[date] = Field(None, description="分析日期结束（含）")
     limit: int = Field(200, ge=1, le=2000, description="最多处理的分析记录数")
 
 
@@ -22,6 +28,12 @@ class BacktestRunResponse(BaseModel):
     completed: int = Field(..., description="完成回测数")
     insufficient: int = Field(..., description="数据不足数")
     errors: int = Field(..., description="错误数")
+    applied_eval_window_days: Optional[int] = Field(
+        ...,
+        description="实际生效的评估窗口（交易日数）",
+    )
+    message: Optional[str] = Field(None, description="空结果或降级时的诊断说明")
+    diagnostics: Dict[str, Any] = Field(default_factory=dict, description="回测筛选与诊断信息")
 
 
 class BacktestResultItem(BaseModel):
@@ -34,7 +46,11 @@ class BacktestResultItem(BaseModel):
     eval_status: str
     evaluated_at: Optional[str] = None
     operation_advice: Optional[str] = None
+    action: Optional[DecisionAction] = None
+    action_label: Optional[str] = None
     trend_prediction: Optional[str] = None
+    market_phase: Optional[str] = None
+    market_phase_summary: Optional[MarketPhaseSummary] = None
     position_recommendation: Optional[str] = None
     start_price: Optional[float] = None
     end_close: Optional[float] = None

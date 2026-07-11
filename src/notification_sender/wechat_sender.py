@@ -11,6 +11,7 @@ import base64
 import hashlib
 import requests
 import time
+from typing import Optional
 
 from src.config import Config
 from src.formatters import chunk_content_by_max_bytes
@@ -36,7 +37,7 @@ class WechatSender:
         self._wechat_msg_type = getattr(config, 'wechat_msg_type', 'markdown')
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
         
-    def send_to_wechat(self, content: str) -> bool:
+    def send_to_wechat(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到企业微信机器人
         
@@ -86,7 +87,7 @@ class WechatSender:
             return self._send_wechat_chunked(content, max_bytes)
         
         try:
-            return self._send_wechat_message(content)
+            return self._send_wechat_message(content, timeout_seconds=timeout_seconds)
         except Exception as e:
             logger.error(f"发送企业微信消息失败: {e}")
             return False
@@ -124,14 +125,14 @@ class WechatSender:
             logger.error("企业微信图片发送异常: %s", e)
             return False
     
-    def _send_wechat_message(self, content: str) -> bool:
+    def _send_wechat_message(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """发送企业微信消息"""
         payload = self._gen_wechat_payload(content)
         
         response = requests.post(
             self._wechat_url,
             json=payload,
-            timeout=10,
+            timeout=timeout_seconds or 10,
             verify=self._webhook_verify_ssl
         )
         

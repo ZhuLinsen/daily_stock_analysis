@@ -25,7 +25,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
+from src.agent.stock_scope import StockScope
+from src.llm.usage import should_persist_usage_telemetry
+from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
@@ -158,6 +162,52 @@ def _is_non_retriable_tool_result(result: Any) -> bool:
     )
 
 
+def _is_stock_scoped_tool(tool_registry: ToolRegistry, tool_name: str) -> bool:
+    tool_def = tool_registry.resolve(tool_name)
+    if tool_def is None:
+        return False
+    return any(param.name == "stock_code" for param in tool_def.parameters)
+
+
+def _normalize_guard_stock_code(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    raw = value if isinstance(value, str) else str(value)
+    normalized = _normalize_tool_stock_code(raw)
+    return normalized if isinstance(normalized, str) else str(normalized)
+
+
+def _guard_tool_stock_scope(tool_registry: ToolRegistry, tool_name: str, arguments: Dict[str, Any], stock_scope: Optional[StockScope]) -> Optional[Dict[str, Any]]:
+    if stock_scope is None or not isinstance(arguments, dict):
+        return None
+    if not _is_stock_scoped_tool(tool_registry, tool_name):
+        return None
+    if "stock_code" not in arguments:
+        return None
+
+    requested = _normalize_guard_stock_code(arguments.get("stock_code"))
+
+    expected = _normalize_guard_stock_code(stock_scope.expected_stock_code)
+    allowed = {
+        normalized
+        for code in stock_scope.allowed_stock_codes
+        for normalized in [_normalize_guard_stock_code(code)]
+        if normalized
+    }
+    if requested and (requested == expected or requested in allowed):
+        return None
+
+    return {
+        "error": "stock_scope_violation",
+        "expected_stock_code": expected,
+        "requested_stock_code": requested,
+        "allowed_stock_codes": sorted(allowed),
+        "retriable": False,
+    }
+
+
 def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     """Extract and parse a Decision Dashboard JSON from agent text.
 
@@ -178,19 +228,23 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         for block in json_blocks:
             parsed = _try_parse_json(block)
             if parsed is not None:
+                normalize_report_signal_attribution(parsed)
                 return parsed
             parsed = _try_repair_json(block, repair_json)
             if parsed is not None:
+                normalize_report_signal_attribution(parsed)
                 return parsed
 
     # Strategy 2: raw parse
     parsed = _try_parse_json(content)
     if parsed is not None:
+        normalize_report_signal_attribution(parsed)
         return parsed
 
     # Strategy 3: json_repair on full content
     parsed = _try_repair_json(content, repair_json)
     if parsed is not None:
+        normalize_report_signal_attribution(parsed)
         return parsed
 
     # Strategy 4: brace-delimited
@@ -200,9 +254,11 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         candidate = content[brace_start : brace_end + 1]
         parsed = _try_parse_json(candidate)
         if parsed is not None:
+            normalize_report_signal_attribution(parsed)
             return parsed
         parsed = _try_repair_json(candidate, repair_json)
         if parsed is not None:
+            normalize_report_signal_attribution(parsed)
             return parsed
 
     logger.warning("Failed to parse dashboard JSON from agent response")
@@ -368,6 +424,8 @@ def run_agent_loop(
     thinking_labels: Optional[Dict[str, str]] = None,
     max_wall_clock_seconds: Optional[float] = None,
     tool_call_timeout_seconds: Optional[float] = None,
+    stock_scope: Optional[StockScope] = None,
+    emit_stage_events: bool = True,
 ) -> RunLoopResult:
     """Execute the ReAct LLM ↔ tool loop.
 
@@ -385,6 +443,9 @@ def run_agent_loop(
         thinking_labels: Override map of tool_name → friendly label.
         max_wall_clock_seconds: Optional overall timeout budget for the loop.
         tool_call_timeout_seconds: Optional timeout for one parallel tool batch.
+        emit_stage_events: Whether to emit the synthetic ``agent_loop``
+            stage lifecycle. Orchestrated business stages disable this so
+            ``stage_start`` / ``stage_done`` only describe real stages.
 
     Returns:
         A :class:`RunLoopResult` with the final content, stats, and the
@@ -407,6 +468,27 @@ def run_agent_loop(
     # even when the total budget is small.
     _MIN_STEP_BUDGET_S = 8.0
 
+    def _finish(result: RunLoopResult) -> RunLoopResult:
+        if progress_callback and emit_stage_events:
+            progress_callback(
+                stream_event(
+                    "stage_done",
+                    stage="agent_loop",
+                    status="completed" if result.success else "failed",
+                    duration=round(time.time() - start_time, 2),
+                )
+            )
+        return result
+
+    if progress_callback and emit_stage_events:
+        progress_callback(
+            stream_event(
+                "stage_start",
+                stage="agent_loop",
+                message="Starting agent analysis...",
+            )
+        )
+
     for step in range(max_steps):
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         timeout_exhausted = remaining_timeout is not None and remaining_timeout <= 0
@@ -424,7 +506,7 @@ def run_agent_loop(
                     remaining_timeout,
                     _MIN_STEP_BUDGET_S,
                 )
-                return _build_budget_guard_result(
+                return _finish(_build_budget_guard_result(
                     start_time=start_time,
                     step=step,
                     tool_calls_log=tool_calls_log,
@@ -434,11 +516,11 @@ def run_agent_loop(
                     messages=messages,
                     remaining_timeout_s=remaining_timeout,
                     min_step_budget_s=_MIN_STEP_BUDGET_S,
-                )
+                ))
 
             if remaining_timeout <= 0:
                 logger.warning("Agent timed out before step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step,
@@ -447,7 +529,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         logger.info("Agent step %d/%d", step + 1, max_steps)
 
@@ -459,7 +541,7 @@ def run_agent_loop(
                 last_tool = tool_calls_log[-1].get("tool", "")
                 label = labels.get(last_tool, last_tool)
                 thinking_msg = f"「{label}」已完成，继续深入分析..."
-            progress_callback({"type": "thinking", "step": step + 1, "message": thinking_msg})
+            progress_callback(stream_event("thinking", step=step + 1, message=thinking_msg))
 
         # --- LLM call ---
         response = llm_adapter.call_with_tools(
@@ -473,13 +555,13 @@ def run_agent_loop(
         if m and m != "error":
             models_used.append(m)
         model_for_usage = m or response.provider
-        if model_for_usage and model_for_usage != "error" and response.usage:
+        if model_for_usage and model_for_usage != "error" and should_persist_usage_telemetry(response.usage):
             _persist_usage(response.usage, model_for_usage, call_type="agent")
 
         remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
         if remaining_timeout is not None and remaining_timeout <= 0:
             logger.warning("Agent timed out after LLM call at step %d", step + 1)
-            return _build_timeout_result(
+            return _finish(_build_timeout_result(
                 start_time=start_time,
                 max_wall_clock_seconds=float(max_wall_clock_seconds),
                 step=step + 1,
@@ -488,7 +570,7 @@ def run_agent_loop(
                 provider_used=provider_used,
                 models_used=models_used,
                 messages=messages,
-            )
+            ))
 
         if response.tool_calls:
             # ---- tool execution branch ----
@@ -502,11 +584,14 @@ def run_agent_loop(
             assistant_msg: Dict[str, Any] = {
                 "role": "assistant",
                 "content": response.content,
+                "_trace_provider": response.provider,
+                "_trace_model": m,
                 "tool_calls": [
                     {
                         "id": tc.id,
                         "name": tc.name,
                         "arguments": tc.arguments,
+                        **({"provider_specific_fields": tc.provider_specific_fields} if tc.provider_specific_fields else {}),
                         **({"thought_signature": tc.thought_signature} if tc.thought_signature is not None else {}),
                     }
                     for tc in response.tool_calls
@@ -514,6 +599,8 @@ def run_agent_loop(
             }
             if response.reasoning_content is not None:
                 assistant_msg["reasoning_content"] = response.reasoning_content
+            if response.provider_blocks:
+                assistant_msg["provider_blocks"] = response.provider_blocks
             messages.append(assistant_msg)
 
             # Execute tools (parallel when > 1)
@@ -531,6 +618,7 @@ def run_agent_loop(
                 tool_calls_log,
                 non_retriable_tool_results,
                 tool_wait_timeout_seconds=effective_tool_timeout,
+                stock_scope=stock_scope,
             )
 
             # Append tool results preserving original call order
@@ -549,7 +637,7 @@ def run_agent_loop(
             remaining_timeout = _remaining_timeout_seconds(start_time, max_wall_clock_seconds)
             if remaining_timeout is not None and remaining_timeout <= 0:
                 logger.warning("Agent timed out after tool execution at step %d", step + 1)
-                return _build_timeout_result(
+                return _finish(_build_timeout_result(
                     start_time=start_time,
                     max_wall_clock_seconds=float(max_wall_clock_seconds),
                     step=step + 1,
@@ -558,7 +646,7 @@ def run_agent_loop(
                     provider_used=provider_used,
                     models_used=models_used,
                     messages=messages,
-                )
+                ))
 
         else:
             # ---- final answer branch ----
@@ -569,12 +657,12 @@ def run_agent_loop(
                 total_tokens,
             )
             if progress_callback:
-                progress_callback({"type": "generating", "step": step + 1, "message": "正在生成最终分析..."})
+                progress_callback(stream_event("generating", step=step + 1, message="正在生成最终分析..."))
 
             final_content = response.content or ""
             is_error = response.provider == "error"
 
-            return RunLoopResult(
+            return _finish(RunLoopResult(
                 success=not is_error and bool(final_content),
                 content=final_content if not is_error else "",
                 tool_calls_log=tool_calls_log,
@@ -584,11 +672,11 @@ def run_agent_loop(
                 models_used=models_used,
                 error=final_content if is_error else None,
                 messages=messages,
-            )
+            ))
 
     # Max steps exceeded
     logger.warning("Agent hit max steps (%d)", max_steps)
-    return RunLoopResult(
+    return _finish(RunLoopResult(
         success=False,
         content="",
         tool_calls_log=tool_calls_log,
@@ -598,7 +686,7 @@ def run_agent_loop(
         models_used=models_used,
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
         messages=messages,
-    )
+    ))
 
 
 # ============================================================
@@ -613,6 +701,7 @@ def _execute_tools(
     tool_calls_log: List[Dict[str, Any]],
     non_retriable_tool_results: Optional[Dict[str, str]] = None,
     tool_wait_timeout_seconds: Optional[float] = None,
+    stock_scope: Optional[StockScope] = None,
 ) -> List[Dict[str, Any]]:
     """Execute one or more tool calls, returning ordered result dicts.
 
@@ -622,6 +711,20 @@ def _execute_tools(
     def _exec_single(tc_item):
         t0 = time.time()
         cache_key = _build_tool_cache_key(tc_item.name, tc_item.arguments)
+        guard_result = _guard_tool_stock_scope(tool_registry, tc_item.name, tc_item.arguments, stock_scope)
+        if guard_result is not None:
+            dur = round(time.time() - t0, 2)
+            result_str = serialize_tool_result(guard_result)
+            if cache_key and non_retriable_tool_results is not None:
+                non_retriable_tool_results[cache_key] = result_str
+            logger.warning(
+                "Tool '%s' blocked by stock scope: requested=%s expected=%s allowed=%s",
+                tc_item.name,
+                guard_result.get("requested_stock_code"),
+                guard_result.get("expected_stock_code"),
+                guard_result.get("allowed_stock_codes"),
+            )
+            return tc_item, result_str, False, dur, False, guard_result
 
         if cache_key and non_retriable_tool_results is not None and cache_key in non_retriable_tool_results:
             dur = round(time.time() - t0, 2)
@@ -630,7 +733,7 @@ def _execute_tools(
                 tc_item.name,
                 tc_item.arguments,
             )
-            return tc_item, non_retriable_tool_results[cache_key], False, dur, True
+            return tc_item, non_retriable_tool_results[cache_key], False, dur, True, None
 
         try:
             res = tool_registry.execute(tc_item.name, **tc_item.arguments)
@@ -643,14 +746,14 @@ def _execute_tools(
             ok = False
             logger.warning("Tool '%s' failed: %s", tc_item.name, e)
         dur = round(time.time() - t0, 2)
-        return tc_item, res_str, ok, dur, False
+        return tc_item, res_str, ok, dur, False, None
 
     results: List[Dict[str, Any]] = []
 
     if len(tool_calls) == 1:
         tc = tool_calls[0]
         if progress_callback:
-            progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+            progress_callback(stream_event("tool_start", step=step, tool=tc.name))
         timeout_triggered = False
         if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0:
             pool = ThreadPoolExecutor(max_workers=1)
@@ -658,7 +761,7 @@ def _execute_tools(
             try:
                 future = pool.submit(ctx.run, _exec_single, tc)
                 try:
-                    _, result_str, success, dur, cached = future.result(timeout=tool_wait_timeout_seconds)
+                    _, result_str, success, dur, cached, guard_result = future.result(timeout=tool_wait_timeout_seconds)
                 except FuturesTimeoutError:
                     timeout_triggered = True
                     future.cancel()
@@ -671,12 +774,13 @@ def _execute_tools(
                     success = False
                     dur = round(tool_wait_timeout_seconds, 2)
                     cached = False
+                    guard_result = None
             finally:
                 pool.shutdown(wait=not timeout_triggered, cancel_futures=timeout_triggered)
         else:
-            _, result_str, success, dur, cached = _exec_single(tc)
+            _, result_str, success, dur, cached, guard_result = _exec_single(tc)
         if progress_callback:
-            progress_callback({"type": "tool_done", "step": step, "tool": tc.name, "success": success, "duration": dur})
+            progress_callback(stream_event("tool_done", step=step, tool=tc.name, success=success, duration=dur))
         log_entry = {
             "step": step, "tool": tc.name, "arguments": tc.arguments,
             "success": success, "duration": dur, "result_length": len(result_str),
@@ -688,12 +792,19 @@ def _execute_tools(
                     log_entry["timeout"] = True
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
+        if guard_result is not None:
+            log_entry.update({
+                "guarded": True,
+                "expected_stock_code": guard_result.get("expected_stock_code"),
+                "requested_stock_code": guard_result.get("requested_stock_code"),
+                "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
+            })
         tool_calls_log.append(log_entry)
         results.append({"tc": tc, "result_str": result_str})
     else:
         for tc in tool_calls:
             if progress_callback:
-                progress_callback({"type": "tool_start", "step": step, "tool": tc.name})
+                progress_callback(stream_event("tool_start", step=step, tool=tc.name))
 
         pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 5))
         timeout_triggered = False
@@ -705,14 +816,22 @@ def _execute_tools(
                 timeout=tool_wait_timeout_seconds if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0 else None,
             ):
                 pending.discard(future)
-                tc_item, result_str, success, dur, cached = future.result()
+                tc_item, result_str, success, dur, cached, guard_result = future.result()
                 if progress_callback:
-                    progress_callback({"type": "tool_done", "step": step, "tool": tc_item.name, "success": success, "duration": dur})
-                tool_calls_log.append({
+                    progress_callback(stream_event("tool_done", step=step, tool=tc_item.name, success=success, duration=dur))
+                log_entry = {
                     "step": step, "tool": tc_item.name, "arguments": tc_item.arguments,
                     "success": success, "duration": dur, "result_length": len(result_str),
                     "cached": cached,
-                })
+                }
+                if guard_result is not None:
+                    log_entry.update({
+                        "guarded": True,
+                        "expected_stock_code": guard_result.get("expected_stock_code"),
+                        "requested_stock_code": guard_result.get("requested_stock_code"),
+                        "allowed_stock_codes": guard_result.get("allowed_stock_codes", []),
+                    })
+                tool_calls_log.append(log_entry)
                 results.append({"tc": tc_item, "result_str": result_str})
         except FuturesTimeoutError:
             timeout_triggered = True
@@ -730,13 +849,13 @@ def _execute_tools(
                         "timeout": True,
                     })
                     if progress_callback:
-                        progress_callback({
-                            "type": "tool_done",
-                            "step": step,
-                            "tool": tc_item.name,
-                            "success": False,
-                            "duration": round(tool_wait_timeout_seconds or 0.0, 2),
-                        })
+                        progress_callback(stream_event(
+                            "tool_done",
+                            step=step,
+                            tool=tc_item.name,
+                            success=False,
+                            duration=round(tool_wait_timeout_seconds or 0.0, 2),
+                        ))
                     tool_calls_log.append({
                         "step": step,
                         "tool": tc_item.name,

@@ -135,6 +135,38 @@ class SchedulerBackgroundTaskTestCase(unittest.TestCase):
         self.assertEqual(fake_schedule.jobs[0].at_time, "09:30")
         self.assertEqual(scheduler.schedule_time, "09:30")
 
+    def test_scheduler_registers_multiple_daily_jobs(self):
+        fake_schedule = _FakeScheduleModule()
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(
+                schedule_time="18:00",
+                schedule_times=["15:10", "09:20", "15:10"],
+            )
+            scheduler.set_daily_task(lambda: None, run_immediately=False)
+
+        self.assertEqual([job.at_time for job in fake_schedule.jobs], ["09:20", "15:10"])
+        self.assertEqual(scheduler.schedule_times, ["09:20", "15:10"])
+
+    def test_scheduler_stop_cancels_registered_daily_jobs(self):
+        fake_schedule = _FakeScheduleModule()
+        with patch.dict(sys.modules, {"schedule": fake_schedule}):
+            from src.scheduler import Scheduler
+
+            scheduler = Scheduler(
+                schedule_time="18:00",
+                schedule_times=["09:20", "15:10"],
+            )
+            scheduler.set_daily_task(lambda: None, run_immediately=False)
+            self.assertEqual(len(fake_schedule.jobs), 2)
+
+            scheduler.stop()
+
+        self.assertEqual(fake_schedule.jobs, [])
+        self.assertEqual(scheduler._daily_jobs, [])
+        self.assertIsNone(scheduler._daily_job)
+
     def test_scheduler_keeps_existing_daily_job_when_schedule_time_invalid(self):
         fake_schedule = _FakeScheduleModule()
         with patch.dict(sys.modules, {"schedule": fake_schedule}):

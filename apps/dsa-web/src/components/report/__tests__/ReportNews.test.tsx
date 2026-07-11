@@ -30,6 +30,8 @@ describe('ReportNews', () => {
 
     expect(await screen.findByText('茅台发布最新经营数据')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '跳转' })).toHaveAttribute('href', 'https://example.com/news');
+    expect(screen.getByText('相关资讯/后续检索')).toBeVisible();
+    expect(screen.getByText('来源：报告页补充资讯；是否用于分析以输入数据块为准。')).toBeVisible();
     expect(container.querySelector('.home-panel-card')).toBeTruthy();
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
 
@@ -62,6 +64,7 @@ describe('ReportNews', () => {
 
     expect(await screen.findByText('No related news')).toBeInTheDocument();
     expect(screen.getByText('Refresh later to check for the latest updates.')).toBeInTheDocument();
+    expect(screen.getByText('Related news / follow-up retrieval')).toBeVisible();
   });
 
   it('renders the error state and supports retry', async () => {

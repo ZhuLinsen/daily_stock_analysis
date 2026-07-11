@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
+import re
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
 
 
@@ -72,7 +74,13 @@ class BacktestEngine:
     )
     _HOLD_KEYWORDS = (
         "持有",
+        "震荡观望",
+        "洗盘观察",
+        "持有观察",
         "hold",
+        "range-bound watch",
+        "shakeout watch",
+        "hold and watch",
     )
     _WAIT_KEYWORDS = (
         "观望",
@@ -88,18 +96,39 @@ class BacktestEngine:
         "不要", "不", "别", "勿", "没有",  # Chinese
     )
 
+    _NEGATION_CONNECTOR_WORDS = (
+        "建议",
+        "应",
+        "应当",
+        "宜",
+        "先",
+        "再",
+        "暂",
+        "不必",
+        "必须",
+        "无需",
+    )
+
     @classmethod
     def infer_direction_expected(cls, operation_advice: Optional[str]) -> str:
         """Infer expected direction: up/down/not_down/flat."""
         text = cls._normalize_text(operation_advice)
         if cls._matches_intent(text, cls._BEARISH_KEYWORDS):
             return "down"
-        if cls._matches_intent(text, cls._WAIT_KEYWORDS):
-            return "flat"
+        if cls._first_intent_position(text, cls._WAIT_KEYWORDS) is not None:
+            wait_pos = cls._first_intent_position(text, cls._WAIT_KEYWORDS)
+            bullish_pos = cls._first_intent_position(text, cls._BULLISH_KEYWORDS)
+            hold_pos = cls._first_intent_position(text, cls._HOLD_KEYWORDS)
+            if (bullish_pos is None or wait_pos < bullish_pos) and (
+                hold_pos is None or wait_pos < hold_pos
+            ):
+                return "flat"
         if cls._matches_intent(text, cls._BULLISH_KEYWORDS):
             return "up"
         if cls._matches_intent(text, cls._HOLD_KEYWORDS):
             return "not_down"
+        if cls._matches_intent(text, cls._WAIT_KEYWORDS):
+            return "flat"
         return "flat"
 
     @classmethod
@@ -109,10 +138,20 @@ class BacktestEngine:
         Priority: bearish/wait -> cash, bullish/hold -> long, unrecognized -> cash.
         """
         text = cls._normalize_text(operation_advice)
-        if cls._matches_intent(text, cls._BEARISH_KEYWORDS) or cls._matches_intent(text, cls._WAIT_KEYWORDS):
+        if cls._matches_intent(text, cls._BEARISH_KEYWORDS):
             return "cash"
+        wait_pos = cls._first_intent_position(text, cls._WAIT_KEYWORDS)
+        if wait_pos is not None:
+            bullish_pos = cls._first_intent_position(text, cls._BULLISH_KEYWORDS)
+            hold_pos = cls._first_intent_position(text, cls._HOLD_KEYWORDS)
+            if (bullish_pos is None or wait_pos < bullish_pos) and (
+                hold_pos is None or wait_pos < hold_pos
+            ):
+                return "cash"
         if cls._matches_intent(text, cls._BULLISH_KEYWORDS) or cls._matches_intent(text, cls._HOLD_KEYWORDS):
             return "long"
+        if cls._matches_intent(text, cls._WAIT_KEYWORDS):
+            return "cash"
         return "cash"
 
     @classmethod
@@ -231,6 +270,97 @@ class BacktestEngine:
             "simulated_exit_price": simulated_exit_price,
             "simulated_exit_reason": simulated_exit_reason,
             "simulated_return_pct": simulated_return_pct,
+        }
+
+    @classmethod
+    def evaluate_decision_signal(
+        cls,
+        *,
+        direction_expected: str,
+        anchor_date: date,
+        start_price: float,
+        forward_bars: Sequence[DailyBarLike],
+        config: EvaluationConfig,
+    ) -> Dict[str, Any]:
+        """Evaluate a structured DecisionSignal action without text inference."""
+
+        start_price_value = cls._finite_optional_float(start_price)
+        if start_price_value is None or start_price_value <= 0:
+            return {
+                "anchor_date": anchor_date,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "invalid_anchor_price",
+            }
+
+        eval_days = int(config.eval_window_days)
+        if eval_days <= 0:
+            raise ValueError("eval_window_days must be positive")
+
+        if len(forward_bars) < eval_days:
+            return {
+                "anchor_date": anchor_date,
+                "eval_window_days": eval_days,
+                "engine_version": config.engine_version,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "insufficient_forward_bars",
+            }
+
+        window_bars = list(forward_bars[:eval_days])
+        raw_end_close = window_bars[-1].close
+        end_close = cls._finite_optional_float(raw_end_close)
+        highs: List[float] = []
+        lows: List[float] = []
+        for bar in window_bars:
+            high = cls._finite_optional_float(bar.high)
+            low = cls._finite_optional_float(bar.low)
+            if high is not None:
+                highs.append(high)
+            if low is not None:
+                lows.append(low)
+        max_high = max(highs) if highs else None
+        min_low = min(lows) if lows else None
+
+        stock_return_pct: Optional[float]
+        if end_close is None:
+            stock_return_pct = None
+        else:
+            stock_return_pct = (end_close - start_price_value) / start_price_value * 100
+
+        outcome, direction_correct = cls._classify_signal_outcome(
+            stock_return_pct=stock_return_pct,
+            direction_expected=direction_expected,
+            neutral_band_pct=config.neutral_band_pct,
+        )
+
+        if stock_return_pct is None:
+            return {
+                "anchor_date": anchor_date,
+                "eval_window_days": eval_days,
+                "engine_version": config.engine_version,
+                "direction_expected": direction_expected,
+                "eval_status": "unable",
+                "unable_reason": "missing_end_close" if raw_end_close is None else "invalid_end_close",
+                "start_price": start_price_value,
+                "end_close": end_close,
+                "max_high": max_high,
+                "min_low": min_low,
+            }
+
+        return {
+            "anchor_date": anchor_date,
+            "eval_window_days": eval_days,
+            "engine_version": config.engine_version,
+            "eval_status": "completed",
+            "direction_expected": direction_expected,
+            "direction_correct": direction_correct,
+            "outcome": outcome,
+            "start_price": start_price_value,
+            "end_close": end_close,
+            "max_high": max_high,
+            "min_low": min_low,
+            "stock_return_pct": stock_return_pct,
         }
 
     @classmethod
@@ -360,24 +490,114 @@ class BacktestEngine:
         Tier 2: substring match with negation guard.
         Keywords are assumed to be lowercase (matching _normalize_text output).
         """
+        return cls._first_intent_position(text, keywords) is not None
+
+    @classmethod
+    def _first_intent_position(cls, text: str, keywords: Sequence[str]) -> Optional[int]:
+        """Return the earliest match position for intent keywords, or None."""
         if not text:
-            return False
+            return None
+
+        best_pos: Optional[int] = None
+
         for kw in keywords:
-            if text == kw:
-                return True
-        for kw in keywords:
-            idx = text.find(kw)
-            if idx == -1:
+            if not kw:
                 continue
-            if not cls._is_negated(text[:idx]):
+            if text == kw:
+                return 0
+
+            keyword = kw.lower().strip()
+            if not keyword:
+                continue
+
+            # Use word-boundary matching for ASCII keywords to avoid
+            # false positives such as "watch" matching "wait".
+            if bool(re.search(r"[a-z]", keyword)):
+                for match in re.finditer(
+                    rf"(?<![a-zA-Z0-9_]){re.escape(keyword)}(?![a-zA-Z0-9_])",
+                    text,
+                ):
+                    if not cls._is_negated(text[: match.start()], keyword):
+                        pos = match.start()
+                        if best_pos is None or pos < best_pos:
+                            best_pos = pos
+                            break
+                    continue
+
+            # For non-ASCII terms (Chinese), use substring matching to keep
+            # natural language phrasings like "建议买入" effective.
+            if re.search(r"[\u4e00-\u9fff]", keyword):
+                start = 0
+                while True:
+                    match_idx = text.find(keyword, start)
+                    if match_idx < 0:
+                        break
+                    if not cls._is_negated(text[:match_idx], keyword):
+                        if best_pos is None or match_idx < best_pos:
+                            best_pos = match_idx
+                        break
+                    start = match_idx + len(keyword)
+                continue
+
+        return best_pos
+
+    @classmethod
+    def _is_negated(cls, prefix: str, keyword: str) -> bool:
+        """Check if the prefix text indicates negation for a candidate intent."""
+        stripped = prefix.rstrip()
+        target = (keyword or "").lower().strip()
+        if not target:
+            return False
+
+        if any(stripped.endswith(neg) for neg in cls._NEGATION_PATTERNS):
+            return True
+
+        # 限定“否定 + 动作动词”匹配，避免将“条件位否定”误伤核心建议意图。
+        lookback = stripped[-12:]
+        for neg in cls._NEGATION_PATTERNS:
+            if not neg:
+                continue
+            neg_idx = lookback.rfind(neg)
+            if neg_idx < 0:
+                continue
+
+            suffix_gap = lookback[neg_idx + len(neg):].strip()
+            if not suffix_gap:
                 return True
+            if any(ch in suffix_gap for ch in "，,。；;:!?！？"):
+                continue
+
+            if cls._contains_keyword(suffix_gap, target):
+                return True
+
+            # Keep English short-gap behavior where negation words are followed by
+            # connector words such as "to" (e.g. "not to sell").
+            if not any(ch >= "\u4e00" and ch <= "\u9fff" for ch in suffix_gap):
+                if len(suffix_gap) <= 6:
+                    return True
+                continue
+
+            if cls._is_negation_connector_gap(suffix_gap):
+                return True
+
         return False
 
     @classmethod
-    def _is_negated(cls, prefix: str) -> bool:
-        """Check if the prefix text ends with a negation pattern."""
-        stripped = prefix.rstrip()
-        return any(stripped.endswith(neg) for neg in cls._NEGATION_PATTERNS)
+    def _contains_keyword(cls, text: str, keyword: str) -> bool:
+        """Check whether *keyword* exists in text with intent-aware boundaries."""
+        if not text or not keyword:
+            return False
+        if bool(re.search(r"[a-z]", keyword)):
+            return bool(re.search(rf"(?<![a-zA-Z0-9_]){re.escape(keyword)}(?![a-zA-Z0-9_])", text))
+        return keyword in text
+
+    @classmethod
+    def _is_negation_connector_gap(cls, gap: str) -> bool:
+        """Whether a short Chinese negation gap is still a valid negation bridge."""
+        compact = re.sub(r"[\s,，。；;:!?！？]", "", gap).strip()
+        if not compact:
+            return True
+        return compact in cls._NEGATION_CONNECTOR_WORDS
 
     @classmethod
     def _classify_outcome(
@@ -418,6 +638,51 @@ class BacktestEngine:
         if abs(r) <= band:
             return "win", True
         return "loss", False
+
+    @classmethod
+    def _classify_signal_outcome(
+        cls,
+        *,
+        stock_return_pct: Optional[float],
+        direction_expected: str,
+        neutral_band_pct: float,
+    ) -> tuple[Optional[str], Optional[bool]]:
+        if stock_return_pct is None:
+            return None, None
+
+        band = abs(float(neutral_band_pct))
+        r = float(stock_return_pct)
+
+        if direction_expected == "up":
+            if r >= band:
+                return "hit", True
+            if r <= -band:
+                return "miss", False
+            return "neutral", None
+
+        if direction_expected == "not_down":
+            if r >= 0:
+                return "hit", True
+            if r <= -band:
+                return "miss", False
+            return "neutral", None
+
+        if direction_expected == "not_up":
+            if r <= band:
+                return "hit", True
+            return "miss", False
+
+        return None, None
+
+    @staticmethod
+    def _finite_optional_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
 
     @classmethod
     def _evaluate_targets(

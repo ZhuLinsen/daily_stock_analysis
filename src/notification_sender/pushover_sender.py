@@ -35,7 +35,13 @@ class PushoverSender:
         """检查 Pushover 配置是否完整"""
         return bool(self._pushover_config['user_key'] and self._pushover_config['api_token'])
 
-    def send_to_pushover(self, content: str, title: Optional[str] = None) -> bool:
+    def send_to_pushover(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        *,
+        timeout_seconds: Optional[float] = None,
+    ) -> bool:
         """
         推送消息到 Pushover
         
@@ -57,7 +63,7 @@ class PushoverSender:
         Args:
             content: 消息内容（Markdown 格式，会转为纯文本）
             title: 消息标题（可选，默认为"股票分析报告"）
-            
+
         Returns:
             是否发送成功
         """
@@ -84,10 +90,18 @@ class PushoverSender:
         
         if len(plain_content) <= max_length:
             # 单条消息发送
-            return self._send_pushover_message(api_url, user_key, api_token, plain_content, title)
+            return self._send_pushover_message(api_url, user_key, api_token, plain_content, title, timeout_seconds=timeout_seconds)
         else:
             # 分段发送长消息
-            return self._send_pushover_chunked(api_url, user_key, api_token, plain_content, title, max_length)
+            return self._send_pushover_chunked(
+                api_url,
+                user_key,
+                api_token,
+                plain_content,
+                title,
+                max_length,
+                timeout_seconds=timeout_seconds,
+            )
       
     def _send_pushover_message(
         self, 
@@ -96,7 +110,9 @@ class PushoverSender:
         api_token: str, 
         message: str, 
         title: str,
-        priority: int = 0
+        priority: int = 0,
+        *,
+        timeout_seconds: Optional[float] = None,
     ) -> bool:
         """
         发送单条 Pushover 消息
@@ -118,7 +134,7 @@ class PushoverSender:
                 "priority": priority,
             }
             
-            response = requests.post(api_url, data=payload, timeout=30)
+            response = requests.post(api_url, data=payload, timeout=timeout_seconds or 30)
             
             if response.status_code == 200:
                 result = response.json()
@@ -145,7 +161,9 @@ class PushoverSender:
         api_token: str, 
         content: str, 
         title: str,
-        max_length: int
+        max_length: int,
+        *,
+        timeout_seconds: Optional[float] = None,
     ) -> bool:
         """
         分段发送长 Pushover 消息
@@ -198,7 +216,14 @@ class PushoverSender:
             # 添加分页标记到标题
             chunk_title = f"{title} ({i+1}/{total_chunks})" if total_chunks > 1 else title
             
-            if self._send_pushover_message(api_url, user_key, api_token, chunk, chunk_title):
+            if self._send_pushover_message(
+                api_url,
+                user_key,
+                api_token,
+                chunk,
+                chunk_title,
+                timeout_seconds=timeout_seconds,
+            ):
                 success_count += 1
                 logger.info(f"Pushover 第 {i+1}/{total_chunks} 批发送成功")
             else:
@@ -207,6 +232,5 @@ class PushoverSender:
             # 批次间隔，避免触发频率限制
             if i < total_chunks - 1:
                 time.sleep(1)
-        
+
         return success_count == total_chunks
-    

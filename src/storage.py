@@ -16,10 +16,10 @@ from contextlib import contextmanager
 import hashlib
 import json
 import logging
-import re
+import threading
 import time
-from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar
+from datetime import datetime, date, timedelta, timezone
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar, Union
 
 import pandas as pd
 from sqlalchemy import (
@@ -35,6 +35,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
+    text,
     select,
     and_,
     or_,
@@ -42,6 +43,9 @@ from sqlalchemy import (
     desc,
     event,
     func,
+    inspect,
+    MetaData,
+    Table,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import (
@@ -51,10 +55,14 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
+from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -63,7 +71,29 @@ if TYPE_CHECKING:
     from src.search_service import SearchResponse
 
 
+def utc_naive_now() -> datetime:
+    """Return current UTC time without tzinfo for SQLite DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def to_utc_naive_datetime(value: datetime) -> datetime:
+    """Normalize aware datetimes to UTC-naive; treat naive values as UTC-naive."""
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 # === 数据模型定义 ===
+
+class DatabaseSchemaMigration(Base):
+    """Applied database schema version marker."""
+
+    __tablename__ = 'schema_migrations'
+
+    version = Column(String(64), primary_key=True)
+    description = Column(String(255), nullable=False)
+    applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
 
 class StockDaily(Base):
     """
@@ -182,6 +212,65 @@ class NewsIntel(Base):
 
     def __repr__(self) -> str:
         return f"<NewsIntel(code={self.code}, title={self.title[:20]}...)>"
+
+
+class IntelligenceSource(Base):
+    """可配置资讯源。"""
+
+    __tablename__ = 'intelligence_sources'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True, index=True)
+    source_type = Column(String(32), nullable=False, default='rss', index=True)
+    url = Column(String(1000), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    scope_type = Column(String(32), nullable=False, default='market', index=True)
+    scope_value = Column(String(64), index=True)
+    market = Column(String(32), nullable=False, default='cn', index=True)
+    description = Column(Text)
+    last_status = Column(String(32))
+    last_error = Column(Text)
+    last_fetched_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_intel_source_scope', 'scope_type', 'scope_value', 'market'),
+    )
+
+
+class IntelligenceItem(Base):
+    """沉淀后的资讯 / 情报条目。"""
+
+    __tablename__ = 'intelligence_items'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, ForeignKey('intelligence_sources.id', ondelete='SET NULL'), nullable=True, index=True)
+    source_name = Column(String(100), index=True)
+    source_type = Column(String(32), nullable=False, default='rss', index=True)
+    title = Column(String(300), nullable=False)
+    summary = Column(Text)
+    url = Column(String(1000), nullable=False, index=True)
+    source = Column(String(100))
+    published_at = Column(DateTime, index=True)
+    fetched_at = Column(DateTime, default=datetime.now, index=True)
+    scope_type = Column(String(32), nullable=False, default='market', index=True)
+    scope_value = Column(String(64), nullable=False, default=INTELLIGENCE_ITEM_NULL_SCOPE_VALUE, index=True)
+    market = Column(String(32), nullable=False, default='cn', index=True)
+    raw_payload = Column(Text)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'source_id',
+            'url',
+            'scope_type',
+            'scope_value',
+            'market',
+            name='uix_intel_item_source_scope_url',
+        ),
+        Index('ix_intel_item_scope_time', 'scope_type', 'scope_value', 'market', 'published_at'),
+        Index('ix_intel_item_fetch_time', 'fetched_at'),
+    )
 
 
 class FundamentalSnapshot(Base):
@@ -608,6 +697,46 @@ class ConversationMessage(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class ConversationSummary(Base):
+    """Rolling summary for visible Agent chat history."""
+
+    __tablename__ = 'conversation_summaries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), nullable=False, unique=True, index=True)
+    summary = Column(Text, nullable=False)
+    covered_message_id = Column(Integer, nullable=False, default=0)
+    source_message_count = Column(Integer, nullable=False, default=0)
+    estimated_tokens = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+
+class AgentProviderTurn(Base):
+    """Provider protocol trace required for thinking/tool-call roundtrip."""
+
+    __tablename__ = 'agent_provider_turns'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), nullable=False, index=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    provider = Column(String(64), nullable=False, index=True)
+    model = Column(String(160), nullable=False, index=True)
+    anchor_user_message_id = Column(Integer, nullable=False, index=True)
+    anchor_assistant_message_id = Column(Integer, nullable=False, index=True)
+    messages_json = Column(Text, nullable=False)
+    contains_reasoning = Column(Boolean, nullable=False, default=False)
+    contains_tool_calls = Column(Boolean, nullable=False, default=False)
+    contains_thinking_blocks = Column(Boolean, nullable=False, default=False)
+    must_roundtrip = Column(Boolean, nullable=False, default=False, index=True)
+    estimated_tokens = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_agent_provider_turn_bucket', 'session_id', 'provider', 'model', 'must_roundtrip'),
+    )
+
+
 class LLMUsage(Base):
     """One row per litellm.completion() call — token-usage audit log."""
 
@@ -618,13 +747,368 @@ class LLMUsage(Base):
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
     stock_code = Column(String(16), nullable=True)
+    provider = Column(String(64), nullable=True)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=False, default=0)
+
+    # Sanitized provider usage snapshot; raw prompts, messages, headers, and
+    # tokenizer free-text fields are intentionally not persisted here.
+    provider_usage_json = Column(Text, nullable=True)
+    provider_usage_schema_name = Column(String(64), nullable=True)
+    provider_usage_schema_version = Column(String(32), nullable=True)
+    provider_usage_observed_at = Column(String(32), nullable=True)
+
+    # Normalized telemetry values are derived from provider usage and may stay
+    # NULL when the provider payload is absent or explicitly invalid.
+    normalized_prompt_tokens = Column(Integer, nullable=True)
+    normalized_completion_tokens = Column(Integer, nullable=True)
+    normalized_total_tokens = Column(Integer, nullable=True)
+    normalized_cache_read_tokens = Column(Integer, nullable=True)
+    normalized_cache_write_tokens = Column(Integer, nullable=True)
+    normalized_cache_miss_tokens = Column(Integer, nullable=True)
+    normalized_uncached_input_tokens = Column(Integer, nullable=True)
+    normalized_cache_eligible_input_tokens = Column(Integer, nullable=True)
+    normalized_cache_hit_ratio = Column(Float, nullable=True)
+    normalized_cache_write_ratio = Column(Float, nullable=True)
+    cache_capability = Column(String(32), nullable=True)
+    cache_eligibility = Column(String(32), nullable=True)
+    cache_observation = Column(String(32), nullable=True)
+    estimated_prefix_tokens = Column(Integer, nullable=True)
+    provider_reported_prompt_tokens = Column(Integer, nullable=True)
+    provider_reported_cached_tokens = Column(Integer, nullable=True)
+    provider_min_cache_tokens = Column(Integer, nullable=True)
+    eligibility_confidence = Column(String(32), nullable=True)
+
+    # Kept nullable for schema compatibility; new writes do not store provider
+    # or proxy tokenizer free-text values.
+    tokenizer_name = Column(String(128), nullable=True)
+    tokenizer_version = Column(String(64), nullable=True)
+
+    # HMAC fingerprints let deployments compare message shapes without storing
+    # raw prompt/message content.
+    messages_hmac = Column(String(64), nullable=True)
+    system_message_hmac = Column(String(64), nullable=True)
+    user_message_hmac = Column(String(64), nullable=True)
+    hmac_key_version = Column(String(64), nullable=True)
+    hmac_domain = Column(String(32), nullable=True)
+    hash_scope = Column(String(32), nullable=True)
+
+    # P0.5a internal legacy message stability audit. These diagnostics are
+    # stored locally only and are not returned by public usage APIs.
+    language = Column(String(16), nullable=True)
+    market_group = Column(String(16), nullable=True)
+    analysis_mode = Column(String(64), nullable=True)
+    legacy_prompt_mode = Column(String(32), nullable=True)
+    skill_config_hmac = Column(String(64), nullable=True)
+    transport = Column(String(64), nullable=True)
+    message_count = Column(Integer, nullable=True)
+    estimated_total_prompt_tokens = Column(Integer, nullable=True)
+    approx_common_prefix_chars = Column(Integer, nullable=True)
+    approx_common_prefix_tokens = Column(Integer, nullable=True)
+    known_dynamic_marker_positions = Column(Text, nullable=True)
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
-class DatabaseManager:
+_LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
+    "provider_usage_json": "TEXT",
+    "provider": "VARCHAR(64)",
+    "provider_usage_schema_name": "VARCHAR(64)",
+    "provider_usage_schema_version": "VARCHAR(32)",
+    "provider_usage_observed_at": "VARCHAR(32)",
+    "normalized_prompt_tokens": "INTEGER",
+    "normalized_completion_tokens": "INTEGER",
+    "normalized_total_tokens": "INTEGER",
+    "normalized_cache_read_tokens": "INTEGER",
+    "normalized_cache_write_tokens": "INTEGER",
+    "normalized_cache_miss_tokens": "INTEGER",
+    "normalized_uncached_input_tokens": "INTEGER",
+    "normalized_cache_eligible_input_tokens": "INTEGER",
+    "normalized_cache_hit_ratio": "FLOAT",
+    "normalized_cache_write_ratio": "FLOAT",
+    "cache_capability": "VARCHAR(32)",
+    "cache_eligibility": "VARCHAR(32)",
+    "cache_observation": "VARCHAR(32)",
+    "estimated_prefix_tokens": "INTEGER",
+    "provider_reported_prompt_tokens": "INTEGER",
+    "provider_reported_cached_tokens": "INTEGER",
+    "provider_min_cache_tokens": "INTEGER",
+    "eligibility_confidence": "VARCHAR(32)",
+    "tokenizer_name": "VARCHAR(128)",
+    "tokenizer_version": "VARCHAR(64)",
+    "messages_hmac": "VARCHAR(64)",
+    "system_message_hmac": "VARCHAR(64)",
+    "user_message_hmac": "VARCHAR(64)",
+    "hmac_key_version": "VARCHAR(64)",
+    "hmac_domain": "VARCHAR(32)",
+    "hash_scope": "VARCHAR(32)",
+    "language": "VARCHAR(16)",
+    "market_group": "VARCHAR(16)",
+    "analysis_mode": "VARCHAR(64)",
+    "legacy_prompt_mode": "VARCHAR(32)",
+    "skill_config_hmac": "VARCHAR(64)",
+    "transport": "VARCHAR(64)",
+    "message_count": "INTEGER",
+    "estimated_total_prompt_tokens": "INTEGER",
+    "approx_common_prefix_chars": "INTEGER",
+    "approx_common_prefix_tokens": "INTEGER",
+    "known_dynamic_marker_positions": "TEXT",
+}
+_LLM_USAGE_INTEGER_TELEMETRY_COLUMNS = {
+    column
+    for column, column_type in _LLM_USAGE_TELEMETRY_COLUMN_SQL.items()
+    if column_type == "INTEGER"
+}
+_LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS = {"tokenizer_name", "tokenizer_version"}
+_LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR = "prompt_cache_telemetry_disabled"
+_LLM_PROMPT_CACHE_TELEMETRY_COLUMNS = {
+    "provider_usage_json",
+    "provider_usage_schema_name",
+    "provider_usage_schema_version",
+    "provider_usage_observed_at",
+    "normalized_cache_read_tokens",
+    "normalized_cache_write_tokens",
+    "normalized_cache_miss_tokens",
+    "normalized_uncached_input_tokens",
+    "normalized_cache_eligible_input_tokens",
+    "normalized_cache_hit_ratio",
+    "normalized_cache_write_ratio",
+    "cache_capability",
+    "cache_eligibility",
+    "cache_observation",
+    "estimated_prefix_tokens",
+    "provider_reported_cached_tokens",
+    "provider_min_cache_tokens",
+    "eligibility_confidence",
+}
+
+
+class AlertRuleRecord(Base):
+    """Persisted alert rule managed through the Alert API."""
+
+    __tablename__ = 'alert_rules'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), nullable=False)
+    target_scope = Column(String(32), nullable=False, default='single_symbol', index=True)
+    target = Column(String(64), nullable=False, index=True)
+    alert_type = Column(String(32), nullable=False, index=True)
+    parameters = Column(Text, nullable=False, default='{}')
+    severity = Column(String(16), nullable=False, default='warning', index=True)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    source = Column(String(16), nullable=False, default='api', index=True)
+    cooldown_policy = Column(Text)
+    notification_policy = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_alert_rule_type_target', 'alert_type', 'target'),
+    )
+
+
+class AlertTriggerRecord(Base):
+    """Alert trigger history row.
+
+    P1 exposes read APIs and table shape; runtime writer integration lands in
+    later phases.
+    """
+
+    __tablename__ = 'alert_triggers'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, index=True)
+    target = Column(String(64), nullable=False, index=True)
+    observed_value = Column(Float)
+    threshold = Column(Float)
+    reason = Column(Text)
+    data_source = Column(String(64))
+    data_timestamp = Column(DateTime, index=True)
+    triggered_at = Column(DateTime, default=datetime.now, index=True)
+    status = Column(String(16), nullable=False, default='triggered', index=True)
+    diagnostics = Column(Text)
+
+    __table_args__ = (
+        Index('ix_alert_trigger_rule_time', 'rule_id', 'triggered_at'),
+    )
+
+
+class AlertNotificationRecord(Base):
+    """Notification attempt row for alert triggers.
+
+    P1 exposes read APIs and table shape; runtime writer integration lands in
+    later phases.
+    """
+
+    __tablename__ = 'alert_notifications'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trigger_id = Column(Integer, index=True)
+    channel = Column(String(32), nullable=False, index=True)
+    attempt = Column(Integer, nullable=False, default=1)
+    success = Column(Boolean, nullable=False, default=False, index=True)
+    error_code = Column(String(64))
+    retryable = Column(Boolean, nullable=False, default=False)
+    latency_ms = Column(Integer)
+    diagnostics = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_alert_notification_trigger_channel', 'trigger_id', 'channel'),
+    )
+
+
+class AlertCooldownRecord(Base):
+    """Persisted alert cooldown state for DB-managed alert rules."""
+
+    __tablename__ = 'alert_cooldowns'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, index=True)
+    # Reserved for future non-DB/expanded-scope rules; P4 queries by rule_id.
+    rule_key = Column(String(255), index=True)
+    target = Column(String(64), nullable=False, index=True)
+    severity = Column(String(16), nullable=False, default='warning', index=True)
+    last_triggered_at = Column(DateTime, index=True)
+    cooldown_until = Column(DateTime, index=True)
+    reason = Column(Text)
+    state = Column(String(16), nullable=False, default='active', index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('rule_id', 'target', 'severity', name='uix_alert_cooldown_rule_target_severity'),
+    )
+
+
+class DecisionSignalRecord(Base):
+    """Persisted AI decision signal asset for Issue #1390 P1."""
+
+    __tablename__ = 'decision_signals'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(16), nullable=False, index=True)
+    stock_name = Column(String(64))
+    market = Column(String(8), nullable=False, index=True)
+    source_type = Column(String(32), nullable=False, index=True)
+    source_agent = Column(String(64))
+    source_report_id = Column(Integer, index=True)
+    trace_id = Column(String(64), index=True)
+    market_phase = Column(String(24), index=True)
+    trigger_source = Column(String(64), nullable=False, index=True)
+    action = Column(String(16), nullable=False, index=True)
+    action_label = Column(String(32))
+    confidence = Column(Float)
+    score = Column(Integer)
+    horizon = Column(String(16), index=True)
+    entry_low = Column(Float)
+    entry_high = Column(Float)
+    stop_loss = Column(Float)
+    target_price = Column(Float)
+    invalidation = Column(Text)
+    watch_conditions = Column(Text)
+    reason = Column(Text)
+    risk_summary = Column(Text)
+    catalyst_summary = Column(Text)
+    evidence_json = Column(Text)
+    data_quality_summary_json = Column(Text)
+    plan_quality = Column(String(16), nullable=False, default='unknown', index=True)
+    status = Column(String(16), nullable=False, default='active', index=True)
+    expires_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+    metadata_json = Column(Text)
+
+    __table_args__ = (
+        Index('ix_decision_signal_stock_status_time', 'stock_code', 'status', 'created_at'),
+        Index('ix_decision_signal_market_status_time', 'market', 'status', 'created_at'),
+        Index(
+            'ix_decision_signal_report_type_market_stock_action_horizon_phase',
+            'source_report_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
+        Index(
+            'ix_decision_signal_trace_type_market_stock_action_horizon_phase',
+            'trace_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
+    )
+
+
+class DecisionSignalOutcomeRecord(Base):
+    """Signal-level forward outcome for Issue #1390 P5."""
+
+    __tablename__ = 'decision_signal_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, nullable=False, index=True)
+    horizon = Column(String(16), nullable=False, index=True)
+    engine_version = Column(String(32), nullable=False, index=True)
+    eval_status = Column(String(24), nullable=False, default='unable', index=True)
+    outcome = Column(String(16), index=True)
+    direction_expected = Column(String(16), index=True)
+    direction_correct = Column(Boolean)
+    unable_reason = Column(String(64), index=True)
+    anchor_date = Column(Date, index=True)
+    eval_window_days = Column(Integer)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    max_high = Column(Float)
+    min_low = Column(Float)
+    stock_return_pct = Column(Float)
+
+    action = Column(String(16), index=True)
+    market = Column(String(8), index=True)
+    market_phase = Column(String(24), index=True)
+    source_type = Column(String(32), index=True)
+    source_agent = Column(String(64), index=True)
+    plan_quality = Column(String(16), index=True)
+    data_quality_level = Column(String(24), index=True)
+    holding_state = Column(String(16), nullable=False, default='unknown', index=True)
+
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('signal_id', 'horizon', 'engine_version', name='uix_decision_signal_outcome_key'),
+        Index('ix_decision_signal_outcome_stats_action', 'engine_version', 'action', 'horizon'),
+        Index('ix_decision_signal_outcome_stats_market', 'engine_version', 'market', 'horizon'),
+    )
+
+
+class DecisionSignalFeedbackRecord(Base):
+    """Latest user feedback for a decision signal."""
+
+    __tablename__ = 'decision_signal_feedback'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, nullable=False, unique=True, index=True)
+    feedback_value = Column(String(16), nullable=False, index=True)
+    reason_code = Column(String(64), index=True)
+    note = Column(Text)
+    source = Column(String(16), nullable=False, default='api', index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+
+class _DatabaseManagerMeta(type):
+    """Serialize DatabaseManager construction across __new__ and __init__."""
+
+    def __call__(cls, *args, **kwargs):
+        with cls._init_lock:
+            return super().__call__(*args, **kwargs)
+
+
+class DatabaseManager(metaclass=_DatabaseManagerMeta):
     """
     数据库管理器 - 单例模式
     
@@ -635,6 +1119,7 @@ class DatabaseManager:
     """
     
     _instance: Optional['DatabaseManager'] = None
+    _init_lock = threading.RLock()
     _initialized: bool = False
     
     def __new__(cls, *args, **kwargs):
@@ -654,65 +1139,291 @@ class DatabaseManager:
         if getattr(self, '_initialized', False):
             return
 
-        config = get_config()
-        if db_url is None:
-            db_url = config.get_db_url()
+        created_engine = None
 
-        self._db_url = db_url
-        self._sqlite_wal_enabled = config.sqlite_wal_enabled
-        self._sqlite_busy_timeout_ms = config.sqlite_busy_timeout_ms
-        self._sqlite_write_retry_max = config.sqlite_write_retry_max
-        self._sqlite_write_retry_base_delay = config.sqlite_write_retry_base_delay
+        try:
+            config = get_config()
+            if db_url is None:
+                db_url = config.get_db_url()
 
-        engine_kwargs = {
-            "echo": False,
-            "pool_pre_ping": True,
-        }
-        if str(db_url).startswith("sqlite:") and self._sqlite_busy_timeout_ms > 0:
-            engine_kwargs["connect_args"] = {
-                "timeout": self._sqlite_busy_timeout_ms / 1000,
+            self._db_url = db_url
+            self._sqlite_wal_enabled = config.sqlite_wal_enabled
+            self._sqlite_busy_timeout_ms = config.sqlite_busy_timeout_ms
+            self._sqlite_write_retry_max = config.sqlite_write_retry_max
+            self._sqlite_write_retry_base_delay = config.sqlite_write_retry_base_delay
+
+            engine_kwargs = {
+                "echo": False,
+                "pool_pre_ping": True,
             }
+            if str(db_url).startswith("sqlite:") and self._sqlite_busy_timeout_ms > 0:
+                engine_kwargs["connect_args"] = {
+                    "timeout": self._sqlite_busy_timeout_ms / 1000,
+                }
 
-        # 创建数据库引擎
-        self._engine = create_engine(
-            db_url,
-            **engine_kwargs,
+            # 创建数据库引擎
+            created_engine = create_engine(
+                db_url,
+                **engine_kwargs,
+            )
+            self._engine = created_engine
+            self._is_sqlite_engine = self._engine.url.get_backend_name() == 'sqlite'
+            self._sqlite_file_db = self._is_sqlite_engine and self._is_file_sqlite_database()
+            self._install_sqlite_pragma_handler()
+
+            # 创建 Session 工厂
+            self._SessionLocal = sessionmaker(
+                bind=self._engine,
+                autocommit=False,
+                autoflush=False,
+            )
+
+            # 创建所有表
+            Base.metadata.create_all(self._engine)
+            self._ensure_llm_usage_telemetry_columns()
+            self._ensure_intelligence_item_scope_values()
+            self._ensure_schema_migration_record()
+            self._ensure_intelligence_items_unique_index()
+
+            self._initialized = True
+            logger.info(f"数据库初始化完成: {db_url}")
+
+            # 注册退出钩子，确保程序退出时关闭数据库连接
+            atexit.register(DatabaseManager._cleanup_engine, self._engine)
+        except Exception:
+            self._initialized = False
+            try:
+                if created_engine is not None:
+                    created_engine.dispose()
+            except Exception as cleanup_exc:
+                logger.warning("数据库初始化失败后的引擎清理也失败: %s", cleanup_exc)
+            self._engine = None
+            self._SessionLocal = None
+            self.__class__._instance = None
+            raise
+
+    def _ensure_schema_migration_record(self) -> None:
+        session = self._SessionLocal()
+        values = {
+            "version": CURRENT_SCHEMA_VERSION,
+            "description": "Baseline schema created through SQLAlchemy metadata.create_all",
+        }
+        try:
+            if self._is_sqlite_engine:
+                statement = sqlite_insert(DatabaseSchemaMigration).values(**values)
+                statement = statement.on_conflict_do_nothing(index_elements=["version"])
+                session.execute(statement)
+            else:
+                session.execute(DatabaseSchemaMigration.__table__.insert().values(**values))
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            with self._SessionLocal() as verify_session:
+                existing = verify_session.get(DatabaseSchemaMigration, CURRENT_SCHEMA_VERSION)
+            if existing is None:
+                raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def _ensure_intelligence_items_unique_index(self) -> None:
+        if not self._is_sqlite_engine:
+            return
+
+        if not inspect(self._engine).has_table("intelligence_items"):
+            return
+
+        try:
+            unique_indexes = self._list_sqlite_unique_indexes("intelligence_items")
+        except Exception as exc:
+            logger.warning(
+                "[Intelligence items] failed to inspect unique indexes; "
+                "skip migration/repair: %s",
+                exc,
+            )
+            return
+
+        target_columns = ("source_id", "url", "scope_type", "scope_value", "market")
+        has_target_index = any(tuple(cols) == target_columns for cols in unique_indexes)
+        has_legacy_url_unique = any(tuple(cols) == ("url",) for cols in unique_indexes)
+
+        if has_target_index:
+            return
+        if unique_indexes and not has_legacy_url_unique:
+            # Table has other unique index shapes; avoid aggressive changes and add
+            # the expected scoped uniqueness directly.
+            self._ensure_intelligence_items_scoped_unique_index_once()
+            return
+
+        self._rebuild_intelligence_items_table()
+
+    def _rebuild_intelligence_items_table(self) -> None:
+        temporary_table = f"intelligence_items_recreate_tmp_{int(time.time() * 1_000_000_000)}"
+        columns = [column.name for column in IntelligenceItem.__table__.columns]
+        select_clause = ", ".join(f'"{column}"' for column in columns)
+        scoped_index_columns = ", ".join(["source_id", "url", "scope_type", "scope_value", "market"])
+        scoped_index_name = "uix_intel_item_scope"
+
+        tmp_metadata = MetaData()
+        tmp_table = Table(
+            temporary_table,
+            tmp_metadata,
+            *(column.copy() for column in IntelligenceItem.__table__.columns),
         )
-        self._is_sqlite_engine = self._engine.url.get_backend_name() == 'sqlite'
-        self._sqlite_file_db = self._is_sqlite_engine and self._is_file_sqlite_database()
-        self._install_sqlite_pragma_handler()
-        
-        # 创建 Session 工厂
-        self._SessionLocal = sessionmaker(
-            bind=self._engine,
-            autocommit=False,
-            autoflush=False,
-        )
-        
-        # 创建所有表
-        Base.metadata.create_all(self._engine)
+        logger.info("Rebuilding intelligence_items table to align composite uniqueness constraints.")
+        with self._engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{temporary_table}"'))
+            tmp_table.create(connection)
+            connection.execute(
+                text(
+                    f"INSERT INTO \"{temporary_table}\" ({select_clause}) "
+                    f"SELECT {select_clause} FROM intelligence_items"
+                )
+            )
+            connection.execute(text('DROP TABLE "intelligence_items"'))
+            connection.execute(
+                text(f'ALTER TABLE "{temporary_table}" RENAME TO intelligence_items')
+            )
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {scoped_index_name} ON "
+                    f"intelligence_items ({scoped_index_columns})"
+                )
+            )
 
-        self._initialized = True
-        logger.info(f"数据库初始化完成: {db_url}")
+    def _ensure_intelligence_items_scoped_unique_index_once(self) -> None:
+        target_index_name = "uix_intel_item_scope"
+        with self._engine.begin() as connection:
+            rows = connection.execute(
+                text("PRAGMA index_list(intelligence_items)")
+            ).fetchall()
+            for row in rows:
+                if row[1] == target_index_name:
+                    return
+            index_columns = ", ".join(["source_id", "url", "scope_type", "scope_value", "market"])
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {target_index_name} ON "
+                    f"intelligence_items ({index_columns})"
+                )
+            )
 
-        # 注册退出钩子，确保程序退出时关闭数据库连接
-        atexit.register(DatabaseManager._cleanup_engine, self._engine)
-    
+    def _list_sqlite_unique_indexes(self, table_name: str):
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(f"PRAGMA index_list({table_name})")
+            ).fetchall()
+            unique_indexes = []
+            for row in rows:
+                # row: (seq, name, unique, origin, partial)
+                if int(row[2]) != 1:
+                    continue
+                index_name = row[1]
+                index_columns = []
+                for index_info in connection.execute(
+                    text(f"PRAGMA index_xinfo({index_name})")
+                ).fetchall():
+                    # index_xinfo: (seqno, cid, name, desc, coll, key, ... )
+                    column_name = index_info[2]
+                    if column_name is None:
+                        continue
+                    index_columns.append(column_name)
+                unique_indexes.append(index_columns)
+            return unique_indexes
+
+    def _ensure_llm_usage_telemetry_columns(self) -> None:
+        """Add nullable P0a usage telemetry columns to existing SQLite DBs."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(LLMUsage.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[LLM usage] failed to inspect telemetry columns; "
+                "skipping best-effort SQLite telemetry column backfill: %s",
+                exc,
+            )
+            return
+
+        max_retries = self._sqlite_write_retry_max
+        for column, column_type in _LLM_USAGE_TELEMETRY_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {LLMUsage.__tablename__} "
+                            f"ADD COLUMN {column} {column_type}"
+                        )
+                    existing.add(column)
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_duplicate_column_error(exc, column):
+                        existing.add(column)
+                        break
+                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
+                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "[LLM usage] SQLite telemetry column backfill locked, "
+                            "retrying: %s (%s/%s, %.2fs)",
+                            column,
+                            attempt + 1,
+                            max_retries,
+                            delay,
+                        )
+                        if delay > 0:
+                            time.sleep(delay)
+                        continue
+                    raise
+
+    def _ensure_intelligence_item_scope_values(self) -> None:
+        """Backfill nullable intelligence item scopes so SQLite unique keys work."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(IntelligenceItem.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning("资讯池 scope_value 回填检查失败，已跳过: %s", exc)
+            return
+        if "scope_value" not in existing:
+            return
+        try:
+            with self._engine.begin() as connection:
+                connection.exec_driver_sql(
+                    f"UPDATE {IntelligenceItem.__tablename__} "
+                    "SET scope_value = ? "
+                    "WHERE scope_value IS NULL OR scope_value = ''",
+                    (INTELLIGENCE_ITEM_NULL_SCOPE_VALUE,),
+                )
+        except Exception as exc:
+            logger.warning("资讯池 scope_value 回填失败，已跳过: %s", exc)
+
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':
         """获取单例实例"""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+        with cls._init_lock:
+            if cls._instance is None:
+                cls()
+            return cls._instance
     
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
-        if cls._instance is not None:
-            if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
-                cls._instance._engine.dispose()
-            cls._instance._initialized = False
-            cls._instance = None
+        with cls._init_lock:
+            if cls._instance is not None:
+                if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
+                    cls._instance._engine.dispose()
+                cls._instance._initialized = False
+                cls._instance = None
 
     @classmethod
     def _cleanup_engine(cls, engine) -> None:
@@ -806,6 +1517,11 @@ class DatabaseManager:
                 "database table is locked",
             )
         )
+
+    @staticmethod
+    def _is_sqlite_duplicate_column_error(exc: OperationalError, column: str) -> bool:
+        err_text = str(getattr(exc, "orig", exc)).lower()
+        return "duplicate column name" in err_text and column.lower() in err_text
 
     @staticmethod
     def _normalize_daily_date(value: Any) -> Any:
@@ -1181,7 +1897,10 @@ class DatabaseManager:
         save_snapshot: bool = True
     ) -> int:
         """
-        保存分析结果历史记录
+        保存分析结果历史记录。
+
+        Returns:
+            新保存的 AnalysisHistory.id；保存失败返回 0。
         """
         if result is None:
             return 0
@@ -1194,33 +1913,112 @@ class DatabaseManager:
 
         try:
             def _write(session: Session) -> int:
-                session.add(
-                    AnalysisHistory(
-                        query_id=query_id,
-                        code=result.code,
-                        name=result.name,
-                        report_type=report_type,
-                        sentiment_score=result.sentiment_score,
-                        operation_advice=result.operation_advice,
-                        trend_prediction=result.trend_prediction,
-                        analysis_summary=result.analysis_summary,
-                        raw_result=self._safe_json_dumps(raw_result),
-                        news_content=news_content,
-                        context_snapshot=context_text,
-                        ideal_buy=sniper_points.get("ideal_buy"),
-                        secondary_buy=sniper_points.get("secondary_buy"),
-                        stop_loss=sniper_points.get("stop_loss"),
-                        take_profit=sniper_points.get("take_profit"),
-                        created_at=datetime.now(),
-                    )
+                history = AnalysisHistory(
+                    query_id=query_id,
+                    code=result.code,
+                    name=result.name,
+                    report_type=report_type,
+                    sentiment_score=result.sentiment_score,
+                    operation_advice=result.operation_advice,
+                    trend_prediction=result.trend_prediction,
+                    analysis_summary=result.analysis_summary,
+                    raw_result=self._safe_json_dumps(raw_result),
+                    news_content=news_content,
+                    context_snapshot=context_text,
+                    ideal_buy=sniper_points.get("ideal_buy"),
+                    secondary_buy=sniper_points.get("secondary_buy"),
+                    stop_loss=sniper_points.get("stop_loss"),
+                    take_profit=sniper_points.get("take_profit"),
+                    created_at=datetime.now(),
                 )
-                return 1
+                session.add(history)
+                session.flush()
+                return int(history.id or 0)
             return self._run_write_transaction(
                 f"save_analysis_history[{result.code}]",
                 _write,
             )
         except Exception as e:
             logger.error(f"保存分析历史失败: {e}")
+            return 0
+
+    def update_analysis_history_diagnostics(
+        self,
+        *,
+        query_id: str,
+        code: Optional[str] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
+        notification_runs: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """
+        更新已保存分析历史的运行诊断快照。
+
+        通知结果通常在分析历史落库后才产生，因此这里仅补写
+        context_snapshot.diagnostics，不改变报告正文或其它历史字段。
+        """
+        if not query_id or (diagnostics is None and not notification_runs):
+            return 0
+
+        try:
+            def _write(session: Session) -> int:
+                conditions = [AnalysisHistory.query_id == query_id]
+                if code:
+                    conditions.append(AnalysisHistory.code == code)
+
+                row = session.execute(
+                    select(AnalysisHistory)
+                    .where(and_(*conditions))
+                    .order_by(desc(AnalysisHistory.created_at))
+                    .limit(1)
+                ).scalars().first()
+                if row is None:
+                    return 0
+
+                context_snapshot: Dict[str, Any] = {}
+                if row.context_snapshot:
+                    try:
+                        parsed = json.loads(row.context_snapshot)
+                        if isinstance(parsed, dict):
+                            context_snapshot = parsed
+                    except Exception:
+                        context_snapshot = {}
+
+                if diagnostics is not None:
+                    context_snapshot["diagnostics"] = diagnostics
+                else:
+                    existing_diagnostics = context_snapshot.get("diagnostics")
+                    if not isinstance(existing_diagnostics, dict):
+                        existing_diagnostics = {
+                            "query_id": query_id,
+                            "stock_code": code,
+                            "notification_runs": [],
+                        }
+                    runs = existing_diagnostics.get("notification_runs")
+                    if not isinstance(runs, list):
+                        runs = []
+                    trace_id = existing_diagnostics.get("trace_id")
+                    for run in notification_runs or []:
+                        if isinstance(run, dict):
+                            run_payload = dict(run)
+                            if trace_id and not run_payload.get("trace_id"):
+                                run_payload["trace_id"] = trace_id
+                            runs.append(run_payload)
+                    existing_diagnostics["notification_runs"] = runs
+                    context_snapshot["diagnostics"] = existing_diagnostics
+                row.context_snapshot = self._safe_json_dumps(context_snapshot)
+                return 1
+
+            return self._run_write_transaction(
+                f"update_analysis_history_diagnostics[{query_id}:{code or '*'}]",
+                _write,
+            )
+        except Exception as e:
+            logger.warning(
+                "更新分析历史诊断快照失败（fail-open）: query_id=%s code=%s err=%s",
+                query_id,
+                code,
+                e,
+            )
             return 0
 
     def get_analysis_history(
@@ -1264,10 +2062,39 @@ class DatabaseManager:
             ).scalars().all()
 
             return list(results)
+
+    def get_latest_analysis_history_id(
+        self,
+        *,
+        query_id: str,
+        code: str,
+        report_type: str,
+    ) -> Optional[int]:
+        """Return the latest matching history id for read-only lookups.
+
+        P2 automatic DecisionSignal extraction receives the freshly saved id
+        directly from ``save_analysis_history()`` and does not use this helper.
+        """
+
+        if not query_id or not code or not report_type:
+            return None
+
+        with self.get_session() as session:
+            return session.execute(
+                select(AnalysisHistory.id)
+                .where(
+                    AnalysisHistory.query_id == query_id,
+                    AnalysisHistory.code == code,
+                    AnalysisHistory.report_type == report_type,
+                )
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
+                .limit(1)
+            ).scalar_one_or_none()
     
     def get_analysis_history_paginated(
         self,
-        code: Optional[str] = None,
+        code: Optional[Union[str, List[str]]] = None,
+        report_type: Optional[str] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         offset: int = 0,
@@ -1278,6 +2105,7 @@ class DatabaseManager:
         
         Args:
             code: 股票代码筛选
+            report_type: 报告类型筛选
             start_date: 开始日期（含）
             end_date: 结束日期（含）
             offset: 偏移量（跳过前 N 条）
@@ -1292,7 +2120,14 @@ class DatabaseManager:
             conditions = []
             
             if code:
-                conditions.append(AnalysisHistory.code == code)
+                if isinstance(code, list):
+                    codes = [c for c in code if c]
+                    if codes:
+                        conditions.append(AnalysisHistory.code.in_(codes))
+                else:
+                    conditions.append(AnalysisHistory.code == code)
+            if report_type:
+                conditions.append(AnalysisHistory.report_type == report_type)
             if start_date:
                 # created_at >= start_date 00:00:00
                 conditions.append(AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time()))
@@ -1342,7 +2177,9 @@ class DatabaseManager:
         """
         删除指定的分析历史记录。
 
-        同时清理依赖这些历史记录的回测结果，避免外键约束失败。
+        同时清理依赖这些历史记录的回测结果和分析来源决策信号，避免
+        依赖历史记录的派生数据残留。DecisionSignal 的 source_report_id
+        允许弱引用，因此这里只清理 source_type=analysis 的真实历史绑定信号。
 
         Args:
             record_ids: 要删除的历史记录主键 ID 列表
@@ -1355,15 +2192,116 @@ class DatabaseManager:
             return 0
 
         with self.session_scope() as session:
+            existing_ids = sorted(
+                session.execute(
+                    select(AnalysisHistory.id).where(AnalysisHistory.id.in_(ids))
+                ).scalars().all()
+            )
+            if not existing_ids:
+                return 0
+
+            linked_signal_ids = sorted(
+                session.execute(
+                    select(DecisionSignalRecord.id).where(
+                        and_(
+                            DecisionSignalRecord.source_type == "analysis",
+                            DecisionSignalRecord.source_report_id.in_(existing_ids),
+                        )
+                    )
+                ).scalars().all()
+            )
+            if linked_signal_ids:
+                session.execute(
+                    delete(DecisionSignalOutcomeRecord).where(
+                        DecisionSignalOutcomeRecord.signal_id.in_(linked_signal_ids)
+                    )
+                )
+                session.execute(
+                    delete(DecisionSignalFeedbackRecord).where(
+                        DecisionSignalFeedbackRecord.signal_id.in_(linked_signal_ids)
+                    )
+                )
+                session.execute(
+                    delete(DecisionSignalRecord).where(DecisionSignalRecord.id.in_(linked_signal_ids))
+                )
             session.execute(
-                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(ids))
+                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
             result = session.execute(
-                delete(AnalysisHistory).where(AnalysisHistory.id.in_(ids))
+                delete(AnalysisHistory).where(AnalysisHistory.id.in_(existing_ids))
             )
             return result.rowcount or 0
 
-    def get_latest_analysis_by_query_id(self, query_id: str) -> Optional[AnalysisHistory]:
+    def get_distinct_stocks_from_history(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        limit: int = 200,
+        include_market_review: bool = False,
+    ) -> List[AnalysisHistory]:
+        """
+        获取历史记录中的不重复股票列表，每只股票取最新一条记录。
+
+        使用子查询按 code 分组取 MAX(id)，再 JOIN 回查完整记录。
+        默认排除大盘复盘，避免混入普通个股栏。
+
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            limit: 最大返回数量
+            include_market_review: 是否包含大盘复盘记录
+
+        Returns:
+            每条股票最新一条 AnalysisHistory 记录列表
+        """
+        with self.get_session() as session:
+            subq = (
+                select(
+                    AnalysisHistory.code,
+                    func.max(AnalysisHistory.id).label("max_id"),
+                )
+            )
+            if start_date:
+                subq = subq.where(
+                    AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time())
+                )
+            if end_date:
+                subq = subq.where(
+                    AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+                )
+            if not include_market_review:
+                subq = subq.where(
+                    and_(
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
+            subq = subq.group_by(AnalysisHistory.code).subquery()
+
+            results = (
+                session.execute(
+                    select(AnalysisHistory)
+                    .join(subq, AnalysisHistory.id == subq.c.max_id)
+                    .order_by(
+                        desc(AnalysisHistory.created_at),
+                    )
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
+            return list(results)
+
+    def get_latest_analysis_by_query_id(
+        self,
+        query_id: str,
+        *,
+        code: Optional[str] = None,
+        report_type: Optional[str] = None,
+    ) -> Optional[AnalysisHistory]:
         """
         根据 query_id 查询最新一条分析历史记录
 
@@ -1371,14 +2309,22 @@ class DatabaseManager:
 
         Args:
             query_id: 分析记录关联的 query_id
+            code: 可选股票代码过滤，用于区分同一 query_id 下的 MARKET 与个股记录
+            report_type: 可选报告类型过滤
 
         Returns:
             AnalysisHistory 对象，不存在返回 None
         """
         with self.get_session() as session:
+            conditions = [AnalysisHistory.query_id == query_id]
+            if code:
+                conditions.append(AnalysisHistory.code == code)
+            if report_type:
+                conditions.append(AnalysisHistory.report_type == report_type)
+
             result = session.execute(
                 select(AnalysisHistory)
-                .where(AnalysisHistory.query_id == query_id)
+                .where(and_(*conditions))
                 .order_by(desc(AnalysisHistory.created_at))
                 .limit(1)
             ).scalars().first()
@@ -1715,146 +2661,12 @@ class DatabaseManager:
 
     @staticmethod
     def _parse_sniper_value(value: Any) -> Optional[float]:
-        """
-        Parse a sniper point value from various formats to float.
-
-        Handles: numeric types, plain number strings, Chinese price formats
-        like "18.50元", range formats like "18.50-19.00", and text with
-        embedded numbers while filtering out MA indicators.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            v = float(value)
-            return v if v > 0 else None
-
-        text = str(value).replace(',', '').replace('，', '').strip()
-        if not text or text == '-' or text == '—' or text == 'N/A':
-            return None
-
-        # 尝试直接解析纯数字字符串
-        try:
-            return float(text)
-        except ValueError:
-            pass
-
-        # 优先截取 "：" 到 "元" 之间的价格，避免误提取 MA5/MA10 等技术指标数字
-        colon_pos = max(text.rfind("："), text.rfind(":"))
-        yuan_pos = text.find("元", colon_pos + 1 if colon_pos != -1 else 0)
-        if yuan_pos != -1:
-            segment_start = colon_pos + 1 if colon_pos != -1 else 0
-            segment = text[segment_start:yuan_pos]
-            
-            # 使用 finditer 并过滤掉 MA 开头的数字
-            matches = list(re.finditer(r"-?\d+(?:\.\d+)?", segment))
-            valid_numbers = []
-            for m in matches:
-                # 检查前面是否是 "MA" (忽略大小写)
-                start_idx = m.start()
-                if start_idx >= 2:
-                    prefix = segment[start_idx-2:start_idx].upper()
-                    if prefix == "MA":
-                        continue
-                valid_numbers.append(m.group())
-            
-            if valid_numbers:
-                try:
-                    return abs(float(valid_numbers[-1]))
-                except ValueError:
-                    pass
-
-        # 兜底：无"元"字时，先截去第一个括号后的内容，避免误提取括号内技术指标数字
-        # 例如 "1.52-1.53 (回踩MA5/10附近)" → 仅在 "1.52-1.53 " 中搜索
-        paren_pos = len(text)
-        for paren_char in ('(', '（'):
-            pos = text.find(paren_char)
-            if pos != -1:
-                paren_pos = min(paren_pos, pos)
-        search_text = text[:paren_pos].strip() or text  # 括号前为空时降级用全文
-
-        valid_numbers = []
-        for m in re.finditer(r"\d+(?:\.\d+)?", search_text):
-            start_idx = m.start()
-            if start_idx >= 2 and search_text[start_idx-2:start_idx].upper() == "MA":
-                continue
-            valid_numbers.append(m.group())
-        if valid_numbers:
-            try:
-                return float(valid_numbers[-1])
-            except ValueError:
-                pass
-        return None
+        return parse_sniper_value(value)
 
     def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:
-        """
-        Extract sniper point values from an AnalysisResult.
+        """Extract normalized sniper point values from an AnalysisResult."""
 
-        Tries multiple extraction paths to handle different dashboard structures:
-        1. result.get_sniper_points() (standard path)
-        2. Direct dashboard dict traversal with various nesting levels
-        3. Fallback from raw_result dict if available
-        """
-        raw_points = {}
-
-        # Path 1: standard method
-        if hasattr(result, "get_sniper_points"):
-            raw_points = result.get_sniper_points() or {}
-
-        # Path 2: direct dashboard traversal when standard path yields empty values
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            dashboard = getattr(result, "dashboard", None)
-            if isinstance(dashboard, dict):
-                raw_points = self._find_sniper_in_dashboard(dashboard) or raw_points
-
-        # Path 3: try raw_result for agent mode results
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            raw_response = getattr(result, "raw_response", None)
-            if isinstance(raw_response, dict):
-                raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
-
-        return {
-            "ideal_buy": self._parse_sniper_value(raw_points.get("ideal_buy")),
-            "secondary_buy": self._parse_sniper_value(raw_points.get("secondary_buy")),
-            "stop_loss": self._parse_sniper_value(raw_points.get("stop_loss")),
-            "take_profit": self._parse_sniper_value(raw_points.get("take_profit")),
-        }
-
-    @staticmethod
-    def _find_sniper_in_dashboard(d: dict) -> Optional[Dict[str, Any]]:
-        """
-        Recursively search for sniper_points in a dashboard dict.
-        Handles various nesting: dashboard.battle_plan.sniper_points,
-        dashboard.dashboard.battle_plan.sniper_points, etc.
-        """
-        if not isinstance(d, dict):
-            return None
-
-        # Direct: d has sniper_points keys at top level
-        if "ideal_buy" in d:
-            return d
-
-        # d.sniper_points
-        sp = d.get("sniper_points")
-        if isinstance(sp, dict) and sp:
-            return sp
-
-        # d.battle_plan.sniper_points
-        bp = d.get("battle_plan")
-        if isinstance(bp, dict):
-            sp = bp.get("sniper_points")
-            if isinstance(sp, dict) and sp:
-                return sp
-
-        # d.dashboard.battle_plan.sniper_points (double-nested)
-        inner = d.get("dashboard")
-        if isinstance(inner, dict):
-            bp = inner.get("battle_plan")
-            if isinstance(bp, dict):
-                sp = bp.get("sniper_points")
-                if isinstance(sp, dict) and sp:
-                    return sp
-
-        return None
+        return extract_sniper_points(result)
 
     @staticmethod
     def _build_fallback_url_key(
@@ -1871,7 +2683,7 @@ class DatabaseManager:
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
-    def save_conversation_message(self, session_id: str, role: str, content: str) -> None:
+    def save_conversation_message(self, session_id: str, role: str, content: str) -> int:
         """
         保存 Agent 对话消息
         """
@@ -1882,6 +2694,8 @@ class DatabaseManager:
                 content=content
             )
             session.add(msg)
+            session.flush()
+            return int(msg.id)
 
     def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -1895,6 +2709,215 @@ class DatabaseManager:
 
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
+
+    def get_visible_conversation_messages(self, session_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return visible user/assistant conversation messages in chronological order."""
+        with self.session_scope() as session:
+            stmt = (
+                select(ConversationMessage)
+                .where(
+                    and_(
+                        ConversationMessage.session_id == session_id,
+                        ConversationMessage.role.in_(["user", "assistant"]),
+                    )
+                )
+                .order_by(ConversationMessage.created_at, ConversationMessage.id)
+            )
+            if limit is not None:
+                stmt = (
+                    stmt.order_by(None)
+                    .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+                    .limit(limit)
+                )
+            messages = session.execute(stmt).scalars().all()
+            if limit is not None:
+                messages = list(reversed(messages))
+            return [
+                {
+                    "id": msg.id,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at,
+                }
+                for msg in messages
+                if msg.content
+            ]
+
+    def get_conversation_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the rolling summary for a conversation session, if present."""
+        with self.session_scope() as session:
+            stmt = select(ConversationSummary).where(
+                ConversationSummary.session_id == session_id
+            )
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "session_id": row.session_id,
+                "summary": row.summary,
+                "covered_message_id": row.covered_message_id,
+                "source_message_count": row.source_message_count,
+                "estimated_tokens": row.estimated_tokens,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+
+    def save_agent_provider_turn(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        provider: str,
+        model: str,
+        anchor_user_message_id: int,
+        anchor_assistant_message_id: int,
+        messages: List[Dict[str, Any]],
+        contains_reasoning: bool,
+        contains_tool_calls: bool,
+        contains_thinking_blocks: bool,
+        must_roundtrip: bool,
+        estimated_tokens: int,
+    ) -> int:
+        """Persist one provider protocol trace and enforce per-model retention."""
+        with self.session_scope() as session:
+            row = AgentProviderTurn(
+                session_id=session_id,
+                run_id=run_id,
+                provider=provider,
+                model=model,
+                anchor_user_message_id=int(anchor_user_message_id or 0),
+                anchor_assistant_message_id=int(anchor_assistant_message_id or 0),
+                messages_json=json.dumps(messages or [], ensure_ascii=False, default=str),
+                contains_reasoning=bool(contains_reasoning),
+                contains_tool_calls=bool(contains_tool_calls),
+                contains_thinking_blocks=bool(contains_thinking_blocks),
+                must_roundtrip=bool(must_roundtrip),
+                estimated_tokens=int(estimated_tokens or 0),
+            )
+            session.add(row)
+            session.flush()
+            row_id = int(row.id)
+            if row.must_roundtrip:
+                self._trim_agent_provider_turns(
+                    session=session,
+                    session_id=session_id,
+                    provider=provider,
+                    model=model,
+                    keep=PROVIDER_TRACE_RETENTION_LIMIT,
+                )
+            return row_id
+
+    def get_agent_provider_turns(
+        self,
+        session_id: str,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        must_roundtrip_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return provider trace turns in chronological order."""
+        with self.session_scope() as session:
+            conditions = [AgentProviderTurn.session_id == session_id]
+            if provider:
+                conditions.append(AgentProviderTurn.provider == provider)
+            if model:
+                conditions.append(AgentProviderTurn.model == model)
+            if must_roundtrip_only:
+                conditions.append(AgentProviderTurn.must_roundtrip.is_(True))
+            stmt = (
+                select(AgentProviderTurn)
+                .where(and_(*conditions))
+                .order_by(AgentProviderTurn.created_at, AgentProviderTurn.id)
+            )
+            rows = session.execute(stmt).scalars().all()
+            result = []
+            for row in rows:
+                try:
+                    messages = json.loads(row.messages_json or "[]")
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Invalid provider trace messages_json skipped for session %s turn %s: %s",
+                        row.session_id,
+                        row.id,
+                        exc,
+                    )
+                    messages = []
+                result.append({
+                    "id": row.id,
+                    "session_id": row.session_id,
+                    "run_id": row.run_id,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "anchor_user_message_id": row.anchor_user_message_id,
+                    "anchor_assistant_message_id": row.anchor_assistant_message_id,
+                    "messages": messages if isinstance(messages, list) else [],
+                    "messages_json": row.messages_json,
+                    "contains_reasoning": row.contains_reasoning,
+                    "contains_tool_calls": row.contains_tool_calls,
+                    "contains_thinking_blocks": row.contains_thinking_blocks,
+                    "must_roundtrip": row.must_roundtrip,
+                    "estimated_tokens": row.estimated_tokens,
+                    "created_at": row.created_at,
+                })
+            return result
+
+    def _trim_agent_provider_turns(
+        self,
+        *,
+        session: Session,
+        session_id: str,
+        provider: str,
+        model: str,
+        keep: int,
+    ) -> int:
+        old_ids_stmt = (
+            select(AgentProviderTurn.id)
+            .where(
+                and_(
+                    AgentProviderTurn.session_id == session_id,
+                    AgentProviderTurn.provider == provider,
+                    AgentProviderTurn.model == model,
+                    AgentProviderTurn.must_roundtrip.is_(True),
+                )
+            )
+            .order_by(AgentProviderTurn.created_at.desc(), AgentProviderTurn.id.desc())
+            .offset(max(0, int(keep)))
+        )
+        old_ids = list(session.execute(old_ids_stmt).scalars().all())
+        if not old_ids:
+            return 0
+        result = session.execute(
+            delete(AgentProviderTurn).where(AgentProviderTurn.id.in_(old_ids))
+        )
+        return int(result.rowcount or 0)
+
+    def upsert_conversation_summary(
+        self,
+        session_id: str,
+        summary: str,
+        covered_message_id: int,
+        source_message_count: int,
+        estimated_tokens: int,
+    ) -> None:
+        """Create or update the rolling summary for a conversation session."""
+        with self.session_scope() as session:
+            now = datetime.now()
+            values = {
+                "session_id": session_id,
+                "summary": summary,
+                "covered_message_id": int(covered_message_id or 0),
+                "source_message_count": int(source_message_count or 0),
+                "estimated_tokens": int(estimated_tokens or 0),
+                "updated_at": now,
+            }
+            stmt = sqlite_insert(ConversationSummary).values(**values)
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["session_id"],
+                    set_=values,
+                )
+            )
 
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""
@@ -2014,6 +3037,16 @@ class DatabaseManager:
             删除的消息数
         """
         with self.session_scope() as session:
+            session.execute(
+                delete(AgentProviderTurn).where(
+                    AgentProviderTurn.session_id == session_id
+                )
+            )
+            session.execute(
+                delete(ConversationSummary).where(
+                    ConversationSummary.session_id == session_id
+                )
+            )
             result = session.execute(
                 delete(ConversationMessage).where(
                     ConversationMessage.session_id == session_id
@@ -2033,16 +3066,20 @@ class DatabaseManager:
         completion_tokens: int,
         total_tokens: int,
         stock_code: Optional[str] = None,
+        **telemetry: Any,
     ) -> None:
         """Append one LLM call record to llm_usage."""
-        row = LLMUsage(
-            call_type=call_type,
-            model=model or "unknown",
-            stock_code=stock_code,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-        )
+        row_values: Dict[str, Any] = {
+            "call_type": call_type,
+            "model": model or "unknown",
+            "stock_code": stock_code,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+        for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL:
+            row_values[column] = None if column in _LLM_USAGE_DROPPED_FREE_TEXT_COLUMNS else telemetry.get(column)
+        row = LLMUsage(**row_values)
         with self.session_scope() as session:
             session.add(row)
 
@@ -2054,9 +3091,11 @@ class DatabaseManager:
         """Return aggregated token usage between from_dt and to_dt.
 
         Returns a dict with keys:
-          total_calls, total_tokens,
-          by_call_type: list of {call_type, calls, total_tokens},
-          by_model:     list of {model, calls, total_tokens}
+          total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+          by_call_type: list of {call_type, calls, prompt_tokens,
+            completion_tokens, total_tokens},
+          by_model: list of {model, calls, prompt_tokens, completion_tokens,
+            total_tokens, max_total_tokens}
         """
         with self.session_scope() as session:
             base_filter = and_(
@@ -2068,6 +3107,8 @@ class DatabaseManager:
             totals = session.execute(
                 select(
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 ).where(base_filter)
             ).one()
@@ -2077,6 +3118,8 @@ class DatabaseManager:
                 select(
                     LLMUsage.call_type,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 )
                 .where(base_filter)
@@ -2089,7 +3132,10 @@ class DatabaseManager:
                 select(
                     LLMUsage.model,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                    func.coalesce(func.max(LLMUsage.total_tokens), 0).label("max_total_tokens"),
                 )
                 .where(base_filter)
                 .group_by(LLMUsage.model)
@@ -2098,16 +3144,80 @@ class DatabaseManager:
 
         return {
             "total_calls": totals.calls,
+            "total_prompt_tokens": totals.prompt_tokens,
+            "total_completion_tokens": totals.completion_tokens,
             "total_tokens": totals.tokens,
             "by_call_type": [
-                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "call_type": r.call_type,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                }
                 for r in by_type_rows
             ],
             "by_model": [
-                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "model": r.model,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                    "max_total_tokens": r.max_total_tokens,
+                }
                 for r in by_model_rows
             ],
         }
+
+    def get_llm_usage_records(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return recent LLM usage audit rows between from_dt and to_dt.
+
+        Each row contains id, call_type, model, stock_code, prompt_tokens,
+        completion_tokens, total_tokens, and called_at. Results are ordered by
+        newest call first, and limit is clamped to the public API range.
+        """
+        normalized_limit = max(1, min(int(limit or 50), 200))
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(
+                    LLMUsage.id,
+                    LLMUsage.call_type,
+                    LLMUsage.model,
+                    LLMUsage.stock_code,
+                    LLMUsage.prompt_tokens,
+                    LLMUsage.completion_tokens,
+                    LLMUsage.total_tokens,
+                    LLMUsage.called_at,
+                )
+                .where(
+                    and_(
+                        LLMUsage.called_at >= from_dt,
+                        LLMUsage.called_at <= to_dt,
+                    )
+                )
+                .order_by(desc(LLMUsage.called_at), desc(LLMUsage.id))
+                .limit(normalized_limit)
+            ).all()
+
+        return [
+            {
+                "id": r.id,
+                "call_type": r.call_type,
+                "model": r.model,
+                "stock_code": r.stock_code,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "total_tokens": r.total_tokens,
+                "called_at": r.called_at,
+            }
+            for r in rows
+        ]
 
 
 # 便捷函数
@@ -2124,17 +3234,86 @@ def persist_llm_usage(
 ) -> None:
     """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
     try:
+        if usage is None:
+            usage = {}
+        prompt_cache_telemetry_disabled = bool(
+            getattr(usage, _LLM_PROMPT_CACHE_TELEMETRY_DISABLED_ATTR, False)
+        )
+        prompt_tokens = _coerce_llm_usage_non_negative_int(usage.get("prompt_tokens")) or 0
+        completion_tokens = _coerce_llm_usage_non_negative_int(usage.get("completion_tokens")) or 0
+        total_tokens = _coerce_llm_usage_non_negative_int(usage.get("total_tokens")) or 0
+        telemetry = {
+            column: usage.get(column)
+            for column in _LLM_USAGE_TELEMETRY_COLUMN_SQL
+        }
+        if prompt_cache_telemetry_disabled:
+            for column in _LLM_PROMPT_CACHE_TELEMETRY_COLUMNS:
+                telemetry[column] = None
+        for column in _LLM_USAGE_INTEGER_TELEMETRY_COLUMNS:
+            telemetry[column] = _coerce_llm_usage_non_negative_int(telemetry.get(column))
+        telemetry["normalized_prompt_tokens"] = (
+            telemetry.get("normalized_prompt_tokens")
+            if telemetry.get("normalized_prompt_tokens") is not None
+            else prompt_tokens
+        )
+        telemetry["normalized_completion_tokens"] = (
+            telemetry.get("normalized_completion_tokens")
+            if telemetry.get("normalized_completion_tokens") is not None
+            else completion_tokens
+        )
+        telemetry["normalized_total_tokens"] = (
+            telemetry.get("normalized_total_tokens")
+            if telemetry.get("normalized_total_tokens") is not None
+            else total_tokens
+        )
+        has_usage_payload = bool(usage.get("provider_usage_json")) or any(
+            key in usage
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "normalized_prompt_tokens",
+                "normalized_completion_tokens",
+                "normalized_total_tokens",
+            )
+        )
+        if not prompt_cache_telemetry_disabled:
+            telemetry["cache_capability"] = usage.get("cache_capability") or "unknown"
+            telemetry["cache_eligibility"] = usage.get("cache_eligibility") or "unknown"
+            telemetry["cache_observation"] = usage.get("cache_observation") or (
+                "no_usage" if not has_usage_payload else "unknown"
+            )
         db = DatabaseManager.get_instance()
         db.record_llm_usage(
             call_type=call_type,
             model=model,
-            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
-            completion_tokens=usage.get("completion_tokens", 0) or 0,
-            total_tokens=usage.get("total_tokens", 0) or 0,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
             stock_code=stock_code,
+            **telemetry,
         )
     except Exception as exc:
         logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
+
+
+def _coerce_llm_usage_non_negative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if value < 0 or not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or not text.isdigit():
+            return None
+        return int(text)
+    return None
 
 
 if __name__ == "__main__":

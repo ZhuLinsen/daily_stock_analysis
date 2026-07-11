@@ -8,6 +8,8 @@ Slack 发送提醒服务
 """
 import logging
 import json
+from typing import Optional
+
 import requests
 
 from src.config import Config
@@ -44,7 +46,7 @@ class SlackSender:
         """检查 Slack 配置是否完整（支持 Webhook 或 Bot API）"""
         return self._use_bot or bool(self._slack_webhook_url)
 
-    def send_to_slack(self, content: str) -> bool:
+    def send_to_slack(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         推送消息到 Slack（支持 Webhook 和 Bot API）
 
@@ -66,11 +68,11 @@ class SlackSender:
 
         # 优先使用 Bot API（与 _send_slack_image 保持一致）
         if self._use_bot:
-            return all(self._send_slack_bot(chunk) for chunk in chunks)
+            return all(self._send_slack_bot(chunk, timeout_seconds=timeout_seconds) for chunk in chunks)
 
         # 其次使用 Webhook
         if self._slack_webhook_url:
-            return all(self._send_slack_webhook(chunk) for chunk in chunks)
+            return all(self._send_slack_webhook(chunk, timeout_seconds=timeout_seconds) for chunk in chunks)
 
         logger.warning("Slack 配置不完整，跳过推送")
         return False
@@ -96,7 +98,7 @@ class SlackSender:
             pos += _BLOCK_TEXT_LIMIT
         return blocks
 
-    def _send_slack_webhook(self, content: str) -> bool:
+    def _send_slack_webhook(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         使用 Incoming Webhook 发送消息到 Slack
 
@@ -115,7 +117,7 @@ class SlackSender:
                 self._slack_webhook_url,
                 data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
                 headers={'Content-Type': 'application/json; charset=utf-8'},
-                timeout=15,
+                timeout=timeout_seconds or 15,
                 verify=self._webhook_verify_ssl,
             )
             if response.status_code == 200 and response.text == "ok":
@@ -127,7 +129,7 @@ class SlackSender:
             logger.error(f"Slack Webhook 发送异常: {e}")
             return False
 
-    def _send_slack_bot(self, content: str) -> bool:
+    def _send_slack_bot(self, content: str, *, timeout_seconds: Optional[float] = None) -> bool:
         """
         使用 Bot API (chat.postMessage) 发送消息到 Slack
 
@@ -151,7 +153,7 @@ class SlackSender:
                 'https://slack.com/api/chat.postMessage',
                 data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
                 headers=headers,
-                timeout=15,
+                timeout=timeout_seconds or 15,
             )
             result = response.json()
             if result.get("ok"):
