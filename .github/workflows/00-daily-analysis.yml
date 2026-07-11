@@ -387,6 +387,11 @@ jobs:
           # ==========================================
           # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          # 盘中自动选股参数：保留默认值，避免未配置 Repository Variables 时传入空值。
+          AUTO_SELECT_COUNT: ${{ vars.AUTO_SELECT_COUNT || '10' }}
+          AUTO_SELECT_MIN_AMOUNT: ${{ vars.AUTO_SELECT_MIN_AMOUNT || '100000000' }}
+          AUTO_SELECT_MIN_PRICE: ${{ vars.AUTO_SELECT_MIN_PRICE || '2' }}
+          AUTO_SELECT_MAX_PRICE: ${{ vars.AUTO_SELECT_MAX_PRICE || '200' }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
