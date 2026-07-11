@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # Keep this test runnable when optional LLM runtime deps are not installed.
@@ -27,10 +28,11 @@ except ModuleNotFoundError:
 try:
     from fastapi.testclient import TestClient
     from api.app import create_app
-    from api.v1.endpoints.history import get_history_detail, get_history_list, get_stock_bar
+    from api.v1.endpoints.history import delete_history_by_code, get_history_detail, get_history_list, get_stock_bar
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
+    delete_history_by_code = None
     get_history_detail = None
     get_history_list = None
     get_stock_bar = None
@@ -183,6 +185,33 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             )
 
         self.assertEqual(getattr(raised.exception, "status_code", None), 500)
+
+    def test_delete_history_by_code_deletes_more_than_one_lookup_batch(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        remaining = {record_id: SimpleNamespace(id=record_id) for record_id in range(1, 10_002)}
+        db = MagicMock()
+
+        def get_records(*, code, limit=20, offset=0, **_kwargs):
+            records = list(remaining.values())[offset:offset + limit]
+            return records, len(remaining)
+
+        def delete_records(record_ids):
+            deleted = 0
+            for record_id in record_ids:
+                if remaining.pop(record_id, None) is not None:
+                    deleted += 1
+            return deleted
+
+        db.get_analysis_history_paginated.side_effect = get_records
+        db.delete_analysis_history_records.side_effect = delete_records
+
+        response = delete_history_by_code("600519", db_manager=db)
+
+        self.assertEqual(response.deleted, 10_001)
+        self.assertEqual(remaining, {})
+        self.assertEqual(db.get_analysis_history_paginated.call_count, 2)
 
     def _build_result(self) -> AnalysisResult:
         """构造分析结果"""
