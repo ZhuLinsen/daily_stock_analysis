@@ -216,6 +216,16 @@ class SignalAttribution(BaseModel):
         return self
 
 
+class AgentDisagreementExplanation(BaseModel):
+    """Low-sensitivity multi-agent disagreement explanation for final dashboards."""
+
+    conflict_type: Optional[str] = None
+    decision_path: Optional[str] = None
+    degraded_stages: List[Dict[str, Any]] = Field(default_factory=list)
+    risk_override: Dict[str, Any] = Field(default_factory=dict)
+    summary: Optional[str] = None
+
+
 class Dashboard(BaseModel):
     """Dashboard block."""
 
@@ -225,6 +235,7 @@ class Dashboard(BaseModel):
     battle_plan: Optional[BattlePlan] = None
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
+    agent_disagreement_explanation: Optional[AgentDisagreementExplanation] = None
 
 
 class AnalysisReportSchema(BaseModel):

@@ -339,6 +339,89 @@ def test_orchestrator_prepare_decision_context_respects_risk_override_config(mon
     assert summary["conflict_type"] != "risk_override"
 
 
+def test_orchestrator_builds_final_disagreement_explanation(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.orchestrator import AgentOrchestrator
+
+    ctx = AgentContext(query="test", stock_code="600519")
+    ctx.meta["agent_disagreement_summary"] = {
+        "conflict_type": "risk_override",
+        "decision_path_hint": "prioritize_risk_controls_and_cap_buy_signal",
+        "risk_control": {
+            "evidence_present": True,
+            "override_enabled": True,
+            "override_trigger_present": True,
+            "reason": "risk_veto",
+        },
+        "degraded_result": {
+            "present": True,
+            "stages": [
+                {
+                    "stage_name": "intel",
+                    "status": "failed",
+                    "non_critical": True,
+                    "error": "raw secret error",
+                }
+            ],
+        },
+    }
+    ctx.set_data("risk_override_applied", {
+        "from": "buy",
+        "to": "hold",
+        "adjustment": "veto",
+        "reason": "risk_veto",
+    })
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True),
+    )
+
+    explanation = orchestrator._build_agent_disagreement_explanation(ctx)
+
+    assert explanation["conflict_type"] == "risk_override"
+    assert explanation["decision_path"] == "prioritize_risk_controls_and_cap_buy_signal"
+    assert explanation["degraded_stages"] == [
+        {"stage_name": "intel", "status": "failed", "non_critical": True}
+    ]
+    assert explanation["risk_override"]["applied"] is True
+    assert explanation["risk_override"]["from"] == "buy"
+    assert explanation["risk_override"]["to"] == "hold"
+    assert "raw secret error" not in str(explanation)
+
+
+def test_orchestrator_builds_no_explanation_without_summary(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True),
+    )
+
+    assert orchestrator._build_agent_disagreement_explanation(AgentContext()) is None
+
+
+def test_orchestrator_attach_explanation_keeps_dashboard_unchanged_without_summary(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.orchestrator import AgentOrchestrator
+
+    ctx = AgentContext(query="test", stock_code="600519")
+    dashboard = {"decision_type": "buy", "dashboard": {"core_conclusion": {"one_sentence": "ok"}}}
+    ctx.set_data("final_dashboard", dashboard)
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True),
+    )
+
+    orchestrator._attach_agent_disagreement_explanation(ctx)
+
+    assert ctx.get_data("final_dashboard") == dashboard
+    assert "agent_disagreement_explanation" not in ctx.get_data("final_dashboard")["dashboard"]
+
+
 def test_orchestrator_prepare_decision_context_propagates_summary_errors(monkeypatch):
     _mock_optional_litellm(monkeypatch)
     from src.agent import orchestrator as orchestrator_module

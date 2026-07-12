@@ -914,6 +914,10 @@ class TestOrchestratorExecution(unittest.TestCase):
             "risk_warning": "",
         }, ensure_ascii=False)
 
+    @staticmethod
+    def _agent_disagreement_explanation(dashboard):
+        return dashboard["dashboard"]["agent_disagreement_explanation"]
+
     class _OpinionStage:
         def __init__(
             self,
@@ -1062,6 +1066,11 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.dashboard["decision_type"], "buy")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["risk_override"]["applied"], False)
+        self.assertEqual(explanation["risk_override"]["override_enabled"], False)
+        self.assertEqual(explanation["risk_override"]["override_trigger_present"], True)
+        self.assertNotEqual(explanation["conflict_type"], "risk_override")
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1107,6 +1116,12 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.dashboard["decision_type"], "buy")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["risk_override"]["applied"], False)
+        self.assertEqual(explanation["risk_override"]["evidence_present"], True)
+        self.assertEqual(explanation["risk_override"]["override_trigger_present"], False)
+        self.assertEqual(explanation["risk_override"]["reason"], "high_risk_evidence")
+        self.assertNotEqual(explanation["conflict_type"], "risk_override")
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1156,6 +1171,13 @@ class TestOrchestratorExecution(unittest.TestCase):
             "adjustment": "veto",
             "reason": "risk_veto",
         })
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["conflict_type"], "risk_override")
+        self.assertEqual(explanation["risk_override"]["applied"], True)
+        self.assertEqual(explanation["risk_override"]["from"], "buy")
+        self.assertEqual(explanation["risk_override"]["to"], "hold")
+        self.assertEqual(explanation["risk_override"]["reason"], "risk_veto")
+        self.assertIn("risk_override_applied=buy->hold", explanation["summary"])
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1196,6 +1218,16 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertEqual(ctx.meta["degraded_stages"], [
             {"stage_name": "intel", "status": "failed", "non_critical": True}
         ])
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["conflict_type"], "partial_bullish_with_degraded_inputs")
+        self.assertEqual(
+            explanation["decision_path"],
+            "state_degraded_inputs_before_any_bullish_lean",
+        )
+        self.assertEqual(explanation["degraded_stages"], [
+            {"stage_name": "intel", "status": "failed", "non_critical": True}
+        ])
+        self.assertEqual(explanation["risk_override"]["applied"], False)
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1242,6 +1274,12 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertEqual(ctx.meta["degraded_stages"], [
             {"stage_name": "chan_theory", "status": "failed", "non_critical": True}
         ])
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["conflict_type"], "partial_bearish_with_degraded_inputs")
+        self.assertEqual(explanation["degraded_stages"], [
+            {"stage_name": "chan_theory", "status": "failed", "non_critical": True}
+        ])
+        self.assertIn("degraded_stages=chan_theory", explanation["summary"])
 
         combined = "\n".join(
             str(message.get("content", ""))

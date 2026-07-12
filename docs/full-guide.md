@@ -872,11 +872,13 @@ P3 在普通分析和 Agent 初始上下文中接入 `AnalysisContextPack` 低�
 
 P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report metadata，不改变报告 JSON schema，也不把完整 pack 暴露到历史、通知或 Web。Agent 工具级复用 pack 数据和 P5 数据质量评分留给后续阶段。
 
-#### Multi-Agent 决策分歧摘要输入（Issue #1904 P1 plumbing）
+#### Multi-Agent 决策分歧解释输出（Issue #1904 P1）
 
 Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
 
-该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+P1 会在最终 dashboard 的 `dashboard.agent_disagreement_explanation` 中追加低敏解释字段，包含 `conflict_type`、`decision_path`、`degraded_stages`、`risk_override` 和 `summary`。该字段由 orchestrator 在最终 dashboard 后处理阶段稳定注入，而不是只依赖 LLM 自行生成；因此能明确说明分歧类型、最终采用路径、降级情况，以及 veto / override 是否实际生效。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。
+
+该字段是向后兼容的 dashboard 可选扩展：不新增 API 请求参数、不改变 `decision_type=buy|hold|sell`、不新增 Web/Desktop 专属展示、不写入新的运行时配置或数据库迁移。Web 报告/Agent 页面折叠展示多 Agent 决策过程仍属于 #1904 后续可见性阶段。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 

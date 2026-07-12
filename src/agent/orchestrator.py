@@ -745,6 +745,139 @@ class AgentOrchestrator:
             risk_override_enabled=getattr(self.config, "agent_risk_override", True),
         )
 
+    def _attach_agent_disagreement_explanation(self, ctx: AgentContext) -> None:
+        """Attach the final low-sensitivity disagreement explanation to dashboard output."""
+        dashboard = ctx.get_data("final_dashboard")
+        if not isinstance(dashboard, dict):
+            return
+
+        explanation = self._build_agent_disagreement_explanation(ctx)
+        if not explanation:
+            return
+
+        dashboard_block = dashboard.get("dashboard")
+        if not isinstance(dashboard_block, dict):
+            dashboard_block = {}
+        else:
+            dashboard_block = dict(dashboard_block)
+
+        dashboard_block["agent_disagreement_explanation"] = explanation
+        dashboard["dashboard"] = dashboard_block
+        ctx.set_data("final_dashboard", dashboard)
+
+        for opinion in reversed(ctx.opinions):
+            if opinion.agent_name == "decision":
+                opinion.raw_data = dashboard
+                break
+
+    def _build_agent_disagreement_explanation(self, ctx: AgentContext) -> Optional[Dict[str, Any]]:
+        """Build the final dashboard disagreement explanation from runtime context."""
+        summary = ctx.meta.get("agent_disagreement_summary")
+        if not isinstance(summary, dict) or not summary:
+            return None
+
+        conflict_type = _safe_text(summary.get("conflict_type"))
+        decision_path = _safe_text(summary.get("decision_path_hint"))
+        degraded_result = (
+            summary.get("degraded_result")
+            if isinstance(summary.get("degraded_result"), dict)
+            else {}
+        )
+        risk_control = (
+            summary.get("risk_control")
+            if isinstance(summary.get("risk_control"), dict)
+            else {}
+        )
+
+        risk_applied = ctx.get_data("risk_override_applied")
+        if not isinstance(risk_applied, dict):
+            risk_applied = {}
+
+        degraded_stages = self._summarize_degraded_stages(degraded_result)
+        risk_override = {
+            "evidence_present": bool(risk_control.get("evidence_present")),
+            "override_enabled": bool(risk_control.get("override_enabled")),
+            "override_trigger_present": bool(risk_control.get("override_trigger_present")),
+            "applied": bool(risk_applied),
+            "reason": _safe_text(risk_applied.get("reason") or risk_control.get("reason") or "none"),
+        }
+        if risk_applied:
+            risk_override.update(
+                {
+                    "from": _safe_text(risk_applied.get("from")),
+                    "to": _safe_text(risk_applied.get("to")),
+                    "adjustment": _safe_text(risk_applied.get("adjustment")),
+                }
+            )
+
+        return {
+            "conflict_type": conflict_type,
+            "decision_path": decision_path,
+            "degraded_stages": degraded_stages,
+            "risk_override": risk_override,
+            "summary": self._format_agent_disagreement_explanation_summary(
+                conflict_type=conflict_type,
+                decision_path=decision_path,
+                degraded_stages=degraded_stages,
+                risk_override=risk_override,
+            ),
+        }
+
+    @staticmethod
+    def _summarize_degraded_stages(degraded_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return prompt-safe degraded-stage markers for final output."""
+        stages = degraded_result.get("stages")
+        if not isinstance(stages, list):
+            return []
+
+        sanitized: List[Dict[str, Any]] = []
+        for item in stages:
+            if not isinstance(item, dict):
+                continue
+            stage_name = _safe_text(item.get("stage_name"))
+            status = _safe_text(item.get("status"))
+            if not stage_name or not status:
+                continue
+            sanitized.append({
+                "stage_name": stage_name,
+                "status": status,
+                "non_critical": item.get("non_critical") is True,
+            })
+        return sanitized
+
+    @staticmethod
+    def _format_agent_disagreement_explanation_summary(
+        *,
+        conflict_type: str,
+        decision_path: str,
+        degraded_stages: List[Dict[str, Any]],
+        risk_override: Dict[str, Any],
+    ) -> str:
+        """Build a concise low-sensitivity human-readable explanation."""
+        parts = []
+        if conflict_type:
+            parts.append(f"conflict_type={conflict_type}")
+        if decision_path:
+            parts.append(f"decision_path={decision_path}")
+
+        if degraded_stages:
+            stage_names = ", ".join(stage["stage_name"] for stage in degraded_stages if stage.get("stage_name"))
+            if stage_names:
+                parts.append(f"degraded_stages={stage_names}")
+
+        if risk_override.get("applied"):
+            from_signal = risk_override.get("from") or "unknown"
+            to_signal = risk_override.get("to") or "unknown"
+            reason = risk_override.get("reason") or "none"
+            parts.append(f"risk_override_applied={from_signal}->{to_signal} ({reason})")
+        elif risk_override.get("evidence_present"):
+            reason = risk_override.get("reason") or "none"
+            parts.append(f"risk_evidence_present=true ({reason})")
+        else:
+            parts.append("risk_override_applied=false")
+
+        return "; ".join(parts)
+
     def _record_degraded_stage(
         self,
         ctx: AgentContext,
@@ -897,6 +1030,7 @@ class AgentOrchestrator:
         # Apply risk override (idempotent — safe to call even if already
         # applied in _execute_pipeline after the decision stage).
         self._apply_risk_override(ctx)
+        self._attach_agent_disagreement_explanation(ctx)
         overridden = ctx.get_data("final_dashboard")
         if isinstance(overridden, dict):
             return overridden
@@ -1650,6 +1784,13 @@ def _level_values_equal(left: Any, right: Any) -> bool:
         and right_normalized is not None
         and left_normalized == right_normalized
     )
+
+
+def _safe_text(value: Any) -> str:
+    """Return a stripped string for low-sensitivity output fields."""
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def _first_non_empty_text(*values: Any) -> str:
