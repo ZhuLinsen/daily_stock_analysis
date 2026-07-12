@@ -38,7 +38,7 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-            - name: 执行股票分析
+      - name: 执行股票分析
         env:
           STOCK_LIST: "603986,300308"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
