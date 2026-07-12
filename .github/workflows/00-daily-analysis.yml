@@ -44,4 +44,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-        run: python main.py --force_run=${{ github.event.inputs.force_run || 'false' }}
+        run: python main.py
