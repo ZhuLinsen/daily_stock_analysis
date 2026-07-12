@@ -6,6 +6,7 @@ import { ReportNews } from './ReportNews';
 import { ReportDetails } from './ReportDetails';
 import { ReportDiagnostics } from './ReportDiagnostics';
 import { AnalysisContextSummary } from './AnalysisContextSummary';
+import { MarketStructureCard } from './MarketStructureCard';
 import { MarketReviewReportView } from './MarketReviewReportView';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 
@@ -67,6 +68,9 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
         isHistory={isHistory}
         watchlist={watchlist}
       />
+
+      {/* 市场结构位置 */}
+      <MarketStructureCard context={details?.marketStructure} language={reportLanguage} />
 
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} language={reportLanguage} />

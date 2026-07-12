@@ -110,7 +110,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "alphasift")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
@@ -141,6 +141,16 @@ if DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE=1 "${packaged_entry}" >/tmp/alphasift-pac
 else
   echo "ERROR: packaged backend artifact cannot import alphasift.dsa_adapter."
   cat /tmp/alphasift-packaged-import.log
+  exit 1
+fi
+
+log "Verifying packaged AkShare calendar data..."
+packaged_akshare_calendar="${packaged_root}/_internal/akshare/file_fold/calendar.json"
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  packaged_akshare_calendar="${packaged_root}/akshare/file_fold/calendar.json"
+fi
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  echo "ERROR: packaged AkShare calendar data not found under ${packaged_root}."
   exit 1
 fi
 

@@ -3127,6 +3127,10 @@
             "description": "建议动作展示标签",
             "nullable": true
           },
+          "model_used": {
+            "type": "string",
+            "description": "历史记录中展示的模型快照，仅用于展示与排障，不影响 provider/model/base URL 运行时路由"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -3164,7 +3168,7 @@
               },
               "model_used": {
                 "type": "string",
-                "description": "分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）"
+                "description": "历史快照中的模型名称，仅供展示，不参与运行时 provider/model/base URL 路由、清理或迁移"
               }
             }
           },
@@ -3258,6 +3262,10 @@
               "context_snapshot": {
                 "type": "object",
                 "description": "分析时上下文快照（JSON）"
+              },
+              "market_structure": {
+                "type": "object",
+                "description": "市场结构上下文（题材主线与个股市场位置信息，JSON）"
               }
             }
           }

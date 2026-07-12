@@ -817,6 +817,10 @@ class TestOrchestratorModes(unittest.TestCase):
         orch = self._make_orchestrator()
         phase_context = {"phase": "intraday", "is_partial_bar": True}
         pack_summary = "\n## 分析上下文包摘要\n- 数据块状态：行情 available\n"
+        market_structure_context = {
+            "market_theme_context": {"status": "ok", "active_themes": []},
+            "stock_market_position": {"status": "ok", "primary_theme": {"name": "机器人概念"}},
+        }
 
         ctx = orch._build_context(
             "Analyze 600519",
@@ -825,13 +829,16 @@ class TestOrchestratorModes(unittest.TestCase):
                 "stock_name": "贵州茅台",
                 "market_phase_context": phase_context,
                 "analysis_context_pack_summary": pack_summary,
+                "market_structure_context": market_structure_context,
             },
         )
 
         self.assertEqual(ctx.meta["market_phase_context"], phase_context)
         self.assertEqual(ctx.meta["analysis_context_pack_summary"], pack_summary)
+        self.assertEqual(ctx.meta["market_structure_context"], market_structure_context)
         self.assertNotIn("market_phase_context", ctx.data)
         self.assertNotIn("analysis_context_pack_summary", ctx.data)
+        self.assertNotIn("market_structure_context", ctx.data)
 
     def test_build_context_extracts_code_from_query(self):
         orch = self._make_orchestrator()
@@ -2379,6 +2386,10 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         agent = self._make_agent(memory)
         ctx = AgentContext(query="test", stock_code="600519")
         ctx.meta["market_phase_context"] = {"phase": "intraday"}
+        ctx.meta["market_structure_context"] = {
+            "market_theme_context": {"status": "ok"},
+            "stock_market_position": {"status": "ok"},
+        }
         ctx.meta["analysis_context_pack_summary"] = "\n## 分析上下文包摘要\n- 数据块状态：行情 available\n"
         ctx.set_data("realtime_quote", {"price": 1880.0})
 
@@ -2387,6 +2398,8 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         self.assertIn("[Pre-fetched: realtime_quote]", injected)
         self.assertNotIn("market_phase_context", injected)
         self.assertNotIn("[Pre-fetched: market_phase_context]", injected)
+        self.assertNotIn("market_structure_context", injected)
+        self.assertNotIn("[Pre-fetched: market_structure_context]", injected)
         self.assertNotIn("analysis_context_pack_summary", injected)
         self.assertNotIn("[Pre-fetched: analysis_context_pack_summary]", injected)
         self.assertNotIn("分析上下文包摘要", injected)

@@ -409,6 +409,11 @@ class DecisionSignalService:
                 change_pct=self._history_float(raw.get("change_pct")),
                 model_used=raw.get("model_used"),
                 query_id=getattr(record, "query_id", None),
+                market_structure_context=(
+                    raw.get("market_structure_context")
+                    if isinstance(raw.get("market_structure_context"), dict)
+                    else None
+                ),
             )
             payload = build_decision_signal_payload_from_report(
                 result,

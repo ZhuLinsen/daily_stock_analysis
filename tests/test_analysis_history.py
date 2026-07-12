@@ -1623,6 +1623,65 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsNone(report.details.analysis_context_pack_overview)
         self.assertIsNone(report.details.context_snapshot)
 
+    def test_history_detail_restores_market_structure_from_raw_result_without_snapshot(self) -> None:
+        """SAVE_CONTEXT_SNAPSHOT=false should still expose market_structure saved in raw_result."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        market_structure = {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+                "active_themes": [{"name": "机器人概念"}],
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+            },
+        }
+        result = self._build_result()
+        result.market_structure_context = market_structure
+        query_id = "query_market_structure_snapshot_disabled_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot={"market_structure_context": {"ignored": True}},
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            self.assertIsNone(row.context_snapshot)
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.details.context_snapshot)
+        self.assertEqual(
+            report.details.market_structure["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            report.details.raw_result["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            report.details.raw_result,
+        )
+
     def test_history_markdown_localizes_english_report_and_placeholder_name(self) -> None:
         """History markdown should preserve report_language for English reports."""
         result = AnalysisResult(

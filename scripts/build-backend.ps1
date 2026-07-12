@@ -124,6 +124,7 @@ $pyInstallerArgs = @(
   '--add-data', 'strategies;strategies',
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
+  '--collect-data', 'akshare',
   '--collect-all', 'alphasift'
 )
 $pyInstallerArgs += $hiddenImportArgs
@@ -159,6 +160,15 @@ try {
   } else {
     $env:DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE = $previousProbe
   }
+}
+
+Write-Host 'Verifying packaged AkShare calendar data...'
+$packagedAkshareCalendar = Join-Path 'dist\backend\stock_analysis' '_internal\akshare\file_fold\calendar.json'
+if (-not (Test-Path $packagedAkshareCalendar)) {
+  $packagedAkshareCalendar = Join-Path 'dist\backend\stock_analysis' 'akshare\file_fold\calendar.json'
+}
+if (-not (Test-Path $packagedAkshareCalendar)) {
+  throw 'Packaged AkShare calendar data not found under dist\backend\stock_analysis.'
 }
 
 Write-Host 'Verifying static asset references (packaged)...'

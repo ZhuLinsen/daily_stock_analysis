@@ -20,6 +20,7 @@ SWITCH_CLEANUP_KEYS = {
     "trend_result",
     "news_context",
     "fundamental_context",
+    "market_structure_context",
     "analysis_context_pack_summary",
     "market_phase_context",
 }

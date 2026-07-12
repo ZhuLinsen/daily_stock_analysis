@@ -408,6 +408,49 @@ def test_list_signals_profile_filter_controls_lazy_backfill(isolated_db) -> None
     assert balanced["items"][0]["decision_profile"] == "balanced"
     with isolated_db.get_session() as session:
         assert session.query(DecisionSignalRecord).count() == 1
+def test_list_signals_backfill_uses_raw_result_market_structure_without_snapshot(isolated_db) -> None:
+    market_structure = {
+        "schema_version": "market-structure-v1",
+        "status": "partial",
+        "market": "cn",
+        "market_theme_context": {
+            "schema_version": "market-theme-v1",
+            "status": "partial",
+            "market": "cn",
+        },
+        "stock_market_position": {
+            "schema_version": "stock-market-position-v1",
+            "status": "partial",
+            "stock_code": "300024",
+            "market": "cn",
+            "primary_theme": {"name": "机器人概念"},
+            "theme_phase": "accelerating",
+            "stock_role": "follower",
+            "risk_tags": [{"code": "theme_data_partial"}],
+        },
+    }
+    record_id = isolated_db.save_analysis_history(
+        result=_history_result(code="300024", name="机器人", market_structure_context=market_structure),
+        query_id="query-lazy-signal-market-structure",
+        report_type="simple",
+        news_content="新闻摘要",
+        context_snapshot={"market_structure_context": {"ignored": True}},
+        save_snapshot=False,
+    )
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    listed = service.list_signals(source_type="analysis", source_report_id=record_id)
+
+    assert listed["total"] == 1
+    metadata = listed["items"][0]["metadata"]
+    assert metadata["market_structure_version"] == "market-structure-v1"
+    assert metadata["market_theme_version"] == "market-theme-v1"
+    assert metadata["stock_market_position_version"] == "stock-market-position-v1"
+    assert metadata["market_structure_status"] == "partial"
+    assert metadata["primary_theme"] == "机器人概念"
+    assert metadata["theme_phase"] == "accelerating"
+    assert metadata["stock_role"] == "follower"
+    assert metadata["market_structure_risk_tags"] == ["theme_data_partial"]
 
 
 @pytest.mark.parametrize(

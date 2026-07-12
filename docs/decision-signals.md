@@ -148,6 +148,23 @@ Web 入口位于 `/decision-signals`：
 - Legacy / unknown 只用数据库 `NULL` 表示。`profile_policy_version` 只表示默认 profile metadata contract version，不代表已经实现独立 profile policy engine、scoring engine 或多 profile 生成。P1/P2 不写入 `scoring_version` 或 `scoring_breakdown`；这些字段如需引入，应由后续 reassess / scoring issue 定义。
 - Lazy backfill 语义：省略 profile 保留旧的 `source_type=analysis + source_report_id` 懒回填；`decision_profile=balanced` 可生成 balanced 回填；`decision_profile=unknown`、`conservative`、`aggressive` 不自动创建行。
 
+## 市场结构 metadata
+
+普通个股分析和 Agent 个股分析如果携带 `market_structure_context`，自动提取 `DecisionSignal` 时会把以下低敏字段追加到 metadata：
+
+- `market_structure_version`
+- `market_theme_version`
+- `stock_market_position_version`
+- `market_structure_status`
+- `primary_theme`
+- `theme_phase`
+- `stock_role`
+- `market_structure_risk_tags`
+
+这些字段只用于解释信号所处题材背景，不参与 `action`、`score`、`horizon`、同源去重键或生命周期计算。它们也不是题材龙头证明；当 `market_structure_risk_tags` 或缺失证据显示成分股、leader stocks 不完整时，客户端和后验分析应按降级题材证据处理。
+
+快照字段中的 `provider` / `dataset` 来自市场结构抽取链路元数据，属于运行后持久化证据，不参与 LLM provider/model 路由、`base URL` 解析、`.env` 写回或配置迁移；可核验范围见 `src/schemas/market_structure.py`。
+
 ## 告警、通知与组合风险
 
 - 股票级真实告警触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 `alert_triggers.diagnostics`。

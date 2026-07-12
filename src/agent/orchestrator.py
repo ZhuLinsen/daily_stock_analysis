@@ -795,6 +795,9 @@ class AgentOrchestrator:
             daily_market_context = context.get("daily_market_context")
             if isinstance(daily_market_context, dict) and daily_market_context:
                 ctx.meta["daily_market_context"] = dict(daily_market_context)
+            market_structure_context = context.get("market_structure_context")
+            if isinstance(market_structure_context, dict) and market_structure_context:
+                ctx.meta["market_structure_context"] = dict(market_structure_context)
             analysis_context_pack_summary = context.get("analysis_context_pack_summary")
             if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
                 ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
