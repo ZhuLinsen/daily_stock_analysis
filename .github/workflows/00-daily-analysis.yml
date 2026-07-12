@@ -1,29 +1,19 @@
-name: 每日股票分析
+name: Daily Stock Analysis
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
-  schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
-  # 手动触发
+  push:
   workflow_dispatch:
     inputs:
       mode:
-        description: '运行模式'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - full          # 完整分析（股票+大盘）
-          - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
-      force_run:
-        description: '强制运行（跳过交易日检查）'
+        description: '模式'
         required: false
-        default: false
+        default: 'full'
+      force_run:
+        description: '强制运行 (跳过交易日检查)'
+        required: false
+        default: 'false'
         type: boolean
 
-# 并发控制：同一时间只运行一个分析任务
 concurrency:
   group: stock-analysis
   cancel-in-progress: false
@@ -34,9 +24,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: 随机延迟 (避免固定时间访问)
-        run: sleep $((RANDOM % 60))
-
       - name: 检出代码
         uses: actions/checkout@v5
 
@@ -50,10 +37,6 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: 创建必要目录
-        run: |
-          mkdir -p data logs reports
 
       - name: 执行股票分析
         env:
