@@ -44,4 +44,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
-        run: python main.py
+          # 关键修改：直接将勾选状态注入到环境变量 FORCE_RUN 中
+          FORCE_RUN: ${{ github.event.inputs.force_run }}
+        run: |
+          python main.py
