@@ -1,7 +1,7 @@
 import type { ReportLanguage } from '../types/analysis';
 
 export const normalizeReportLanguage = (value?: string | null): ReportLanguage =>
-  value === 'en' ? 'en' : value === 'ko' ? 'ko' : 'zh';
+  value === 'en' ? 'en' : value === 'ko' ? 'ko' : value === 'zh-tw' ? 'zh-tw' : 'zh';
 
 const REPORT_TEXT = {
   zh: {
@@ -141,6 +141,52 @@ const REPORT_TEXT = {
     laggingBoard: '약세',
     neutralBoard: '중립',
     reanalyze: '재분석',
+  },
+  'zh-tw': {
+    keyInsights: '核心洞察',
+    noAnalysisSummary: '暫無分析結論',
+    actionAdvice: '操作建議',
+    noAdvice: '暫無建議',
+    trendPrediction: '趨勢預測',
+    noPrediction: '暫無預測',
+    marketSentiment: '市場情緒',
+    strategyPoints: '策略點位',
+    sniperLevels: '狙擊點位',
+    idealBuy: '理想買入',
+    secondaryBuy: '二次買入',
+    stopLoss: '止損價位',
+    takeProfit: '止盈目標',
+    noValue: '—',
+    newsFeed: '資訊動態',
+    relatedNews: '相關資訊',
+    refresh: '刷新',
+    retry: '重試',
+    dismiss: '關閉',
+    details: '查看詳情',
+    loadingNews: '載入資訊中...',
+    noNews: '暫無相關資訊',
+    noNewsDescription: '可稍後刷新以獲取最新資訊。',
+    openLink: '跳轉',
+    transparency: '透明度',
+    traceability: '數據追溯',
+    rawResult: '原始分析結果',
+    analysisSnapshot: '分析快照',
+    copy: '複製',
+    copied: '已複製',
+    recordId: '記錄 ID',
+    fullReport: '完整分析報告',
+    loadingReport: '載入報告中...',
+    loadReportFailed: '載入報告失敗',
+    copyMarkdownSource: '複製 Markdown 原始碼',
+    copyPlainText: '複製純文字',
+    analysisModel: '分析模型',
+    fearGreedIndex: '恐懼貪婪指數',
+    boardLinkage: '板塊聯動',
+    relatedBoards: '關聯板塊',
+    leadingBoard: '領漲',
+    laggingBoard: '領跌',
+    neutralBoard: '中性',
+    reanalyze: '重新分析',
   },
 } as const;
 

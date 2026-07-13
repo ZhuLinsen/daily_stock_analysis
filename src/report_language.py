@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from src.schemas.decision_scale import signal_key_for_score
@@ -1162,20 +1161,3 @@ def get_sentiment_label(score: int, language: Optional[str]) -> str:
     if score >= 20:
         return "悲观"
     return "极度悲观"
-
-
-def get_now_with_config_timezone() -> datetime:
-    """Return current datetime adjusted to config.notification_timezone, or local timezone if not set."""
-    try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        from backports.zoneinfo import ZoneInfo  # type: ignore[import-not-found]
-    from src.config import get_config
-    config = get_config()
-    tz_name = getattr(config, "notification_timezone", "") or ""
-    if tz_name:
-        try:
-            return datetime.now(ZoneInfo(tz_name))
-        except Exception:
-            pass
-    return datetime.now()

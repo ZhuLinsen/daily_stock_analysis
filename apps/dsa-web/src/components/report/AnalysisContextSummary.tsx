@@ -44,6 +44,14 @@ const BLOCK_LABELS: Record<ReportLanguage, Record<string, string>> = {
     fundamentals: '基本面',
     chip: '筹码',
   },
+  'zh-tw': {
+    quote: '行情',
+    daily_bars: '日線',
+    technical: '技術',
+    news: '新聞',
+    fundamentals: '基本面',
+    chip: '籌碼',
+  },
   en: {
     quote: 'quote',
     daily_bars: 'daily bars',
@@ -153,6 +161,36 @@ const TEXT = {
       fetch_failed: '수집 실패',
     },
   },
+  'zh-tw': {
+    eyebrow: '數據上下文',
+    title: '輸入數據塊',
+    counts: '狀態計數',
+    source: '來源',
+    warnings: '告警',
+    missingReasons: '缺失原因',
+    inputScope: '本次分析輸入',
+    evidenceScope: '僅代表進入本次 LLM 的輸入，不等同於數據源執行成功',
+    qualityScore: '品質分',
+    limitations: '數據限制',
+    newsResultCount: '新聞結果數',
+    triggerSource: '觸發來源',
+    qualityLevel: {
+      good: '良好',
+      usable: '可用',
+      limited: '受限',
+      poor: '較差',
+    },
+    status: {
+      available: '可用',
+      missing: '缺失',
+      not_supported: '不支援',
+      fallback: '降級',
+      stale: '過期',
+      estimated: '估算',
+      partial: '部分可用',
+      fetch_failed: '抓取失敗',
+    },
+  },
 } as const;
 
 const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
@@ -185,6 +223,16 @@ const MISSING_REASON_LABELS: Record<ReportLanguage, Record<string, string>> = {
     chip_distribution_missing: '분석 입력에 포함되지 않음',
     today_missing: '당일 데이터가 분석 입력에 포함되지 않음',
     yesterday_missing: '전일 데이터가 분석 입력에 포함되지 않음',
+  },
+  'zh-tw': {
+    daily_bars_missing: '未進入分析輸入',
+    news_context_missing: '未進入分析輸入',
+    realtime_quote_missing: '未進入分析輸入',
+    trend_result_missing: '未進入分析輸入',
+    fundamental_context_missing: '未進入分析輸入',
+    chip_distribution_missing: '未進入分析輸入',
+    today_missing: '今日數據未進入分析輸入',
+    yesterday_missing: '昨日數據未進入分析輸入',
   },
 };
 
