@@ -31,6 +31,7 @@ from src.report_language import (
     localize_chip_health,
     localize_trend_prediction,
     normalize_report_language,
+    get_now_with_config_timezone,
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
@@ -913,8 +914,8 @@ class HistoryService:
         Returns:
             Markdown formatted report string
         """
-        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
-        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else datetime.now(BEIJING_TZ).strftime("%H:%M:%S")
+        report_date = record.created_at.strftime("%Y-%m-%d") if record.created_at else get_now_with_config_timezone().strftime("%Y-%m-%d")
+        report_time = record.created_at.strftime("%H:%M:%S") if record.created_at else get_now_with_config_timezone().strftime("%H:%M:%S")
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         labels = get_report_labels(report_language)
 

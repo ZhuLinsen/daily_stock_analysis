@@ -26,6 +26,7 @@ from src.report_language import (
     localize_operation_advice,
     localize_trend_prediction,
     normalize_report_language,
+    get_now_with_config_timezone,
 )
 from src.schemas.decision_action import (
     display_action_fields_for_result,
@@ -99,11 +100,7 @@ def render(
     Returns:
         Rendered string, or None on error (caller should fallback).
     """
-    from datetime import datetime, timedelta, timezone
-
-    BEIJING_TZ = timezone(timedelta(hours=8))
-    TAIPEI_TZ = BEIJING_TZ  # 兩者時間相同
-
+    from datetime import datetime
     try:
         from jinja2 import Environment, FileSystemLoader, select_autoescape
     except ImportError:
@@ -111,7 +108,7 @@ def render(
         return None
 
     if report_date is None:
-        report_date = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        report_date = get_now_with_config_timezone().strftime("%Y-%m-%d")
 
     templates_dir = _resolve_templates_dir()
     template_name = f"report_{platform}.j2"
@@ -179,7 +176,7 @@ def render(
                 models_used.append(model)
         models_used = list(dict.fromkeys(models_used))
 
-    report_timestamp = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    report_timestamp = get_now_with_config_timezone().strftime("%Y-%m-%d %H:%M:%S")
 
     def failed_checks(checklist: List[str]) -> List[str]:
         return [c for c in (checklist or []) if c.startswith("❌") or c.startswith("⚠️")]

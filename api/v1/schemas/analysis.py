@@ -116,7 +116,7 @@ class MarketReviewRequest(BaseModel):
         True,
         description="是否在大盘复盘完成后发送推送通知",
     )
-    report_language: Optional[Literal["zh", "en", "ko"]] = Field(
+    report_language: Optional[Literal["zh", "zh-tw", "en", "ko"]] = Field(
         None,
         validation_alias=AliasChoices("report_language", "reportLanguage"),
         description="本次大盘复盘报告输出语言；未传时使用全局 REPORT_LANGUAGE",
