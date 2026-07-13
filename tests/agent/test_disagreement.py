@@ -344,9 +344,14 @@ def test_orchestrator_builds_final_disagreement_explanation(monkeypatch):
     from src.agent.orchestrator import AgentOrchestrator
 
     ctx = AgentContext(query="test", stock_code="600519")
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8))
+    ctx.add_opinion(AgentOpinion(agent_name="risk", signal="sell", confidence=0.9))
     ctx.meta["agent_disagreement_summary"] = {
         "conflict_type": "risk_override",
         "decision_path_hint": "prioritize_risk_controls_and_cap_buy_signal",
+        "bullish_agents": [{"agent_name": "technical", "signal": "buy", "confidence": 0.8}],
+        "bearish_agents": [{"agent_name": "risk", "signal": "sell", "confidence": 0.9}],
+        "neutral_agents": [],
         "risk_control": {
             "evidence_present": True,
             "override_enabled": True,
@@ -371,6 +376,7 @@ def test_orchestrator_builds_final_disagreement_explanation(monkeypatch):
         "adjustment": "veto",
         "reason": "risk_veto",
     })
+    ctx.set_data("final_dashboard", {"decision_type": "hold", "dashboard": {}})
     orchestrator = AgentOrchestrator(
         tool_registry=MagicMock(),
         llm_adapter=MagicMock(),
@@ -379,22 +385,27 @@ def test_orchestrator_builds_final_disagreement_explanation(monkeypatch):
 
     explanation = orchestrator._build_agent_disagreement_explanation(ctx)
 
-    assert explanation["conflict_type"] == "risk_override"
-    assert explanation["decision_path"] == "prioritize_risk_controls_and_cap_buy_signal"
-    assert explanation["degraded_stages"] == [
-        {"stage_name": "intel", "status": "failed", "non_critical": True}
+    assert explanation["base_disagreement"]["type"] == "mixed_directional_signals"
+    assert explanation["decision_path"] == "apply_risk_control"
+    assert explanation["degraded_events"] == [
+        {"stage": "intel", "reason": "non_critical_failure", "critical": False}
     ]
-    assert explanation["risk_override"]["applied"] is True
-    assert explanation["risk_override"]["from"] == "buy"
-    assert explanation["risk_override"]["to"] == "hold"
+    assert explanation["risk_control"]["applied"] is True
+    assert explanation["risk_control"]["trigger"] == "risk_veto"
+    assert explanation["risk_control"]["planned_action"] == "cap_buy_to_hold"
+    assert explanation["risk_control"]["from"] == "buy"
+    assert explanation["risk_control"]["to"] == "hold"
+    assert "conflict_type=" not in explanation["summary"]
     assert "raw secret error" not in str(explanation)
 
 
-def test_orchestrator_relabels_risk_conflict_when_final_override_does_not_apply(monkeypatch):
+def test_orchestrator_preserves_base_disagreement_when_risk_control_does_not_apply(monkeypatch):
     _mock_optional_litellm(monkeypatch)
     from src.agent.orchestrator import AgentOrchestrator
 
     ctx = AgentContext(query="test", stock_code="600519")
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8))
+    ctx.add_opinion(AgentOpinion(agent_name="intel", signal="sell", confidence=0.7))
     ctx.add_opinion(AgentOpinion(
         agent_name="risk",
         signal="sell",
@@ -404,6 +415,12 @@ def test_orchestrator_relabels_risk_conflict_when_final_override_does_not_apply(
     ctx.meta["agent_disagreement_summary"] = {
         "conflict_type": "risk_override",
         "decision_path_hint": "prioritize_risk_controls_and_cap_buy_signal",
+        "bullish_agents": [{"agent_name": "technical", "signal": "buy", "confidence": 0.8}],
+        "bearish_agents": [
+            {"agent_name": "intel", "signal": "sell", "confidence": 0.7},
+            {"agent_name": "risk", "signal": "sell", "confidence": 0.9},
+        ],
+        "neutral_agents": [],
         "risk_control": {
             "evidence_present": True,
             "override_enabled": True,
@@ -421,16 +438,42 @@ def test_orchestrator_relabels_risk_conflict_when_final_override_does_not_apply(
 
     explanation = orchestrator._build_agent_disagreement_explanation(ctx)
 
-    assert explanation["conflict_type"] == "risk_control_reviewed_no_override"
+    assert explanation["base_disagreement"]["type"] == "mixed_directional_signals"
     assert explanation["decision_path"] == "preserve_final_signal_after_risk_check"
-    assert explanation["risk_override"]["applied"] is False
-    assert explanation["risk_override"]["will_apply"] is False
-    assert explanation["risk_override"]["current"] == "hold"
-    assert explanation["risk_override"]["target"] == "hold"
-    assert (
-        explanation["risk_override"]["not_applied_reason"]
-        == "final_signal_already_within_risk_limit"
+    assert explanation["risk_control"]["evidence_present"] is True
+    assert explanation["risk_control"]["trigger"] == "risk_veto"
+    assert explanation["risk_control"]["planned_action"] == "cap_buy_to_hold"
+    assert explanation["risk_control"]["applied"] is False
+    assert explanation["risk_control"]["not_applied_reason"] == "final_signal_already_within_risk_limit"
+    assert "conflict_type=" not in explanation["summary"]
+
+
+def test_orchestrator_final_explanation_summary_is_localized(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True),
     )
+
+    summaries = {}
+    for language in ("zh", "en", "ko"):
+        ctx = AgentContext(query="test", stock_code="600519")
+        ctx.meta["report_language"] = language
+        ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8))
+        ctx.add_opinion(AgentOpinion(agent_name="intel", signal="sell", confidence=0.7))
+        ctx.set_data("final_dashboard", {"decision_type": "hold", "dashboard": {}})
+        summaries[language] = orchestrator._build_agent_disagreement_explanation(ctx)["summary"]
+
+    assert "基础 Agent" in summaries["zh"]
+    assert "Base agents" in summaries["en"]
+    assert "기초 Agent" in summaries["ko"]
+    for summary in summaries.values():
+        assert "conflict_type=" not in summary
+        assert "risk_evidence_present=" not in summary
+        assert "decision_path=" not in summary
 
 
 def test_orchestrator_builds_no_explanation_without_summary(monkeypatch):
@@ -446,7 +489,7 @@ def test_orchestrator_builds_no_explanation_without_summary(monkeypatch):
     assert orchestrator._build_agent_disagreement_explanation(AgentContext()) is None
 
 
-def test_orchestrator_attach_explanation_keeps_dashboard_unchanged_without_summary(monkeypatch):
+def test_orchestrator_attach_explanation_without_summary_uses_runtime_facts(monkeypatch):
     _mock_optional_litellm(monkeypatch)
     from src.agent.orchestrator import AgentOrchestrator
 
@@ -461,8 +504,9 @@ def test_orchestrator_attach_explanation_keeps_dashboard_unchanged_without_summa
 
     orchestrator._attach_agent_disagreement_explanation(ctx)
 
-    assert ctx.get_data("final_dashboard") == dashboard
-    assert "agent_disagreement_explanation" not in ctx.get_data("final_dashboard")["dashboard"]
+    explanation = ctx.get_data("final_dashboard")["dashboard"]["agent_disagreement_explanation"]
+    assert explanation["base_disagreement"]["type"] == "insufficient_opinions"
+    assert explanation["risk_control"]["applied"] is False
 
 
 def test_orchestrator_prepare_decision_context_propagates_summary_errors(monkeypatch):

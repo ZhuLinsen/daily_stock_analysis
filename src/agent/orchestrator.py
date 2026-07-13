@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
+_BULLISH_BASE_SIGNALS = {"buy", "strong_buy"}
+_BEARISH_BASE_SIGNALS = {"sell", "strong_sell"}
 
 
 @dataclass
@@ -156,6 +158,12 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._record_degraded_event(
+                ctx,
+                stage="timeout",
+                reason="timeout",
+                critical=False,
+            )
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -197,6 +205,12 @@ class AgentOrchestrator:
         dashboard = None
         content = ""
         if ctx is not None:
+            self._record_degraded_event(
+                ctx,
+                stage=stage_name,
+                reason="budget_skip",
+                critical=False,
+            )
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
                 dashboard = self._mark_partial_dashboard(
@@ -772,131 +786,21 @@ class AgentOrchestrator:
 
     def _build_agent_disagreement_explanation(self, ctx: AgentContext) -> Optional[Dict[str, Any]]:
         """Build the final dashboard disagreement explanation from runtime context."""
-        summary = ctx.meta.get("agent_disagreement_summary")
-        if not isinstance(summary, dict) or not summary:
+        dashboard = ctx.get_data("final_dashboard")
+        if not isinstance(dashboard, dict):
             return None
 
-        conflict_type = _safe_text(summary.get("conflict_type"))
-        decision_path = _safe_text(summary.get("decision_path_hint"))
-        dashboard = ctx.get_data("final_dashboard")
-        dashboard_signal = dashboard.get("decision_type") if isinstance(dashboard, dict) else None
-        degraded_result = (
-            summary.get("degraded_result")
-            if isinstance(summary.get("degraded_result"), dict)
-            else {}
+        risk_plan = build_risk_override_plan(
+            ctx,
+            current_signal=dashboard.get("decision_type"),
+            override_enabled=getattr(self.config, "agent_risk_override", True),
         )
-        risk_control = (
-            summary.get("risk_control")
-            if isinstance(summary.get("risk_control"), dict)
-            else {}
+        return build_final_agent_disagreement_explanation(
+            ctx,
+            dashboard,
+            risk_plan,
+            normalize_report_language(ctx.meta.get("report_language", "zh")),
         )
-
-        risk_applied = ctx.get_data("risk_override_applied")
-        if not isinstance(risk_applied, dict):
-            risk_applied = {}
-
-        degraded_stages = self._summarize_degraded_stages(degraded_result)
-        risk_override = {
-            "evidence_present": bool(risk_control.get("evidence_present")),
-            "override_enabled": bool(risk_control.get("override_enabled")),
-            "override_trigger_present": bool(risk_control.get("override_trigger_present")),
-            "applied": bool(risk_applied),
-            "reason": _safe_text(risk_applied.get("reason") or risk_control.get("reason") or "none"),
-        }
-        if risk_applied:
-            risk_override.update(
-                {
-                    "from": _safe_text(risk_applied.get("from")),
-                    "to": _safe_text(risk_applied.get("to")),
-                    "adjustment": _safe_text(risk_applied.get("adjustment")),
-                }
-            )
-        else:
-            final_plan = build_risk_override_plan(
-                ctx,
-                current_signal=dashboard_signal,
-                override_enabled=getattr(self.config, "agent_risk_override", True),
-            )
-            if final_plan.current_signal:
-                risk_override.update(
-                    {
-                        "current": final_plan.current_signal,
-                        "target": final_plan.target_signal,
-                        "will_apply": final_plan.will_apply,
-                    }
-                )
-            if conflict_type == "risk_override" and final_plan.will_apply is False:
-                conflict_type = "risk_control_reviewed_no_override"
-                decision_path = "preserve_final_signal_after_risk_check"
-                risk_override["not_applied_reason"] = "final_signal_already_within_risk_limit"
-
-        return {
-            "conflict_type": conflict_type,
-            "decision_path": decision_path,
-            "degraded_stages": degraded_stages,
-            "risk_override": risk_override,
-            "summary": self._format_agent_disagreement_explanation_summary(
-                conflict_type=conflict_type,
-                decision_path=decision_path,
-                degraded_stages=degraded_stages,
-                risk_override=risk_override,
-            ),
-        }
-
-    @staticmethod
-    def _summarize_degraded_stages(degraded_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Return prompt-safe degraded-stage markers for final output."""
-        stages = degraded_result.get("stages")
-        if not isinstance(stages, list):
-            return []
-
-        sanitized: List[Dict[str, Any]] = []
-        for item in stages:
-            if not isinstance(item, dict):
-                continue
-            stage_name = _safe_text(item.get("stage_name"))
-            status = _safe_text(item.get("status"))
-            if not stage_name or not status:
-                continue
-            sanitized.append({
-                "stage_name": stage_name,
-                "status": status,
-                "non_critical": item.get("non_critical") is True,
-            })
-        return sanitized
-
-    @staticmethod
-    def _format_agent_disagreement_explanation_summary(
-        *,
-        conflict_type: str,
-        decision_path: str,
-        degraded_stages: List[Dict[str, Any]],
-        risk_override: Dict[str, Any],
-    ) -> str:
-        """Build a concise low-sensitivity human-readable explanation."""
-        parts = []
-        if conflict_type:
-            parts.append(f"conflict_type={conflict_type}")
-        if decision_path:
-            parts.append(f"decision_path={decision_path}")
-
-        if degraded_stages:
-            stage_names = ", ".join(stage["stage_name"] for stage in degraded_stages if stage.get("stage_name"))
-            if stage_names:
-                parts.append(f"degraded_stages={stage_names}")
-
-        if risk_override.get("applied"):
-            from_signal = risk_override.get("from") or "unknown"
-            to_signal = risk_override.get("to") or "unknown"
-            reason = risk_override.get("reason") or "none"
-            parts.append(f"risk_override_applied={from_signal}->{to_signal} ({reason})")
-        elif risk_override.get("evidence_present"):
-            reason = risk_override.get("reason") or "none"
-            parts.append(f"risk_evidence_present=true ({reason})")
-        else:
-            parts.append("risk_override_applied=false")
-
-        return "; ".join(parts)
 
     def _record_degraded_stage(
         self,
@@ -917,6 +821,27 @@ class AgentOrchestrator:
             "status": result.status.value,
             "non_critical": self._is_non_critical_stage(agent_name),
         })
+
+    @staticmethod
+    def _record_degraded_event(
+        ctx: AgentContext,
+        *,
+        stage: str,
+        reason: str,
+        critical: bool,
+    ) -> None:
+        """Record a low-sensitivity runtime degradation event."""
+        events = ctx.meta.setdefault("degraded_events", [])
+        if not isinstance(events, list):
+            events = []
+            ctx.meta["degraded_events"] = events
+        event = {
+            "stage": _safe_text(stage) or "unknown",
+            "reason": _safe_text(reason) or "stage_failure",
+            "critical": bool(critical),
+        }
+        if event not in events:
+            events.append(event)
 
     def _is_non_critical_stage(self, agent_name: str) -> bool:
         """Return whether a failed stage should degrade instead of aborting."""
@@ -1595,6 +1520,338 @@ class AgentOrchestrator:
         prefix = f"风控接管：最终信号已下调为 {signal}。"
         merged = " ".join(dict.fromkeys([prefix] + warnings))
         return merged[:500]
+
+
+def build_final_agent_disagreement_explanation(
+    ctx: AgentContext,
+    dashboard: Dict[str, Any],
+    risk_override_plan: Any,
+    report_language: str,
+) -> Dict[str, Any]:
+    """Build the deterministic final-state disagreement explanation."""
+    base_disagreement = _build_final_base_disagreement(ctx)
+    risk_control = _build_final_risk_control(ctx, risk_override_plan)
+    degraded_events = _build_final_degraded_events(ctx)
+    decision_path = _build_final_decision_path(base_disagreement, risk_control, degraded_events)
+    return {
+        "base_disagreement": base_disagreement,
+        "risk_control": risk_control,
+        "degraded_events": degraded_events,
+        "decision_path": decision_path,
+        "summary": _format_final_disagreement_summary(
+            base_disagreement=base_disagreement,
+            risk_control=risk_control,
+            degraded_events=degraded_events,
+            report_language=report_language,
+        ),
+    }
+
+
+def _build_final_base_disagreement(ctx: AgentContext) -> Dict[str, Any]:
+    summary = ctx.meta.get("agent_disagreement_summary")
+    if isinstance(summary, dict):
+        bullish = _sanitize_agent_bucket(summary.get("bullish_agents"))
+        bearish = _sanitize_agent_bucket(summary.get("bearish_agents"))
+        neutral = _sanitize_agent_bucket(summary.get("neutral_agents"))
+    else:
+        bullish, bearish, neutral = _bucket_runtime_opinions(ctx)
+
+    return {
+        "type": _classify_base_disagreement(bullish, bearish, neutral),
+        "bullish_agents": bullish,
+        "bearish_agents": bearish,
+        "neutral_agents": neutral,
+    }
+
+
+def _sanitize_agent_bucket(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: List[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "agent_name": _safe_text(item.get("agent_name")) or "unknown",
+            "signal": _normalize_base_signal(item.get("signal")),
+            "confidence": _safe_confidence_value(item.get("confidence")),
+        })
+    return items
+
+
+def _bucket_runtime_opinions(
+    ctx: AgentContext,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    bullish: List[Dict[str, Any]] = []
+    bearish: List[Dict[str, Any]] = []
+    neutral: List[Dict[str, Any]] = []
+    for opinion in ctx.opinions:
+        agent_name = _safe_text(getattr(opinion, "agent_name", ""))
+        if agent_name == "decision":
+            continue
+        signal = _normalize_base_signal(getattr(opinion, "signal", None))
+        item = {
+            "agent_name": agent_name or "unknown",
+            "signal": signal,
+            "confidence": _safe_confidence_value(getattr(opinion, "confidence", None)),
+        }
+        if signal in _BULLISH_BASE_SIGNALS:
+            bullish.append(item)
+        elif signal in _BEARISH_BASE_SIGNALS:
+            bearish.append(item)
+        else:
+            neutral.append(item)
+    return bullish, bearish, neutral
+
+
+def _normalize_base_signal(value: Any) -> str:
+    if not isinstance(value, str):
+        return "hold"
+    normalized = value.strip().lower()
+    if normalized in _BULLISH_BASE_SIGNALS or normalized in _BEARISH_BASE_SIGNALS:
+        return normalized
+    return "hold"
+
+
+def _safe_confidence_value(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return round(max(0.0, min(1.0, confidence)), 2)
+
+
+def _classify_base_disagreement(
+    bullish_agents: List[Dict[str, Any]],
+    bearish_agents: List[Dict[str, Any]],
+    neutral_agents: List[Dict[str, Any]],
+) -> str:
+    if bullish_agents and bearish_agents:
+        return "mixed_directional_signals"
+    if bullish_agents:
+        return "aligned_bullish"
+    if bearish_agents:
+        return "aligned_bearish"
+    if neutral_agents:
+        return "aligned_neutral"
+    return "insufficient_opinions"
+
+
+def _build_final_risk_control(ctx: AgentContext, plan: Any) -> Dict[str, Any]:
+    risk_applied = ctx.get_data("risk_override_applied")
+    if not isinstance(risk_applied, dict):
+        risk_applied = {}
+
+    applied = bool(risk_applied)
+    control = {
+        "evidence_present": bool(getattr(plan, "evidence_present", False)) or applied,
+        "trigger": _risk_control_trigger(plan, risk_applied),
+        "planned_action": _risk_control_planned_action(plan, risk_applied),
+        "applied": applied,
+        "not_applied_reason": "none" if applied else _risk_control_not_applied_reason(plan),
+        "override_enabled": bool(getattr(plan, "override_enabled", False)),
+    }
+    if applied:
+        control.update({
+            "from": _safe_text(risk_applied.get("from")),
+            "to": _safe_text(risk_applied.get("to")),
+            "reason": _safe_text(risk_applied.get("reason") or getattr(plan, "reason", "none")),
+        })
+    else:
+        current_signal = getattr(plan, "current_signal", None)
+        target_signal = getattr(plan, "target_signal", None)
+        if current_signal:
+            control["current"] = current_signal
+        if target_signal:
+            control["target"] = target_signal
+    return control
+
+
+def _risk_control_trigger(plan: Any, risk_applied: Dict[str, Any]) -> str:
+    reason = _safe_text(risk_applied.get("reason") or getattr(plan, "reason", "")).lower()
+    adjustment = _safe_text(getattr(plan, "adjustment", "")).lower()
+    applied_adjustment = _safe_text(risk_applied.get("adjustment")).lower()
+    if bool(getattr(plan, "veto_buy", False)) or reason == "risk_veto" or applied_adjustment == "veto":
+        return "risk_veto"
+    if adjustment.startswith("downgrade") or applied_adjustment.startswith("downgrade"):
+        return "risk_downgrade"
+    if reason == "high_risk_evidence" or bool(getattr(plan, "risk_level_high", False)):
+        return "high_risk_evidence"
+    return "none"
+
+
+def _risk_control_planned_action(plan: Any, risk_applied: Dict[str, Any]) -> str:
+    adjustment = _safe_text(risk_applied.get("adjustment") or getattr(plan, "adjustment", "")).lower()
+    if bool(getattr(plan, "veto_buy", False)) or adjustment == "veto":
+        return "cap_buy_to_hold"
+    if adjustment.startswith("downgrade"):
+        return "downgrade"
+    return "none"
+
+
+def _risk_control_not_applied_reason(plan: Any) -> str:
+    if not bool(getattr(plan, "evidence_present", False)):
+        return "none"
+    if not bool(getattr(plan, "override_enabled", False)):
+        return "override_disabled"
+    if not bool(getattr(plan, "override_trigger_present", False)):
+        return "no_trigger"
+    if getattr(plan, "will_apply", None) is False:
+        return "final_signal_already_within_risk_limit"
+    return "none"
+
+
+def _build_final_degraded_events(ctx: AgentContext) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    _append_degraded_events(events, ctx.meta.get("degraded_events"))
+    _append_degraded_stages(events, ctx.meta.get("degraded_stages"))
+
+    summary = ctx.meta.get("agent_disagreement_summary")
+    if isinstance(summary, dict):
+        degraded_result = summary.get("degraded_result")
+        if isinstance(degraded_result, dict):
+            _append_degraded_stages(events, degraded_result.get("stages"))
+    return events
+
+
+def _append_degraded_events(events: List[Dict[str, Any]], source: Any) -> None:
+    if not isinstance(source, list):
+        return
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        event = {
+            "stage": _safe_text(item.get("stage")) or _safe_text(item.get("stage_name")) or "unknown",
+            "reason": _safe_text(item.get("reason")) or "stage_failure",
+            "critical": item.get("critical") is True,
+        }
+        if event not in events:
+            events.append(event)
+
+
+def _append_degraded_stages(events: List[Dict[str, Any]], source: Any) -> None:
+    if not isinstance(source, list):
+        return
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        stage = _safe_text(item.get("stage_name") or item.get("stage"))
+        status = _safe_text(item.get("status")).lower()
+        if not stage:
+            continue
+        if status == "timeout":
+            reason = "timeout"
+        elif item.get("non_critical") is True:
+            reason = "non_critical_failure"
+        else:
+            reason = "stage_failure"
+        event = {
+            "stage": stage,
+            "reason": reason,
+            "critical": item.get("non_critical") is not True,
+        }
+        if event not in events:
+            events.append(event)
+
+
+def _build_final_decision_path(
+    base_disagreement: Dict[str, Any],
+    risk_control: Dict[str, Any],
+    degraded_events: List[Dict[str, Any]],
+) -> str:
+    if risk_control.get("applied"):
+        return "apply_risk_control"
+    if degraded_events:
+        return "degraded_partial_result"
+    if risk_control.get("evidence_present"):
+        return "preserve_final_signal_after_risk_check"
+    if base_disagreement.get("type") == "mixed_directional_signals":
+        return "synthesize_mixed_signals"
+    return "synthesize_agent_inputs"
+
+
+def _format_final_disagreement_summary(
+    *,
+    base_disagreement: Dict[str, Any],
+    risk_control: Dict[str, Any],
+    degraded_events: List[Dict[str, Any]],
+    report_language: str,
+) -> str:
+    base_type = base_disagreement.get("type")
+    risk_applied = bool(risk_control.get("applied"))
+    risk_evidence = bool(risk_control.get("evidence_present"))
+    has_degraded = bool(degraded_events)
+
+    if report_language == "en":
+        parts = [_english_base_summary(base_type)]
+        if risk_applied:
+            parts.append("Risk controls adjusted the final signal.")
+        elif risk_evidence:
+            parts.append("Risk evidence was reviewed, and the final signal did not require a mechanical downgrade.")
+        else:
+            parts.append("No mechanical risk-control trigger was found.")
+        if has_degraded:
+            parts.append("Some agent stages were degraded, so the result is based on partial completed inputs.")
+        return " ".join(parts)
+
+    if report_language == "ko":
+        parts = [_korean_base_summary(base_type)]
+        if risk_applied:
+            parts.append("위험 통제가 최종 신호를 조정했습니다.")
+        elif risk_evidence:
+            parts.append("위험 근거를 검토했지만 최종 신호는 기계적 하향 조정이 필요하지 않았습니다.")
+        else:
+            parts.append("기계적 위험 통제 트리거는 확인되지 않았습니다.")
+        if has_degraded:
+            parts.append("일부 Agent 단계가 강등되어 완료된 입력을 기준으로 결과를 구성했습니다.")
+        return " ".join(parts)
+
+    parts = [_chinese_base_summary(base_type)]
+    if risk_applied:
+        parts.append("风控规则已实际调整最终信号。")
+    elif risk_evidence:
+        parts.append("风控证据已检查，最终信号未触发机械下调。")
+    else:
+        parts.append("未发现需要机械接管的风控触发。")
+    if has_degraded:
+        parts.append("部分 Agent 阶段发生降级，结果基于已完成输入生成。")
+    return "".join(parts)
+
+
+def _chinese_base_summary(base_type: Any) -> str:
+    if base_type == "mixed_directional_signals":
+        return "基础 Agent 存在方向分歧。"
+    if base_type == "aligned_bullish":
+        return "基础 Agent 整体偏多。"
+    if base_type == "aligned_bearish":
+        return "基础 Agent 整体偏空。"
+    if base_type == "aligned_neutral":
+        return "基础 Agent 整体偏中性。"
+    return "基础 Agent 信息不足。"
+
+
+def _english_base_summary(base_type: Any) -> str:
+    if base_type == "mixed_directional_signals":
+        return "Base agents disagree on direction."
+    if base_type == "aligned_bullish":
+        return "Base agents are broadly bullish."
+    if base_type == "aligned_bearish":
+        return "Base agents are broadly bearish."
+    if base_type == "aligned_neutral":
+        return "Base agents are broadly neutral."
+    return "Base-agent evidence is limited."
+
+
+def _korean_base_summary(base_type: Any) -> str:
+    if base_type == "mixed_directional_signals":
+        return "기초 Agent 간 방향 판단이 엇갈립니다."
+    if base_type == "aligned_bullish":
+        return "기초 Agent 판단은 대체로 긍정적입니다."
+    if base_type == "aligned_bearish":
+        return "기초 Agent 판단은 대체로 부정적입니다."
+    if base_type == "aligned_neutral":
+        return "기초 Agent 판단은 대체로 중립적입니다."
+    return "기초 Agent 근거가 제한적입니다."
 
 
 # Common English words (2-5 uppercase letters) that should NOT be treated as

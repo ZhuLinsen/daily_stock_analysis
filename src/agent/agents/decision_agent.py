@@ -132,13 +132,12 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 ``strongest_bullish_signal`` is the name of the strongest bullish signal (e.g., MACD golden cross, earnings surprise, low valuation).
 ``strongest_bearish_signal`` is the name of the strongest bearish signal (e.g., MA death cross, earnings warning, high valuation).
 
-When an ``Agent Disagreement Summary`` section is provided, the final dashboard
-may include ``dashboard.agent_disagreement_explanation`` with low-sensitivity
-fields for ``conflict_type``, ``decision_path``, ``degraded_stages``,
-``risk_override``, and ``summary``. This field explains cross-agent conflict,
-the adopted decision path, non-critical degradation, and whether risk override
-actually affected the final dashboard. Do not include raw reasoning, raw data,
-raw error text, tokens, secrets, or private payloads in this field.
+When an ``Agent Disagreement Summary`` section is provided, use it only as
+low-sensitivity context for the decision. Do not generate
+``dashboard.agent_disagreement_explanation`` yourself; the orchestrator injects
+that final-state field after dashboard post-processing. Do not include raw
+reasoning, raw data, raw error text, tokens, secrets, or private payloads in
+any disagreement-related output.
 """
         if report_language == "en":
             return prompt + """

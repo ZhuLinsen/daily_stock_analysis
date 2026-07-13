@@ -219,10 +219,10 @@ class SignalAttribution(BaseModel):
 class AgentDisagreementExplanation(BaseModel):
     """Low-sensitivity multi-agent disagreement explanation for final dashboards."""
 
-    conflict_type: Optional[str] = None
+    base_disagreement: Dict[str, Any] = Field(default_factory=dict)
+    risk_control: Dict[str, Any] = Field(default_factory=dict)
+    degraded_events: List[Dict[str, Any]] = Field(default_factory=list)
     decision_path: Optional[str] = None
-    degraded_stages: List[Dict[str, Any]] = Field(default_factory=list)
-    risk_override: Dict[str, Any] = Field(default_factory=dict)
     summary: Optional[str] = None
 
 

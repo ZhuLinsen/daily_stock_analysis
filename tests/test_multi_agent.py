@@ -1067,10 +1067,11 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertEqual(result.dashboard["decision_type"], "buy")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["risk_override"]["applied"], False)
-        self.assertEqual(explanation["risk_override"]["override_enabled"], False)
-        self.assertEqual(explanation["risk_override"]["override_trigger_present"], True)
-        self.assertNotEqual(explanation["conflict_type"], "risk_override")
+        self.assertEqual(explanation["base_disagreement"]["type"], "mixed_directional_signals")
+        self.assertEqual(explanation["risk_control"]["applied"], False)
+        self.assertEqual(explanation["risk_control"]["override_enabled"], False)
+        self.assertEqual(explanation["risk_control"]["trigger"], "risk_veto")
+        self.assertEqual(explanation["risk_control"]["not_applied_reason"], "override_disabled")
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1093,7 +1094,7 @@ class TestOrchestratorExecution(unittest.TestCase):
             captured_messages.append(messages)
             return SimpleNamespace(
                 success=True,
-                content=self._dashboard_json(decision_type="buy"),
+                content=self._dashboard_json(decision_type="hold"),
                 total_tokens=11,
                 tool_calls_log=[],
                 models_used=["test/model"],
@@ -1114,14 +1115,14 @@ class TestOrchestratorExecution(unittest.TestCase):
                     result = orch._execute_pipeline(ctx, parse_dashboard=True)
 
         self.assertTrue(result.success)
-        self.assertEqual(result.dashboard["decision_type"], "buy")
+        self.assertEqual(result.dashboard["decision_type"], "hold")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["risk_override"]["applied"], False)
-        self.assertEqual(explanation["risk_override"]["evidence_present"], True)
-        self.assertEqual(explanation["risk_override"]["override_trigger_present"], False)
-        self.assertEqual(explanation["risk_override"]["reason"], "high_risk_evidence")
-        self.assertNotEqual(explanation["conflict_type"], "risk_override")
+        self.assertEqual(explanation["base_disagreement"]["type"], "mixed_directional_signals")
+        self.assertEqual(explanation["risk_control"]["applied"], False)
+        self.assertEqual(explanation["risk_control"]["evidence_present"], True)
+        self.assertEqual(explanation["risk_control"]["trigger"], "high_risk_evidence")
+        self.assertEqual(explanation["risk_control"]["not_applied_reason"], "no_trigger")
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1172,12 +1173,15 @@ class TestOrchestratorExecution(unittest.TestCase):
             "reason": "risk_veto",
         })
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["conflict_type"], "risk_override")
-        self.assertEqual(explanation["risk_override"]["applied"], True)
-        self.assertEqual(explanation["risk_override"]["from"], "buy")
-        self.assertEqual(explanation["risk_override"]["to"], "hold")
-        self.assertEqual(explanation["risk_override"]["reason"], "risk_veto")
-        self.assertIn("risk_override_applied=buy->hold", explanation["summary"])
+        self.assertEqual(explanation["base_disagreement"]["type"], "mixed_directional_signals")
+        self.assertEqual(explanation["decision_path"], "apply_risk_control")
+        self.assertEqual(explanation["risk_control"]["applied"], True)
+        self.assertEqual(explanation["risk_control"]["trigger"], "risk_veto")
+        self.assertEqual(explanation["risk_control"]["planned_action"], "cap_buy_to_hold")
+        self.assertEqual(explanation["risk_control"]["from"], "buy")
+        self.assertEqual(explanation["risk_control"]["to"], "hold")
+        self.assertEqual(explanation["risk_control"]["reason"], "risk_veto")
+        self.assertNotIn("risk_override_applied=", explanation["summary"])
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1206,6 +1210,7 @@ class TestOrchestratorExecution(unittest.TestCase):
             )
 
         technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        intel = self._OpinionStage("intel", signal="sell", confidence=0.7)
         risk = self._OpinionStage(
             "risk",
             signal="sell",
@@ -1214,7 +1219,7 @@ class TestOrchestratorExecution(unittest.TestCase):
         )
         decision = self._decision_agent()
 
-        with patch.object(orch, "_build_agent_chain", return_value=[technical, risk, decision]):
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, risk, decision]):
             with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
                 with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
                     result = orch._execute_pipeline(ctx, parse_dashboard=True)
@@ -1223,17 +1228,18 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertEqual(result.dashboard["decision_type"], "hold")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["conflict_type"], "risk_control_reviewed_no_override")
+        self.assertEqual(explanation["base_disagreement"]["type"], "mixed_directional_signals")
         self.assertEqual(explanation["decision_path"], "preserve_final_signal_after_risk_check")
-        self.assertEqual(explanation["risk_override"]["applied"], False)
-        self.assertEqual(explanation["risk_override"]["will_apply"], False)
-        self.assertEqual(explanation["risk_override"]["current"], "hold")
-        self.assertEqual(explanation["risk_override"]["target"], "hold")
+        self.assertEqual(explanation["risk_control"]["evidence_present"], True)
+        self.assertEqual(explanation["risk_control"]["trigger"], "risk_veto")
+        self.assertEqual(explanation["risk_control"]["planned_action"], "cap_buy_to_hold")
+        self.assertEqual(explanation["risk_control"]["applied"], False)
         self.assertEqual(
-            explanation["risk_override"]["not_applied_reason"],
+            explanation["risk_control"]["not_applied_reason"],
             "final_signal_already_within_risk_limit",
         )
-        self.assertNotIn("risk_override_applied=buy->hold", explanation["summary"])
+        self.assertNotIn("risk_override_applied=", explanation["summary"])
+        self.assertNotIn("conflict_type=", explanation["summary"])
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1272,15 +1278,12 @@ class TestOrchestratorExecution(unittest.TestCase):
             {"stage_name": "intel", "status": "failed", "non_critical": True}
         ])
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["conflict_type"], "partial_bullish_with_degraded_inputs")
-        self.assertEqual(
-            explanation["decision_path"],
-            "state_degraded_inputs_before_any_bullish_lean",
-        )
-        self.assertEqual(explanation["degraded_stages"], [
-            {"stage_name": "intel", "status": "failed", "non_critical": True}
+        self.assertEqual(explanation["base_disagreement"]["type"], "aligned_bullish")
+        self.assertEqual(explanation["decision_path"], "degraded_partial_result")
+        self.assertEqual(explanation["degraded_events"], [
+            {"stage": "intel", "reason": "non_critical_failure", "critical": False}
         ])
-        self.assertEqual(explanation["risk_override"]["applied"], False)
+        self.assertEqual(explanation["risk_control"]["applied"], False)
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1328,11 +1331,12 @@ class TestOrchestratorExecution(unittest.TestCase):
             {"stage_name": "chan_theory", "status": "failed", "non_critical": True}
         ])
         explanation = self._agent_disagreement_explanation(result.dashboard)
-        self.assertEqual(explanation["conflict_type"], "partial_bearish_with_degraded_inputs")
-        self.assertEqual(explanation["degraded_stages"], [
-            {"stage_name": "chan_theory", "status": "failed", "non_critical": True}
+        self.assertEqual(explanation["base_disagreement"]["type"], "aligned_bearish")
+        self.assertEqual(explanation["decision_path"], "degraded_partial_result")
+        self.assertEqual(explanation["degraded_events"], [
+            {"stage": "chan_theory", "reason": "non_critical_failure", "critical": False}
         ])
-        self.assertIn("degraded_stages=chan_theory", explanation["summary"])
+        self.assertNotIn("degraded_stages=", explanation["summary"])
 
         combined = "\n".join(
             str(message.get("content", ""))
@@ -1378,6 +1382,14 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIsNotNone(result.content)
         self.assertIn("insufficient budget", (result.error or "").lower())
         self.assertIn("[降级结果]", result.dashboard["analysis_summary"])
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["base_disagreement"]["type"], "aligned_bullish")
+        self.assertEqual(explanation["decision_path"], "degraded_partial_result")
+        self.assertIn(
+            {"stage": "intel", "reason": "budget_skip", "critical": False},
+            explanation["degraded_events"],
+        )
+        self.assertNotIn("aligned_bullish", explanation["summary"])
         technical.run.assert_called_once()
         intel.run.assert_not_called()
 
@@ -1423,6 +1435,11 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIsNotNone(result.content)
         self.assertIn("insufficient budget", (result.error or "").lower())
         self.assertEqual(result.total_steps, 1)
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertIn(
+            {"stage": "decision", "reason": "budget_skip", "critical": False},
+            explanation["degraded_events"],
+        )
         technical.run.assert_called_once()
         decision.run.assert_not_called()
 
@@ -1505,6 +1522,12 @@ class TestOrchestratorExecution(unittest.TestCase):
             result.dashboard["dashboard"]["battle_plan"]["sniper_points"]["stop_loss"],
             1760.0,
         )
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["decision_path"], "degraded_partial_result")
+        self.assertIn(
+            {"stage": "timeout", "reason": "timeout", "critical": False},
+            explanation["degraded_events"],
+        )
 
     def test_execute_pipeline_timeout_after_intel_synthesizes_dashboard(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=1, agent_risk_override=True))
@@ -1541,6 +1564,14 @@ class TestOrchestratorExecution(unittest.TestCase):
             result.dashboard["dashboard"]["battle_plan"]["sniper_points"]["stop_loss"],
             295.0,
         )
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["base_disagreement"]["type"], "aligned_bullish")
+        self.assertEqual(explanation["decision_path"], "degraded_partial_result")
+        self.assertIn(
+            {"stage": "timeout", "reason": "timeout", "critical": False},
+            explanation["degraded_events"],
+        )
+        self.assertNotIn("aligned_bullish", explanation["summary"])
 
     # --- Sub-agent timeout clamp regression (AGENT_*_TIMEOUT_S) ---
 
