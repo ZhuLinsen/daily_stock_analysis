@@ -390,6 +390,49 @@ def test_orchestrator_builds_final_disagreement_explanation(monkeypatch):
     assert "raw secret error" not in str(explanation)
 
 
+def test_orchestrator_relabels_risk_conflict_when_final_override_does_not_apply(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.orchestrator import AgentOrchestrator
+
+    ctx = AgentContext(query="test", stock_code="600519")
+    ctx.add_opinion(AgentOpinion(
+        agent_name="risk",
+        signal="sell",
+        confidence=0.9,
+        raw_data={"veto_buy": True},
+    ))
+    ctx.meta["agent_disagreement_summary"] = {
+        "conflict_type": "risk_override",
+        "decision_path_hint": "prioritize_risk_controls_and_cap_buy_signal",
+        "risk_control": {
+            "evidence_present": True,
+            "override_enabled": True,
+            "override_trigger_present": True,
+            "reason": "risk_veto",
+        },
+        "degraded_result": {"present": False, "stages": []},
+    }
+    ctx.set_data("final_dashboard", {"decision_type": "hold", "dashboard": {}})
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(agent_risk_override=True),
+    )
+
+    explanation = orchestrator._build_agent_disagreement_explanation(ctx)
+
+    assert explanation["conflict_type"] == "risk_control_reviewed_no_override"
+    assert explanation["decision_path"] == "preserve_final_signal_after_risk_check"
+    assert explanation["risk_override"]["applied"] is False
+    assert explanation["risk_override"]["will_apply"] is False
+    assert explanation["risk_override"]["current"] == "hold"
+    assert explanation["risk_override"]["target"] == "hold"
+    assert (
+        explanation["risk_override"]["not_applied_reason"]
+        == "final_signal_already_within_risk_limit"
+    )
+
+
 def test_orchestrator_builds_no_explanation_without_summary(monkeypatch):
     _mock_optional_litellm(monkeypatch)
     from src.agent.orchestrator import AgentOrchestrator

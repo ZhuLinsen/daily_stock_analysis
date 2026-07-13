@@ -778,6 +778,8 @@ class AgentOrchestrator:
 
         conflict_type = _safe_text(summary.get("conflict_type"))
         decision_path = _safe_text(summary.get("decision_path_hint"))
+        dashboard = ctx.get_data("final_dashboard")
+        dashboard_signal = dashboard.get("decision_type") if isinstance(dashboard, dict) else None
         degraded_result = (
             summary.get("degraded_result")
             if isinstance(summary.get("degraded_result"), dict)
@@ -809,6 +811,24 @@ class AgentOrchestrator:
                     "adjustment": _safe_text(risk_applied.get("adjustment")),
                 }
             )
+        else:
+            final_plan = build_risk_override_plan(
+                ctx,
+                current_signal=dashboard_signal,
+                override_enabled=getattr(self.config, "agent_risk_override", True),
+            )
+            if final_plan.current_signal:
+                risk_override.update(
+                    {
+                        "current": final_plan.current_signal,
+                        "target": final_plan.target_signal,
+                        "will_apply": final_plan.will_apply,
+                    }
+                )
+            if conflict_type == "risk_override" and final_plan.will_apply is False:
+                conflict_type = "risk_control_reviewed_no_override"
+                decision_path = "preserve_final_signal_after_risk_check"
+                risk_override["not_applied_reason"] = "final_signal_already_within_risk_limit"
 
         return {
             "conflict_type": conflict_type,

@@ -1190,6 +1190,59 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIn('"override_enabled": true', combined)
         self.assertIn('"override_trigger_present": true', combined)
 
+    def test_pipeline_risk_veto_keeps_conservative_final_signal_without_override_label(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="hold"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        risk = self._OpinionStage(
+            "risk",
+            signal="sell",
+            confidence=0.9,
+            raw_data={"veto_buy": True, "reasoning": "material risk"},
+        )
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, risk, decision]):
+            with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                    result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.dashboard["decision_type"], "hold")
+        self.assertIsNone(ctx.get_data("risk_override_applied"))
+        explanation = self._agent_disagreement_explanation(result.dashboard)
+        self.assertEqual(explanation["conflict_type"], "risk_control_reviewed_no_override")
+        self.assertEqual(explanation["decision_path"], "preserve_final_signal_after_risk_check")
+        self.assertEqual(explanation["risk_override"]["applied"], False)
+        self.assertEqual(explanation["risk_override"]["will_apply"], False)
+        self.assertEqual(explanation["risk_override"]["current"], "hold")
+        self.assertEqual(explanation["risk_override"]["target"], "hold")
+        self.assertEqual(
+            explanation["risk_override"]["not_applied_reason"],
+            "final_signal_already_within_risk_limit",
+        )
+        self.assertNotIn("risk_override_applied=buy->hold", explanation["summary"])
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertIn('"conflict_type": "risk_override"', combined)
+        self.assertIn('"risk_override_present": true', combined)
+
     def test_pipeline_degraded_directional_input_is_not_reported_as_consensus(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
         ctx = AgentContext(query="test", stock_code="600519")
