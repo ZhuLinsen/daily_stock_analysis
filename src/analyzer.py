@@ -2387,7 +2387,7 @@ class GeminiAnalyzer:
 - 所有 JSON 鍵名保持不變。
 - `decision_type` 必須保持為 `buy|hold|sell`。
 - 所有面向用戶的人類可讀文本值必須使用繁體中文。
-- 股票名稱請使用常見的繁體中文譯名（如：蘋果、英偉達、特斯拉、奈飛），若不確定則保持原文。
+- 股票名稱請使用常見的繁體中文譯名（如：蘋果、輝達、特斯拉、網飛），若不確定則保持原文。
 - 這包括 `stock_name`、`trend_prediction`、`operation_advice`、`confidence_level`、嵌套的儀表板文本、檢查清單項目和所有敘述摘要。
 """
         if lang == "ko":

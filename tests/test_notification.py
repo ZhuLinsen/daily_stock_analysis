@@ -143,6 +143,16 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         self.assertFalse(result)
 
     @mock.patch("src.notification.get_config")
+    def test_source_display_name_falls_back_safely(self, mock_get_config):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+
+        self.assertEqual(service._get_source_display_name("tushare", "zh-tw"), "Tushare Pro")
+        self.assertEqual(service._get_source_display_name("stooq", "zh-tw"), "Stooq")
+        self.assertEqual(service._get_source_display_name("tushare", "ko"), "Tushare Pro")
+        self.assertEqual(service._get_source_display_name("invalid_source", "zh-tw"), "invalid_source")
+
+    @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
     def test_send_to_astrbot_via_notification_service(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
         cfg = _make_config(astrbot_url="https://astrbot.example")

@@ -1956,9 +1956,9 @@ class NotificationService(
         "akshare_sina": {"zh": "新浪财经", "zh-tw": "新浪財經", "en": "Sina Finance"},
         "akshare_qq": {"zh": "腾讯财经", "zh-tw": "騰訊財經", "en": "Tencent Finance"},
         "efinance": {"zh": "东方财富(efinance)", "zh-tw": "東方財富(efinance)", "en": "Eastmoney (efinance)"},
-        "tushare": {"zh": "Tushare Pro", "en": "Tushare Pro"},
+        "tushare": {"zh": "Tushare Pro", "zh-tw": "Tushare Pro", "en": "Tushare Pro"},
         "sina": {"zh": "新浪财经", "zh-tw": "新浪財經", "en": "Sina Finance"},
-        "stooq": {"zh": "Stooq", "en": "Stooq"},
+        "stooq": {"zh": "Stooq", "zh-tw": "Stooq", "en": "Stooq"},
         "longbridge": {"zh": "长桥", "zh-tw": "長橋", "en": "Longbridge"},
         "fallback": {"zh": "降级兜底", "zh-tw": "降級兜底", "en": "Fallback"},
     }
@@ -1968,7 +1968,8 @@ class NotificationService(
         mapping = self._SOURCE_DISPLAY_NAMES.get(raw_source)
         if not mapping:
             return raw_source
-        return mapping[normalize_report_language(language)]
+        lang = normalize_report_language(language)
+        return mapping.get(lang, mapping.get("zh", raw_source))
 
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
         snapshot = getattr(result, 'market_snapshot', None)

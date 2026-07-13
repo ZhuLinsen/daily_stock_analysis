@@ -157,6 +157,11 @@ class KoreanReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(localize_action_label("sell", "zh-tw"), "賣出")
         self.assertEqual(localize_action_label("avoid", "zh-tw"), "迴避")
 
+    def test_new_traditional_chinese_aliases(self) -> None:
+        self.assertEqual(normalize_report_language("traditional-chinese"), "zh-tw")
+        self.assertEqual(normalize_report_language("traditional_chinese"), "zh-tw")
+        self.assertEqual(normalize_report_language("traditional chinese"), "zh-tw")
+
 
 if __name__ == "__main__":
     unittest.main()
