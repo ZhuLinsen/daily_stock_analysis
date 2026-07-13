@@ -123,6 +123,36 @@ const TEXT = {
       skipped: '건너뜀',
     },
   },
+  'zh-tw': {
+    eyebrow: '運行診斷',
+    title: '運行狀態',
+    loading: '診斷載入中...',
+    unavailable: '運行診斷暫不可用',
+    noComponents: '暫無組件診斷',
+    components: '關鍵鏈路',
+    advanced: '高級欄位',
+    copy: '複製排障資訊',
+    copied: '已複製',
+    scope: '抓取 / LLM / 保存 / 通知鏈路',
+    trace: 'Trace',
+    task: 'Task',
+    query: 'Query',
+    trigger: '觸發來源',
+    overall: {
+      normal: '正常',
+      degraded: '部分降級',
+      failed: '失敗',
+      unknown: '未知',
+    },
+    component: {
+      ok: '正常',
+      degraded: '最近失敗後已降級',
+      failed: '失敗',
+      unknown: '未知',
+      not_configured: '未配置',
+      skipped: '已跳過',
+    },
+  },
 } as const;
 
 const OVERALL_STATUS_STYLE: Record<RunDiagnosticStatus, { variant: BadgeVariant; tone: StatusTone }> = {
@@ -170,7 +200,13 @@ export const ReportDiagnostics: React.FC<ReportDiagnosticsProps> = ({
 }) => {
   const reportLanguage = normalizeReportLanguage(language);
   const text = TEXT[reportLanguage];
-  const runFlowText = UI_TEXT[reportLanguage === 'ko' ? 'en' : reportLanguage];
+  const runFlowText = UI_TEXT[
+    reportLanguage === 'ko'
+      ? 'en'
+      : reportLanguage === 'zh-tw'
+      ? 'zh'
+      : reportLanguage
+  ];
   const [fetchState, setFetchState] = useState<{
     recordId?: number;
     summary: RunDiagnosticSummary | null;

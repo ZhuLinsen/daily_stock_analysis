@@ -27,6 +27,10 @@ const NEWS_SOURCE_TEXT = {
     sourceLabel: '관련 뉴스 / 후속 검색',
     sourceHint: '출처: 리포트 페이지 보충 뉴스이며, 분석 사용 여부는 입력 데이터 블록 기준입니다.',
   },
+  'zh-tw': {
+    sourceLabel: '相關資訊/後續檢索',
+    sourceHint: '來源：報告頁補充資訊；是否用於分析以輸入數據塊為準。',
+  },
 } as const;
 
 /**
