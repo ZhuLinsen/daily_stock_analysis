@@ -142,6 +142,21 @@ class KoreanReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(localize_trend_prediction("상승", "en"), "Bullish")
         self.assertEqual(localize_operation_advice("적극 매도", "zh"), "强烈卖出")
 
+    def test_traditional_chinese_labels_cover_full_english_key_set(self) -> None:
+        tw_labels = get_report_labels("zh-tw")
+        en_labels = get_report_labels("en")
+        self.assertEqual(set(tw_labels.keys()), set(en_labels.keys()))
+        self.assertEqual(tw_labels["dashboard_title"], "決策儀表板")
+        self.assertEqual(tw_labels["risk_alerts_label"], "風險警報")
+
+    def test_traditional_chinese_decision_action_labels(self) -> None:
+        from src.schemas.decision_action import localize_action_label
+        self.assertEqual(localize_action_label("buy", "zh-tw"), "買入")
+        self.assertEqual(localize_action_label("add", "zh-tw"), "加倉")
+        self.assertEqual(localize_action_label("hold", "zh-tw"), "持有")
+        self.assertEqual(localize_action_label("sell", "zh-tw"), "賣出")
+        self.assertEqual(localize_action_label("avoid", "zh-tw"), "迴避")
+
 
 if __name__ == "__main__":
     unittest.main()
