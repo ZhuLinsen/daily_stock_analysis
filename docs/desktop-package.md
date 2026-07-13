@@ -75,6 +75,22 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
   - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
 
+### macOS 提示“应用已损坏，无法打开”
+
+当前 macOS DMG 尚未使用 Apple Developer 证书签名和公证。通过浏览器下载后，macOS Gatekeeper 可能因此提示“Daily Stock Analysis 已损坏，无法打开”或“无法验证开发者”；这通常是系统对未签名、未公证应用的拦截，不代表 DMG 文件必然损坏。
+
+请按以下顺序排查：
+
+1. 只从项目的 [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) 下载附件，并确认安装包架构与 Mac 一致：Apple 芯片（M1/M2/M3/M4 等）使用 `daily-stock-analysis-macos-arm64-<tag>.dmg`，Intel 芯片使用 `daily-stock-analysis-macos-x64-<tag>.dmg`。不要对第三方转载或来源不明的安装包绕过 Gatekeeper。
+2. 打开 DMG，将 `Daily Stock Analysis` 拖入“应用程序”后尝试启动一次。若被拦截，进入“系统设置 -> 隐私与安全性”，在安全性提示处确认应用名称，然后点击“仍要打开”，按系统提示再次确认。较旧 macOS 的对应入口为“系统偏好设置 -> 安全性与隐私 -> 通用”。
+3. 仅当安装包确认来自上述官方 Release、且“仍要打开”仍无法放行时，打开“终端”清除该应用的下载隔离属性，然后重新启动：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Daily Stock Analysis.app"
+```
+
+如果应用不在 `/Applications`，请将命令中的路径替换为实际 `.app` 路径。不要对整个“应用程序”目录执行 `xattr`，也不要对来源不明的应用执行此命令。长期彻底消除该提示需要在发布流程中接入 Apple Developer 签名与 notarization（公证），不属于上述临时放行步骤。
+
 建议发布流程：
 
 1. 合并代码到 `main`
