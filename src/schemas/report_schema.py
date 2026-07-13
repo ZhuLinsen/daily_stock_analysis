@@ -10,9 +10,19 @@ Uses Optional for lenient parsing; business-layer integrity checks are separate.
 """
 
 import math
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from src.agent.risk_override import (
+    RiskControlAppliedReason,
+    RiskControlNotAppliedReason,
+    RiskControlPayload,
+    RiskControlPlannedAction,
+    RiskControlSignal,
+    RiskControlTrigger,
+    identify_risk_control_state,
+)
 
 
 class PositionAdvice(BaseModel):
@@ -216,14 +226,175 @@ class SignalAttribution(BaseModel):
         return self
 
 
-class AgentDisagreementExplanation(BaseModel):
+class _AgentDisagreementContractModel(BaseModel):
+    """Strict runtime contract that serializes public aliases by default."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def model_dump(self, **kwargs: Any) -> Dict[str, Any]:
+        kwargs.setdefault("by_alias", True)
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
+
+    def model_dump_json(self, **kwargs: Any) -> str:
+        kwargs.setdefault("by_alias", True)
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump_json(**kwargs)
+
+
+class AgentDisagreementAgentBucketItem(_AgentDisagreementContractModel):
+    """Low-sensitivity agent bucket entry for disagreement explanation."""
+
+    agent_name: str
+    signal: Literal["strong_buy", "buy", "hold", "sell", "strong_sell"]
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class AgentDisagreementBase(_AgentDisagreementContractModel):
+    """Base directional disagreement facts."""
+
+    type: Literal[
+        "mixed_directional_signals",
+        "aligned_bullish",
+        "bullish_with_neutral",
+        "aligned_bearish",
+        "bearish_with_neutral",
+        "aligned_neutral",
+        "insufficient_opinions",
+    ]
+    bullish_agents: List[AgentDisagreementAgentBucketItem] = Field(default_factory=list)
+    bearish_agents: List[AgentDisagreementAgentBucketItem] = Field(default_factory=list)
+    neutral_agents: List[AgentDisagreementAgentBucketItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_type_matches_buckets(self) -> "AgentDisagreementBase":
+        """Reject disagreement labels that contradict their bucket facts."""
+        bullish = bool(self.bullish_agents)
+        bearish = bool(self.bearish_agents)
+        neutral = bool(self.neutral_agents)
+        expected_type = (
+            "mixed_directional_signals"
+            if bullish and bearish
+            else "bullish_with_neutral"
+            if bullish and neutral
+            else "aligned_bullish"
+            if bullish
+            else "bearish_with_neutral"
+            if bearish and neutral
+            else "aligned_bearish"
+            if bearish
+            else "aligned_neutral"
+            if neutral
+            else "insufficient_opinions"
+        )
+        if self.type != expected_type:
+            raise ValueError(
+                f"type={self.type!r} contradicts bucket contents; expected {expected_type!r}"
+            )
+
+        if any(item.signal not in {"strong_buy", "buy"} for item in self.bullish_agents):
+            raise ValueError("bullish_agents may only contain bullish signals")
+        if any(item.signal not in {"strong_sell", "sell"} for item in self.bearish_agents):
+            raise ValueError("bearish_agents may only contain bearish signals")
+        if any(item.signal != "hold" for item in self.neutral_agents):
+            raise ValueError("neutral_agents may only contain hold signals")
+        return self
+
+
+class AgentDisagreementRiskControl(_AgentDisagreementContractModel):
+    """Final-state risk-control facts for disagreement explanation."""
+
+    evidence_present: bool = False
+    trigger: RiskControlTrigger = "none"
+    planned_action: RiskControlPlannedAction = "none"
+    applied: bool = False
+    not_applied_reason: RiskControlNotAppliedReason = "none"
+    override_enabled: bool = False
+    from_: Optional[RiskControlSignal] = Field(None, alias="from")
+    to: Optional[RiskControlSignal] = None
+    reason: Optional[RiskControlAppliedReason] = None
+    current: Optional[RiskControlSignal] = None
+    target: Optional[RiskControlSignal] = None
+
+    @model_validator(mode="after")
+    def validate_state_consistency(self) -> "AgentDisagreementRiskControl":
+        """Delegate all cross-field checks to the shared finite-state contract."""
+        identify_risk_control_state(RiskControlPayload(
+            evidence_present=self.evidence_present,
+            trigger=self.trigger,
+            planned_action=self.planned_action,
+            applied=self.applied,
+            not_applied_reason=self.not_applied_reason,
+            override_enabled=self.override_enabled,
+            from_signal=self.from_,
+            to_signal=self.to,
+            reason=self.reason,
+            current=self.current,
+            target=self.target,
+        ))
+        return self
+
+
+class AgentDisagreementDegradedEvent(_AgentDisagreementContractModel):
+    """Low-sensitivity degraded event marker."""
+
+    stage: str
+    reason: Literal["stage_failure", "non_critical_failure", "timeout", "budget_skip"]
+    critical: bool = False
+
+
+AgentDisagreementDecisionPath = Literal[
+    "apply_risk_control",
+    "degraded_partial_result",
+    "preserve_final_signal_after_risk_check",
+    "synthesize_mixed_signals",
+    "synthesize_agent_inputs",
+]
+
+
+def derive_agent_disagreement_decision_path(
+    *,
+    base_disagreement_type: str,
+    risk_control_applied: bool,
+    risk_evidence_present: bool,
+    degraded_events_present: bool,
+) -> AgentDisagreementDecisionPath:
+    """Derive the final path from the same ordered runtime facts used by the builder."""
+    if risk_control_applied:
+        return "apply_risk_control"
+    if degraded_events_present:
+        return "degraded_partial_result"
+    if risk_evidence_present:
+        return "preserve_final_signal_after_risk_check"
+    if base_disagreement_type == "mixed_directional_signals":
+        return "synthesize_mixed_signals"
+    return "synthesize_agent_inputs"
+
+
+class AgentDisagreementExplanation(_AgentDisagreementContractModel):
     """Low-sensitivity multi-agent disagreement explanation for final dashboards."""
 
-    base_disagreement: Dict[str, Any] = Field(default_factory=dict)
-    risk_control: Dict[str, Any] = Field(default_factory=dict)
-    degraded_events: List[Dict[str, Any]] = Field(default_factory=list)
-    decision_path: Optional[str] = None
+    base_disagreement: AgentDisagreementBase
+    risk_control: AgentDisagreementRiskControl = Field(default_factory=AgentDisagreementRiskControl)
+    degraded_events: List[AgentDisagreementDegradedEvent] = Field(default_factory=list)
+    decision_path: AgentDisagreementDecisionPath
     summary: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_decision_path_matches_runtime_facts(self) -> "AgentDisagreementExplanation":
+        """Reject path labels that contradict risk, degradation, or base facts."""
+        expected_path = derive_agent_disagreement_decision_path(
+            base_disagreement_type=self.base_disagreement.type,
+            risk_control_applied=self.risk_control.applied,
+            risk_evidence_present=self.risk_control.evidence_present,
+            degraded_events_present=bool(self.degraded_events),
+        )
+        if self.decision_path != expected_path:
+            raise ValueError(
+                f"decision_path={self.decision_path!r} contradicts risk_control, "
+                f"degraded_events, and base_disagreement; expected {expected_path!r}"
+            )
+        return self
 
 
 class Dashboard(BaseModel):

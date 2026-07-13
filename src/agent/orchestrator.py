@@ -33,7 +33,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.chat_context import build_visible_chat_history
-from src.agent.disagreement import build_agent_disagreement_summary
+from src.agent.disagreement import (
+    build_agent_disagreement_summary,
+    build_base_agent_disagreement,
+    build_base_agent_disagreement_from_buckets,
+)
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -42,13 +46,23 @@ from src.agent.protocols import (
     StageStatus,
     normalize_decision_signal,
 )
-from src.agent.risk_override import build_risk_override_plan
+from src.agent.risk_override import (
+    RiskOverridePlan,
+    build_risk_override_plan,
+    derive_risk_control_payload,
+    derive_risk_override_application,
+    parse_risk_override_application,
+)
 from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
+from src.schemas.report_schema import (
+    AgentDisagreementExplanation,
+    derive_agent_disagreement_decision_path,
+)
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
@@ -58,8 +72,6 @@ logger = logging.getLogger(__name__)
 # Valid orchestrator modes (ordered by cost/depth)
 VALID_MODES = ("quick", "standard", "full", "specialist")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
-_BULLISH_BASE_SIGNALS = {"buy", "strong_buy"}
-_BEARISH_BASE_SIGNALS = {"sell", "strong_sell"}
 
 
 @dataclass
@@ -145,6 +157,7 @@ class AgentOrchestrator:
         models_used: List[str],
         elapsed_s: float,
         timeout_s: int,
+        stage_name: str,
         ctx: Optional[AgentContext] = None,
         parse_dashboard: bool = True,
     ) -> OrchestratorResult:
@@ -160,7 +173,7 @@ class AgentOrchestrator:
         if ctx is not None:
             self._record_degraded_event(
                 ctx,
-                stage="timeout",
+                stage=stage_name,
                 reason="timeout",
                 critical=False,
             )
@@ -235,7 +248,6 @@ class AgentOrchestrator:
             provider=stats.models_used[0] if stats.models_used else "",
             model=", ".join(stats.models_used),
         )
-
 
     def _prepare_agent(self, agent: Any) -> Any:
         """Apply orchestrator-level runtime settings to a child agent.
@@ -467,6 +479,7 @@ class AgentOrchestrator:
                     models_used,
                     elapsed_s,
                     timeout_s,
+                    agent.agent_name,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
@@ -572,6 +585,7 @@ class AgentOrchestrator:
                     models_used,
                     elapsed_s,
                     timeout_s,
+                    agent.agent_name,
                     ctx=ctx,
                     parse_dashboard=parse_dashboard,
                 )
@@ -797,7 +811,6 @@ class AgentOrchestrator:
         )
         return build_final_agent_disagreement_explanation(
             ctx,
-            dashboard,
             risk_plan,
             normalize_report_language(ctx.meta.get("report_language", "zh")),
         )
@@ -1425,11 +1438,12 @@ class AgentOrchestrator:
             current_signal=dashboard.get("decision_type", "hold"),
             override_enabled=getattr(self.config, "agent_risk_override", True),
         )
-        if not plan.will_apply or plan.target_signal is None or plan.current_signal is None:
+        if not plan.will_apply:
             return
 
-        current_signal = plan.current_signal
-        new_signal = plan.target_signal
+        application = derive_risk_override_application(plan)
+        current_signal = application.from_signal
+        new_signal = application.to_signal
         dashboard["decision_type"] = new_signal
         dashboard["risk_warning"] = self._merge_risk_warning(
             dashboard.get("risk_warning"),
@@ -1476,12 +1490,7 @@ class AgentOrchestrator:
                         position["has_position"] = "优先控制回撤，建议减仓或退出高风险仓位。"
 
         ctx.set_data("final_dashboard", dashboard)
-        ctx.set_data("risk_override_applied", {
-            "from": current_signal,
-            "to": new_signal,
-            "adjustment": plan.adjustment or ("veto" if plan.veto_buy else "none"),
-            "reason": plan.reason,
-        })
+        ctx.set_data("risk_override_applied", application.to_context_dict())
 
         for opinion in reversed(ctx.opinions):
             if opinion.agent_name == "decision":
@@ -1495,7 +1504,7 @@ class AgentOrchestrator:
             "[Orchestrator] risk override applied: %s -> %s (adjustment=%s, high_flag=%s)",
             current_signal,
             new_signal,
-            plan.adjustment or ("veto" if plan.veto_buy else "none"),
+            application.adjustment,
             plan.has_high_flag,
         )
 
@@ -1524,16 +1533,15 @@ class AgentOrchestrator:
 
 def build_final_agent_disagreement_explanation(
     ctx: AgentContext,
-    dashboard: Dict[str, Any],
-    risk_override_plan: Any,
+    risk_override_plan: RiskOverridePlan,
     report_language: str,
 ) -> Dict[str, Any]:
-    """Build the deterministic final-state disagreement explanation."""
+    """Build and validate the deterministic final-state disagreement explanation."""
     base_disagreement = _build_final_base_disagreement(ctx)
     risk_control = _build_final_risk_control(ctx, risk_override_plan)
     degraded_events = _build_final_degraded_events(ctx)
     decision_path = _build_final_decision_path(base_disagreement, risk_control, degraded_events)
-    return {
+    explanation = AgentDisagreementExplanation.model_validate({
         "base_disagreement": base_disagreement,
         "risk_control": risk_control,
         "degraded_events": degraded_events,
@@ -1544,161 +1552,20 @@ def build_final_agent_disagreement_explanation(
             degraded_events=degraded_events,
             report_language=report_language,
         ),
-    }
+    })
+    return explanation.model_dump()
 
 
 def _build_final_base_disagreement(ctx: AgentContext) -> Dict[str, Any]:
     summary = ctx.meta.get("agent_disagreement_summary")
     if isinstance(summary, dict):
-        bullish = _sanitize_agent_bucket(summary.get("bullish_agents"))
-        bearish = _sanitize_agent_bucket(summary.get("bearish_agents"))
-        neutral = _sanitize_agent_bucket(summary.get("neutral_agents"))
-    else:
-        bullish, bearish, neutral = _bucket_runtime_opinions(ctx)
-
-    return {
-        "type": _classify_base_disagreement(bullish, bearish, neutral),
-        "bullish_agents": bullish,
-        "bearish_agents": bearish,
-        "neutral_agents": neutral,
-    }
+        return build_base_agent_disagreement_from_buckets(summary)
+    return build_base_agent_disagreement(ctx, include_decision=False)
 
 
-def _sanitize_agent_bucket(value: Any) -> List[Dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    items: List[Dict[str, Any]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        items.append({
-            "agent_name": _safe_text(item.get("agent_name")) or "unknown",
-            "signal": _normalize_base_signal(item.get("signal")),
-            "confidence": _safe_confidence_value(item.get("confidence")),
-        })
-    return items
-
-
-def _bucket_runtime_opinions(
-    ctx: AgentContext,
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    bullish: List[Dict[str, Any]] = []
-    bearish: List[Dict[str, Any]] = []
-    neutral: List[Dict[str, Any]] = []
-    for opinion in ctx.opinions:
-        agent_name = _safe_text(getattr(opinion, "agent_name", ""))
-        if agent_name == "decision":
-            continue
-        signal = _normalize_base_signal(getattr(opinion, "signal", None))
-        item = {
-            "agent_name": agent_name or "unknown",
-            "signal": signal,
-            "confidence": _safe_confidence_value(getattr(opinion, "confidence", None)),
-        }
-        if signal in _BULLISH_BASE_SIGNALS:
-            bullish.append(item)
-        elif signal in _BEARISH_BASE_SIGNALS:
-            bearish.append(item)
-        else:
-            neutral.append(item)
-    return bullish, bearish, neutral
-
-
-def _normalize_base_signal(value: Any) -> str:
-    if not isinstance(value, str):
-        return "hold"
-    normalized = value.strip().lower()
-    if normalized in _BULLISH_BASE_SIGNALS or normalized in _BEARISH_BASE_SIGNALS:
-        return normalized
-    return "hold"
-
-
-def _safe_confidence_value(value: Any) -> float:
-    try:
-        confidence = float(value)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    return round(max(0.0, min(1.0, confidence)), 2)
-
-
-def _classify_base_disagreement(
-    bullish_agents: List[Dict[str, Any]],
-    bearish_agents: List[Dict[str, Any]],
-    neutral_agents: List[Dict[str, Any]],
-) -> str:
-    if bullish_agents and bearish_agents:
-        return "mixed_directional_signals"
-    if bullish_agents:
-        return "aligned_bullish"
-    if bearish_agents:
-        return "aligned_bearish"
-    if neutral_agents:
-        return "aligned_neutral"
-    return "insufficient_opinions"
-
-
-def _build_final_risk_control(ctx: AgentContext, plan: Any) -> Dict[str, Any]:
-    risk_applied = ctx.get_data("risk_override_applied")
-    if not isinstance(risk_applied, dict):
-        risk_applied = {}
-
-    applied = bool(risk_applied)
-    control = {
-        "evidence_present": bool(getattr(plan, "evidence_present", False)) or applied,
-        "trigger": _risk_control_trigger(plan, risk_applied),
-        "planned_action": _risk_control_planned_action(plan, risk_applied),
-        "applied": applied,
-        "not_applied_reason": "none" if applied else _risk_control_not_applied_reason(plan),
-        "override_enabled": bool(getattr(plan, "override_enabled", False)),
-    }
-    if applied:
-        control.update({
-            "from": _safe_text(risk_applied.get("from")),
-            "to": _safe_text(risk_applied.get("to")),
-            "reason": _safe_text(risk_applied.get("reason") or getattr(plan, "reason", "none")),
-        })
-    else:
-        current_signal = getattr(plan, "current_signal", None)
-        target_signal = getattr(plan, "target_signal", None)
-        if current_signal:
-            control["current"] = current_signal
-        if target_signal:
-            control["target"] = target_signal
-    return control
-
-
-def _risk_control_trigger(plan: Any, risk_applied: Dict[str, Any]) -> str:
-    reason = _safe_text(risk_applied.get("reason") or getattr(plan, "reason", "")).lower()
-    adjustment = _safe_text(getattr(plan, "adjustment", "")).lower()
-    applied_adjustment = _safe_text(risk_applied.get("adjustment")).lower()
-    if bool(getattr(plan, "veto_buy", False)) or reason == "risk_veto" or applied_adjustment == "veto":
-        return "risk_veto"
-    if adjustment.startswith("downgrade") or applied_adjustment.startswith("downgrade"):
-        return "risk_downgrade"
-    if reason == "high_risk_evidence" or bool(getattr(plan, "risk_level_high", False)):
-        return "high_risk_evidence"
-    return "none"
-
-
-def _risk_control_planned_action(plan: Any, risk_applied: Dict[str, Any]) -> str:
-    adjustment = _safe_text(risk_applied.get("adjustment") or getattr(plan, "adjustment", "")).lower()
-    if bool(getattr(plan, "veto_buy", False)) or adjustment == "veto":
-        return "cap_buy_to_hold"
-    if adjustment.startswith("downgrade"):
-        return "downgrade"
-    return "none"
-
-
-def _risk_control_not_applied_reason(plan: Any) -> str:
-    if not bool(getattr(plan, "evidence_present", False)):
-        return "none"
-    if not bool(getattr(plan, "override_enabled", False)):
-        return "override_disabled"
-    if not bool(getattr(plan, "override_trigger_present", False)):
-        return "no_trigger"
-    if getattr(plan, "will_apply", None) is False:
-        return "final_signal_already_within_risk_limit"
-    return "none"
+def _build_final_risk_control(ctx: AgentContext, plan: RiskOverridePlan) -> Dict[str, Any]:
+    application = parse_risk_override_application(ctx.get_data("risk_override_applied"))
+    return dict(derive_risk_control_payload(plan, application).to_public_dict())
 
 
 def _build_final_degraded_events(ctx: AgentContext) -> List[Dict[str, Any]]:
@@ -1759,15 +1626,12 @@ def _build_final_decision_path(
     risk_control: Dict[str, Any],
     degraded_events: List[Dict[str, Any]],
 ) -> str:
-    if risk_control.get("applied"):
-        return "apply_risk_control"
-    if degraded_events:
-        return "degraded_partial_result"
-    if risk_control.get("evidence_present"):
-        return "preserve_final_signal_after_risk_check"
-    if base_disagreement.get("type") == "mixed_directional_signals":
-        return "synthesize_mixed_signals"
-    return "synthesize_agent_inputs"
+    return derive_agent_disagreement_decision_path(
+        base_disagreement_type=_safe_text(base_disagreement.get("type")),
+        risk_control_applied=risk_control.get("applied") is True,
+        risk_evidence_present=risk_control.get("evidence_present") is True,
+        degraded_events_present=bool(degraded_events),
+    )
 
 
 def _format_final_disagreement_summary(
@@ -1823,8 +1687,12 @@ def _chinese_base_summary(base_type: Any) -> str:
         return "基础 Agent 存在方向分歧。"
     if base_type == "aligned_bullish":
         return "基础 Agent 整体偏多。"
+    if base_type == "bullish_with_neutral":
+        return "基础 Agent 偏多，但仍有中性输入。"
     if base_type == "aligned_bearish":
         return "基础 Agent 整体偏空。"
+    if base_type == "bearish_with_neutral":
+        return "基础 Agent 偏空，但仍有中性输入。"
     if base_type == "aligned_neutral":
         return "基础 Agent 整体偏中性。"
     return "基础 Agent 信息不足。"
@@ -1835,8 +1703,12 @@ def _english_base_summary(base_type: Any) -> str:
         return "Base agents disagree on direction."
     if base_type == "aligned_bullish":
         return "Base agents are broadly bullish."
+    if base_type == "bullish_with_neutral":
+        return "Base agents lean bullish with neutral inputs."
     if base_type == "aligned_bearish":
         return "Base agents are broadly bearish."
+    if base_type == "bearish_with_neutral":
+        return "Base agents lean bearish with neutral inputs."
     if base_type == "aligned_neutral":
         return "Base agents are broadly neutral."
     return "Base-agent evidence is limited."
@@ -1847,8 +1719,12 @@ def _korean_base_summary(base_type: Any) -> str:
         return "기초 Agent 간 방향 판단이 엇갈립니다."
     if base_type == "aligned_bullish":
         return "기초 Agent 판단은 대체로 긍정적입니다."
+    if base_type == "bullish_with_neutral":
+        return "기초 Agent 판단은 긍정 쪽이지만 중립 입력도 있습니다."
     if base_type == "aligned_bearish":
         return "기초 Agent 판단은 대체로 부정적입니다."
+    if base_type == "bearish_with_neutral":
+        return "기초 Agent 판단은 부정 쪽이지만 중립 입력도 있습니다."
     if base_type == "aligned_neutral":
         return "기초 Agent 판단은 대체로 중립적입니다."
     return "기초 Agent 근거가 제한적입니다."

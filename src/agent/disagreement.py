@@ -26,21 +26,7 @@ def build_agent_disagreement_summary(
     risk_override_enabled: bool = True,
 ) -> Dict[str, Any]:
     """Build a structured, low-sensitivity summary of prior agent disagreement."""
-    buckets = {
-        "bullish_agents": [],
-        "bearish_agents": [],
-        "neutral_agents": [],
-    }
-
-    for opinion in ctx.opinions:
-        signal = _effective_signal(opinion.agent_name, opinion.signal)
-        agent_summary = _summarize_opinion(opinion.agent_name, signal, opinion.confidence)
-        if signal in _BULLISH_SIGNALS:
-            buckets["bullish_agents"].append(agent_summary)
-        elif signal in _BEARISH_SIGNALS:
-            buckets["bearish_agents"].append(agent_summary)
-        else:
-            buckets["neutral_agents"].append(agent_summary)
+    buckets = build_agent_disagreement_buckets(ctx)
 
     risk_override_plan = build_risk_override_plan(
         ctx,
@@ -64,6 +50,106 @@ def build_agent_disagreement_summary(
         "risk_control": risk_override_plan.to_low_sensitivity_dict(),
         "degraded_result": degraded_result,
     }
+
+
+def build_base_agent_disagreement(
+    ctx: AgentContext,
+    *,
+    include_decision: bool = False,
+) -> Dict[str, Any]:
+    """Return the base directional disagreement using the shared bucket contract."""
+    buckets = build_agent_disagreement_buckets(ctx, include_decision=include_decision)
+    return build_base_agent_disagreement_from_buckets(buckets)
+
+
+def build_base_agent_disagreement_from_buckets(
+    buckets: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Return base disagreement facts from pre-sanitized or raw bucket lists."""
+    sanitized = sanitize_agent_disagreement_buckets(buckets)
+    return {
+        "type": classify_base_agent_disagreement(
+            sanitized["bullish_agents"],
+            sanitized["bearish_agents"],
+            sanitized["neutral_agents"],
+        ),
+        **sanitized,
+    }
+
+
+def build_agent_disagreement_buckets(
+    ctx: AgentContext,
+    *,
+    include_decision: bool = True,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Bucket agent opinions using the canonical low-sensitivity signal semantics."""
+    buckets: Dict[str, List[Dict[str, Any]]] = {
+        "bullish_agents": [],
+        "bearish_agents": [],
+        "neutral_agents": [],
+    }
+
+    for opinion in ctx.opinions:
+        agent_name = str(getattr(opinion, "agent_name", "") or "").strip()
+        if not include_decision and agent_name.lower() == "decision":
+            continue
+        signal = _effective_signal(agent_name, getattr(opinion, "signal", None))
+        agent_summary = _summarize_opinion(
+            agent_name,
+            signal,
+            getattr(opinion, "confidence", None),
+        )
+        if signal in _BULLISH_SIGNALS:
+            buckets["bullish_agents"].append(agent_summary)
+        elif signal in _BEARISH_SIGNALS:
+            buckets["bearish_agents"].append(agent_summary)
+        else:
+            buckets["neutral_agents"].append(agent_summary)
+
+    return buckets
+
+
+def sanitize_agent_disagreement_buckets(buckets: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    """Sanitize bucket payloads without changing the established bucket membership."""
+    return {
+        "bullish_agents": _sanitize_bucket_items(buckets.get("bullish_agents")),
+        "bearish_agents": _sanitize_bucket_items(buckets.get("bearish_agents")),
+        "neutral_agents": _sanitize_bucket_items(buckets.get("neutral_agents")),
+    }
+
+
+def classify_base_agent_disagreement(
+    bullish_agents: List[Dict[str, Any]],
+    bearish_agents: List[Dict[str, Any]],
+    neutral_agents: List[Dict[str, Any]],
+) -> str:
+    """Classify base directional disagreement without risk or degradation overrides."""
+    if bullish_agents and bearish_agents:
+        return "mixed_directional_signals"
+    if bullish_agents and not bearish_agents:
+        return "aligned_bullish" if not neutral_agents else "bullish_with_neutral"
+    if bearish_agents and not bullish_agents:
+        return "aligned_bearish" if not neutral_agents else "bearish_with_neutral"
+    if neutral_agents:
+        return "aligned_neutral"
+    return "insufficient_opinions"
+
+
+def _sanitize_bucket_items(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: List[Dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            _summarize_opinion(
+                str(item.get("agent_name") or "unknown"),
+                item.get("signal"),
+                item.get("confidence"),
+            )
+        )
+    return items
 
 
 def _summarize_opinion(agent_name: str, signal: Any, confidence: Any) -> Dict[str, Any]:
@@ -154,13 +240,7 @@ def _classify_conflict_type(
         if bearish_agents and not bullish_agents:
             return "partial_bearish_with_degraded_inputs"
         return "degraded_only"
-    if bullish_agents and not bearish_agents:
-        return "aligned_bullish" if not neutral_agents else "bullish_with_neutral"
-    if bearish_agents and not bullish_agents:
-        return "aligned_bearish" if not neutral_agents else "bearish_with_neutral"
-    if neutral_agents:
-        return "aligned_neutral"
-    return "insufficient_opinions"
+    return classify_base_agent_disagreement(bullish_agents, bearish_agents, neutral_agents)
 
 
 def _decision_path_hint(conflict_type: str) -> str:
@@ -180,4 +260,10 @@ def _decision_path_hint(conflict_type: str) -> str:
     return hints.get(conflict_type, "prefer_conservative_hold_due_to_mixed_inputs")
 
 
-__all__ = ["build_agent_disagreement_summary"]
+__all__ = [
+    "build_agent_disagreement_summary",
+    "build_base_agent_disagreement",
+    "build_base_agent_disagreement_from_buckets",
+    "classify_base_agent_disagreement",
+    "sanitize_agent_disagreement_buckets",
+]
