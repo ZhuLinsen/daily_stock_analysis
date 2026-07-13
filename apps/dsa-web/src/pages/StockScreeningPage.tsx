@@ -95,6 +95,16 @@ const clearPersistedScreenTask = () => {
 const isUnrecoverableScreenTaskError = (error: ParsedApiError) =>
   error.title === '选股任务不可恢复';
 
+const formatRecoverableScreenTaskPollingError = (error: ParsedApiError) => {
+  if (error.category === 'upstream_timeout') {
+    return '选股任务仍在后台运行，状态轮询暂时超时，将自动重试。';
+  }
+  if (error.category === 'upstream_network' || error.category === 'local_connection_failed') {
+    return '选股任务仍在后台运行，暂时无法连接本地服务获取状态，将自动重试。';
+  }
+  return formatParsedApiError(error) || '暂时无法获取选股任务状态，稍后将自动重试。';
+};
+
 const formatScore = (score: AlphaSiftCandidate['score']) => {
   if (score == null || Number.isNaN(Number(score))) {
     return '-';
@@ -734,13 +744,14 @@ const StockScreeningPage: React.FC = () => {
           return;
         }
         const parsedError = getParsedApiError(err);
-        setError(formatParsedApiError(parsedError) || '暂时无法获取选股任务状态，稍后将自动重试。');
         if (isUnrecoverableScreenTaskError(parsedError)) {
+          setError(formatParsedApiError(parsedError) || '选股任务不可恢复，请重新提交。');
           setCandidates([]);
           setScreenMeta(null);
           finishTask();
           return;
         }
+        setError(formatRecoverableScreenTaskPollingError(parsedError));
         setLoading(true);
         timer = window.setTimeout(pollTask, SCREEN_TASK_POLL_INTERVAL_MS);
       }

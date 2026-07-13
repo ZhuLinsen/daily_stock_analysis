@@ -102,6 +102,35 @@ export interface SetupStatusResponse {
   checks: SetupStatusCheck[];
 }
 
+export type GenerationBackendHealthStatus = 'not_tested' | 'passed' | 'failed' | 'skipped';
+export type GenerationBackendSmokeMode = 'text' | 'json';
+
+export interface GenerationBackendStatus {
+  backendId: string;
+  backendType: 'litellm' | 'local_cli';
+  providerId: string;
+  available: boolean;
+  healthStatus: GenerationBackendHealthStatus;
+  supportsJson: boolean;
+  supportsTools: boolean;
+  supportsStream: boolean;
+  supportsVision: boolean;
+  isPrimary: boolean;
+  fallbackTarget?: string | null;
+  maxConcurrency: number;
+  usageAvailable: boolean;
+  lastErrorCode?: string | null;
+  lastErrorMessage?: string | null;
+}
+
+export interface GenerationBackendStatusResponse {
+  primaryBackendId: string;
+  fallbackBackendId?: string | null;
+  primary: GenerationBackendStatus;
+  fallback?: GenerationBackendStatus | null;
+  backends: GenerationBackendStatus[];
+}
+
 export interface ExportSystemConfigResponse {
   content: string;
   configVersion: string;
@@ -111,6 +140,26 @@ export interface ExportSystemConfigResponse {
 export interface SystemConfigUpdateItem {
   key: string;
   value: string;
+}
+
+export interface GenerationBackendStatusPreviewRequest {
+  items?: SystemConfigUpdateItem[];
+  maskToken?: string;
+}
+
+export interface TestGenerationBackendRequest {
+  backendId?: string | null;
+  mode?: GenerationBackendSmokeMode;
+  items?: SystemConfigUpdateItem[];
+  maskToken?: string;
+  timeoutSeconds?: number | null;
+}
+
+export interface TestGenerationBackendResponse {
+  success: boolean;
+  mode: GenerationBackendSmokeMode;
+  message: string;
+  status: GenerationBackendStatus;
 }
 
 export interface UpdateSystemConfigRequest {
@@ -154,6 +203,24 @@ export interface ValidateSystemConfigResponse {
   issues: ConfigValidationIssue[];
 }
 
+export interface SchedulerStatusResponse {
+  enabled: boolean;
+  running: boolean;
+  scheduleTimes: string[];
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  lastSkippedAt?: string | null;
+  lastSkipReason?: string | null;
+}
+
+export interface SchedulerRunNowResponse {
+  accepted: boolean;
+  running: boolean;
+  reason?: string;
+}
+
 export interface TestLLMChannelRequest {
   name: string;
   protocol: string;
@@ -163,6 +230,7 @@ export interface TestLLMChannelRequest {
   enabled?: boolean;
   timeoutSeconds?: number;
   capabilityChecks?: LLMCapabilityCheck[];
+  useSavedSecret?: boolean;
 }
 
 export type LLMCapabilityCheck = 'json' | 'tools' | 'vision' | 'stream';
@@ -244,6 +312,7 @@ export interface DiscoverLLMChannelModelsRequest {
   apiKey?: string;
   models?: string[];
   timeoutSeconds?: number;
+  useSavedSecret?: boolean;
 }
 
 export interface DiscoverLLMChannelModelsResponse {

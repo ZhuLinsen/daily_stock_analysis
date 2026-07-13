@@ -1,12 +1,17 @@
 import type React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
+import type { SetupStatusResponse } from '../../types/systemConfig';
 import SettingsPage from '../SettingsPage';
 
 const {
+  analyzeAsync,
   exportEnv,
+  getSchedulerStatus,
+  getSetupStatus,
   importEnv,
+  runSchedulerNow,
   updateSystemConfig,
   alphasiftEnable,
   alphasiftInstall,
@@ -32,8 +37,12 @@ const {
   useSystemConfigMock,
   webBuildInfoMock,
 } = vi.hoisted(() => ({
+  analyzeAsync: vi.fn(),
   exportEnv: vi.fn(),
+  getSchedulerStatus: vi.fn(),
+  getSetupStatus: vi.fn(),
   importEnv: vi.fn(),
+  runSchedulerNow: vi.fn(),
   updateSystemConfig: vi.fn(),
   alphasiftEnable: vi.fn(),
   alphasiftInstall: vi.fn(),
@@ -76,8 +85,17 @@ vi.mock('../../hooks', () => ({
 vi.mock('../../api/systemConfig', () => ({
   systemConfigApi: {
     exportEnv: (...args: unknown[]) => exportEnv(...args),
+    getSchedulerStatus: (...args: unknown[]) => getSchedulerStatus(...args),
+    getSetupStatus: (...args: unknown[]) => getSetupStatus(...args),
     importEnv: (...args: unknown[]) => importEnv(...args),
+    runSchedulerNow: (...args: unknown[]) => runSchedulerNow(...args),
     update: (...args: unknown[]) => updateSystemConfig(...args),
+  },
+}));
+
+vi.mock('../../api/analysis', () => ({
+  analysisApi: {
+    analyzeAsync: (...args: unknown[]) => analyzeAsync(...args),
   },
 }));
 
@@ -109,18 +127,35 @@ vi.mock('../../components/settings', () => ({
   LLMChannelEditor: ({
     items,
     onSaved,
+    onDraftItemsChange,
   }: {
     items: Array<{ key: string; value: string }>;
     onSaved: (items: Array<{ key: string; value: string }>) => void;
+    onDraftItemsChange?: (items: Array<{ key: string; value: string }>) => void;
   }) => (
     <div>
       <div data-testid="llm-channel-editor-items">{items.map((item) => item.key).join(',')}</div>
+      <button
+        type="button"
+        onClick={() => onDraftItemsChange?.([
+          { key: 'LLM_CHANNELS', value: 'draft,backup' },
+          { key: 'LITELLM_MODEL', value: 'openai/draft-model' },
+          { key: 'GENERATION_BACKEND', value: 'codex_cli' },
+        ])}
+      >
+        emit llm draft
+      </button>
       <button
         type="button"
         onClick={() => onSaved([{ key: 'LLM_CHANNELS', value: 'primary,backup' }])}
       >
         save llm channels
       </button>
+    </div>
+  ),
+  GenerationBackendStatusPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
+    <div data-testid="generation-backend-status-items">
+      {items.map((item) => `${item.key}=${item.value}`).join('|')}
     </div>
   ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
@@ -404,6 +439,16 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -420,6 +465,59 @@ describe('SettingsPage', () => {
       content: 'STOCK_LIST=600519\n',
       configVersion: 'v1',
       updatedAt: '2026-03-21T00:00:00Z',
+    });
+    getSchedulerStatus.mockResolvedValue({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['09:20', '15:10'],
+      nextRunAt: '2026-06-21T09:20:00+08:00',
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    getSetupStatus.mockResolvedValue({
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '已配置自选股。',
+          nextStep: null,
+        },
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'configured',
+          message: '已配置模型渠道。',
+          nextStep: null,
+        },
+        {
+          key: 'notification',
+          title: '通知',
+          category: 'notification',
+          required: false,
+          status: 'optional',
+          message: '通知可选。',
+          nextStep: null,
+        },
+      ],
+    });
+    analyzeAsync.mockResolvedValue({
+      taskId: 'task-setup-smoke',
+      status: 'pending',
+      message: 'accepted',
+    });
+    runSchedulerNow.mockResolvedValue({
+      accepted: true,
+      running: true,
     });
     importEnv.mockResolvedValue({
       success: true,
@@ -476,6 +574,246 @@ describe('SettingsPage', () => {
     expect(screen.getByText('认证与登录保护')).toBeInTheDocument();
     expect(screen.getByText('修改密码')).toBeInTheDocument();
     expect(load).toHaveBeenCalled();
+  });
+
+  it('renders first-run setup checks and routes setup actions', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('first-run-setup-card')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
+    expect(screen.getByText('自选股')).toBeInTheDocument();
+    expect(screen.getAllByText('已配置')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '维护自选股' }));
+    fireEvent.click(screen.getByRole('button', { name: '配置通知' }));
+
+    expect(setActiveCategory).toHaveBeenNthCalledWith(1, 'ai_model');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(2, 'base');
+    expect(setActiveCategory).toHaveBeenNthCalledWith(3, 'notification');
+  });
+
+  it('keeps first-run setup summary neutral while setup status is loading', async () => {
+    getSetupStatus.mockImplementation(() => new Promise(() => undefined));
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('正在检查首次启动配置')).toBeInTheDocument();
+    expect(screen.getByText('正在读取配置状态，完成后会显示缺失项和试跑入口。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps first-run setup summary neutral when setup status fails', async () => {
+    getSetupStatus.mockRejectedValue(new Error('setup status unavailable'));
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('暂无法判断配置状态')).toBeInTheDocument();
+    expect(screen.getByText('配置状态读取失败。可先检查或修改设置项，稍后刷新检查结果。')).toBeInTheDocument();
+    expect(screen.queryByText('基础配置已满足最小可用分析')).not.toBeInTheDocument();
+    expect(screen.queryByText('还有基础配置需要处理')).not.toBeInTheDocument();
+    expect(screen.queryByText('所有必需项已就绪，可运行一次简短分析验证链路。')).not.toBeInTheDocument();
+  });
+
+  it('keeps the latest first-run setup status when refresh responses resolve out of order', async () => {
+    const staleRefresh = createDeferred<SetupStatusResponse>();
+    const latestRefresh = createDeferred<SetupStatusResponse>();
+    const initialStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'initial-status',
+          title: '初始状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '初始配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+    const staleStatus: SetupStatusResponse = {
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'stale-status',
+          title: '过期状态',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '过期的配置状态。',
+          nextStep: '这条旧响应不应覆盖最新状态。',
+        },
+      ],
+    };
+    const latestStatus: SetupStatusResponse = {
+      isComplete: true,
+      readyForSmoke: true,
+      requiredMissingKeys: [],
+      nextStepKey: null,
+      checks: [
+        {
+          key: 'latest-status',
+          title: '最新状态',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '最新配置状态。',
+          nextStep: null,
+        },
+      ],
+    };
+
+    getSetupStatus
+      .mockResolvedValueOnce(initialStatus)
+      .mockImplementationOnce(() => staleRefresh.promise)
+      .mockImplementationOnce(() => latestRefresh.promise);
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('初始状态')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新检查' }));
+    fireEvent.click(screen.getByRole('button', { name: 'merge stock list' }));
+
+    await waitFor(() => expect(getSetupStatus).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      latestRefresh.resolve(latestStatus);
+      await latestRefresh.promise;
+    });
+
+    expect(await screen.findByText('最新状态')).toBeInTheDocument();
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+
+    await act(async () => {
+      staleRefresh.resolve(staleStatus);
+      await staleRefresh.promise;
+    });
+
+    await waitFor(() => expect(screen.getByText('最新状态')).toBeInTheDocument());
+    expect(screen.queryByText('过期状态')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
+  });
+
+  it('runs a brief setup smoke analysis with the first watchlist stock', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    await screen.findByText('基础配置已满足最小可用分析');
+    fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
+
+    await waitFor(() => expect(analyzeAsync).toHaveBeenCalledWith({
+      stockCode: 'SH600000',
+      reportType: 'brief',
+      asyncMode: true,
+      notify: false,
+      originalQuery: 'SH600000',
+      selectionSource: 'manual',
+    }));
+    expect(await screen.findByText(/task-setup-smoke/)).toBeInTheDocument();
+  });
+
+  it('allows brief setup smoke when only the Agent channel is incomplete', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+    getSetupStatus.mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: true,
+      requiredMissingKeys: ['llm_agent'],
+      nextStepKey: 'llm_agent',
+      checks: [
+        {
+          key: 'llm_primary',
+          title: 'LLM 主渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'configured',
+          message: '已启用 Claude Code CLI 本地生成 Backend（experimental/limited）。',
+          nextStep: null,
+        },
+        {
+          key: 'llm_agent',
+          title: 'Agent 渠道',
+          category: 'agent',
+          required: true,
+          status: 'needs_action',
+          message: 'Agent 工具调用需要 LiteLLM 模型配置；local CLI 主生成方式不会被自动继承。',
+          nextStep: '如需使用 Ask-Stock Agent，请配置 LiteLLM 模型。',
+        },
+        {
+          key: 'stock_list',
+          title: '自选股',
+          category: 'base',
+          required: true,
+          status: 'configured',
+          message: '已配置 1 只股票。',
+          nextStep: null,
+        },
+      ],
+    });
+
+    render(<SettingsPage />);
+
+    await screen.findByText('还缺少 1 项：Agent 渠道');
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '简短试跑' }));
+
+    await waitFor(() => expect(analyzeAsync).toHaveBeenCalledWith({
+      stockCode: 'SH600000',
+      reportType: 'brief',
+      asyncMode: true,
+      notify: false,
+      originalQuery: 'SH600000',
+      selectionSource: 'manual',
+    }));
+  });
+
+  it('shows missing setup items and lets the user reopen the setup check', async () => {
+    getSetupStatus.mockResolvedValue({
+      isComplete: false,
+      readyForSmoke: false,
+      requiredMissingKeys: ['LLM_CHANNELS'],
+      nextStepKey: 'LLM_CHANNELS',
+      checks: [
+        {
+          key: 'llm_channels',
+          title: '模型渠道',
+          category: 'ai_model',
+          required: true,
+          status: 'needs_action',
+          message: '还没有配置模型渠道。',
+          nextStep: '请先配置模型渠道。',
+        },
+      ],
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('还有基础配置需要处理')).toBeInTheDocument();
+    expect(screen.getByText('还缺少 1 项：模型渠道')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '简短试跑' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '暂时隐藏' }));
+    expect(screen.getByText('首次启动配置检查已隐藏')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开检查' }));
+    expect(screen.getByText('首次启动配置检查')).toBeInTheDocument();
   });
 
   it('renders web build info in system settings', async () => {
@@ -790,6 +1128,118 @@ describe('SettingsPage', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('passes merged generation backend draft items to the backend status panel', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      getChangedItems: () => [
+        { key: 'GENERATION_BACKEND', value: 'litellm' },
+        { key: 'LLM_CHANNELS', value: 'saved' },
+        { key: 'OPENAI_MODEL', value: 'gpt-draft' },
+        { key: 'GEMINI_MODEL', value: 'gemini-draft' },
+        { key: 'OLLAMA_API_BASE', value: 'http://localhost:11434' },
+        { key: 'WECHAT_WEBHOOK_URL', value: 'not-a-url' },
+      ],
+    }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
+
+    const statusItems = await screen.findByTestId('generation-backend-status-items');
+    await waitFor(() => {
+      expect(statusItems).toHaveTextContent('GENERATION_BACKEND=litellm');
+      expect(statusItems).toHaveTextContent('LLM_CHANNELS=draft,backup');
+      expect(statusItems).toHaveTextContent('LITELLM_MODEL=openai/draft-model');
+      expect(statusItems).toHaveTextContent('OPENAI_MODEL=gpt-draft');
+      expect(statusItems).toHaveTextContent('GEMINI_MODEL=gemini-draft');
+      expect(statusItems).toHaveTextContent('OLLAMA_API_BASE=http://localhost:11434');
+      expect(statusItems).not.toHaveTextContent('GENERATION_BACKEND=codex_cli');
+      expect(statusItems).not.toHaveTextContent('WECHAT_WEBHOOK_URL=not-a-url');
+    });
+  });
+
+  it('clears llm channel draft items after llm channel editor saves', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'ai_model' }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'emit llm draft' }));
+    expect(await screen.findByTestId('generation-backend-status-items')).toHaveTextContent('LLM_CHANNELS=draft,backup');
+
+    fireEvent.click(screen.getByRole('button', { name: 'save llm channels' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('generation-backend-status-items')).not.toHaveTextContent('LLM_CHANNELS=draft,backup');
+    });
+    expect(refreshAfterExternalSave).toHaveBeenCalledWith(['LLM_CHANNELS']);
+  });
+
+  it('keeps prompt cache settings collapsed and expandable at the bottom of AI model settings', () => {
+    const aiField = (key: string, displayOrder: number, value = '') => ({
+      key,
+      value,
+      rawValueExists: Boolean(value),
+      isMasked: false,
+      schema: {
+        key,
+        category: 'ai_model',
+        dataType: 'string',
+        uiControl: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? 'select' : 'text',
+        isSensitive: false,
+        isRequired: false,
+        isEditable: true,
+        options: key === 'LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL' ? ['off', 'basic', 'debug'] : [],
+        validation: {},
+        displayOrder,
+      },
+    });
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        ai_model: [
+          aiField('LITELLM_CONFIG', 10, './litellm.yaml'),
+          aiField('LLM_PROMPT_CACHE_TELEMETRY_ENABLED', 20, 'true'),
+          aiField('LLM_PROMPT_CACHE_HINTS_ENABLED', 21, 'false'),
+          aiField('LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL', 22, 'off'),
+        ],
+      },
+    }));
+
+    const { container } = render(<SettingsPage />);
+
+    const promptCacheSummary = screen.getByText('Provider Prompt Cache 高级设置').closest('summary');
+    const promptCacheDetails = promptCacheSummary?.closest('details');
+    const telemetryField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED');
+    const hintsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED');
+    const diagnosticsField = screen.getByTestId('settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL');
+
+    expect(promptCacheSummary).toBeInTheDocument();
+    expect(promptCacheDetails).toBeInTheDocument();
+    expect(promptCacheDetails).not.toHaveAttribute('open');
+    expect(promptCacheDetails).toContainElement(telemetryField);
+    expect(promptCacheDetails).toContainElement(hintsField);
+    expect(promptCacheDetails).toContainElement(diagnosticsField);
+    expect(telemetryField).not.toBeVisible();
+    expect(hintsField).not.toBeVisible();
+    expect(diagnosticsField).not.toBeVisible();
+
+    fireEvent.click(promptCacheSummary as HTMLElement);
+
+    expect(promptCacheDetails).toHaveAttribute('open');
+    expect(telemetryField).toBeVisible();
+    expect(hintsField).toBeVisible();
+    expect(diagnosticsField).toBeVisible();
+
+    expect(Array.from(container.querySelectorAll('[data-testid^="settings-field-"]')).map((node) => node.getAttribute('data-testid'))).toEqual([
+      'settings-field-LITELLM_CONFIG',
+      'settings-field-LLM_PROMPT_CACHE_TELEMETRY_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_HINTS_ENABLED',
+      'settings-field-LLM_PROMPT_CACHE_DIAGNOSTICS_LEVEL',
+    ]);
+  });
+
   it('notifies alphasift status update and skips install after generic save when ALPHASIFT_ENABLED is set false', async () => {
     save.mockResolvedValue({ success: true });
     getChangedItems.mockReturnValue([{ key: 'ALPHASIFT_ENABLED', value: 'false' }]);
@@ -852,6 +1302,7 @@ describe('SettingsPage', () => {
   it('runs AlphaSift enable flow from the settings card', async () => {
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [
@@ -909,6 +1360,7 @@ describe('SettingsPage', () => {
     const privateInstallSpec = 'git+https://user:token@example.com/internal/alphasift.git';
     const configState = buildSystemConfigState();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [
@@ -1013,10 +1465,680 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('settings-field-ALPHASIFT_INSTALL_SPEC')).toBeInTheDocument();
   });
 
+  it('scopes setup and AlphaSift helper cards to their related categories', async () => {
+    const configState = buildSystemConfigState();
+    const dataSourceItems = [
+      {
+        key: 'ALPHASIFT_ENABLED',
+        value: 'false',
+        rawValueExists: true,
+        isMasked: false,
+        schema: {
+          key: 'ALPHASIFT_ENABLED',
+          category: 'data_source',
+          dataType: 'boolean',
+          uiControl: 'switch',
+          isSensitive: false,
+          isRequired: false,
+          isEditable: true,
+          options: [],
+          validation: {},
+          displayOrder: 16,
+        },
+      },
+    ];
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'base',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+
+    const { rerender } = render(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AlphaSift 选股' })).not.toBeInTheDocument();
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'ai_model',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+    rerender(<SettingsPage />);
+
+    expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'AlphaSift 选股' })).not.toBeInTheDocument();
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        data_source: dataSourceItems,
+      },
+    }));
+    rerender(<SettingsPage />);
+
+    expect(await screen.findByRole('heading', { name: 'AlphaSift 选股' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
+  });
+
+  it('maps schedule settings to the scheduler card instead of generic raw fields', async () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIME',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIME',
+              category: 'system',
+              dataType: 'time',
+              uiControl: 'time',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 10,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '09:20,15:10',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+          {
+            key: 'SCHEDULE_RUN_IMMEDIATELY',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_RUN_IMMEDIATELY',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 12,
+            },
+          },
+          {
+            key: 'LOG_LEVEL',
+            value: 'INFO',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'LOG_LEVEL',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'select',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: ['INFO', 'DEBUG'],
+              validation: {},
+              displayOrder: 50,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('scheduler-settings-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_ENABLED')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_TIME')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_TIMES')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-SCHEDULE_RUN_IMMEDIATELY')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-field-LOG_LEVEL')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('scheduler-time-input-0'), {
+      target: { value: '10:30' },
+    });
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_TIMES', '10:30,15:10');
+
+    fireEvent.click(screen.getByTestId('scheduler-run-now-button'));
+
+    await waitFor(() => expect(runSchedulerNow).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows an error when run-now is rejected because analysis is already running', async () => {
+    runSchedulerNow.mockRejectedValueOnce(new Error('A scheduled analysis is already running'));
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByTestId('scheduler-run-now-button'));
+
+    await waitFor(() => expect(runSchedulerNow).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/A scheduled analysis is already running/)).toBeInTheDocument();
+  });
+
+  it('does not show a failed run as the last successful scheduler run', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: '2026-06-21T17:00:00+08:00',
+      lastSuccessAt: null,
+      lastError: 'analysis failed',
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByTestId('scheduler-last-success')).toHaveTextContent('-');
+    expect(screen.getByTestId('scheduler-last-error')).toHaveTextContent('analysis failed');
+  });
+
+  it('shows active runtime scheduler state even when saved schedule flag is false', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+
+    fireEvent.click(enabledCheckbox);
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_ENABLED', 'false');
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+  });
+
+  it('keeps local scheduler toggle edits when runtime and saved states are initially consistent', async () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+    render(<SettingsPage />);
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+
+    fireEvent.click(enabledCheckbox);
+
+    expect(setDraftValue).toHaveBeenCalledWith('SCHEDULE_ENABLED', 'false');
+    await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked());
+
+    const refreshButton = screen.getByTestId('scheduler-refresh-status-button');
+    fireEvent.click(refreshButton);
+    await waitFor(() => expect(screen.getByTestId('scheduler-enabled-checkbox')).not.toBeChecked());
+  });
+
+  it('can reconcile runtime scheduler state when runtime is enabled but saved value is disabled', async () => {
+    save.mockResolvedValue({ success: true });
+    getChangedItems.mockReturnValue([]);
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: false,
+      dirtyCount: 0,
+      getChangedItems: () => [],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const saveButton = screen.getByRole('button', { name: /保存配置/ });
+    expect(saveButton).toBeDisabled();
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).toBeChecked();
+    fireEvent.click(enabledCheckbox);
+
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await waitFor(() => expect(saveButton).toHaveTextContent('保存配置 (1)'));
+
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'false' }]));
+  });
+
+  it('can reconcile runtime scheduler state when runtime is disabled but saved value is enabled', async () => {
+    save.mockResolvedValue({ success: true });
+    getChangedItems.mockReturnValue([]);
+    const configState = buildSystemConfigState();
+    getSchedulerStatus.mockResolvedValueOnce({
+      enabled: false,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: null,
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: false,
+      dirtyCount: 0,
+      getChangedItems: () => [],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    const saveButton = screen.getByRole('button', { name: /保存配置/ });
+    expect(saveButton).toBeDisabled();
+
+    const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
+    expect(enabledCheckbox).not.toBeChecked();
+    fireEvent.click(enabledCheckbox);
+
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
+    await waitFor(() => expect(saveButton).toBeEnabled());
+    await waitFor(() => expect(saveButton).toHaveTextContent('保存配置 (1)'));
+
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'true' }]));
+  });
+
+  it('refreshes scheduler status after saving scheduler settings', async () => {
+    const configState = buildSystemConfigState();
+    getSchedulerStatus
+      .mockResolvedValueOnce({
+        enabled: false,
+        running: false,
+        scheduleTimes: [],
+        nextRunAt: null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        running: false,
+        scheduleTimes: ['09:20', '15:10'],
+        nextRunAt: '2026-06-21T09:20:00+08:00',
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      });
+    save.mockResolvedValue({ success: true });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: true,
+      dirtyCount: 1,
+      getChangedItems: () => [{ key: 'SCHEDULE_ENABLED', value: 'true' }],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '09:20,15:10',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText('未启用')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '保存配置 (1)' }));
+
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('已启用')).toBeInTheDocument();
+  });
+
   it('refreshes AlphaSift state when the enable flow fails', async () => {
     const configState = buildSystemConfigState();
     alphasiftEnable.mockRejectedValueOnce(new Error('config update failed'));
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'data_source',
       itemsByCategory: {
         ...configState.itemsByCategory,
         data_source: [
@@ -1308,6 +2430,105 @@ describe('SettingsPage', () => {
 
     await waitFor(() => expect(importEnv).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+  });
+
+  it('refreshes scheduler status after successful env import updates scheduler settings', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    const configState = buildSystemConfigState();
+    getSchedulerStatus
+      .mockResolvedValueOnce({
+        enabled: false,
+        running: false,
+        scheduleTimes: ['18:00'],
+        nextRunAt: null,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      })
+      .mockResolvedValueOnce({
+        enabled: true,
+        running: false,
+        scheduleTimes: ['09:20', '15:10'],
+        nextRunAt: '2026-06-21T09:20:00+08:00',
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+      });
+    importEnv.mockResolvedValueOnce({
+      success: true,
+      configVersion: 'v2',
+      appliedCount: 2,
+      skippedMaskedCount: 0,
+      reloadTriggered: true,
+      updatedKeys: ['SCHEDULE_ENABLED', 'SCHEDULE_TIMES'],
+      warnings: [],
+    });
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        system: [
+          ...configState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'false',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+          {
+            key: 'SCHEDULE_TIMES',
+            value: '18:00',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_TIMES',
+              category: 'system',
+              dataType: 'string',
+              uiControl: 'text',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 11,
+            },
+          },
+        ],
+      },
+    }));
+
+    const { container } = render(<SettingsPage />);
+
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('未启用')).toBeInTheDocument();
+
+    vi.clearAllMocks();
+
+    const input = container.querySelector('input[type="file"]');
+    expect(input).not.toBeNull();
+
+    fireEvent.change(input as HTMLInputElement, {
+      target: {
+        files: [new File(['SCHEDULE_ENABLED=true\nSCHEDULE_TIMES=09:20,15:10\n'], 'desktop-backup.env', { type: 'text/plain' })],
+      },
+    });
+
+    await waitFor(() => expect(importEnv).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('已启用')).toBeInTheDocument();
   });
 
   it('shows an error when env import succeeds but reload fails', async () => {

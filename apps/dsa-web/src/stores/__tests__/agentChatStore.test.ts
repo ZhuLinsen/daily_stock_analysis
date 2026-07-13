@@ -127,6 +127,32 @@ describe('agentChatStore.startStream', () => {
     });
   });
 
+  it('reports an interrupted stream instead of appending an empty assistant message', async () => {
+    vi.mocked(agentApi.chatStream).mockResolvedValue(
+      createStreamResponse([
+        'data: {"type":"thinking","step":1,"message":"分析中"}',
+      ]),
+    );
+
+    await useAgentChatStore
+      .getState()
+      .startStream({ message: '分析茅台', session_id: 'session-test' }, { skillName: '趋势技能' });
+
+    const state = useAgentChatStore.getState();
+    expect(state.loading).toBe(false);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'user',
+      content: '分析茅台',
+    });
+    expect(state.chatError).toMatchObject({
+      title: '回复未完整返回',
+      message: 'Agent 流式响应在完成前中断，请重试。',
+      category: 'upstream_network',
+      rawMessage: 'Agent stream ended before a done event was received.',
+    });
+  });
+
   it('preserves parsed error details when done.success is false', async () => {
     vi.mocked(agentApi.chatStream).mockResolvedValue(
       createStreamResponse([

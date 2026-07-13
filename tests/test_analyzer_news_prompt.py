@@ -147,6 +147,24 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("支撑/压力位", prompt)
         self.assertIn("洗盘观察", prompt)
 
+    def test_analysis_prompt_score_scale_splits_reduce_and_sell_bands(self) -> None:
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+                    analyzer = GeminiAnalyzer(
+                        skill_instructions="",
+                        default_skill_policy="",
+                        use_legacy_default_prompt=legacy,
+                    )
+
+                prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
+
+                self.assertIn("### 减仓（20-39分）", prompt)
+                self.assertIn("### 卖出（0-19分）", prompt)
+                self.assertIn("20-39：减仓，`action=reduce`，`decision_type=sell`。", prompt)
+                self.assertIn("0-19：卖出，`action=sell`，`decision_type=sell`。", prompt)
+                self.assertNotIn("### 卖出/减仓（0-39分）", prompt)
+
     def test_prompt_contains_time_constraints(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
             analyzer = GeminiAnalyzer()

@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-股票智能分析系统 - 大盘复盘模块（支持 A 股 / 港股 / 美股）
+股票智能分析系统 - 大盘复盘模块（支持 A 股 / 港股 / 美股 / 日本 / 韩国）
 ===================================
 
 职责：
-1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / hk / us / both）
+1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / hk / us / jp / kr / both）
 2. 执行大盘复盘分析并生成复盘报告
 3. 保存和发送复盘报告
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -22,11 +23,13 @@ from src.market_analyzer import MarketAnalyzer
 from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.analyzer import AnalysisResult, GeminiAnalyzer
+from src.llm.generation_backend import GenerationError
 from src.services.run_diagnostics import (
     current_diagnostic_snapshot,
     record_history_run,
     record_notification_run,
 )
+from src.schemas.market_light import MARKET_LIGHT_REGIONS
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,8 @@ _MARKET_REVIEW_MARKETS = (
     ('cn', 'cn_title', 'A 股'),
     ('hk', 'hk_title', '港股'),
     ('us', 'us_title', '美股'),
+    ('jp', 'jp_title', '日股'),
+    ('kr', 'kr_title', '韩股'),
 )
 _MARKET_REVIEW_REGION_ORDER = tuple(market for market, _, _ in _MARKET_REVIEW_MARKETS)
 _VALID_MARKET_REVIEW_REGIONS = frozenset(_MARKET_REVIEW_REGION_ORDER)
@@ -90,6 +95,19 @@ def _record_market_review_notification_run(
     _refresh_market_review_history_diagnostics(query_id=query_id)
 
 
+def _collect_market_light_snapshot(
+    snapshots: Dict[str, Dict[str, Any]],
+    *,
+    region: str,
+    review_result: Any,
+) -> None:
+    if region not in MARKET_LIGHT_REGIONS:
+        return
+    snapshot = getattr(review_result, "market_light_snapshot", None)
+    if isinstance(snapshot, dict) and snapshot:
+        snapshots[region] = snapshot
+
+
 def _get_market_review_text(language: str) -> dict[str, str]:
     normalized = normalize_report_language(language)
     if normalized == "en":
@@ -99,7 +117,20 @@ def _get_market_review_text(language: str) -> dict[str, str]:
             "cn_title": "# A-share Market Recap",
             "us_title": "# US Market Recap",
             "hk_title": "# HK Market Recap",
+            "jp_title": "# Japan Market Recap",
+            "kr_title": "# Korea Market Recap",
             "separator": "> Next market recap follows",
+        }
+    if normalized == "ko":
+        return {
+            "root_title": "# 🎯 시황 리뷰",
+            "push_title": "🎯 시황 리뷰",
+            "cn_title": "# 중국 A주 시황 리뷰",
+            "us_title": "# 미국 시황 리뷰",
+            "hk_title": "# 홍콩 시황 리뷰",
+            "jp_title": "# 일본 시황 리뷰",
+            "kr_title": "# 한국 시황 리뷰",
+            "separator": "> 다음 시장 시황 리뷰",
         }
     return {
         "root_title": "# 🎯 大盘复盘",
@@ -107,8 +138,19 @@ def _get_market_review_text(language: str) -> dict[str, str]:
         "cn_title": "# A股大盘复盘",
         "us_title": "# 美股大盘复盘",
         "hk_title": "# 港股大盘复盘",
+        "jp_title": "# 日股大盘复盘",
+        "kr_title": "# 韩股大盘复盘",
         "separator": "> 以下为下一市场大盘复盘",
     }
+
+
+def _get_market_review_market_heading(language: Any, market: str) -> str:
+    review_text = _get_market_review_text(str(language or "zh"))
+    title_key = next(
+        (candidate_title_key for mkt, candidate_title_key, _ in _MARKET_REVIEW_MARKETS if mkt == market),
+        "",
+    )
+    return str(review_text.get(title_key) or market.upper()).lstrip("#").strip()
 
 
 def _resolve_market_review_regions(raw_region: Optional[str]) -> list[str]:
@@ -204,7 +246,11 @@ def run_market_review(
                 )
                 review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
-                market_light_snapshots[mkt] = review_result.market_light_snapshot
+                _collect_market_light_snapshot(
+                    market_light_snapshots,
+                    region=mkt,
+                    review_result=review_result,
+                )
                 market_review_payloads[mkt] = _coerce_market_review_payload(
                     review_result,
                     region=mkt,
@@ -238,7 +284,12 @@ def run_market_review(
             )
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report
-            market_light_snapshots = {run_region: review_result.market_light_snapshot}
+            market_light_snapshots = {}
+            _collect_market_light_snapshot(
+                market_light_snapshots,
+                region=run_region,
+                review_result=review_result,
+            )
             market_review_payloads = {
                 run_region: _coerce_market_review_payload(
                     review_result,
@@ -258,6 +309,10 @@ def run_market_review(
             markdown_report = _render_market_review_payload_markdown(
                 market_review_payload,
                 wrapper_title=review_text["root_title"],
+            )
+            merge_markdown_report = _render_market_review_merge_markdown(
+                market_review_payload,
+                review_report=review_report,
             )
             if save_report_file:
                 # 保存报告到文件
@@ -369,8 +424,19 @@ def run_market_review(
                     report=review_report,
                     market_review_payload=market_review_payload,
                 )
+            if merge_notification:
+                return merge_markdown_report
             return review_report
         
+    except GenerationError:
+        logger.exception(
+            "[MarketReview] component=market_review action=failed "
+            "reason=generation_backend_config trigger_source=%s query_id=%s region=%s",
+            trigger_source,
+            history_query_id,
+            persist_region,
+        )
+        raise
     except Exception:
         logger.exception(
             "[MarketReview] component=market_review action=failed "
@@ -445,12 +511,41 @@ def _render_market_review_payload_markdown(
     return body.strip()
 
 
+def _render_market_review_merge_markdown(
+    payload: Dict[str, Any],
+    *,
+    review_report: str,
+) -> str:
+    """Render market-review body for the outer combined notification wrapper."""
+    markets = payload.get("markets")
+    if isinstance(markets, dict) and markets:
+        return _render_market_review_payload_markdown(payload)
+    return _append_missing_sector_payload_block(review_report, payload)
+
+
 def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:
     markets = payload.get("markets")
     if isinstance(markets, dict) and markets:
         markdown_report = payload.get("markdown_report")
         if isinstance(markdown_report, str) and markdown_report.strip():
-            return markdown_report.strip()
+            original_markdown = markdown_report.strip()
+            rendered = original_markdown
+            for market in _MARKET_REVIEW_REGION_ORDER:
+                market_payload = markets.get(market)
+                if not isinstance(market_payload, dict):
+                    continue
+                title_prefix = str(market_payload.get("title") or market.upper()).strip()
+                wrapper_title = _get_market_review_market_heading(payload.get("language"), market)
+                segment_title_prefix = title_prefix
+                if wrapper_title and _extract_market_markdown_segment(original_markdown, wrapper_title):
+                    segment_title_prefix = wrapper_title
+                rendered = _append_missing_sector_payload_block_to_market_segment(
+                    rendered,
+                    market_payload,
+                    title_prefix=title_prefix,
+                    segment_title_prefix=segment_title_prefix,
+                )
+            return rendered
         parts = []
         for market in _MARKET_REVIEW_REGION_ORDER:
             market_payload = markets.get(market)
@@ -464,7 +559,8 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
     sections = payload.get("sections")
     if not isinstance(sections, list) or not sections:
         markdown = payload.get("markdown_report")
-        return markdown if isinstance(markdown, str) else ""
+        rendered = markdown if isinstance(markdown, str) else ""
+        return _append_missing_sector_payload_block(rendered, payload)
 
     title = payload.get("title")
     normalized_title = _normalize_market_review_heading(title)
@@ -486,7 +582,181 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
         if should_render_section_title:
             lines.extend([f"### {section_title}", ""])
         lines.extend([markdown, ""])
+    return _append_missing_sector_payload_block("\n".join(lines).strip(), payload)
+
+
+def _append_missing_sector_payload_block(
+    markdown: str,
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+    existing_markdown: Optional[Any] = None,
+    segment_title_prefix: str = "",
+) -> str:
+    sector_block = _render_sector_payload_markdown_block(payload, title_prefix=title_prefix)
+    if not sector_block:
+        return markdown.strip()
+    markdown_to_check = markdown if existing_markdown is None else existing_markdown
+    check_title_prefix = segment_title_prefix or title_prefix
+    if _markdown_has_sector_table(markdown_to_check, title_prefix=check_title_prefix):
+        return markdown.strip()
+
+    base = markdown.strip()
+    if not base:
+        return sector_block
+    return f"{base}\n\n{sector_block}".strip()
+
+
+def _append_missing_sector_payload_block_to_market_segment(
+    markdown: str,
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+    segment_title_prefix: str = "",
+) -> str:
+    base = markdown.strip()
+    check_title_prefix = segment_title_prefix or title_prefix
+    sector_block = _render_sector_payload_markdown_block(payload, title_prefix=title_prefix)
+    if not sector_block:
+        return base
+    if _markdown_has_sector_table(base, title_prefix=check_title_prefix):
+        return base
+
+    segment_span = _find_market_markdown_segment_span(base, check_title_prefix)
+    if segment_span is None:
+        return _append_missing_sector_payload_block(
+            base,
+            payload,
+            title_prefix=title_prefix,
+            existing_markdown=base,
+            segment_title_prefix=check_title_prefix,
+        )
+
+    start, end = segment_span
+    segment = base[start:end].strip()
+    rendered_segment = f"{segment}\n\n{sector_block}".strip() if segment else sector_block
+    suffix = base[end:]
+    if suffix and not suffix.startswith(("\n", "\r")):
+        rendered_segment = f"{rendered_segment}\n\n"
+    return f"{base[:start]}{rendered_segment}{suffix}".strip()
+
+
+def _render_sector_payload_markdown_block(
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+) -> str:
+    sector_block = _render_sector_payload_block(payload)
+    if not sector_block:
+        return ""
+    language = normalize_report_language(payload.get("language"))
+    title = "Sector Highlights" if language == "en" else "板块主线"
+    heading = f"{title_prefix} / {title}" if title_prefix else title
+    return f"### {heading}\n\n{sector_block}".strip()
+
+
+def _markdown_has_sector_table(markdown: Any, *, title_prefix: str = "") -> bool:
+    text = str(markdown or "")
+    if title_prefix:
+        title = title_prefix.strip()
+        prefixed_markers = (
+            f"### {title} / 板块主线",
+            f"### {title} / Sector Highlights",
+        )
+        if any(marker in text for marker in prefixed_markers):
+            return True
+        segment = _extract_market_markdown_segment(text, title)
+        if segment is None:
+            return False
+        text = segment
+
+    return _markdown_contains_sector_markers(text)
+
+
+def _extract_market_markdown_segment(markdown: str, title: str) -> Optional[str]:
+    segment_span = _find_market_markdown_segment_span(markdown, title)
+    if segment_span is None:
+        return None
+    start, end = segment_span
+    return markdown[start:end]
+
+
+def _find_market_markdown_segment_span(markdown: str, title: str) -> Optional[tuple[int, int]]:
+    if not title:
+        return None
+    heading_pattern = re.compile(rf"(?m)^(#{{1,2}})\s+{re.escape(title)}\s*$")
+    match = heading_pattern.search(markdown)
+    if not match:
+        return None
+    heading_level = len(match.group(1))
+    next_heading = re.search(
+        rf"(?m)^(?:#{{1,{heading_level}}}\s+|---\s*$)",
+        markdown[match.end():],
+    )
+    end = match.end() + next_heading.start() if next_heading else len(markdown)
+    return match.start(), end
+
+
+def _markdown_contains_sector_markers(text: str) -> bool:
+    markers = (
+        "#### 领涨板块",
+        "#### 领跌板块",
+        "#### 行业板块领涨",
+        "#### 行业板块领跌",
+        "#### Leading Sectors",
+        "#### Lagging Sectors",
+        "#### Leading Industry Sectors",
+        "#### Lagging Industry Sectors",
+        "| 排名 | 板块 |",
+        "| 排名 | 行业板块 |",
+        "| Rank | Sector |",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
+    sectors = payload.get("sectors")
+    if not isinstance(sectors, dict):
+        return ""
+    top = sectors.get("top") if isinstance(sectors.get("top"), list) else []
+    bottom = sectors.get("bottom") if isinstance(sectors.get("bottom"), list) else []
+    if not top and not bottom:
+        return ""
+
+    language = normalize_report_language(payload.get("language"))
+    lines = []
+    if top:
+        if language == "en":
+            lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        else:
+            lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
+        for rank, sector in enumerate(top[:5], 1):
+            if not isinstance(sector, dict):
+                continue
+            name = str(sector.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
+    if bottom:
+        if lines:
+            lines.append("")
+        if language == "en":
+            lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        else:
+            lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
+        for rank, sector in enumerate(bottom[:5], 1):
+            if not isinstance(sector, dict):
+                continue
+            name = str(sector.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
     return "\n".join(lines).strip()
+
+
+def _format_sector_change_pct(sector: Dict[str, Any]) -> str:
+    raw = sector.get("change_pct", sector.get("changePct"))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return "--"
+    return f"{value:+.2f}%"
 
 
 def _normalize_market_review_heading(value: Any) -> str:
@@ -515,6 +785,10 @@ def _persist_market_review_history(
             stock_name = "Market Review"
             operation_advice = "View review"
             trend_prediction = "Market review"
+        elif report_language == "ko":
+            stock_name = "시황 리뷰"
+            operation_advice = "리뷰 보기"
+            trend_prediction = "시황 리뷰"
         else:
             stock_name = "大盘复盘"
             operation_advice = "查看复盘"
@@ -618,7 +892,11 @@ def _build_market_review_context_overview(
         metadata["trigger_source"] = diagnostic_snapshot.get("trigger_source") or metadata["trigger_source"]
         metadata["scope"] = diagnostic_snapshot.get("scope") or metadata["scope"]
 
-    label = "Market review" if report_language == "en" else "大盘复盘"
+    label = (
+        "Market review" if report_language == "en"
+        else "시황 리뷰" if report_language == "ko"
+        else "大盘复盘"
+    )
     return {
         "pack_version": "market_review/1.0",
         "created_at": datetime.now().isoformat(),
@@ -655,4 +933,8 @@ def _summarize_market_review(review_report: str, report_language: str) -> str:
         text = line.strip().lstrip("#").strip()
         if text and not text.startswith("---") and not text.startswith(">"):
             return text[:200]
-    return "Market review report generated." if report_language == "en" else "大盘复盘报告已生成。"
+    if report_language == "en":
+        return "Market review report generated."
+    if report_language == "ko":
+        return "시황 리뷰 리포트가 생성되었습니다."
+    return "大盘复盘报告已生成。"

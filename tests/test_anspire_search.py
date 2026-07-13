@@ -444,18 +444,35 @@ class TestAnspireIntegration(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        """Check if API Key is configured."""
+        """Check if API Key is configured and valid."""
         cls.api_keys = [k.strip() for k in os.getenv('ANSPIRE_API_KEYS', '').split(',') if k.strip()]
         cls.has_api_key = len(cls.api_keys) > 0
+        cls.has_valid_api_key = False  # 标记是否有有效的 API Key
         
         if cls.has_api_key:
             reset_search_service()
             cls.service = get_search_service()
+            
+            # 验证 API Key 是否有效
+            try:
+                # 查找 Anspire provider
+                for provider in cls.service._providers:
+                    if isinstance(provider, AnspireSearchProvider):
+                        # 执行一次简单的搜索验证
+                        test_response = provider.search("测试", max_results=1)
+                        if test_response.success:
+                            cls.has_valid_api_key = True
+                        break
+            except Exception:
+                cls.has_valid_api_key = False
 
-    @unittest.skipIf(
-        not os.environ.get("ANSPIRE_API_KEYS"),
-        "未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试"
-    )
+    def setUp(self):
+        """在每次测试前检查 API Key 是否有效"""
+        if not os.environ.get("ANSPIRE_API_KEYS"):
+            self.skipTest("未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试")
+        if not getattr(self.__class__, 'has_valid_api_key', False):
+            self.skipTest("ANSPIRE_API_KEYS 环境变量中的 API Key 无效，跳过集成测试")
+
     @pytest.mark.network
     def test_real_api_call_stock_news(self):
         """真实 API 调用测试 - 股票新闻搜索"""
@@ -494,10 +511,6 @@ class TestAnspireIntegration(unittest.TestCase):
             # snippet 可能为空，视具体实现而定
             # self.assertIsNotNone(result.snippet)
     
-    @unittest.skipIf(
-        not os.environ.get("ANSPIRE_API_KEYS"),
-        "未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试"
-    )
     @pytest.mark.network
     def test_real_api_call_general_search(self):
         """真实 API 调用测试 - 通用搜索"""

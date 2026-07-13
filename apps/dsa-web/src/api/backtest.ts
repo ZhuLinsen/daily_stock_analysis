@@ -17,11 +17,13 @@ export const backtestApi = {
    */
   run: async (params: BacktestRunRequest = {}): Promise<BacktestRunResponse> => {
     const requestData: Record<string, unknown> = {};
-    if (params.code) requestData.code = params.code;
+    if (params.code?.trim()) requestData.code = params.code.trim();
     if (params.force) requestData.force = params.force;
-    if (params.evalWindowDays) requestData.eval_window_days = params.evalWindowDays;
+    if (params.evalWindowDays != null) requestData.eval_window_days = params.evalWindowDays;
     if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
-    if (params.limit) requestData.limit = params.limit;
+    if (params.analysisDateFrom) requestData.analysis_date_from = params.analysisDateFrom;
+    if (params.analysisDateTo) requestData.analysis_date_to = params.analysisDateTo;
+    if (params.limit != null) requestData.limit = params.limit;
 
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/run',

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import and_, select
 
+from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.market_phase_summary import extract_market_phase_summary, normalize_analysis_phase_bucket
@@ -18,6 +19,7 @@ from src.repositories.stock_repo import StockRepository
 from src.schemas.decision_action import build_action_fields
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager
 from src.utils.data_processing import parse_json_field
+from src.services.stock_code_utils import normalize_code as normalize_backtest_code
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +41,17 @@ class BacktestService:
         force: bool = False,
         eval_window_days: Optional[int] = None,
         min_age_days: Optional[int] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
         limit: int = 200,
     ) -> Dict[str, Any]:
         config = get_config()
+
+        if analysis_date_from and analysis_date_to and analysis_date_from > analysis_date_to:
+            raise ValueError("analysis_date_from cannot be after analysis_date_to")
+
+        query_code = self._normalize_code(code)
+        diagnostic_code = self._normalize_code_for_display(code)
 
         if eval_window_days is None:
             eval_window_days = getattr(config, "backtest_eval_window_days", 10)
@@ -57,13 +67,16 @@ class BacktestService:
             engine_version=str(engine_version),
         )
 
-        candidates = self.repo.get_candidates(
-            code=code,
+        limit_int = int(limit)
+        candidates = self._get_run_candidates(
+            code=query_code,
             min_age_days=int(min_age_days),
-            limit=int(limit),
+            limit=limit_int,
             eval_window_days=int(eval_window_days),
             engine_version=str(engine_version),
             force=force,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
         )
 
         processed = 0
@@ -76,7 +89,9 @@ class BacktestService:
 
         for analysis in candidates:
             processed += 1
-            touched_codes.add(analysis.code)
+            normalized_code = self._normalize_summary_code(analysis.code)
+            if normalized_code:
+                touched_codes.add(normalized_code)
 
             try:
                 analysis_date = self._resolve_analysis_date(analysis)
@@ -94,11 +109,23 @@ class BacktestService:
                         )
                     )
                     continue
-                start_daily = self.stock_repo.get_start_daily(code=analysis.code, analysis_date=analysis_date)
+                daily_code_candidates = self._build_daily_code_candidates(analysis.code)
+                start_daily = self._get_start_daily_for_candidates(
+                    code_candidates=daily_code_candidates,
+                    analysis_date=analysis_date,
+                )
 
                 if start_daily is None or start_daily.close is None:
-                    self._try_fill_daily_data(code=analysis.code, analysis_date=analysis_date, eval_window_days=eval_window_days)
-                    start_daily = self.stock_repo.get_start_daily(code=analysis.code, analysis_date=analysis_date)
+                    refill_code = daily_code_candidates[0] if daily_code_candidates else analysis.code
+                    self._try_fill_daily_data(
+                        code=refill_code,
+                        analysis_date=analysis_date,
+                        eval_window_days=eval_window_days,
+                    )
+                    start_daily = self._get_start_daily_for_candidates(
+                        code_candidates=daily_code_candidates,
+                        analysis_date=analysis_date,
+                    )
 
                 if start_daily is None or start_daily.close is None:
                     insufficient += 1
@@ -116,19 +143,34 @@ class BacktestService:
                     )
                     continue
 
-                forward_bars = self.stock_repo.get_forward_bars(
-                    code=analysis.code,
+                matched_daily_code = start_daily.code or (
+                    daily_code_candidates[0] if daily_code_candidates else analysis.code
+                )
+                forward_bars = self._get_forward_bars_by_candidates(
+                    code_candidates=daily_code_candidates,
                     analysis_date=start_daily.date,
                     eval_window_days=int(eval_window_days),
+                    preferred_code=matched_daily_code,
                 )
 
                 if len(forward_bars) < int(eval_window_days):
-                    self._try_fill_daily_data(code=analysis.code, analysis_date=start_daily.date, eval_window_days=eval_window_days)
-                    forward_bars = self.stock_repo.get_forward_bars(
-                        code=analysis.code,
-                        analysis_date=start_daily.date,
-                        eval_window_days=int(eval_window_days),
-                    )
+                    for fill_code in self._ordered_daily_refill_codes(
+                        code_candidates=daily_code_candidates,
+                        preferred_code=matched_daily_code,
+                    ):
+                        self._try_fill_daily_data(
+                            code=fill_code,
+                            analysis_date=start_daily.date,
+                            eval_window_days=eval_window_days,
+                        )
+                        forward_bars = self._get_forward_bars_by_candidates(
+                            code_candidates=daily_code_candidates,
+                            analysis_date=start_daily.date,
+                            eval_window_days=int(eval_window_days),
+                            preferred_code=matched_daily_code,
+                        )
+                        if len(forward_bars) >= int(eval_window_days):
+                            break
 
                 evaluation = BacktestEngine.evaluate_single(
                     operation_advice=analysis.operation_advice,
@@ -152,7 +194,7 @@ class BacktestService:
                     BacktestResult(
                         analysis_history_id=analysis.id,
                         code=analysis.code,
-                        analysis_date=evaluation.get("analysis_date"),
+                        analysis_date=analysis_date,
                         eval_window_days=int(evaluation.get("eval_window_days") or eval_window_days),
                         engine_version=str(evaluation.get("engine_version") or engine_version),
                         eval_status=str(evaluation.get("eval_status") or "error"),
@@ -208,13 +250,359 @@ class BacktestService:
                 engine_version=str(engine_version),
             )
 
+        has_matching_analysis = False
+        aligned_existing_result_dates = 0
+        has_analysis_date_filter = analysis_date_from is not None or analysis_date_to is not None
+        if not force and has_analysis_date_filter:
+            aligned_existing_result_dates = self.repo.align_existing_result_dates(
+                code=query_code,
+                min_age_days=int(min_age_days),
+                eval_window_days=int(eval_window_days),
+                engine_version=str(engine_version),
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+        if not force and processed == 0:
+            has_matching_analysis = self._has_matching_analysis_for_run(
+                code=query_code,
+                min_age_days=int(min_age_days),
+                eval_window_days=int(eval_window_days),
+                engine_version=str(engine_version),
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+
+        diagnostics = self._build_run_diagnostics(
+            code=diagnostic_code,
+            eval_window_days=int(eval_window_days),
+            min_age_days=int(min_age_days),
+            limit=limit_int,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+            processed=processed,
+            saved=saved,
+            completed=completed,
+            insufficient=insufficient,
+            errors=errors,
+            has_matching_analysis=has_matching_analysis,
+            aligned_existing_result_dates=aligned_existing_result_dates,
+        )
+
         return {
             "processed": processed,
             "saved": saved,
             "completed": completed,
             "insufficient": insufficient,
             "errors": errors,
+            "applied_eval_window_days": int(eval_window_days),
+            "message": diagnostics.get("message"),
+            "diagnostics": diagnostics,
         }
+
+    def _get_run_candidates(
+        self,
+        *,
+        code: Optional[str],
+        min_age_days: int,
+        limit: int,
+        eval_window_days: int,
+        engine_version: str,
+        force: bool,
+        analysis_date_from: Optional[date],
+        analysis_date_to: Optional[date],
+    ) -> List[Any]:
+        if limit <= 0:
+            return []
+
+        if analysis_date_from is None and analysis_date_to is None:
+            return self.repo.get_candidates(
+                code=code,
+                min_age_days=min_age_days,
+                limit=limit,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+                force=force,
+            )
+
+        matched: List[Any] = []
+        offset = 0
+        page_size = min(max(limit, 200), 1000)
+
+        while len(matched) < limit:
+            batch = self.repo.get_candidates(
+                code=code,
+                min_age_days=min_age_days,
+                limit=page_size,
+                offset=offset,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+                force=force,
+            )
+            if not batch:
+                break
+
+            matched.extend(
+                self._filter_candidates_by_analysis_date(
+                    batch,
+                    analysis_date_from=analysis_date_from,
+                    analysis_date_to=analysis_date_to,
+                )
+            )
+            offset += len(batch)
+            if len(batch) < page_size:
+                break
+
+        return matched[:limit]
+
+    def _has_matching_analysis_for_run(
+        self,
+        *,
+        code: Optional[str],
+        min_age_days: int,
+        eval_window_days: int,
+        engine_version: str,
+        analysis_date_from: Optional[date],
+        analysis_date_to: Optional[date],
+    ) -> bool:
+        """Check if historical analysis rows match the same run filters, ignoring backtest history."""
+        if analysis_date_from is None and analysis_date_to is None:
+            return bool(
+                self.repo.get_candidates(
+                    code=code,
+                    min_age_days=min_age_days,
+                    limit=1,
+                    eval_window_days=eval_window_days,
+                    engine_version=engine_version,
+                    force=True,
+                )
+            )
+
+        return len(
+            self._get_run_candidates(
+                code=code,
+                min_age_days=min_age_days,
+                limit=1,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+                force=True,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+            )
+        ) > 0
+
+    def _filter_candidates_by_analysis_date(
+        self,
+        candidates: List[Any],
+        *,
+        analysis_date_from: Optional[date],
+        analysis_date_to: Optional[date],
+    ) -> List[Any]:
+        if analysis_date_from is None and analysis_date_to is None:
+            return candidates
+
+        filtered: List[Any] = []
+        for analysis in candidates:
+            analysis_date = self._resolve_analysis_date(analysis)
+            if analysis_date is None:
+                continue
+            if analysis_date_from is not None and analysis_date < analysis_date_from:
+                continue
+            if analysis_date_to is not None and analysis_date > analysis_date_to:
+                continue
+            filtered.append(analysis)
+        return filtered
+
+    def _get_start_daily_for_candidates(self, *, code_candidates: List[str], analysis_date: date):
+        best_daily = None
+        best_rank = len(code_candidates)
+        for rank, candidate in enumerate(code_candidates):
+            daily = self.stock_repo.get_start_daily(code=candidate, analysis_date=analysis_date)
+            if daily is None:
+                continue
+            if best_daily is None or daily.date > best_daily.date or (
+                daily.date == best_daily.date and rank < best_rank
+            ):
+                best_daily = daily
+                best_rank = rank
+        return best_daily
+
+    @staticmethod
+    def _build_daily_code_candidates(code: Optional[str]) -> List[str]:
+        if not code:
+            return []
+
+        raw_code = str(code).strip()
+        if not raw_code:
+            return []
+
+        raw_code = raw_code.upper()
+        normalized_code = normalize_stock_code(raw_code)
+        backtest_normalized_code = normalize_backtest_code(raw_code)
+        candidates = [raw_code]
+        for candidate in (normalized_code, backtest_normalized_code):
+            if candidate and candidate != raw_code:
+                candidates.append(candidate)
+        for candidate in list(candidates):
+            candidates.extend(BacktestRepository._build_market_code_variants(raw_code, candidate))
+        return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+    @staticmethod
+    def _normalize_code(code: Optional[str]) -> Optional[str]:
+        if not code:
+            return None
+
+        normalized = normalize_backtest_code(str(code).strip())
+        if normalized is None:
+            raise ValueError(f"非法股票代码格式: {code}")
+        return normalized
+
+    @staticmethod
+    def _normalize_summary_code(code: Optional[str]) -> Optional[str]:
+        if not code:
+            return None
+        raw_code = str(code).strip()
+        normalized = normalize_stock_code(raw_code)
+        backtest_normalized = normalize_backtest_code(raw_code)
+        if raw_code.upper().startswith("SS") and backtest_normalized and backtest_normalized != normalized:
+            normalized = backtest_normalized
+        return canonical_stock_code(normalized or raw_code)
+
+    @staticmethod
+    def _normalize_code_for_display(code: Optional[str]) -> Optional[str]:
+        if not code:
+            return None
+
+        normalized = normalize_backtest_code(str(code).strip())
+        if normalized is None:
+            raise ValueError(f"非法股票代码格式: {code}")
+        return normalized
+
+    @staticmethod
+    def _ordered_candidate_codes(
+        *,
+        code_candidates: List[str],
+        preferred_code: Optional[str] = None,
+    ) -> List[str]:
+        ordered = list(dict.fromkeys(code_candidates))
+        if not ordered:
+            return []
+
+        if not preferred_code:
+            return ordered
+
+        normalized_preferred = preferred_code.strip()
+        if normalized_preferred and normalized_preferred in ordered:
+            return [normalized_preferred] + [code for code in ordered if code != normalized_preferred]
+        return ordered
+
+    @staticmethod
+    def _normalize_daily_refill_code(code: Optional[str]) -> str:
+        raw_code = str(code or "").strip()
+        if not raw_code:
+            return ""
+        return canonical_stock_code(normalize_stock_code(raw_code))
+
+    @staticmethod
+    def _ordered_daily_refill_codes(
+        *,
+        code_candidates: List[str],
+        preferred_code: Optional[str] = None,
+    ) -> List[str]:
+        ordered = BacktestService._ordered_candidate_codes(
+            code_candidates=code_candidates,
+            preferred_code=preferred_code,
+        )
+        refill_codes: List[str] = []
+        seen: set[str] = set()
+        for code in ordered:
+            refill_code = BacktestService._normalize_daily_refill_code(code)
+            if not refill_code or refill_code in seen:
+                continue
+            seen.add(refill_code)
+            refill_codes.append(refill_code)
+        return refill_codes
+
+    def _get_forward_bars_by_candidates(
+        self,
+        *,
+        code_candidates: List[str],
+        analysis_date: date,
+        eval_window_days: int,
+        preferred_code: Optional[str] = None,
+    ) -> List[Any]:
+        ordered_codes = BacktestService._ordered_candidate_codes(
+            code_candidates=code_candidates,
+            preferred_code=preferred_code,
+        )
+
+        if not ordered_codes:
+            return []
+
+        best_bars: List[Any] = []
+        for code in ordered_codes:
+            if not code:
+                continue
+
+            bars = self.stock_repo.get_forward_bars(
+                code=code,
+                analysis_date=analysis_date,
+                eval_window_days=eval_window_days,
+            )
+            if len(bars) >= eval_window_days:
+                return bars
+            if len(bars) > len(best_bars):
+                best_bars = bars
+        return best_bars
+
+    @staticmethod
+    def _build_run_diagnostics(
+        *,
+        code: Optional[str],
+        eval_window_days: int,
+        min_age_days: int,
+        limit: int,
+        analysis_date_from: Optional[date],
+        analysis_date_to: Optional[date],
+        processed: int,
+        saved: int,
+        completed: int,
+        insufficient: int,
+        errors: int,
+        has_matching_analysis: bool = False,
+        aligned_existing_result_dates: int = 0,
+    ) -> Dict[str, Any]:
+        diagnostics: Dict[str, Any] = {
+            "code": code,
+            "eval_window_days": eval_window_days,
+            "min_age_days": min_age_days,
+            "limit": limit,
+            "analysis_date_from": analysis_date_from.isoformat() if analysis_date_from else None,
+            "analysis_date_to": analysis_date_to.isoformat() if analysis_date_to else None,
+        }
+        if aligned_existing_result_dates:
+            diagnostics["aligned_existing_result_dates"] = aligned_existing_result_dates
+
+        message: Optional[str] = None
+        if processed == 0:
+            if has_matching_analysis:
+                diagnostics["empty_reason"] = "no_new_results"
+                message = "历史分析记录已存在，当前筛选条件下没有新的回测任务可执行。"
+            else:
+                diagnostics["empty_reason"] = "no_matching_analysis"
+                message = "未找到符合条件的历史分析记录，请检查股票代码、分析日期范围、最小天龄或是否已生成历史分析。"
+        elif completed == 0 and insufficient > 0 and errors == 0:
+            diagnostics["empty_reason"] = "insufficient_daily_data"
+            message = "已找到历史分析记录，但可用日线行情不足，无法完成回测。"
+        elif completed == 0 and errors > 0:
+            diagnostics["empty_reason"] = "evaluation_error"
+            message = "已找到历史分析记录，但回测计算失败，请查看后端日志或放宽筛选条件。"
+        elif saved == 0 and completed == 0:
+            diagnostics["empty_reason"] = "no_new_results"
+            message = "没有写入新的回测结果；如需覆盖已有结果，请启用强制重跑。"
+
+        if message:
+            diagnostics["message"] = message
+        return diagnostics
 
     def get_recent_evaluations(
         self,
@@ -229,6 +617,7 @@ class BacktestService:
     ) -> Dict[str, Any]:
         config = get_config()
         engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+        code = self._normalize_code(code)
 
         phase_bucket = self._normalize_phase_filter(analysis_phase)
         if eval_window_days is None and (analysis_date_from is not None or analysis_date_to is not None or phase_bucket is not None):
@@ -262,7 +651,7 @@ class BacktestService:
             limit=limit,
         )
         items = []
-        for result, stock_name, trend_prediction, _created_at, context_snapshot, raw_result, report_type in rows:
+        for result, stock_name, trend_prediction, _created_at, context_snapshot, raw_result, report_type, analysis_sentiment_score in rows:
             summary = extract_market_phase_summary(context_snapshot)
             items.append(
                 self._result_to_dict(
@@ -273,6 +662,7 @@ class BacktestService:
                     market_phase=self._phase_bucket_from_summary(summary),
                     raw_result=raw_result,
                     report_type=report_type,
+                    analysis_sentiment_score=analysis_sentiment_score,
                 )
             )
         return {"total": total, "page": page, "limit": limit, "items": items}
@@ -289,6 +679,7 @@ class BacktestService:
     ) -> Optional[Dict[str, Any]]:
         config = get_config()
         engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+        code = self._normalize_code(code)
         lookup_code = OVERALL_SENTINEL_CODE if scope == "overall" else code
 
         phase_bucket = self._normalize_phase_filter(analysis_phase)
@@ -444,6 +835,7 @@ class BacktestService:
                 str,
                 Optional[str],
                 Optional[str],
+                Optional[int],
             ]
         ] = []
 
@@ -476,13 +868,14 @@ class BacktestService:
                 context_snapshot,
                 raw_result,
                 report_type,
+                analysis_sentiment_score,
             ) in batch:
                 summary = extract_market_phase_summary(context_snapshot)
                 bucket = self._phase_bucket_from_summary(summary)
                 if bucket != phase_bucket:
                     continue
                 if matched_total >= page_offset and len(page_rows) < limit:
-                    page_rows.append((result, stock_name, trend_prediction, summary, bucket, raw_result, report_type))
+                    page_rows.append((result, stock_name, trend_prediction, summary, bucket, raw_result, report_type, analysis_sentiment_score))
                 matched_total += 1
             if len(batch) < batch_limit:
                 break
@@ -496,8 +889,9 @@ class BacktestService:
                 market_phase=bucket,
                 raw_result=raw_result,
                 report_type=report_type,
+                analysis_sentiment_score=analysis_sentiment_score,
             )
-            for result, stock_name, trend_prediction, summary, bucket, raw_result, report_type in page_rows
+            for result, stock_name, trend_prediction, summary, bucket, raw_result, report_type, analysis_sentiment_score in page_rows
         ]
         return {"total": matched_total, "page": page, "limit": limit, "items": items}
 
@@ -545,6 +939,10 @@ class BacktestService:
         return None
 
     def _try_fill_daily_data(self, *, code: str, analysis_date: date, eval_window_days: int) -> None:
+        refill_code = self._normalize_daily_refill_code(code)
+        if not refill_code:
+            return
+
         try:
             from data_provider.base import DataFetcherManager
 
@@ -552,16 +950,16 @@ class BacktestService:
             end_date = analysis_date + timedelta(days=max(eval_window_days * 2, 30))
             manager = DataFetcherManager()
             df, source = manager.get_daily_data(
-                stock_code=code,
+                stock_code=refill_code,
                 start_date=analysis_date.strftime("%Y-%m-%d"),
                 end_date=end_date.strftime("%Y-%m-%d"),
                 days=eval_window_days * 2,
             )
             if df is None or df.empty:
                 return
-            self.db.save_daily_data(df, code=code, data_source=source)
+            self.db.save_daily_data(df, code=refill_code, data_source=source)
         except Exception as exc:
-            logger.warning(f"补全日线数据失败({code}): {exc}")
+            logger.warning(f"补全日线数据失败({refill_code}): {exc}")
 
     def _recompute_summaries(self, *, touched_codes: List[str], eval_window_days: int, engine_version: str) -> None:
         with self.db.get_session() as session:
@@ -585,10 +983,15 @@ class BacktestService:
             self.repo.upsert_summary(overall_summary)
 
             for code in touched_codes:
+                normalized_code = self._normalize_summary_code(code)
+                if not normalized_code:
+                    continue
+
+                code_conditions = BacktestRepository._build_code_conditions(BacktestResult.code, normalized_code)
                 rows = session.execute(
                     select(BacktestResult).where(
                         and_(
-                            BacktestResult.code == code,
+                            *code_conditions,
                             BacktestResult.eval_window_days == eval_window_days,
                             BacktestResult.engine_version == engine_version,
                         )
@@ -597,7 +1000,7 @@ class BacktestService:
                 data = BacktestEngine.compute_summary(
                     results=rows,
                     scope="stock",
-                    code=code,
+                    code=normalized_code,
                     eval_window_days=eval_window_days,
                     engine_version=engine_version,
                 )
@@ -642,6 +1045,7 @@ class BacktestService:
         market_phase: Optional[str] = None,
         raw_result: Optional[Any] = None,
         report_type: Optional[str] = None,
+        analysis_sentiment_score: Optional[int] = None,
     ) -> Dict[str, Any]:
         parsed_raw_result = parse_json_field(raw_result)
         raw = parsed_raw_result if isinstance(parsed_raw_result, dict) else {}
@@ -650,6 +1054,13 @@ class BacktestService:
             explicit_action=raw.get("action"),
             report_type=report_type or ("market_review" if row.code == "market_review" else None),
             report_language=raw.get("report_language"),
+            sentiment_score=(
+                raw.get("sentiment_score")
+                if raw.get("sentiment_score") is not None
+                else analysis_sentiment_score
+            ),
+            guardrail_reason=raw.get("guardrail_reason") or raw.get("downgrade_reason"),
+            align_with_score=True,
         )
         return {
             "analysis_history_id": row.analysis_history_id,

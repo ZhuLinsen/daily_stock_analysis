@@ -458,8 +458,12 @@ def _is_markdown_table_separator(row: str) -> bool:
 
 
 def _parse_markdown_table_row(row: str) -> List[str]:
-    cells = [c.strip() for c in row.strip().strip('|').split('|')]
-    return [c for c in cells if c]
+    stripped = row.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    return [c.strip() for c in stripped.split('|')]
 
 
 def _strip_inline_markdown(text: str) -> str:
@@ -500,6 +504,8 @@ def _flush_table_as_key_value_rows(buffer: List[str], output: List[str], *, bull
     header = rows[0]
     data_rows = rows[1:] if len(rows) > 1 else []
     for row in data_rows:
+        if len(row) < len(header):
+            row = row + [""] * (len(header) - len(row))
         if len(header) == 2 and len(row) >= 2:
             output.append(f"{bullet} {_format_two_column_table_row(header, row)}")
             continue
@@ -772,8 +778,7 @@ def format_feishu_markdown(content: str) -> str:
 
         def _parse_row(row: str) -> List[str]:
             """解析表格行，提取单元格"""
-            cells = [c.strip() for c in row.strip().strip('|').split('|')]
-            return [c for c in cells if c]
+            return _parse_markdown_table_row(row)
 
         rows = []
         for raw in buffer:
@@ -790,6 +795,8 @@ def format_feishu_markdown(content: str) -> str:
         header = rows[0]
         data_rows = rows[1:] if len(rows) > 1 else []
         for row in data_rows:
+            if len(row) < len(header):
+                row = row + [""] * (len(header) - len(row))
             pairs = []
             for idx, cell in enumerate(row):
                 key = header[idx] if idx < len(header) else f"列{idx + 1}"

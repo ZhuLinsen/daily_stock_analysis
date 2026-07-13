@@ -14,7 +14,9 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # Keep this test runnable when optional LLM runtime deps are not installed.
@@ -26,15 +28,24 @@ except ModuleNotFoundError:
 try:
     from fastapi.testclient import TestClient
     from api.app import create_app
-    from api.v1.endpoints.history import get_history_detail, get_stock_bar
+    from api.v1.endpoints.history import delete_history_by_code, get_history_detail, get_history_list, get_stock_bar
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
+    delete_history_by_code = None
     get_history_detail = None
+    get_history_list = None
     get_stock_bar = None
 
 from src.config import Config
-from src.storage import DatabaseManager, AnalysisHistory, BacktestResult, DecisionSignalRecord
+from src.storage import (
+    DatabaseManager,
+    AnalysisHistory,
+    BacktestResult,
+    DecisionSignalFeedbackRecord,
+    DecisionSignalOutcomeRecord,
+    DecisionSignalRecord,
+)
 from src.analyzer import AnalysisResult
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.services.history_service import HistoryService
@@ -117,6 +128,18 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         auth._auth_enabled = False
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = os.path.join(self._temp_dir.name, "test_analysis_history.db")
+        self._original_env = {
+            key: os.environ.get(key)
+            for key in (
+                "ENV_FILE",
+                "DATABASE_PATH",
+            )
+        }
+        self._env_path = os.path.join(self._temp_dir.name, ".env")
+        with open(self._env_path, "w", encoding="utf-8") as env_file:
+            env_file.write("STOCK_LIST=600519,000001\n")
+
+        os.environ["ENV_FILE"] = self._env_path
         os.environ["DATABASE_PATH"] = self._db_path
 
         Config._instance = None
@@ -125,8 +148,96 @@ class AnalysisHistoryTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         """清理资源"""
+        Config._instance = None
         DatabaseManager.reset_instance()
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self._temp_dir.cleanup()
+
+    def test_history_timestamps_include_server_timezone_offset(self) -> None:
+        serialized = HistoryService._serialize_created_at(datetime(2026, 7, 11, 0, 30))
+
+        self.assertIsNotNone(serialized)
+        self.assertRegex(serialized or "", r"[+-]\d{2}:\d{2}$")
+
+    def test_history_query_failure_is_not_returned_as_an_empty_success(self) -> None:
+        db = MagicMock()
+        db.get_analysis_history_paginated.side_effect = RuntimeError("database unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+            HistoryService(db).get_history_list(page=1, limit=20)
+
+        if get_history_list is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        with self.assertRaises(Exception) as raised:
+            get_history_list(
+                stock_code=None,
+                report_type=None,
+                start_date=None,
+                end_date=None,
+                page=1,
+                limit=20,
+                db_manager=db,
+            )
+
+        self.assertEqual(getattr(raised.exception, "status_code", None), 500)
+
+    def test_delete_history_by_code_deletes_more_than_one_lookup_batch(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        remaining = {record_id: SimpleNamespace(id=record_id) for record_id in range(1, 10_002)}
+        db = MagicMock()
+
+        def get_records(*, code, limit=20, offset=0, **_kwargs):
+            records = list(remaining.values())[offset:offset + limit]
+            return records, len(remaining)
+
+        def delete_records(record_ids):
+            deleted = 0
+            for record_id in record_ids:
+                if remaining.pop(record_id, None) is not None:
+                    deleted += 1
+            return deleted
+
+        db.get_analysis_history_paginated.side_effect = get_records
+        db.delete_analysis_history_records.side_effect = delete_records
+
+        response = delete_history_by_code("600519", db_manager=db)
+
+        self.assertEqual(response.deleted, 10_001)
+        self.assertEqual(remaining, {})
+        self.assertEqual(db.get_analysis_history_paginated.call_count, 2)
+
+    def test_delete_history_by_code_rejects_blank_code_before_query(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        record_id = self._save_history("query_delete_blank_code")
+        with (
+            patch.object(
+                self.db,
+                "get_analysis_history_paginated",
+                wraps=self.db.get_analysis_history_paginated,
+            ) as query,
+            patch.object(
+                self.db,
+                "delete_analysis_history_records",
+                wraps=self.db.delete_analysis_history_records,
+            ) as delete,
+        ):
+            with self.assertRaises(Exception) as raised:
+                delete_history_by_code(" ", db_manager=self.db)
+
+        self.assertEqual(getattr(raised.exception, "status_code", None), 400)
+        query.assert_not_called()
+        delete.assert_not_called()
+        with self.db.get_session() as session:
+            self.assertIsNotNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first())
 
     def _build_result(self) -> AnalysisResult:
         """构造分析结果"""
@@ -199,6 +310,138 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             self.assertEqual(row.secondary_buy, 120.0)
             self.assertEqual(row.stop_loss, 110.0)
             self.assertEqual(row.take_profit, 150.0)
+
+    def test_history_display_resolves_bare_jp_kr_code_from_stock_pool(self) -> None:
+        result = self._build_result()
+        result.code = "005930"
+        result.name = "Samsung Electronics"
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2025-01-02T16:10:00+09:00",
+            "session_date": "2025-01-02",
+            "effective_daily_bar_date": "2025-01-02",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+        expected_phase_summary = {**persisted_phase_summary, "market": "kr"}
+        expected_phase_summary["minutes_to_open"] = None
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_kr_bare",
+            report_type="simple",
+            news_content="news",
+            context_snapshot={"market_phase_summary": persisted_phase_summary},
+            save_snapshot=True,
+        )
+        self.assertGreater(saved, 0)
+
+        service = HistoryService(self.db)
+        with patch("src.services.history_service.resolve_index_stock_code", return_value="005930.KS"):
+            listing = service.get_history_list(page=1, limit=5)
+            detail = service.resolve_and_get_detail("query_kr_bare")
+
+        self.assertEqual(listing["items"][0]["stock_code"], "005930.KS")
+        self.assertEqual(listing["items"][0]["market_phase_summary"], expected_phase_summary)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["stock_code"], "005930.KS")
+        self.assertEqual(detail["market_phase_summary"], expected_phase_summary)
+
+    def test_history_display_rebuilds_market_phase_summary_for_legacy_cn_snapshot(self) -> None:
+        result = self._build_result()
+        result.code = "005930"
+        result.name = "Samsung Electronics"
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2026-01-01T10:00:00+08:00",
+            "session_date": "2026-01-01",
+            "effective_daily_bar_date": "2025-12-31",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_kr_legacy_snapshot",
+            report_type="simple",
+            news_content="news",
+            context_snapshot={"market_phase_summary": persisted_phase_summary},
+            save_snapshot=True,
+        )
+        self.assertGreater(saved, 0)
+
+        service = HistoryService(self.db)
+        with patch("src.services.history_service.resolve_index_stock_code", return_value="005930.KS"):
+            items = service.get_history_list(page=1, limit=5)["items"]
+
+        self.assertEqual(items[0]["stock_code"], "005930.KS")
+        rebuilt = items[0]["market_phase_summary"]
+        self.assertIsNotNone(rebuilt)
+        self.assertEqual(rebuilt["market"], "kr")
+        self.assertEqual(rebuilt["market_local_time"], "2026-01-01T11:00:00+09:00")
+        self.assertEqual(rebuilt["effective_daily_bar_date"], "2025-12-30")
+        self.assertIsNone(rebuilt["minutes_to_open"])
+
+    def test_history_filter_and_stock_bar_merge_bare_and_resolved_jp_kr_codes(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        legacy = self._build_result()
+        legacy.code = "005930"
+        legacy.name = "Samsung Electronics"
+        current = self._build_result()
+        current.code = "005930.KS"
+        current.name = "Samsung Electronics"
+
+        self.assertGreater(
+            self.db.save_analysis_history(
+                result=legacy,
+                query_id="query_kr_legacy",
+                report_type="simple",
+                news_content="news",
+                context_snapshot={"market_phase_summary": _market_phase_summary()},
+                save_snapshot=True,
+            ),
+            0,
+        )
+        self.assertGreater(
+            self.db.save_analysis_history(
+                result=current,
+                query_id="query_kr_current",
+                report_type="simple",
+                news_content="news",
+                context_snapshot={"market_phase_summary": _market_phase_summary()},
+                save_snapshot=True,
+            ),
+            0,
+        )
+
+        with patch("src.services.history_service.resolve_index_stock_code", side_effect=lambda code: "005930.KS" if str(code).split(".", 1)[0] == "005930" else None):
+            listing = HistoryService(self.db).get_history_list(stock_code="005930.KS", page=1, limit=10)
+            stock_bar = get_stock_bar(
+                start_date=None,
+                end_date=None,
+                limit=10,
+                db_manager=self.db,
+            )
+
+        self.assertEqual(listing["total"], 2)
+        self.assertEqual({item["query_id"] for item in listing["items"]}, {"query_kr_legacy", "query_kr_current"})
+        self.assertEqual(len(stock_bar.items), 1)
+        self.assertEqual(stock_bar.items[0].stock_code, "005930.KS")
+        self.assertEqual(stock_bar.items[0].analysis_count, 2)
 
     def test_save_analysis_history_persists_sniper_columns_via_shared_parser(self) -> None:
         """迁出 sniper parser 后历史狙击点位列仍按原规则保存。"""
@@ -422,8 +665,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["trend_prediction"], "看多")
         self.assertEqual(item["analysis_summary"], "基本面稳健，短期震荡")
         self.assertEqual(item["operation_advice"], "持有")
-        self.assertEqual(item["action"], "hold")
-        self.assertEqual(item["action_label"], "持有")
+        self.assertEqual(item["action"], "buy")
+        self.assertEqual(item["action_label"], "买入")
         self.assertEqual(item["model_used"], "gemini/gemini-2.5-pro")
         self.assertEqual(item["current_price"], 51.5)
         self.assertEqual(item["change_pct"], -4.61)
@@ -597,6 +840,76 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(response.items[0].operation_advice, "不建议买入")
         self.assertEqual(response.items[0].action, "avoid")
         self.assertEqual(response.items[0].action_label, "回避")
+
+    def test_stock_bar_item_aligns_score_and_legacy_advice(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.operation_advice = "持有"
+        result.sentiment_score = 78
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_score_align",
+            report_type="detailed",
+            news_content="个股正文",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        self.assertEqual(len(response.items), 1)
+        self.assertEqual(response.items[0].operation_advice, "持有")
+        self.assertEqual(response.items[0].sentiment_score, 78)
+        self.assertEqual(response.items[0].action, "buy")
+        self.assertEqual(response.items[0].action_label, "买入")
+
+    def test_stock_bar_item_falls_back_to_raw_result_summary_fields(self) -> None:
+        if get_stock_bar is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.operation_advice = "Hold"
+        result.report_language = "en"
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_stock_bar_raw_fallback",
+            report_type="detailed",
+            news_content="stock report",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.session_scope() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_stock_bar_raw_fallback"
+            ).first()
+            self.assertIsNotNone(row)
+            row.sentiment_score = None
+            row.operation_advice = None
+
+        response = get_stock_bar(
+            start_date=None,
+            end_date=None,
+            limit=10,
+            db_manager=self.db,
+        )
+
+        self.assertEqual(len(response.items), 1)
+        self.assertEqual(response.items[0].sentiment_score, 78)
+        self.assertEqual(response.items[0].operation_advice, "Hold")
+        self.assertEqual(response.items[0].action, "buy")
+        self.assertEqual(response.items[0].action_label, "Buy")
 
     def test_history_detail_uses_service_resolved_action_fields(self) -> None:
         if get_history_detail is None:
@@ -1001,6 +1314,12 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                         "bottom": [],
                     }
                 },
+                "concept_boards": {
+                    "data": {
+                        "top": [{"name": "机器人概念", "change_pct": 4.2}],
+                        "bottom": [],
+                    }
+                },
                 "earnings": {
                     "data": {
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
@@ -1022,6 +1341,53 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.concept_rankings["top"][0]["name"], "机器人概念")
+
+    def test_history_detail_uses_raw_code_for_legacy_jp_kr_fundamental_snapshot(self) -> None:
+        """Legacy bare JP/KR history rows should display suffixes but read snapshots by stored code."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.code = "005930"
+        result.name = "Samsung Electronics"
+        query_id = "query_kr_raw_fundamental_fallback"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        self.db.save_fundamental_snapshot(
+            query_id=query_id,
+            code="005930",
+            payload={
+                "earnings": {
+                    "data": {
+                        "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
+                        "dividend": {"ttm_dividend_yield_pct": 2.6},
+                    }
+                }
+            },
+        )
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            record_id = row.id
+
+        with patch("src.services.history_service.resolve_index_stock_code", return_value="005930.KS"):
+            report = get_history_detail(str(record_id), db_manager=self.db)
+
+        self.assertEqual(report.meta.stock_code, "005930.KS")
+        self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
+        self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
 
     def test_history_detail_preserves_unavailable_board_rankings_state(self) -> None:
         """Failed board ranking blocks should remain unavailable in detail response."""
@@ -1257,6 +1623,65 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsNone(report.details.analysis_context_pack_overview)
         self.assertIsNone(report.details.context_snapshot)
 
+    def test_history_detail_restores_market_structure_from_raw_result_without_snapshot(self) -> None:
+        """SAVE_CONTEXT_SNAPSHOT=false should still expose market_structure saved in raw_result."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        market_structure = {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+                "active_themes": [{"name": "机器人概念"}],
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+            },
+        }
+        result = self._build_result()
+        result.market_structure_context = market_structure
+        query_id = "query_market_structure_snapshot_disabled_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot={"market_structure_context": {"ignored": True}},
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            self.assertIsNone(row.context_snapshot)
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.details.context_snapshot)
+        self.assertEqual(
+            report.details.market_structure["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            report.details.raw_result["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            report.details.raw_result,
+        )
+
     def test_history_markdown_localizes_english_report_and_placeholder_name(self) -> None:
         """History markdown should preserve report_language for English reports."""
         result = AnalysisResult(
@@ -1314,6 +1739,27 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIn("Core Conclusion", markdown)
         self.assertIn("Unnamed Stock (AAPL)", markdown)
         self.assertNotIn("核心结论", markdown)
+
+    def test_history_markdown_signal_metadata_uses_explicit_avoid_action(self) -> None:
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=90,
+            trend_prediction="Bullish",
+            operation_advice="Hold",
+            analysis_summary="Risk remains elevated.",
+            report_language="en",
+            action="avoid",
+            action_label="Avoid",
+        )
+
+        markdown = HistoryService(self.db)._generate_single_stock_markdown(
+            result,
+            MagicMock(created_at=None),
+        )
+
+        self.assertIn("**🟡 Avoid** | Bullish", markdown)
+        self.assertNotIn("Strong Buy", markdown)
 
     def test_history_markdown_returns_persisted_market_review_report(self) -> None:
         """Market review history should return the saved Markdown without rebuilding a stock report."""
@@ -1536,6 +1982,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
     def test_delete_analysis_history_records_also_cleans_backtests_and_decision_signals(self) -> None:
         """删除历史记录时应一并清理关联回测结果和决策信号。"""
         record_id = self._save_history("query_delete_001")
+        linked_signal_id = None
 
         with self.db.session_scope() as session:
             session.add(BacktestResult(
@@ -1546,7 +1993,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 engine_version="v1",
                 eval_status="pending",
             ))
-            session.add(DecisionSignalRecord(
+            linked_signal = DecisionSignalRecord(
                 stock_code="600519",
                 stock_name="贵州茅台",
                 market="cn",
@@ -1560,6 +2007,26 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 reason="linked",
                 plan_quality="minimal",
                 status="active",
+            )
+            session.add(linked_signal)
+            session.flush()
+            linked_signal_id = linked_signal.id
+            session.add(DecisionSignalOutcomeRecord(
+                signal_id=linked_signal_id,
+                horizon="3d",
+                engine_version="decision-signal-v1",
+                eval_status="completed",
+                outcome="hit",
+                action="buy",
+                market="cn",
+                source_type="analysis",
+                plan_quality="minimal",
+                holding_state="holding",
+            ))
+            session.add(DecisionSignalFeedbackRecord(
+                signal_id=linked_signal_id,
+                feedback_value="useful",
+                source="api",
             ))
             session.add(DecisionSignalRecord(
                 stock_code="000001",
@@ -1588,6 +2055,18 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             )
             self.assertEqual(
                 session.query(DecisionSignalRecord).filter(DecisionSignalRecord.source_report_id == record_id).count(),
+                0,
+            )
+            self.assertEqual(
+                session.query(DecisionSignalOutcomeRecord).filter(
+                    DecisionSignalOutcomeRecord.signal_id == linked_signal_id
+                ).count(),
+                0,
+            )
+            self.assertEqual(
+                session.query(DecisionSignalFeedbackRecord).filter(
+                    DecisionSignalFeedbackRecord.signal_id == linked_signal_id
+                ).count(),
                 0,
             )
             self.assertEqual(

@@ -55,6 +55,16 @@ class TestExtractSymbol:
         result = extract_symbol_from_ts_code("AAPL", "US")
         assert result == "AAPL"
 
+    def test_jp_stock_preserves_suffix(self):
+        """测试日股保留 Yahoo 后缀以避免裸代码冲突"""
+        result = extract_symbol_from_ts_code("7203.T", "JP")
+        assert result == "7203.T"
+
+    def test_kr_stock_preserves_suffix(self):
+        """测试韩股保留 Yahoo 后缀以避免裸代码冲突"""
+        result = extract_symbol_from_ts_code("005930.KS", "KR")
+        assert result == "005930.KS"
+
     def test_empty_ts_code(self):
         """测试空 ts_code"""
         result = extract_symbol_from_ts_code("", "CN")
@@ -113,6 +123,21 @@ class TestDetermineMarket:
         """测试美股 Unit（AAPL.U）"""
         result = determine_market("AAPL.U")
         assert result == "US"
+
+    def test_jp_stock_with_yahoo_suffix(self):
+        """测试日股 Yahoo 后缀"""
+        result = determine_market("7203.T")
+        assert result == "JP"
+
+    def test_kr_kospi_stock_with_yahoo_suffix(self):
+        """测试韩股 KOSPI Yahoo 后缀"""
+        result = determine_market("005930.KS")
+        assert result == "KR"
+
+    def test_kr_kosdaq_stock_with_yahoo_suffix(self):
+        """测试韩股 KOSDAQ Yahoo 后缀"""
+        result = determine_market("035720.KQ")
+        assert result == "KR"
 
 
 class TestGetStockName:
@@ -213,6 +238,38 @@ class TestDataCleaning:
         assert result['symbol'] == 'BRK.B'
         assert result['name'] == "BERKSHIRE HATHAWAY 'B'"
         assert result['market'] == 'US'
+
+    def test_valid_jp_stock_with_seed_aliases(self):
+        """测试有效的日股种子记录"""
+        row = {
+            'ts_code': '7203.T',
+            'name': '丰田汽车',
+            'enname': 'Toyota Motor Corporation',
+            'aliases': 'Toyota|Toyota Motor|丰田'
+        }
+        result = parse_stock_row(row, 'JP')
+        assert result is not None
+        assert result['ts_code'] == '7203.T'
+        assert result['symbol'] == '7203.T'
+        assert result['name'] == '丰田汽车'
+        assert result['market'] == 'JP'
+        assert result['aliases'] == ['Toyota', 'Toyota Motor', '丰田']
+
+    def test_valid_kr_stock_with_seed_aliases(self):
+        """测试有效的韩股种子记录"""
+        row = {
+            'ts_code': '005930.KS',
+            'name': '三星电子',
+            'enname': 'Samsung Electronics',
+            'aliases': 'Samsung|Samsung Electronics|三星'
+        }
+        result = parse_stock_row(row, 'KR')
+        assert result is not None
+        assert result['ts_code'] == '005930.KS'
+        assert result['symbol'] == '005930.KS'
+        assert result['name'] == '三星电子'
+        assert result['market'] == 'KR'
+        assert result['aliases'] == ['Samsung', 'Samsung Electronics', '三星']
 
     def test_us_dummy_filtered(self):
         """测试美股 DUMMY 记录被过滤"""
@@ -430,23 +487,47 @@ class TestIntegration:
                 'enname': 'Apple Inc.'
             })
 
+        jp_csv = tmp_path / 'stock_list_jp.csv'
+        with open(jp_csv, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['ts_code', 'name', 'enname', 'aliases'])
+            writer.writeheader()
+            writer.writerow({
+                'ts_code': '7203.T',
+                'name': '丰田汽车',
+                'enname': 'Toyota Motor Corporation',
+                'aliases': 'Toyota|丰田'
+            })
+
+        kr_csv = tmp_path / 'stock_list_kr.csv'
+        with open(kr_csv, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['ts_code', 'name', 'enname', 'aliases'])
+            writer.writeheader()
+            writer.writerow({
+                'ts_code': '005930.KS',
+                'name': '三星电子',
+                'enname': 'Samsung Electronics',
+                'aliases': 'Samsung|三星'
+            })
+
         # 加载数据
         stocks = load_tushare_data(tmp_path)
 
         # 验证数据
-        assert len(stocks) == 3
+        assert len(stocks) == 5
 
         # 构建索引
         index = build_stock_index(stocks)
 
         # 验证索引
-        assert len(index) == 3
+        assert len(index) == 5
+        assert next(item for item in index if item['canonicalCode'] == '7203.T')['aliases'] == ['Toyota', '丰田']
+        assert next(item for item in index if item['canonicalCode'] == '005930.KS')['aliases'] == ['Samsung', '三星']
 
         # 压缩索引
         compressed = compress_index(index)
 
         # 验证压缩
-        assert len(compressed) == 3
+        assert len(compressed) == 5
 
         # 验证字段数量
         for item in compressed:

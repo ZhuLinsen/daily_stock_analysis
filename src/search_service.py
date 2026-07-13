@@ -1085,7 +1085,7 @@ class AnspireSearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Anspire")
     
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7, region_mode: int = 0) -> SearchResponse:
         """执行 Anspire 搜索"""
         try:
             import requests
@@ -1112,7 +1112,8 @@ class AnspireSearchProvider(BaseSearchProvider):
                 "query": query,
                 "top_k": min(max_results,50), 
                 "FromTime": (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),
-                "ToTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "ToTime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "region_mode": region_mode
             }
             
             # 执行搜索

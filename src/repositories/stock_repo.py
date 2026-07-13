@@ -149,6 +149,16 @@ class StockRepository:
             ).scalar_one_or_none()
             return row
 
+    def get_daily_on_date(self, *, code: str, target_date: date) -> Optional[StockDaily]:
+        """Return StockDaily for the exact target_date without trading-day fallback."""
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(StockDaily)
+                .where(and_(StockDaily.code == code, StockDaily.date == target_date))
+                .limit(1)
+            ).scalar_one_or_none()
+            return row
+
     def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
         """Return forward daily bars after analysis_date, up to eval_window_days."""
         with self.db.get_session() as session:

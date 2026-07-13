@@ -5,6 +5,7 @@ import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
 import type { AnalysisReport, HistoryItem, HistoryListResponse, ReportLanguage, StockBarItem, StockHistoryFilters, StockHistoryRange, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
+import { normalizeStockCode } from '../utils/stockCode';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
 const PAGE_SIZE = 20;
@@ -18,6 +19,7 @@ type FetchHistoryOptions = {
   autoSelectFirst?: boolean;
   reset?: boolean;
   silent?: boolean;
+  selectLatestForStockCode?: string;
 };
 
 type SubmitAnalysisOptions = {
@@ -31,14 +33,23 @@ type SubmitAnalysisOptions = {
   reportLanguage?: ReportLanguage;
 };
 
+type CompletedTaskSelectionIntent = {
+  manualSelectionSeq: number;
+  selectedReportId: number | undefined;
+};
+
 let reportRequestSeq = 0;
 let analyzeRequestSeq = 0;
 let historyRequestSeq = 0;
 let marketReviewHistoryRequestSeq = 0;
 let stockHistoryRequestSeq = 0;
+let stockBarRequestSeq = 0;
 let activeTaskRequestSeq = 0;
 let activeTaskLocalRevision = 0;
+let manualSelectionRequestSeq = 0;
+let manualSelectionRequestId = 0;
 const dismissedTaskIds = new Set<string>();
+const pendingCompletedTaskSelectionKeys = new Map<string, CompletedTaskSelectionIntent>();
 
 export interface StockPoolState {
   query: string;
@@ -77,6 +88,7 @@ export interface StockPoolState {
   markdownDrawerOpen: boolean;
   stockBarItems: StockBarItem[];
   isLoadingStockBar: boolean;
+  stockBarRefreshFailed: boolean;
   setQuery: (query: string) => void;
   clearError: () => void;
   clearInlineMessages: () => void;
@@ -88,11 +100,12 @@ export interface StockPoolState {
   loadMoreStockHistory: () => Promise<void>;
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
+  refreshHistoryForCompletedTask: (task: TaskInfo) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
   loadMarketReviewHistory: () => Promise<void>;
   refreshMarketReviewHistory: (silent?: boolean) => Promise<void>;
   loadMoreMarketReviewHistory: () => Promise<void>;
-  selectHistoryItem: (recordId: number) => Promise<void>;
+  selectHistoryItem: (recordId: number, isUserInitiated?: boolean) => Promise<void>;
   toggleHistorySelection: (recordId: number) => void;
   toggleSelectAllVisible: () => void;
   deleteSelectedHistory: () => Promise<void>;
@@ -152,6 +165,7 @@ const initialState = {
   markdownDrawerOpen: false,
   stockBarItems: [] as StockBarItem[],
   isLoadingStockBar: false,
+  stockBarRefreshFailed: false,
 };
 
 function buildHistoryParams(page: number) {
@@ -236,6 +250,87 @@ function normalizeSelectedReport(report: AnalysisReport): AnalysisReport {
       stockCode: MARKET_REVIEW_HISTORY_CODE,
     },
   };
+}
+
+function normalizeStockCodeKey(stockCode: string | undefined): string {
+  const trimmed = (stockCode ?? '').trim();
+  return trimmed ? normalizeStockCode(trimmed).toUpperCase() : '';
+}
+
+function queueCompletedTaskSelection(
+  stockCode: string | undefined,
+  selectedReport: AnalysisReport | null,
+): void {
+  const key = normalizeStockCodeKey(stockCode);
+  if (key) {
+    pendingCompletedTaskSelectionKeys.set(key, {
+      manualSelectionSeq: manualSelectionRequestSeq,
+      selectedReportId: selectedReport?.meta.id,
+    });
+  }
+}
+
+function consumeCompletedTaskSelection(items: HistoryItem[], selectedReport: AnalysisReport | null): HistoryItem | undefined {
+  if (pendingCompletedTaskSelectionKeys.size === 0) {
+    return undefined;
+  }
+  if (manualSelectionRequestId !== 0) {
+    pendingCompletedTaskSelectionKeys.clear();
+    return undefined;
+  }
+
+  if (selectedReport?.meta.reportType === 'market_review') {
+    pendingCompletedTaskSelectionKeys.clear();
+    return undefined;
+  }
+
+  if (selectedReport) {
+    const selectedStockCode = normalizeStockCodeKey(selectedReport.meta.stockCode);
+    const pendingSelectionIntent = selectedStockCode
+      ? pendingCompletedTaskSelectionKeys.get(selectedStockCode)
+      : undefined;
+    if (!selectedStockCode || pendingSelectionIntent === undefined) {
+      pendingCompletedTaskSelectionKeys.clear();
+      return undefined;
+    }
+    if (pendingSelectionIntent.manualSelectionSeq !== manualSelectionRequestSeq) {
+      pendingCompletedTaskSelectionKeys.clear();
+      return undefined;
+    }
+    if (pendingSelectionIntent.selectedReportId !== selectedReport.meta.id) {
+      pendingCompletedTaskSelectionKeys.clear();
+      return undefined;
+    }
+
+    for (const key of Array.from(pendingCompletedTaskSelectionKeys.keys())) {
+      if (key !== selectedStockCode) {
+        pendingCompletedTaskSelectionKeys.delete(key);
+      }
+    }
+
+    const latestItem = items.find(
+      (item) =>
+        item.reportType !== 'market_review' &&
+        normalizeStockCodeKey(item.stockCode) === selectedStockCode,
+    );
+    if (latestItem) {
+      pendingCompletedTaskSelectionKeys.delete(selectedStockCode);
+    }
+    return latestItem;
+  }
+
+  const latestItem = items.find((item) => {
+    if (item.reportType === 'market_review') {
+      return false;
+    }
+    const stockCode = normalizeStockCodeKey(item.stockCode);
+    const pendingSelectionIntent = pendingCompletedTaskSelectionKeys.get(stockCode);
+    return stockCode.length > 0 && pendingSelectionIntent?.manualSelectionSeq === manualSelectionRequestSeq;
+  });
+  if (latestItem) {
+    pendingCompletedTaskSelectionKeys.clear();
+  }
+  return latestItem;
 }
 
 function isDateInHistoryRange(createdAt: string | undefined, range: StockHistoryRange): boolean {
@@ -353,9 +448,17 @@ async function fetchHistory(
   set: (partial: Partial<StockPoolState>) => void,
   options: FetchHistoryOptions = {},
 ): Promise<HistoryListResponse | null> {
-  const { autoSelectFirst = false, reset = true, silent = false } = options;
+  const {
+    autoSelectFirst = false,
+    reset = true,
+    silent = false,
+    selectLatestForStockCode,
+  } = options;
   const currentState = get();
   const page = reset ? 1 : currentState.currentPage + 1;
+  if (reset) {
+    queueCompletedTaskSelection(selectLatestForStockCode, currentState.selectedReport);
+  }
   const requestId = ++historyRequestSeq;
 
   if (!silent) {
@@ -400,8 +503,14 @@ async function fetchHistory(
       selectedHistoryIds: get().selectedHistoryIds.filter((id) => visibleIds.has(id)),
     });
 
-    if (autoSelectFirst && response.items.length > 0 && !get().selectedReport) {
-      await get().selectHistoryItem(response.items[0].id);
+    if (reset) {
+      const latestCompletedTaskItem = consumeCompletedTaskSelection(response.items, get().selectedReport);
+      const selectedReport = get().selectedReport;
+      if (latestCompletedTaskItem && latestCompletedTaskItem.id !== selectedReport?.meta.id) {
+        await get().selectHistoryItem(latestCompletedTaskItem.id, false);
+      } else if (autoSelectFirst && response.items.length > 0 && !selectedReport) {
+        await get().selectHistoryItem(response.items[0].id, false);
+      }
     }
 
     return response;
@@ -554,6 +663,14 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     await fetchHistory(get, set, { reset: true, silent });
   },
 
+  refreshHistoryForCompletedTask: async (task) => {
+    await fetchHistory(get, set, {
+      reset: true,
+      silent: true,
+      selectLatestForStockCode: task.reportType === 'market_review' ? undefined : task.stockCode,
+    });
+  },
+
   loadMoreHistory: async () => {
     const state = get();
     if (state.isLoadingMore || !state.hasMore) {
@@ -578,8 +695,12 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     await fetchMarketReviewHistory(get, set, { reset: false });
   },
 
-  selectHistoryItem: async (recordId) => {
+  selectHistoryItem: async (recordId, isUserInitiated = true) => {
     const requestId = ++reportRequestSeq;
+    if (isUserInitiated) {
+      manualSelectionRequestSeq += 1;
+      manualSelectionRequestId = requestId;
+    }
     const shouldShowInitialLoading = !get().selectedReport;
 
     if (shouldShowInitialLoading) {
@@ -617,6 +738,10 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         error: getParsedApiError(error),
         isLoadingReport: false,
       });
+    } finally {
+      if (isUserInitiated && manualSelectionRequestId === requestId) {
+        manualSelectionRequestId = 0;
+      }
     }
   },
 
@@ -666,7 +791,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       if (selectedWasDeleted) {
         const nextItem = freshPage?.items?.[0];
         if (nextItem) {
-          await get().selectHistoryItem(nextItem.id);
+          await get().selectHistoryItem(nextItem.id, false);
         } else {
           stockHistoryRequestSeq += 1;
           resetStockHistoryState(set);
@@ -730,7 +855,7 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
       if (selectedWasDeleted) {
         const nextItem = freshPage?.items?.[0];
         if (nextItem) {
-          await get().selectHistoryItem(nextItem.id);
+          await get().selectHistoryItem(nextItem.id, false);
         } else {
           set({ selectedReport: null });
         }
@@ -914,38 +1039,62 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
     stockHistoryRequestSeq += 1;
     reportRequestSeq = 0;
     analyzeRequestSeq = 0;
+    manualSelectionRequestSeq = 0;
+    manualSelectionRequestId = 0;
+    stockBarRequestSeq += 1;
     activeTaskRequestSeq += 1;
     activeTaskLocalRevision += 1;
     dismissedTaskIds.clear();
+    pendingCompletedTaskSelectionKeys.clear();
     set({ ...initialState });
   },
 
   loadStockBar: async () => {
     const state = get();
     if (state.isLoadingStockBar) return;
+    const requestSeq = ++stockBarRequestSeq;
     set({ isLoadingStockBar: true });
     try {
       const response = await historyApi.getStockBarList({
         startDate: getRecentStartDate(90),
         endDate: getTodayInShanghai(),
       });
-      set({ stockBarItems: response.items });
+      if (requestSeq !== stockBarRequestSeq) {
+        return;
+      }
+      set({ stockBarItems: response.items, stockBarRefreshFailed: false });
     } catch {
-      // keep existing items on error
+      if (requestSeq !== stockBarRequestSeq) {
+        return;
+      }
+      set({ stockBarRefreshFailed: true });
     } finally {
-      set({ isLoadingStockBar: false });
+      if (requestSeq === stockBarRequestSeq) {
+        set({ isLoadingStockBar: false });
+      }
     }
   },
 
   refreshStockBar: async () => {
+    const requestSeq = ++stockBarRequestSeq;
     try {
       const response = await historyApi.getStockBarList({
         startDate: getRecentStartDate(90),
         endDate: getTodayInShanghai(),
       });
-      set({ stockBarItems: response.items });
+      if (requestSeq !== stockBarRequestSeq) {
+        return;
+      }
+      set({ stockBarItems: response.items, stockBarRefreshFailed: false });
     } catch {
-      // keep existing items on error
+      if (requestSeq !== stockBarRequestSeq) {
+        return;
+      }
+      set({ stockBarRefreshFailed: true });
+    } finally {
+      if (requestSeq === stockBarRequestSeq) {
+        set({ isLoadingStockBar: false });
+      }
     }
   },
 }));

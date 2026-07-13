@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { agentApi } from '../api/agent';
 import type { ChatSessionItem, ChatStreamRequest } from '../api/agent';
 import {
+  createParsedApiError,
   getParsedApiError,
   isApiRequestError,
   isParsedApiError,
@@ -14,12 +15,20 @@ const STORAGE_KEY_SESSION = 'dsa_chat_session_id';
 export interface ProgressStep {
   type: string;
   step?: number;
+  stage?: string;
   tool?: string;
   display_name?: string;
+  status?: string;
   success?: boolean;
   duration?: number;
+  elapsed?: number;
+  timeout?: number;
+  remaining?: number;
+  minimum?: number;
+  reason?: string;
   message?: string;
   content?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface Message {
@@ -269,23 +278,25 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       const decoder = new TextDecoder();
       let buf = '';
       let finalContent: string | null = null;
+      let receivedDoneEvent = false;
       const currentProgressSteps: ProgressStep[] = [];
-        const processLine = (line: string) => {
-          if (!line.startsWith('data: ')) return;
+      const processLine = (line: string) => {
+        if (!line.startsWith('data: ')) return;
 
-          const event = JSON.parse(line.slice(6)) as ProgressStep;
-          if (event.type === 'done') {
-            const doneEvent = event as unknown as StreamFailureEvent;
-            if (doneEvent.success === false) {
-              throw getStreamFailureError(doneEvent, '大模型调用出错，请检查 API Key 配置');
-            }
-            finalContent = doneEvent.content ?? '';
-            return;
+        const event = JSON.parse(line.slice(6)) as ProgressStep;
+        if (event.type === 'done') {
+          receivedDoneEvent = true;
+          const doneEvent = event as unknown as StreamFailureEvent;
+          if (doneEvent.success === false) {
+            throw getStreamFailureError(doneEvent, '大模型调用出错，请检查 API Key 配置');
           }
+          finalContent = doneEvent.content ?? '';
+          return;
+        }
 
-          if (event.type === 'error') {
-            throw getStreamFailureError(event as unknown as StreamFailureEvent, '分析出错');
-          }
+        if (event.type === 'error') {
+          throw getStreamFailureError(event as unknown as StreamFailureEvent, '分析出错');
+        }
 
         currentProgressSteps.push(event);
         set((s) => ({ progressSteps: [...s.progressSteps, event] }));
@@ -317,6 +328,15 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
             throw parseErr;
           }
         }
+      }
+
+      if (!receivedDoneEvent && !ac.signal.aborted) {
+        throw createParsedApiError({
+          title: '回复未完整返回',
+          message: 'Agent 流式响应在完成前中断，请重试。',
+          rawMessage: 'Agent stream ended before a done event was received.',
+          category: 'upstream_network',
+        });
       }
 
       const { sessionId: currentSessionId, currentRoute } = get();

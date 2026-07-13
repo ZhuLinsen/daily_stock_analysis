@@ -5,9 +5,13 @@ import pytest
 
 from src.schemas.decision_action import (
     build_action_fields,
+    display_action_fields_for_result,
+    display_decision_type_for_result,
+    display_operation_advice_for_result,
     localize_action_label,
     normalize_decision_action,
 )
+from src.schemas.decision_scale import action_for_score, decision_type_for_score, signal_key_for_score
 
 
 @pytest.mark.parametrize(
@@ -292,6 +296,23 @@ def test_localize_action_label_uses_report_language() -> None:
     assert localize_action_label("avoid", "en") == "Avoid"
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_label"),
+    [
+        ("buy", "매수"),
+        ("add", "추가 매수"),
+        ("hold", "보유"),
+        ("reduce", "비중축소"),
+        ("sell", "매도"),
+        ("watch", "관망"),
+        ("avoid", "회피"),
+        ("alert", "경고"),
+    ],
+)
+def test_localize_action_label_supports_korean(action: str, expected_label: str) -> None:
+    assert localize_action_label(action, "ko") == expected_label
+
+
 def test_build_action_fields_respects_market_review_exclusion() -> None:
     fields = build_action_fields(
         operation_advice="买入",
@@ -319,3 +340,94 @@ def test_build_action_fields_keeps_empty_action_without_advice_or_explicit_actio
     )
 
     assert fields == {"action": None, "action_label": None}
+
+
+@pytest.mark.parametrize(
+    ("score", "expected_signal", "expected_action", "expected_decision_type"),
+    [
+        (28, "reduce", "reduce", "sell"),
+        (38, "reduce", "reduce", "sell"),
+        (42, "watch", "watch", "hold"),
+        (55, "watch", "watch", "hold"),
+        (60, "buy", "buy", "buy"),
+        (66, "buy", "buy", "buy"),
+        (72, "buy", "buy", "buy"),
+    ],
+)
+def test_canonical_score_scale_boundaries(
+    score: int,
+    expected_signal: str,
+    expected_action: str,
+    expected_decision_type: str,
+) -> None:
+    assert signal_key_for_score(score) == expected_signal
+    assert action_for_score(score) == expected_action
+    assert decision_type_for_score(score) == expected_decision_type
+
+
+def test_build_action_fields_can_align_neutral_action_with_directional_score() -> None:
+    assert build_action_fields(
+        operation_advice="持有",
+        sentiment_score=72,
+        align_with_score=True,
+    ) == {"action": "buy", "action_label": "买入"}
+
+    assert build_action_fields(
+        operation_advice="观望",
+        sentiment_score=28,
+        align_with_score=True,
+    ) == {"action": "reduce", "action_label": "减仓"}
+
+
+def test_build_action_fields_keeps_neutral_score_conflict_when_guardrail_is_explicit() -> None:
+    assert build_action_fields(
+        operation_advice="持有/观望待回踩",
+        sentiment_score=72,
+        guardrail_reason="等待回踩确认",
+        align_with_score=True,
+    ) == {"action": "watch", "action_label": "观望"}
+
+
+def test_display_helpers_share_score_aligned_action_with_report_rows_and_counts() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Hold",
+            "action": None,
+            "action_label": None,
+            "sentiment_score": 72,
+            "decision_type": "hold",
+            "report_language": "en",
+            "dashboard": {},
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {"action": "buy", "action_label": "Buy"}
+    assert display_operation_advice_for_result(result) == "Buy"
+    assert display_decision_type_for_result(result) == "buy"
+
+
+def test_display_helpers_preserve_neutral_action_when_guardrail_was_applied() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Hold",
+            "action": "hold",
+            "action_label": "Hold",
+            "sentiment_score": 72,
+            "decision_type": "hold",
+            "report_language": "en",
+            "dashboard": {
+                "decision_stability": {
+                    "applied": True,
+                    "reason": "Wait for confirmation",
+                }
+            },
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {"action": "hold", "action_label": "Hold"}
+    assert display_operation_advice_for_result(result) == "Hold"
+    assert display_decision_type_for_result(result) == "hold"

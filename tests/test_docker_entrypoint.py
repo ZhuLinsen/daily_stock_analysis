@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from src.config import DEFAULT_ALPHASIFT_INSTALL_SPEC
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,8 +31,9 @@ def test_dockerfile_bundles_default_alphasift_adapter() -> None:
     requirements = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     assert "git \\" in dockerfile
-    assert "git+https://github.com/ZhuLinsen/alphasift.git@14e74fc0819267f7c04c3117a0dd0fe3f9b19404#egg=alphasift" in requirements
-    assert "pip install --no-cache-dir -r requirements.txt" in dockerfile
+    assert f"{DEFAULT_ALPHASIFT_INSTALL_SPEC}#egg=alphasift" in requirements
+    assert "pip install -r requirements.txt" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
     assert "import alphasift.dsa_adapter" in dockerfile
 
 
@@ -58,6 +61,35 @@ def test_docker_compose_injects_env_without_single_file_env_mount() -> None:
     assert "../.env:/app/.env" not in common["volumes"]
     assert not any(str(volume).startswith("../.env:") for volume in common["volumes"])
     assert "../longbridge_tokens:/home/dsa/.longbridge" in common["volumes"]
+
+
+def test_docker_compose_default_memory_recommendation_is_not_512m() -> None:
+    compose_text = (REPO_ROOT / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_text)
+    resources = compose["x-common"]["deploy"]["resources"]
+
+    assert resources["limits"]["memory"] == "1G"
+    assert resources["reservations"]["memory"] == "512M"
+    assert "512M" in compose_text
+    assert "MAX_WORKERS=1" in compose_text
+
+
+def test_docker_memory_guides_describe_resource_profiles() -> None:
+    doc_paths = (
+        "docs/DEPLOY.md",
+        "docs/DEPLOY_EN.md",
+        "docs/full-guide.md",
+        "docs/full-guide_EN.md",
+        "docs/docker/zeabur-deployment.md",
+    )
+
+    for doc_path in doc_paths:
+        doc = (REPO_ROOT / doc_path).read_text(encoding="utf-8")
+
+        assert "512M" in doc
+        assert "1G" in doc
+        assert "2G+" in doc
+        assert "MAX_WORKERS=1" in doc
 
 
 def test_docker_guides_do_not_recommend_single_file_env_bind_mount() -> None:

@@ -39,7 +39,7 @@ export interface MarketReviewAccepted {
 
 // ============ Report Types ============
 
-export type ReportLanguage = 'zh' | 'en';
+export type ReportLanguage = 'zh' | 'en' | 'ko';
 
 export type MarketPhaseValue =
   | 'premarket'
@@ -77,7 +77,7 @@ export interface ReportMeta {
   createdAt: string;
   currentPrice?: number;
   changePct?: number;
-  modelUsed?: string;  // Display-only model snapshot from persisted history; not used for runtime model selection
+  modelUsed?: string;  // 历史元数据快照，仅用于展示，不用于运行时模型选择
   marketPhaseSummary?: MarketPhaseSummary | null;
 }
 
@@ -92,7 +92,12 @@ export type SentimentLabel =
   | 'Bearish'
   | 'Neutral'
   | 'Bullish'
-  | 'Very Bullish';
+  | 'Very Bullish'
+  | '매우 비관'
+  | '비관'
+  | '중립'
+  | '낙관'
+  | '매우 낙관';
 
 export type DecisionAction = 'buy' | 'add' | 'hold' | 'reduce' | 'sell' | 'watch' | 'avoid' | 'alert';
 
@@ -123,12 +128,114 @@ export interface RelatedBoard {
 
 export interface SectorRankingItem {
   name: string;
+  code?: string;
   changePct?: number;
+  source?: string;
+  updatedAt?: string;
 }
 
 export interface SectorRankings {
   top?: SectorRankingItem[];
   bottom?: SectorRankingItem[];
+}
+
+export type MarketStructureStatus = 'ok' | 'partial' | 'unknown' | 'not_supported';
+export type MarketStructureThemeSource = 'industry' | 'concept' | 'mixed' | 'unknown';
+export type MarketStructureThemePhase = 'warming' | 'accelerating' | 'cooling' | 'unknown';
+export type MarketStructureStockRole = 'leader' | 'follower' | 'edge' | 'unknown';
+
+export interface MarketStructureSource {
+  provider: string;
+  dataset: string;
+  status: string;
+  message?: string | null;
+}
+
+export interface MarketStructureDataQuality {
+  status: MarketStructureStatus;
+  missingFields?: string[];
+  sources?: MarketStructureSource[];
+  errors?: string[];
+}
+
+export interface RankedThemeItem {
+  name: string;
+  changePct?: number | null;
+  rank?: number | null;
+  source?: MarketStructureThemeSource;
+  code?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface MarketThemeItem extends RankedThemeItem {
+  phase?: MarketStructureThemePhase;
+  strengthScore?: number | null;
+  reason?: string | null;
+}
+
+export interface ThemeBreadth {
+  activeCount?: number;
+  leadingIndustryCount?: number;
+  leadingConceptCount?: number;
+  laggingCount?: number;
+}
+
+export interface MarketThemeContext {
+  schemaVersion: 'market-theme-v1';
+  status: MarketStructureStatus;
+  market: string;
+  tradeDate?: string | null;
+  activeThemes?: MarketThemeItem[];
+  leadingIndustries?: RankedThemeItem[];
+  leadingConcepts?: RankedThemeItem[];
+  laggingThemes?: RankedThemeItem[];
+  themeBreadth?: ThemeBreadth;
+  dataQuality?: MarketStructureDataQuality;
+}
+
+export interface StockBoardPosition {
+  name: string;
+  type?: string | null;
+  code?: string | null;
+  rank?: number | null;
+  changePct?: number | null;
+  source?: MarketStructureThemeSource;
+}
+
+export interface PrimaryTheme {
+  name: string;
+  source?: MarketStructureThemeSource;
+  phase?: MarketStructureThemePhase;
+  rank?: number | null;
+  changePct?: number | null;
+}
+
+export interface MarketStructureRiskTag {
+  code: string;
+  message: string;
+}
+
+export interface StockMarketPosition {
+  schemaVersion: 'stock-market-position-v1';
+  status: MarketStructureStatus;
+  stockCode: string;
+  stockName?: string | null;
+  market: string;
+  primaryTheme?: PrimaryTheme | null;
+  relatedBoards?: StockBoardPosition[];
+  stockRole?: MarketStructureStockRole;
+  themePhase?: MarketStructureThemePhase;
+  riskTags?: MarketStructureRiskTag[];
+  missingFields?: string[];
+}
+
+export interface MarketStructureContext {
+  schemaVersion: 'market-structure-v1';
+  status: MarketStructureStatus;
+  market: string;
+  tradeDate?: string | null;
+  marketThemeContext: MarketThemeContext;
+  stockMarketPosition: StockMarketPosition;
 }
 
 export interface MarketReviewPayloadSection {
@@ -175,6 +282,7 @@ export interface MarketReviewPayload {
   breadth?: MarketReviewBreadth;
   indices?: MarketReviewIndex[];
   sectors?: SectorRankings;
+  concepts?: SectorRankings;
   news?: Array<Record<string, unknown>>;
   sections?: MarketReviewPayloadSection[];
   markets?: Record<string, MarketReviewPayload>;
@@ -252,6 +360,8 @@ export interface ReportDetails {
   dividendMetrics?: Record<string, unknown>;
   belongBoards?: RelatedBoard[];
   sectorRankings?: SectorRankings;
+  conceptRankings?: SectorRankings;
+  marketStructure?: MarketStructureContext | null;
 }
 
 /** Full analysis report */
@@ -412,7 +522,7 @@ export interface HistoryItem {
   changePct?: number;
   volumeRatio?: number;
   turnoverRate?: number;
-  modelUsed?: string;  // Display-only model snapshot from persisted history; runtime provider/model/base URL still come from analyzer configuration
+  modelUsed?: string;  // 历史元数据快照，仅用于列表展示，不影响运行时调用与路由
   marketPhaseSummary?: MarketPhaseSummary | null;
   createdAt: string;
 }
@@ -500,6 +610,13 @@ export const getSentimentLabel = (score: number, language: ReportLanguage = 'zh'
     if (score <= 60) return 'Neutral';
     if (score <= 80) return 'Bullish';
     return 'Very Bullish';
+  }
+  if (language === 'ko') {
+    if (score <= 20) return '매우 비관';
+    if (score <= 40) return '비관';
+    if (score <= 60) return '중립';
+    if (score <= 80) return '낙관';
+    return '매우 낙관';
   }
   if (score <= 20) return '极度悲观';
   if (score <= 40) return '悲观';

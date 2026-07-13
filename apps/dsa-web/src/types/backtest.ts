@@ -14,6 +14,8 @@ export interface BacktestRunRequest {
   force?: boolean;
   evalWindowDays?: number;
   minAgeDays?: number;
+  analysisDateFrom?: string;
+  analysisDateTo?: string;
   limit?: number;
 }
 
@@ -23,6 +25,9 @@ export interface BacktestRunResponse {
   completed: number;
   insufficient: number;
   errors: number;
+  appliedEvalWindowDays?: number;
+  message?: string | null;
+  diagnostics?: Record<string, unknown>;
 }
 
 // ============ Result Item ============

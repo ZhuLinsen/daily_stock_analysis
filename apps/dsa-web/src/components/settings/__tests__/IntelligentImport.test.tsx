@@ -132,4 +132,42 @@ describe('IntelligentImport', () => {
     });
     expect(await screen.findByText('配置已更新，请再次点击「合并到自选股」')).toBeInTheDocument();
   });
+
+  it('normalizes existing mixed separators when merging into watchlist', async () => {
+    parseImport.mockResolvedValue({
+      items: [{ code: 'HK00700', name: 'Tencent', confidence: 'high' }],
+      codes: [],
+    });
+    update.mockResolvedValue({ success: true });
+
+    render(
+      <IntelligentImport
+        stockListValue="SH600000，SH600519 AAPL"
+        configVersion="v1"
+        maskToken="******"
+        onMerged={onMerged}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('或粘贴 CSV/Excel 复制的文本...'), {
+      target: { value: 'HK00700' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '解析' }));
+
+    await screen.findByText('HK00700');
+
+    fireEvent.click(screen.getByRole('button', { name: '合并到自选股' }));
+
+    await waitFor(() => {
+      expect(update).toHaveBeenCalledWith({
+        configVersion: 'v1',
+        maskToken: '******',
+        reloadNow: true,
+        items: [{ key: 'STOCK_LIST', value: 'SH600000,SH600519,AAPL,HK00700' }],
+      });
+    });
+    await waitFor(() => {
+      expect(onMerged).toHaveBeenCalledWith('SH600000,SH600519,AAPL,HK00700');
+    });
+  });
 });

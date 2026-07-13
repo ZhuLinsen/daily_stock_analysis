@@ -55,6 +55,7 @@ from api.v1.schemas.history import (
 )
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from data_provider.base import canonical_stock_code, normalize_stock_code
+from src.data.stock_index_loader import resolve_index_stock_code
 from src.config import Config
 from src.core.market_review_lock import (
     MarketReviewExecutionLock as _MarketReviewExecutionLock,
@@ -69,11 +70,14 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
-from src.market_phase_summary import extract_market_phase_summary, render_market_phase_summary
+from src.market_phase_summary import (
+    extract_market_phase_summary,
+    rebuild_market_phase_summary_for_stock_code,
+)
+from src.services.stock_code_utils import is_code_like, resolve_index_stock_code_for_analysis
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
-from src.services.stock_code_utils import is_code_like
 from src.services.task_queue import (
     get_task_queue,
     DuplicateTaskError,
@@ -86,6 +90,7 @@ from src.utils.data_processing import (
     parse_json_field,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
+    extract_market_structure_detail_field,
     extract_realtime_detail_fields,
 )
 
@@ -169,6 +174,38 @@ def _run_market_review_background(
         _release_market_review_lock(lock_token)
 
 
+def _coalesce_text(*values: Any) -> Optional[str]:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _extract_guardrail_reason(raw_result: Any) -> Optional[str]:
+    if not isinstance(raw_result, dict):
+        return None
+    for reason in (
+        raw_result.get("guardrail_reason"),
+        raw_result.get("downgrade_reason"),
+        raw_result.get("decision_score_guardrail_reason"),
+    ):
+        if reason is not None:
+            text = str(reason).strip()
+            if text:
+                return text
+    metadata = raw_result.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_reason = metadata.get("guardrail_reason") or metadata.get("downgrade_reason")
+        if metadata_reason is not None:
+            text = str(metadata_reason).strip()
+            if text:
+                return text
+    return None
+
+
 def _invalid_analysis_input_error() -> HTTPException:
     return api_error(400, "validation_error", "请输入有效的股票代码或股票名称")
 
@@ -199,7 +236,12 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
         return ""
 
     if is_code_like(text):
-        return canonical_stock_code(text)
+        return resolve_index_stock_code_for_analysis(text)
+
+    if text.isdigit() and len(text) == 4:
+        resolved_index_code = resolve_index_stock_code_for_analysis(text)
+        if resolved_index_code != canonical_stock_code(text):
+            return resolved_index_code
 
     if _is_obviously_invalid_analysis_input(text):
         raise _invalid_analysis_input_error()
@@ -439,7 +481,7 @@ def _handle_sync_analysis(
 
         # 构建报告结构
         report_data = result.get("report", {})
-        context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
+        context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
             query_id=query_id,
             stock_code=result.get("stock_code", stock_code),
         )
@@ -450,6 +492,7 @@ def _handle_sync_analysis(
             result.get("stock_name"),
             context_snapshot=context_snapshot,
             fallback_fundamental_payload=fundamental_snapshot,
+            fallback_raw_result_payload=raw_result_snapshot or result,
         )
 
         return AnalysisResultResponse(
@@ -818,6 +861,20 @@ def _extract_report_created_at(payload: Dict[str, Any]) -> Optional[str]:
     return _datetime_to_iso(meta.get("created_at"))
 
 
+def _display_stock_code_from_index(stock_code: Any) -> str:
+    code = str(stock_code or "").strip()
+    if not code:
+        return code
+    return resolve_index_stock_code(code) or code
+
+
+def _display_market_phase_summary(stock_code: Any, context_snapshot: Any) -> Any:
+    return rebuild_market_phase_summary_for_stock_code(
+        _display_stock_code_from_index(stock_code),
+        context_snapshot,
+    )
+
+
 def _prepare_report_for_task_enrichment(
     report_data: Dict[str, Any],
     created_at: Optional[str],
@@ -828,6 +885,16 @@ def _prepare_report_for_task_enrichment(
         meta["created_at"] = created_at
     enriched_report["meta"] = meta
     return enriched_report
+
+
+def _first_non_empty_report_value(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
 
 
 def _ensure_report_action_fields(report_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -844,6 +911,12 @@ def _ensure_report_action_fields(report_data: Dict[str, Any]) -> Dict[str, Any]:
         explicit_action=raw_result.get("action") or summary.get("action"),
         report_type=meta.get("report_type"),
         report_language=report_language,
+        sentiment_score=_first_non_empty_report_value(
+            summary.get("sentiment_score"),
+            raw_result.get("sentiment_score"),
+        ),
+        guardrail_reason=_extract_guardrail_reason(raw_result),
+        align_with_score=True,
     )
     summary["action"] = action_fields["action"]
     summary["action_label"] = action_fields["action_label"]
@@ -866,6 +939,9 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
         payload["trace_id"] = _get_task_trace_id(task) or task.task_id
     if not payload.get("stock_code"):
         payload["stock_code"] = task.stock_code
+    display_stock_code = _display_stock_code_from_index(payload.get("stock_code"))
+    if display_stock_code:
+        payload["stock_code"] = display_stock_code
 
     if not payload.get("stock_name") and getattr(task, "stock_name", None):
         payload["stock_name"] = task.stock_name
@@ -884,11 +960,23 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
     report_enriched = False
 
     if isinstance(report_data, dict) and stock_code and query_id:
-        context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
+        context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
             query_id=query_id,
             stock_code=stock_code,
         )
-        if context_snapshot is not None or fundamental_snapshot is not None:
+        report_task_details = report_data.get("details")
+        report_task_raw_result = (
+            report_task_details.get("raw_result")
+            if isinstance(report_task_details, dict)
+            else None
+        )
+        should_rebuild_report = (
+            context_snapshot is not None
+            or fundamental_snapshot is not None
+            or raw_result_snapshot is not None
+            or report_task_raw_result is not None
+        )
+        if should_rebuild_report:
             try:
                 report = _build_analysis_report(
                     _prepare_report_for_task_enrichment(
@@ -900,6 +988,7 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
                     payload.get("stock_name") or getattr(task, "stock_name", None),
                     context_snapshot=context_snapshot,
                     fallback_fundamental_payload=fundamental_snapshot,
+                    fallback_raw_result_payload=raw_result_snapshot or payload,
                 )
                 payload["report"] = report.model_dump()
                 report_enriched = True
@@ -911,6 +1000,14 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
                 )
 
     if not report_enriched and isinstance(report_data, dict):
+        meta = report_data.get("meta")
+        if isinstance(meta, dict) and display_stock_code:
+            raw_meta_code = meta.get("stock_code") or getattr(task, "stock_code", None)
+            meta["stock_code"] = display_stock_code
+            meta["market_phase_summary"] = _display_market_phase_summary(
+                raw_meta_code,
+                {"market_phase_summary": meta.get("market_phase_summary")},
+            )
         payload["report"] = _ensure_report_action_fields(report_data)
 
     return AnalysisResultResponse.model_validate(payload)
@@ -1030,12 +1127,13 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 (raw_result or {}).get("report_language") if isinstance(raw_result, dict) else None
             )
             stock_name = get_localized_stock_name(record.name, record.code, report_language)
+            display_stock_code = _display_stock_code_from_index(record.code)
 
             # Extract current_price / change_pct from context_snapshot
             skills = None
             context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
             analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
-            market_phase_summary = extract_market_phase_summary(context_snapshot)
+            market_phase_summary = _display_market_phase_summary(record.code, context_snapshot)
             api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
             if context_snapshot and isinstance(context_snapshot, dict):
                 raw_skills = context_snapshot.get("skills")
@@ -1056,9 +1154,23 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 context_snapshot=context_snapshot,
                 fallback_fundamental_payload=fallback_fundamental,
             )
-            has_board_details = bool(extracted_boards.get("belong_boards")) or extracted_boards.get("sector_rankings") is not None
+            market_structure = extract_market_structure_detail_field(
+                context_snapshot,
+                raw_result,
+            )
+            has_board_details = (
+                bool(extracted_boards.get("belong_boards"))
+                or extracted_boards.get("sector_rankings") is not None
+                or extracted_boards.get("concept_rankings") is not None
+            )
             details = None
-            if any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None or analysis_context_pack_overview is not None:
+            if (
+                any(extracted_fundamental.values())
+                or has_board_details
+                or market_structure is not None
+                or context_snapshot is not None
+                or analysis_context_pack_overview is not None
+            ):
                 details = ReportDetails(
                     news_content=getattr(record, "news_content", None),
                     raw_result=raw_result,
@@ -1068,6 +1180,8 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     dividend_metrics=extracted_fundamental.get("dividend_metrics"),
                     belong_boards=extracted_boards.get("belong_boards"),
                     sector_rankings=extracted_boards.get("sector_rankings"),
+                    concept_rankings=extracted_boards.get("concept_rankings"),
+                    market_structure=market_structure,
                 )
 
             raw_dict = raw_result if isinstance(raw_result, dict) else {}
@@ -1076,6 +1190,9 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 explicit_action=raw_dict.get("action"),
                 report_type=getattr(record, 'report_type', None),
                 report_language=report_language,
+                sentiment_score=record.sentiment_score if record.sentiment_score is not None else raw_dict.get("sentiment_score"),
+                guardrail_reason=_extract_guardrail_reason(raw_dict),
+                align_with_score=True,
             )
 
             # Build report from DB record so completed tasks return real data
@@ -1083,7 +1200,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 meta=ReportMeta(
                     id=record.id,
                     query_id=task_id,
-                    stock_code=record.code,
+                    stock_code=display_stock_code,
                     stock_name=stock_name,
                     report_type=getattr(record, 'report_type', None),
                     report_language=report_language,
@@ -1117,7 +1234,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                 result=AnalysisResultResponse(
                     query_id=task_id,
                     trace_id=task_id,
-                    stock_code=record.code,
+                    stock_code=display_stock_code,
                     stock_name=stock_name,
                     report=report_dict,
                     diagnostic_summary=build_run_diagnostic_summary(
@@ -1125,7 +1242,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                         raw_result=raw_result,
                         report_saved=True,
                         query_id=task_id,
-                        stock_code=record.code,
+                        stock_code=display_stock_code,
                     ),
                     created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
                 ),
@@ -1148,9 +1265,9 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 def _load_sync_fundamental_sources(
     query_id: str,
     stock_code: str,
-) -> tuple[Optional[Any], Optional[Dict[str, Any]]]:
+) -> tuple[Optional[Any], Optional[Dict[str, Any]], Optional[Any]]:
     """
-    Load context_snapshot and fallback fundamental snapshot for sync analyze response.
+    Load report enrichment payloads for sync analyze response.
     """
     try:
         from src.storage import DatabaseManager
@@ -1158,14 +1275,17 @@ def _load_sync_fundamental_sources(
         db = DatabaseManager.get_instance()
         records = db.get_analysis_history(query_id=query_id, code=stock_code, limit=1)
         context_snapshot = None
+        raw_result_snapshot = None
         if records:
-            context_snapshot = parse_json_field(getattr(records[0], "context_snapshot", None))
+            latest_record = records[0]
+            context_snapshot = parse_json_field(getattr(latest_record, "context_snapshot", None))
+            raw_result_snapshot = parse_json_field(getattr(latest_record, "raw_result", None))
 
         fallback_fundamental = db.get_latest_fundamental_snapshot(
             query_id=query_id,
             code=stock_code,
         )
-        return context_snapshot, fallback_fundamental
+        return context_snapshot, fallback_fundamental, raw_result_snapshot
     except Exception as e:
         logger.debug(
             "load sync fundamental sources failed (fail-open): query_id=%s stock_code=%s err=%s",
@@ -1173,7 +1293,7 @@ def _load_sync_fundamental_sources(
             stock_code,
             e,
         )
-        return None, None
+        return None, None, None
 
 
 def _stringify_report_strategy_value(value: Any) -> Optional[str]:
@@ -1191,6 +1311,7 @@ def _build_analysis_report(
         stock_name: Optional[str] = None,
         context_snapshot: Optional[Any] = None,
         fallback_fundamental_payload: Optional[Dict[str, Any]] = None,
+        fallback_raw_result_payload: Optional[Any] = None,
 ) -> AnalysisReport:
     """
     构建符合 API 规范的分析报告
@@ -1202,6 +1323,7 @@ def _build_analysis_report(
         stock_name: 股票名称
         context_snapshot: 上下文快照（可选）
         fallback_fundamental_payload: 基本面快照 payload（可选）
+        fallback_raw_result_payload: 原始分析结果 payload（可选）
         
     Returns:
         AnalysisReport: 结构化的分析报告
@@ -1215,9 +1337,10 @@ def _build_analysis_report(
         or (context_snapshot or {}).get("report_language")
         or getattr(Config.get_instance(), "report_language", "zh")
     )
+    display_stock_code = _display_stock_code_from_index(meta_data.get("stock_code", stock_code))
     localized_stock_name = get_localized_stock_name(
         meta_data.get("stock_name", stock_name),
-        meta_data.get("stock_code", stock_code),
+        display_stock_code,
         report_language,
     )
     realtime_fields = extract_realtime_detail_fields(context_snapshot)
@@ -1227,15 +1350,19 @@ def _build_analysis_report(
     change_pct = meta_data.get("change_pct")
     if change_pct is None:
         change_pct = realtime_fields.get("change_pct")
-    market_phase_summary = extract_market_phase_summary(context_snapshot)
+    raw_stock_code = meta_data.get("stock_code", stock_code)
+    market_phase_summary = _display_market_phase_summary(raw_stock_code, context_snapshot)
     if market_phase_summary is None:
         meta_phase_summary = meta_data.get("market_phase_summary")
         if meta_phase_summary is not None:
-            market_phase_summary = render_market_phase_summary(meta_phase_summary)
+            market_phase_summary = _display_market_phase_summary(
+                raw_stock_code,
+                {"market_phase_summary": meta_phase_summary},
+            )
 
     meta = ReportMeta(
         query_id=meta_data.get("query_id", query_id),
-        stock_code=meta_data.get("stock_code", stock_code),
+        stock_code=display_stock_code,
         stock_name=localized_stock_name,
         report_type=meta_data.get("report_type", "detailed"),
         report_language=report_language,
@@ -1246,7 +1373,31 @@ def _build_analysis_report(
         market_phase_summary=market_phase_summary,
     )
 
-    raw_result_data = details_data.get("raw_result") if isinstance(details_data.get("raw_result"), dict) else {}
+    def _looks_like_raw_result_payload(candidate: Any) -> bool:
+        return (
+            isinstance(candidate, dict)
+            and (
+                "analysis_summary" in candidate
+                or "operation_advice" in candidate
+                or "trend_prediction" in candidate
+                or "sentiment_score" in candidate
+                or "market_structure_context" in candidate
+                or "model_used" in candidate
+                or "dashboard" in candidate
+                or "action" in candidate
+            )
+        )
+
+    raw_result_data = details_data.get("raw_result")
+    if not isinstance(raw_result_data, dict):
+        raw_result_data = {}
+        if isinstance(fallback_raw_result_payload, dict):
+            if isinstance(fallback_raw_result_payload.get("raw_result"), dict):
+                raw_result_data = fallback_raw_result_payload["raw_result"]
+            elif _looks_like_raw_result_payload(fallback_raw_result_payload):
+                raw_result_data = fallback_raw_result_payload
+        if not raw_result_data and isinstance(details_data, dict):
+            raw_result_data = details_data
     action_fields = build_action_fields(
         operation_advice=(
             raw_result_data.get("operation_advice")
@@ -1256,6 +1407,13 @@ def _build_analysis_report(
         explicit_action=raw_result_data.get("action") or details_data.get("action") or summary_data.get("action"),
         report_type=meta.report_type,
         report_language=report_language,
+        sentiment_score=_first_non_empty_report_value(
+            summary_data.get("sentiment_score"),
+            raw_result_data.get("sentiment_score"),
+            details_data.get("sentiment_score"),
+        ),
+        guardrail_reason=_extract_guardrail_reason(raw_result_data),
+        align_with_score=True,
     )
 
     summary = ReportSummary(
@@ -1285,20 +1443,43 @@ def _build_analysis_report(
         context_snapshot=context_snapshot,
         fallback_fundamental_payload=fallback_fundamental_payload,
     )
+    market_structure = None
+    for raw_candidate in (fallback_raw_result_payload, raw_result_data, details_data):
+        if raw_candidate is None:
+            continue
+        market_structure = extract_market_structure_detail_field(
+            context_snapshot,
+            raw_candidate,
+        )
+        if market_structure is not None:
+            break
     analysis_context_pack_overview = extract_analysis_context_pack_overview(context_snapshot)
     api_context_snapshot = sanitize_context_snapshot_for_api(context_snapshot)
     details = None
-    has_board_details = bool(extracted_boards.get("belong_boards")) or extracted_boards.get("sector_rankings") is not None
-    if details_data or any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None or analysis_context_pack_overview is not None:
+    has_board_details = (
+        bool(extracted_boards.get("belong_boards"))
+        or extracted_boards.get("sector_rankings") is not None
+        or extracted_boards.get("concept_rankings") is not None
+    )
+    if (
+        details_data
+        or any(extracted_fundamental.values())
+        or has_board_details
+        or market_structure is not None
+        or context_snapshot is not None
+        or analysis_context_pack_overview is not None
+    ):
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
-            raw_result=details_data,
+            raw_result=raw_result_data,
             context_snapshot=api_context_snapshot,
             analysis_context_pack_overview=analysis_context_pack_overview,
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            concept_rankings=extracted_boards.get("concept_rankings"),
+            market_structure=market_structure,
         )
 
     return AnalysisReport(

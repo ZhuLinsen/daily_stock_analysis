@@ -25,6 +25,7 @@ import pandas as pd
 import numpy as np
 
 from src.config import get_config
+from src.schemas.decision_scale import signal_key_for_score
 
 logger = logging.getLogger(__name__)
 
@@ -730,16 +731,24 @@ class StockTrendAnalyzer:
         result.signal_reasons = reasons
         result.risk_factors = risks
 
-        # 生成买入信号（调整阈值以适应新的100分制）
-        if score >= 75 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
+        # 生成买入信号（与 canonical decision scale 保持一致）
+        score_signal = signal_key_for_score(score)
+        if score_signal == "strong_buy" and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
             result.buy_signal = BuySignal.STRONG_BUY
-        elif score >= 60 and result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL, TrendStatus.WEAK_BULL]:
+        elif score_signal in {"strong_buy", "buy"} and result.trend_status in [
+            TrendStatus.STRONG_BULL,
+            TrendStatus.BULL,
+            TrendStatus.WEAK_BULL,
+        ]:
             result.buy_signal = BuySignal.BUY
-        elif score >= 45:
-            result.buy_signal = BuySignal.HOLD
-        elif score >= 30:
+        elif score_signal in {"strong_buy", "buy"} and result.trend_status in [
+            TrendStatus.CONSOLIDATION,
+            TrendStatus.WEAK_BEAR,
+        ]:
             result.buy_signal = BuySignal.WAIT
-        elif result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
+        elif score_signal == "watch":
+            result.buy_signal = BuySignal.WAIT
+        elif score_signal == "sell" or result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
             result.buy_signal = BuySignal.STRONG_SELL
         else:
             result.buy_signal = BuySignal.SELL

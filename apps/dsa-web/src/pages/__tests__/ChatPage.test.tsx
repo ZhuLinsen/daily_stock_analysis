@@ -3,7 +3,7 @@ import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-d
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
 import { historyApi } from '../../api/history';
-import type { Message } from '../../stores/agentChatStore';
+import type { Message, ProgressStep } from '../../stores/agentChatStore';
 import ChatPage from '../ChatPage';
 import { extractStockCodeFromMessage, extractStockCodesFromMessage } from '../../utils/chatStockCode';
 
@@ -51,7 +51,7 @@ const mockStartNewChat = vi.fn();
 const mockStoreState = {
   messages: [] as Message[],
   loading: false,
-  progressSteps: [],
+  progressSteps: [] as ProgressStep[],
   sessionId: 'session-1',
   sessions: [
     {
@@ -396,6 +396,77 @@ describe('ChatPage', () => {
     expect(skillBadge).toHaveTextContent('趋势分析、均线金叉');
   });
 
+  it('renders failed stage_done progress as a non-success state', async () => {
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [
+      { type: 'stage_done', stage: 'risk', status: 'failed' },
+    ];
+    mockStoreState.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Partial answer',
+        thinkingSteps: [
+          { type: 'stage_done', stage: 'risk', status: 'failed' },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findAllByText('risk failed')).toHaveLength(1);
+
+    const thinkingToggle = container.querySelector('button[class*="mb-2"][class*="w-full"]') as HTMLButtonElement;
+    fireEvent.click(thinkingToggle);
+
+    const failedStage = screen.getAllByText('risk failed').find((node) =>
+      node.closest('.chat-progress-item'),
+    );
+    expect(failedStage).toBeDefined();
+    expect(failedStage?.closest('.chat-progress-item')).toHaveClass('chat-progress-item-danger');
+    expect(failedStage?.closest('.chat-progress-item')).not.toHaveClass('chat-progress-item-success');
+  });
+
+  it('renders pipeline budget skip progress without timeout severity', async () => {
+    mockStoreState.loading = true;
+    mockStoreState.progressSteps = [
+      { type: 'pipeline_budget_skipped', stage: 'decision' },
+    ];
+    mockStoreState.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Partial answer',
+        thinkingSteps: [
+          { type: 'pipeline_budget_skipped', stage: 'decision' },
+        ],
+      },
+    ];
+
+    const { container } = render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findAllByText('decision skipped: insufficient budget')).toHaveLength(1);
+    expect(screen.queryByText('decision timed out')).not.toBeInTheDocument();
+
+    const thinkingToggle = container.querySelector('button[class*="mb-2"][class*="w-full"]') as HTMLButtonElement;
+    fireEvent.click(thinkingToggle);
+
+    const budgetSkipped = screen.getAllByText('decision skipped: insufficient budget').find((node) =>
+      node.closest('.chat-progress-item'),
+    );
+    expect(budgetSkipped).toBeDefined();
+    expect(budgetSkipped?.closest('.chat-progress-item')).toHaveClass('chat-progress-item-muted');
+    expect(budgetSkipped?.closest('.chat-progress-item')).not.toHaveClass('chat-progress-item-danger');
+  });
+
   it('selects the default skill after loading skills', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>
@@ -440,6 +511,54 @@ describe('ChatPage', () => {
         }),
       );
     });
+  });
+
+  it('collapses the mobile skill picker by default and keeps selected skills when sending', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [
+        { id: 'bull_trend', name: '趋势分析', description: '默认趋势' },
+        { id: 'ma_golden_cross', name: '均线金叉', description: '均线交叉' },
+      ],
+      default_skill_id: 'bull_trend',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    const mobileToggle = await screen.findByRole('button', { name: '展开策略选择' });
+    const skillPanel = screen.getByTestId('chat-skill-picker-panel');
+    expect(mobileToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(skillPanel).toHaveClass('hidden');
+
+    fireEvent.click(mobileToggle);
+
+    expect(screen.getByRole('button', { name: '收起策略选择' })).toHaveAttribute('aria-expanded', 'true');
+    expect(skillPanel).not.toHaveClass('hidden');
+    expect(skillPanel).toHaveClass('flex');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '均线金叉' }));
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析 600519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '分析 600519',
+          skills: ['bull_trend', 'ma_golden_cross'],
+        }),
+        expect.objectContaining({
+          skillName: '趋势分析、均线金叉',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('button', { name: '展开策略选择' })).toHaveAttribute('aria-expanded', 'false');
+    expect(skillPanel).toHaveClass('hidden');
   });
 
   it('omits skills when all concrete skills are cleared', async () => {

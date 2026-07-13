@@ -34,6 +34,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
 try:
@@ -78,6 +79,20 @@ class YfinanceFetcher(BaseFetcher):
         """初始化 YfinanceFetcher"""
         pass
 
+    @staticmethod
+    def _is_jp_kr_suffix_stock(stock_code: str) -> bool:
+        """Return True for supported JP/KR suffix-only Yahoo symbols."""
+        return is_suffix_market_symbol(stock_code, "jp") or is_suffix_market_symbol(stock_code, "kr")
+
+    @staticmethod
+    def _is_tw_suffix_stock(stock_code: str) -> bool:
+        """Return True for supported Taiwan suffix-only Yahoo symbols (TWSE `.TW` / TPEx `.TWO`).
+
+        Taiwan base codes are 4-6 digits (common stocks 4, ETFs/others up to 6,
+        e.g. 00878 / 006208), wider than the JP `.T` range.
+        """
+        return is_suffix_market_symbol(stock_code, "tw")
+
     def _convert_stock_code(self, stock_code: str) -> str:
         """
         转换股票代码为 Yahoo Finance 格式
@@ -113,6 +128,11 @@ class YfinanceFetcher(BaseFetcher):
         # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
         if is_us_stock_code(code):
             logger.debug(f"识别为美股代码: {code}")
+            return code
+
+        # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
+        if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
+            logger.debug(f"识别为日韩台 Yahoo suffix 代码: {code}")
             return code
 
         # 港股：hk前缀 -> .HK后缀
@@ -319,9 +339,10 @@ class YfinanceFetcher(BaseFetcher):
 
     def get_main_indices(self, region: str = "cn") -> Optional[List[Dict[str, Any]]]:
         """
-        获取主要指数行情 (Yahoo Finance)，支持 A 股、美股与港股。
+        获取主要指数行情 (Yahoo Finance)，支持 A 股、美股、港股、日股、韩股与台股。
         region=us 时委托给 _get_us_main_indices。
         region=hk 时委托给 _get_hk_main_indices。
+        region=jp/kr/tw 时分别委托给对应市场指数方法。
         """
         import yfinance as yf
 
@@ -329,6 +350,12 @@ class YfinanceFetcher(BaseFetcher):
             return self._get_us_main_indices(yf)
         if region == "hk":
             return self._get_hk_main_indices(yf)
+        if region == "jp":
+            return self._get_jp_main_indices(yf)
+        if region == "kr":
+            return self._get_kr_main_indices(yf)
+        if region == "tw":
+            return self._get_tw_main_indices(yf)
 
         # A 股指数：akshare 代码 -> (yfinance 代码, 显示名称)
         yf_mapping = {
@@ -417,6 +444,75 @@ class YfinanceFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[Yfinance] 获取港股指数行情失败: {e}")
 
+        return None
+
+    def _get_jp_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取日本主要指数行情（日经225、TOPIX），复用 _fetch_yf_ticker_data。"""
+        jp_indices = {
+            'N225': ('^N225', '日经225'),
+            'TOPX': ('^TOPX', '东证指数'),
+        }
+        results = []
+        try:
+            for code, (yf_symbol, name) in jp_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取日本指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取日本指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个日本指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取日本指数行情失败: {e}")
+        return None
+
+    def _get_kr_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取韩国主要指数行情（KOSPI、KOSDAQ），复用 _fetch_yf_ticker_data。"""
+        kr_indices = {
+            'KS11': ('^KS11', 'KOSPI'),
+            'KQ11': ('^KQ11', 'KOSDAQ'),
+        }
+        results = []
+        try:
+            for code, (yf_symbol, name) in kr_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取韩国指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取韩国指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个韩国指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取韩国指数行情失败: {e}")
+        return None
+
+    def _get_tw_main_indices(self, yf) -> Optional[List[Dict[str, Any]]]:
+        """获取台湾主要指数行情（加权指数 ^TWII、柜买指数 ^TWOII），复用 _fetch_yf_ticker_data。"""
+        tw_indices = {
+            'TWII': ('^TWII', '台湾加权指数'),
+            'TWOII': ('^TWOII', '台湾柜买指数'),
+        }
+        results = []
+        try:
+            for code, (yf_symbol, name) in tw_indices.items():
+                try:
+                    item = self._fetch_yf_ticker_data(yf, yf_symbol, name, code)
+                    if item:
+                        results.append(item)
+                        logger.debug(f"[Yfinance] 获取台湾指数 {name} 成功")
+                except Exception as e:
+                    logger.warning(f"[Yfinance] 获取台湾指数 {name} 失败: {e}")
+            if results:
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个台湾指数行情")
+                return results
+        except Exception as e:
+            logger.error(f"[Yfinance] 获取台湾指数行情失败: {e}")
         return None
 
     def _is_us_stock(self, stock_code: str) -> bool:
@@ -636,10 +732,31 @@ class YfinanceFetcher(BaseFetcher):
             if high is not None and low is not None and prev_close is not None and prev_close > 0:
                 amplitude = ((high - low) / prev_close) * 100
 
+            try:
+                ticker_info = ticker.info or {}
+            except Exception:
+                ticker_info = {}
+            missing_fields = [
+                field
+                for field, value in {
+                    "price": price,
+                    "prev_close": prev_close,
+                    "volume": volume,
+                    "amount": None,
+                    "pe_ratio": None,
+                    "pb_ratio": None,
+                }.items()
+                if value is None
+            ]
+
             quote = UnifiedRealtimeQuote(
                 code=user_code,
                 name=index_name or user_code,
                 source=RealtimeSource.FALLBACK,
+                market="us",
+                currency=str(ticker_info.get("currency") or "").upper() or None,
+                data_quality="partial" if missing_fields else "ok",
+                missing_fields=missing_fields or None,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
                 change_amount=round(change_amount, 4) if change_amount is not None else None,
@@ -687,14 +804,20 @@ class YfinanceFetcher(BaseFetcher):
                 index_name=index_name,
             )
 
-        # 仅处理美股股票
-        if not self._is_us_stock(stock_code):
-            logger.debug(f"[Yfinance] {stock_code} 不是美股，跳过")
+        # 仅处理美股股票或 JP/KR/TW suffix-only 股票
+        if not (
+            self._is_us_stock(stock_code)
+            or self._is_jp_kr_suffix_stock(stock_code)
+            or self._is_tw_suffix_stock(stock_code)
+        ):
+            logger.debug(f"[Yfinance] {stock_code} 不是美股或日韩 suffix 代码，跳过")
             return None
 
         try:
-            symbol = stock_code.strip().upper()
-            logger.debug(f"[Yfinance] 获取美股 {symbol} 实时行情")
+            symbol = self._convert_stock_code(stock_code)
+            is_us_symbol = self._is_us_stock(symbol)
+            suffix_market = get_suffix_market(symbol)
+            logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
 
@@ -717,8 +840,11 @@ class YfinanceFetcher(BaseFetcher):
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
                 hist = ticker.history(period='2d')
                 if hist.empty:
-                    logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
-                    return self._get_us_stock_quote_from_stooq(symbol)
+                    if is_us_symbol:
+                        logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
+                        return self._get_us_stock_quote_from_stooq(symbol)
+                    logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
+                    return None
 
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
@@ -743,17 +869,37 @@ class YfinanceFetcher(BaseFetcher):
             if high is not None and low is not None and prev_close is not None and prev_close > 0:
                 amplitude = ((high - low) / prev_close) * 100
 
-            # 获取股票名称
+            # 获取股票名称与 provider 元数据
             try:
-                info_name = ticker.info.get('shortName', '') or ticker.info.get('longName', '') or ''
+                ticker_info = ticker.info or {}
+            except Exception:
+                ticker_info = {}
+            try:
+                info_name = ticker_info.get('shortName', '') or ticker_info.get('longName', '') or ''
                 name = info_name if is_meaningful_stock_name(info_name, symbol) else STOCK_NAME_MAP.get(symbol, '')
             except Exception:
                 name = STOCK_NAME_MAP.get(symbol, '')
 
+            missing_fields = [
+                field
+                for field, value in {
+                    "price": price,
+                    "prev_close": prev_close,
+                    "volume": volume,
+                    "amount": None,
+                    "pe_ratio": None,
+                    "pb_ratio": None,
+                }.items()
+                if value is None
+            ]
             quote = UnifiedRealtimeQuote(
                 code=symbol,
                 name=name,
                 source=RealtimeSource.FALLBACK,
+                market=suffix_market or ("us" if is_us_symbol else None),
+                currency=str(ticker_info.get("currency") or "").upper() or None,
+                data_quality="partial" if missing_fields else "ok",
+                missing_fields=missing_fields or None,
                 price=price,
                 change_pct=round(change_pct, 2) if change_pct is not None else None,
                 change_amount=round(change_amount, 4) if change_amount is not None else None,
@@ -772,12 +918,15 @@ class YfinanceFetcher(BaseFetcher):
                 circ_mv=None,
             )
 
-            logger.info(f"[Yfinance] 获取美股 {symbol} 实时行情成功: 价格={price}")
+            logger.info(f"[Yfinance] 获取 {symbol} 实时行情成功: 价格={price}")
             return quote
 
         except Exception as e:
-            logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
-            return self._get_us_stock_quote_from_stooq(stock_code)
+            if self._is_us_stock(stock_code):
+                logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
+                return self._get_us_stock_quote_from_stooq(stock_code)
+            logger.warning(f"[Yfinance] 获取 {stock_code} 实时行情失败: {e}")
+            return None
 
 
 if __name__ == "__main__":

@@ -5,18 +5,29 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional
 
 from data_provider.base import normalize_stock_code
 
 from src.analyzer import AnalysisResult
 from src.core.trading_calendar import get_market_for_stock
-from src.schemas.decision_action import build_action_fields
+from src.schemas.decision_action import build_action_fields, normalize_decision_action
+from src.schemas.decision_scale import (
+    CANONICAL_DECISION_SCALE_VERSION,
+    action_for_score,
+    score_action_conflicts_without_guardrail,
+    score_band_metadata,
+)
 from src.services.decision_signal_service import DecisionSignalService
+from src.services.portfolio_service import VALID_MARKETS
 from src.utils.sniper_points import extract_sniper_points
 
 
 logger = logging.getLogger(__name__)
+
+ProfileSource = Literal["auto_default", "backfill_defaulted", "legacy_unknown"]
+
+_PROFILE_SOURCES = frozenset({"auto_default", "backfill_defaulted", "legacy_unknown"})
 
 _CONFIDENCE_MAP = {
     "高": 0.8,
@@ -33,21 +44,36 @@ def build_decision_signal_payload_from_report(
     result: AnalysisResult,
     *,
     context_snapshot: Dict[str, Any] | None = None,
+    portfolio_context: Dict[str, Any] | None = None,
     source_report_id: int | None = None,
     trace_id: str,
     query_source: str,
     report_type: str,
+    profile_source: ProfileSource,
 ) -> Dict[str, Any] | None:
     """Build a DecisionSignal payload from a completed stock analysis report."""
 
     if result is None or not getattr(result, "success", True):
         return None
+    if profile_source not in _PROFILE_SOURCES:
+        raise ValueError(f"invalid profile_source: {profile_source}")
 
+    dashboard = _as_mapping(getattr(result, "dashboard", None))
+    score_calibration = _as_mapping(dashboard.get("decision_score_calibration"))
+    score = _effective_signal_score(
+        _score_from_result(getattr(result, "sentiment_score", None)),
+        score_calibration,
+    )
+    raw_action = _raw_action_from_report(result)
+    guardrail_reason = _extract_guardrail_reason(result, dashboard, score=score, raw_action=raw_action)
     action_fields = build_action_fields(
         operation_advice=getattr(result, "operation_advice", None),
         explicit_action=getattr(result, "action", None),
         report_type=report_type,
         report_language=getattr(result, "report_language", None),
+        sentiment_score=score,
+        guardrail_reason=guardrail_reason,
+        align_with_score=True,
     )
     action = action_fields.get("action")
     if not action:
@@ -58,13 +84,63 @@ def build_decision_signal_payload_from_report(
     if not market:
         logger.warning("Skip decision signal extraction: unrecognized market stock_code=%s", raw_code)
         return None
+    if market not in VALID_MARKETS:
+        # A market the data layer recognizes but the decision-signal service
+        # layer does not accept (e.g. a market added to detection ahead of
+        # VALID_MARKETS). Skip gracefully instead of letting create_signal
+        # raise a swallowed ValueError + noisy traceback.
+        logger.info(
+            "Skip decision signal extraction: market=%s not yet wired for signals stock_code=%s",
+            market,
+            raw_code,
+        )
+        return None
 
-    dashboard = _as_mapping(getattr(result, "dashboard", None))
     sniper_points = extract_sniper_points(result)
     entry_low, entry_high = _entry_range(
         sniper_points.get("ideal_buy"),
         sniper_points.get("secondary_buy"),
     )
+
+    metadata = {
+        "report_type": report_type,
+        "decision_type": getattr(result, "decision_type", None),
+        "report_confidence_level": getattr(result, "confidence_level", None),
+        "report_language": getattr(result, "report_language", None),
+        "decision_profile": "balanced",
+        "profile_source": profile_source,
+        "profile_policy_version": "decision-profile-v1",
+        "signal_generation_version": "legacy-report-extractor-v1",
+        "decision_signal_metadata_version": "decision-signal-metadata-v1",
+        "canonical_decision_scale_version": CANONICAL_DECISION_SCALE_VERSION,
+    }
+    score_metadata = score_band_metadata(score)
+    if score_metadata:
+        metadata["score_scale"] = score_metadata
+        metadata["raw_score"] = _calibrated_or_raw_score(
+            score_calibration,
+            prefer="raw",
+            fallback=score_metadata["score"],
+        )
+        metadata["adjusted_score"] = _calibrated_or_raw_score(
+            score_calibration,
+            prefer="adjusted",
+            fallback=score_metadata["score"],
+        )
+        metadata["final_action"] = action
+        if raw_action:
+            metadata["raw_action"] = raw_action
+        if raw_action and raw_action != action:
+            metadata["action_adjustment_reason"] = "canonical_score_alignment"
+    if guardrail_reason:
+        metadata["guardrail_reason"] = guardrail_reason
+    market_phase_summary = _extract_market_phase_summary(context_snapshot, result)
+    if market_phase_summary:
+        metadata["market_phase_summary"] = market_phase_summary
+    market_structure_summary = _extract_market_structure_summary(context_snapshot, result)
+    if market_structure_summary:
+        metadata.update(market_structure_summary)
+    metadata["holding_state"] = _extract_holding_state(portfolio_context)
 
     payload: Dict[str, Any] = {
         "stock_code": raw_code,
@@ -73,12 +149,13 @@ def build_decision_signal_payload_from_report(
         "source_type": "analysis",
         "source_report_id": source_report_id,
         "trace_id": trace_id,
+        "decision_profile": "balanced",
         "market_phase": _extract_market_phase(context_snapshot, result),
         "trigger_source": str(query_source or "").strip() or "system",
         "action": action,
         "action_label": action_fields.get("action_label"),
         "confidence": _confidence_from_level(getattr(result, "confidence_level", None)),
-        "score": _score_from_result(getattr(result, "sentiment_score", None)),
+        "score": score,
         "entry_low": entry_low,
         "entry_high": entry_high,
         "stop_loss": sniper_points.get("stop_loss"),
@@ -93,12 +170,7 @@ def build_decision_signal_payload_from_report(
         "watch_conditions": _watch_conditions(dashboard),
         "evidence": _evidence(result, sniper_points),
         "data_quality_summary": _extract_data_quality(context_snapshot, result),
-        "metadata": {
-            "report_type": report_type,
-            "decision_type": getattr(result, "decision_type", None),
-            "report_confidence_level": getattr(result, "confidence_level", None),
-            "report_language": getattr(result, "report_language", None),
-        },
+        "metadata": metadata,
         "report_language": getattr(result, "report_language", None),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
@@ -108,10 +180,12 @@ def extract_and_persist_from_analysis_result(
     result: AnalysisResult,
     *,
     context_snapshot: Dict[str, Any] | None = None,
+    portfolio_context: Dict[str, Any] | None = None,
     source_report_id: int | None = None,
     trace_id: str,
     query_source: str,
     report_type: str,
+    profile_source: ProfileSource,
     service: Optional[DecisionSignalService] = None,
 ) -> Dict[str, Any] | None:
     """Best-effort extract and persist a DecisionSignal from an analysis result."""
@@ -120,10 +194,12 @@ def extract_and_persist_from_analysis_result(
         payload = build_decision_signal_payload_from_report(
             result,
             context_snapshot=context_snapshot,
+            portfolio_context=portfolio_context,
             source_report_id=source_report_id,
             trace_id=trace_id,
             query_source=query_source,
             report_type=report_type,
+            profile_source=profile_source,
         )
         if payload is None:
             return None
@@ -144,6 +220,30 @@ def _as_mapping(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _calibrated_or_raw_score(
+    calibration: Dict[str, Any],
+    *,
+    prefer: Literal["raw", "adjusted"],
+    fallback: Optional[int] = None,
+) -> Optional[int]:
+    if prefer == "raw":
+        value = calibration.get("raw_score")
+    else:
+        value = calibration.get("adjusted_score")
+    parsed = _score_from_result(value)
+    if parsed is not None:
+        return parsed
+    return fallback
+
+
+def _effective_signal_score(
+    score: Optional[int],
+    calibration: Dict[str, Any],
+) -> Optional[int]:
+    adjusted = _calibrated_or_raw_score(calibration, prefer="adjusted")
+    return adjusted if adjusted is not None else score
+
+
 def _first_text(*values: Any) -> Optional[str]:
     for value in values:
         text = str(value or "").strip()
@@ -158,6 +258,76 @@ def _score_from_result(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return score if 0 <= score <= 100 else None
+
+
+def _raw_action_from_report(result: AnalysisResult) -> Optional[str]:
+    explicit_action = normalize_decision_action(getattr(result, "action", None))
+    if explicit_action:
+        return explicit_action
+    return normalize_decision_action(getattr(result, "operation_advice", None))
+
+
+_NEUTRAL_GUARDRAIL_HINTS = (
+    "等待",
+    "待",
+    "需要确认",
+    "回踩",
+    "支撑",
+    "压力",
+    "风险",
+    "资金",
+    "突破",
+    "不追",
+    "不宜",
+    "缺少",
+    "缺少确认",
+    "未确认",
+    "wait",
+    "waiting",
+    "pending confirmation",
+    "lack confirmation",
+    "pullback",
+    "support",
+    "resistance",
+    "risk",
+    "flow",
+)
+
+
+def _extract_guardrail_reason(
+    result: AnalysisResult,
+    dashboard: Mapping[str, Any],
+    *,
+    score: Optional[int],
+    raw_action: Optional[str],
+) -> Optional[str]:
+    score_calibration = _as_mapping(dashboard.get("decision_score_calibration"))
+    reason = _first_text(
+        score_calibration.get("guardrail_reason"),
+        _as_mapping(dashboard.get("decision_stability")).get("reason"),
+        getattr(result, "guardrail_reason", None),
+    )
+    if reason:
+        return reason
+
+    if score_action_conflicts_without_guardrail(score=score, action=raw_action):
+        candidates = [getattr(result, "operation_advice", None)]
+        if action_for_score(score) == "buy":
+            candidates.extend(
+                [
+                    getattr(result, "analysis_summary", None),
+                    getattr(result, "buy_reason", None),
+                    _watch_conditions(dashboard),
+                ]
+            )
+        for candidate in candidates:
+            text = _first_text(candidate)
+            if not text:
+                continue
+            normalized = text.lower()
+            if any(hint in normalized for hint in _NEUTRAL_GUARDRAIL_HINTS):
+                return text
+    return None
 
 
 def _confidence_from_level(value: Any) -> Optional[float]:
@@ -183,6 +353,60 @@ def _extract_market_phase(context_snapshot: Optional[Mapping[str, Any]], result:
     return str(result_phase) if result_phase else None
 
 
+def _extract_market_phase_summary(
+    context_snapshot: Optional[Mapping[str, Any]],
+    result: AnalysisResult,
+) -> Optional[Dict[str, Any]]:
+    raw_summary = _as_mapping(_as_mapping(context_snapshot).get("market_phase_summary"))
+    if not raw_summary:
+        raw_summary = _as_mapping(getattr(result, "market_phase_summary", None))
+    allowed_fields = ("phase", "session_date", "minutes_to_open", "minutes_to_close")
+    summary = {
+        field_name: raw_summary.get(field_name)
+        for field_name in allowed_fields
+        if raw_summary.get(field_name) not in (None, "")
+    }
+    return summary or None
+
+
+def _extract_market_structure_summary(
+    context_snapshot: Optional[Mapping[str, Any]],
+    result: AnalysisResult,
+) -> Optional[Dict[str, Any]]:
+    payload = _as_mapping(getattr(result, "market_structure_context", None))
+    if not payload:
+        snapshot = _as_mapping(context_snapshot)
+        payload = _as_mapping(snapshot.get("market_structure_context"))
+        if not payload:
+            payload = _as_mapping(_as_mapping(snapshot.get("enhanced_context")).get("market_structure_context"))
+    if payload.get("schema_version") != "market-structure-v1":
+        return None
+
+    market_theme = _as_mapping(payload.get("market_theme_context"))
+    stock_position = _as_mapping(payload.get("stock_market_position"))
+    primary_theme = _as_mapping(stock_position.get("primary_theme"))
+    risk_tags = stock_position.get("risk_tags")
+    risk_codes = []
+    if isinstance(risk_tags, list):
+        for item in risk_tags:
+            tag = _as_mapping(item)
+            code = tag.get("code")
+            if code:
+                risk_codes.append(str(code))
+
+    summary = {
+        "market_structure_version": payload.get("schema_version"),
+        "market_theme_version": market_theme.get("schema_version"),
+        "stock_market_position_version": stock_position.get("schema_version"),
+        "market_structure_status": payload.get("status"),
+        "primary_theme": primary_theme.get("name"),
+        "theme_phase": stock_position.get("theme_phase"),
+        "stock_role": stock_position.get("stock_role"),
+        "market_structure_risk_tags": risk_codes or None,
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
 def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result: AnalysisResult) -> Optional[Any]:
     snapshot_quality = _as_mapping(
         _as_mapping(context_snapshot).get("analysis_context_pack_overview")
@@ -190,6 +414,20 @@ def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result:
     if snapshot_quality:
         return snapshot_quality
     return _as_mapping(getattr(result, "analysis_context_pack_overview", None)).get("data_quality")
+
+
+def _extract_holding_state(portfolio_context: Optional[Mapping[str, Any]]) -> str:
+    context = _as_mapping(portfolio_context)
+    quantity = context.get("quantity")
+    if quantity in (None, ""):
+        return "unknown"
+    try:
+        numeric_quantity = float(quantity)
+    except (TypeError, ValueError):
+        return "unknown"
+    if not math.isfinite(numeric_quantity):
+        return "unknown"
+    return "holding" if abs(numeric_quantity) > 0 else "empty"
 
 
 def _risk_summary(result: AnalysisResult, dashboard: Mapping[str, Any]) -> Optional[Any]:

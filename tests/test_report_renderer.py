@@ -59,6 +59,16 @@ def _make_renderer_config(show_llm_model: bool = True) -> MagicMock:
     return config
 
 
+def _with_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
+    result.decision_signal_summary = {
+        "action": "sell",
+        "action_label": "卖出",
+        "horizon": "1d",
+        "reason": "技术面走弱",
+    }
+    return result
+
+
 class TestReportRenderer(unittest.TestCase):
     """Report renderer tests."""
 
@@ -69,7 +79,52 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("决策仪表盘", out)
         self.assertIn("贵州茅台", out)
+        self.assertIn("买入", out)
+        self.assertIn("🟢买入:1", out)
+
+    def test_render_markdown_preserves_guardrailed_neutral_action(self) -> None:
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "decision_stability": {"applied": True, "reason": "等待回踩确认"},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=True)
+
+        self.assertIsNotNone(out)
         self.assertIn("持有", out)
+        self.assertIn("🟡观望:1", out)
+
+    def test_render_markdown_uses_explicit_avoid_and_alert_text(self) -> None:
+        avoid = _make_result(
+            code="AVOID",
+            name="Avoid Corp",
+            sentiment_score=90,
+            operation_advice="Buy",
+            report_language="en",
+        )
+        avoid.action = "avoid"
+        avoid.action_label = "Avoid"
+        alert = _make_result(
+            code="ALERT",
+            name="Alert Corp",
+            sentiment_score=85,
+            operation_advice="Buy",
+            report_language="en",
+        )
+        alert.action = "alert"
+        alert.action_label = "Alert"
+
+        out = render("markdown", [avoid, alert], summary_only=True)
+
+        self.assertIsNotNone(out)
+        self.assertIn("🟡 **Avoid Corp(AVOID)**: Avoid | Score 90", out)
+        self.assertIn("🔴 **Alert Corp(ALERT)**: Alert | Score 85", out)
+        self.assertIn("**Avoid Corp(AVOID)**: Avoid | Score 90", out)
+        self.assertIn("**Alert Corp(ALERT)**: Alert | Score 85", out)
+        self.assertNotIn("**Avoid Corp(AVOID)**: Buy", out)
+        self.assertNotIn("**Alert Corp(ALERT)**: Buy", out)
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""
@@ -79,6 +134,19 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("核心结论", out)
         self.assertIn("作战计划", out)
         self.assertNotIn("盘中决策护栏", out)
+
+    def test_render_markdown_omits_decision_signal_excerpt(self) -> None:
+        """Markdown reports omit the duplicated DecisionSignal excerpt."""
+        r = _with_decision_signal_summary(_make_result())
+
+        summary_out = render("markdown", [r], summary_only=True)
+        self.assertIsNotNone(summary_out)
+        self.assertNotIn("AI 决策信号", summary_out)
+
+        full_out = render("markdown", [r], summary_only=False)
+        self.assertIsNotNone(full_out)
+        self.assertNotIn("AI 决策信号", full_out)
+        self.assertNotIn("理由: 技术面走弱", full_out)
 
     def test_render_markdown_phase_decision_section(self) -> None:
         """Markdown renders phase_decision when present."""
@@ -137,6 +205,19 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("贵州茅台", out)
 
+    def test_render_wechat_omits_decision_signal_excerpt(self) -> None:
+        """Wechat reports omit the duplicated DecisionSignal excerpt."""
+        r = _with_decision_signal_summary(_make_result())
+
+        summary_out = render("wechat", [r], summary_only=True)
+        self.assertIsNotNone(summary_out)
+        self.assertNotIn("AI 决策信号", summary_out)
+
+        full_out = render("wechat", [r], summary_only=False)
+        self.assertIsNotNone(full_out)
+        self.assertNotIn("AI 决策信号", full_out)
+        self.assertNotIn("理由: 技术面走弱", full_out)
+
     def test_render_brief(self) -> None:
         """Brief platform renders 3-5 sentence summary."""
         r = _make_result()
@@ -144,6 +225,14 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("决策简报", out)
         self.assertIn("贵州茅台", out)
+
+    def test_render_brief_omits_decision_signal_excerpt(self) -> None:
+        r = _with_decision_signal_summary(_make_result())
+
+        out = render("brief", [r])
+
+        self.assertIsNotNone(out)
+        self.assertNotIn("AI 决策信号", out)
 
     def test_render_brief_respects_model_visibility_toggle(self) -> None:
         r = _make_result(model_used="gemini/gemini-2.5-flash")

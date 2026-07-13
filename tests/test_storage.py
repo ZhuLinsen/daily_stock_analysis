@@ -2,6 +2,7 @@
 import unittest
 import sys
 import os
+import sqlite3
 import tempfile
 import threading
 from datetime import date
@@ -18,6 +19,136 @@ from src.config import Config
 from src.storage import Base, CURRENT_SCHEMA_VERSION, DatabaseManager, DatabaseSchemaMigration, StockDaily
 
 class TestStorage(unittest.TestCase):
+
+    @staticmethod
+    def _list_sqlite_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
+        with sqlite3.connect(db_path) as conn:
+            indexes = {}
+            for row in conn.execute(f"PRAGMA index_list({table_name})").fetchall():
+                index_name = row[1]
+                indexes[index_name] = [
+                    index_info[2]
+                    for index_info in conn.execute(
+                        f"PRAGMA index_xinfo({index_name})"
+                    ).fetchall()
+                    if index_info[2] is not None and int(index_info[5]) == 1
+                ]
+            return indexes
+
+    @staticmethod
+    def _list_sqlite_unique_indexes(db_path: str, table_name: str) -> dict[str, list[str]]:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(f"PRAGMA index_list({table_name})").fetchall()
+            unique_indexes = {}
+            for row in rows:
+                if int(row[2]) != 1:
+                    continue
+                index_name = row[1]
+                index_columns = []
+                for index_info in conn.execute(f"PRAGMA index_xinfo({index_name})").fetchall():
+                    column_name = index_info[2]
+                    if column_name is not None:
+                        index_columns.append(column_name)
+                unique_indexes[index_name] = index_columns
+            return unique_indexes
+
+    def test_legacy_intelligence_items_url_unique_index_rebuilds_without_collision(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_intel.sqlite")
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE intelligence_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    source_type TEXT NOT NULL DEFAULT 'rss',
+                    url TEXT NOT NULL,
+                    scope_type TEXT NOT NULL DEFAULT 'market',
+                    scope_value TEXT,
+                    market TEXT NOT NULL DEFAULT 'cn',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_status TEXT,
+                    last_error TEXT,
+                    last_fetched_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""
+                )
+                conn.execute(
+                    """CREATE TABLE intelligence_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER,
+                    source_name TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'rss',
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    url TEXT NOT NULL,
+                    source TEXT,
+                    published_at DATETIME,
+                    fetched_at DATETIME,
+                    scope_type TEXT NOT NULL DEFAULT 'market',
+                    scope_value TEXT,
+                    market TEXT NOT NULL DEFAULT 'cn',
+                    raw_payload TEXT
+                )"""
+                )
+                conn.execute("CREATE UNIQUE INDEX uix_intelligence_item_url_legacy ON intelligence_items(url)")
+                conn.execute("CREATE INDEX ix_intel_item_scope_time ON intelligence_items(scope_type, scope_value, market, published_at)")
+                conn.execute("CREATE INDEX ix_intel_item_fetch_time ON intelligence_items(fetched_at)")
+                conn.execute("INSERT INTO intelligence_sources (name, url) VALUES ('legacy', 'https://legacy.example.com/rss.xml')")
+                source_id = conn.execute("SELECT id FROM intelligence_sources WHERE name='legacy'").fetchone()[0]
+                conn.executemany(
+                    """INSERT INTO intelligence_items (
+                    source_id,
+                    source_name,
+                    source_type,
+                    title,
+                    summary,
+                    url,
+                    source,
+                    published_at,
+                    fetched_at,
+                    scope_type,
+                    scope_value,
+                    market,
+                    raw_payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (source_id, 'legacy-source', 'rss', 'A', 'legacy-a', 'https://legacy.example.com/a', 'legacy',
+                         '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'market', None, 'cn', None),
+                        (source_id, 'legacy-source', 'rss', 'B', 'legacy-b', 'https://legacy.example.com/b', 'legacy',
+                         '2026-01-02 00:00:00', '2026-01-02 00:00:00', 'market', None, 'cn', None),
+                    ],
+                )
+
+            unique_indexes_before = self._list_sqlite_unique_indexes(db_path, "intelligence_items")
+            self.assertIn("uix_intelligence_item_url_legacy", unique_indexes_before)
+            self.assertEqual(unique_indexes_before["uix_intelligence_item_url_legacy"], ["url"])
+
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            unique_indexes_after = self._list_sqlite_unique_indexes(db_path, "intelligence_items")
+            self.assertNotIn("uix_intelligence_item_url_legacy", unique_indexes_after)
+            self.assertIn("uix_intel_item_scope", unique_indexes_after)
+            self.assertEqual(
+                unique_indexes_after["uix_intel_item_scope"],
+                ["source_id", "url", "scope_type", "scope_value", "market"],
+            )
+            with sqlite3.connect(db_path) as conn:
+                table_count = conn.execute("SELECT COUNT(*) FROM intelligence_items").fetchone()[0]
+                temp_tables = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'intelligence_items_recreate_tmp_%'"
+                ).fetchall()
+
+            self.assertEqual(table_count, 2)
+            self.assertEqual(temp_tables, [])
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
 
     def test_database_initialization_records_schema_version(self):
         DatabaseManager.reset_instance()
@@ -47,6 +178,264 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(count, 1)
 
         DatabaseManager.reset_instance()
+
+    def test_fresh_decision_signal_schema_has_profile_indexes(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "fresh_decision_profile.db")
+
+        try:
+            DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            indexes = self._list_sqlite_indexes(db_path, "decision_signals")
+            self.assertEqual(
+                indexes.get("ix_decision_signals_decision_profile"),
+                ["decision_profile"],
+            )
+            self.assertEqual(
+                indexes.get("ix_decision_signal_market_stock_profile_created"),
+                ["market", "stock_code", "decision_profile", "created_at"],
+            )
+            self.assertEqual(
+                indexes.get(
+                    "ix_decision_signal_report_type_market_stock_profile_action_horizon_phase"
+                ),
+                [
+                    "source_report_id", "source_type", "market", "stock_code",
+                    "decision_profile", "action", "horizon", "market_phase",
+                ],
+            )
+            self.assertEqual(
+                indexes.get(
+                    "ix_decision_signal_trace_type_market_stock_profile_action_horizon_phase"
+                ),
+                [
+                    "trace_id", "source_type", "market", "stock_code",
+                    "decision_profile", "action", "horizon", "market_phase",
+                ],
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_decision_signal_profile_migration_adds_column_indexes_and_closed_stats(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_decision_profile.db")
+        deeply_nested_json = "[" * 10_000 + "]" * 10_000
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE decision_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_code TEXT,
+                    market TEXT,
+                    source_type TEXT,
+                    source_report_id INTEGER,
+                    trace_id TEXT,
+                    action TEXT,
+                    horizon TEXT,
+                    market_phase TEXT,
+                    created_at DATETIME,
+                    metadata_json TEXT
+                )"""
+                )
+                conn.execute(
+                    "CREATE INDEX ix_decision_signal_report_type_market_stock_action_horizon_phase "
+                    "ON decision_signals "
+                    "(source_report_id, source_type, market, stock_code, action, horizon, market_phase)"
+                )
+                conn.execute(
+                    "CREATE INDEX ix_decision_signal_trace_type_market_stock_action_horizon_phase "
+                    "ON decision_signals "
+                    "(trace_id, source_type, market, stock_code, action, horizon, market_phase)"
+                )
+                conn.executemany(
+                    """INSERT INTO decision_signals (
+                    stock_code,
+                    market,
+                    source_type,
+                    source_report_id,
+                    trace_id,
+                    action,
+                    horizon,
+                    market_phase,
+                    created_at,
+                    metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        ("600519", "cn", "analysis", 1, "trace-1", "buy", "3d", "intraday", "2026-01-01", '{"decision_profile":"balanced"}'),
+                        ("600519", "cn", "analysis", 2, "trace-2", "buy", "3d", "intraday", "2026-01-01", None),
+                        ("600519", "cn", "analysis", 3, "trace-3", "buy", "3d", "intraday", "2026-01-01", ""),
+                        ("600519", "cn", "analysis", 4, "trace-4", "buy", "3d", "intraday", "2026-01-01", "   "),
+                        ("600519", "cn", "analysis", 5, "trace-5", "buy", "3d", "intraday", "2026-01-01", "{not-json"),
+                        ("600519", "cn", "analysis", 6, "trace-6", "buy", "3d", "intraday", "2026-01-01", sqlite3.Binary(b"\xff")),
+                        ("600519", "cn", "analysis", 7, "trace-7", "buy", "3d", "intraday", "2026-01-01", "null"),
+                        ("600519", "cn", "analysis", 8, "trace-8", "buy", "3d", "intraday", "2026-01-01", "[]"),
+                        ("600519", "cn", "analysis", 9, "trace-9", "buy", "3d", "intraday", "2026-01-01", '"balanced"'),
+                        ("600519", "cn", "analysis", 10, "trace-10", "buy", "3d", "intraday", "2026-01-01", "1"),
+                        ("600519", "cn", "analysis", 11, "trace-11", "buy", "3d", "intraday", "2026-01-01", "{}"),
+                        ("600519", "cn", "analysis", 12, "trace-12", "buy", "3d", "intraday", "2026-01-01", '{"decision_profile":null}'),
+                        ("600519", "cn", "analysis", 13, "trace-13", "buy", "3d", "intraday", "2026-01-01", '{"decision_profile":""}'),
+                        ("600519", "cn", "analysis", 14, "trace-14", "buy", "3d", "intraday", "2026-01-01", '{"decision_profile":"   "}'),
+                        ("600519", "cn", "analysis", 15, "trace-15", "buy", "3d", "intraday", "2026-01-01", '{"decision_profile":"reckless"}'),
+                        ("600519", "cn", "analysis", 16, "trace-16", "buy", "3d", "intraday", "2026-01-01", deeply_nested_json),
+                    ],
+                )
+
+            with self.assertLogs("src.storage", level="INFO") as logs:
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(decision_signals)").fetchall()}
+                rows = conn.execute(
+                    "SELECT id, decision_profile FROM decision_signals ORDER BY id"
+                ).fetchall()
+
+            self.assertIn("decision_profile", columns)
+            self.assertEqual(rows[0], (1, "balanced"))
+            self.assertTrue(all(profile is None for _, profile in rows[1:]))
+
+            indexes = self._list_sqlite_indexes(db_path, "decision_signals")
+            expected_indexes = {
+                "ix_decision_signals_decision_profile": ["decision_profile"],
+                "ix_decision_signal_market_stock_profile_created": [
+                    "market", "stock_code", "decision_profile", "created_at",
+                ],
+                "ix_decision_signal_report_type_market_stock_profile_action_horizon_phase": [
+                    "source_report_id", "source_type", "market", "stock_code",
+                    "decision_profile", "action", "horizon", "market_phase",
+                ],
+                "ix_decision_signal_trace_type_market_stock_profile_action_horizon_phase": [
+                    "trace_id", "source_type", "market", "stock_code",
+                    "decision_profile", "action", "horizon", "market_phase",
+                ],
+            }
+            for index_name, index_columns in expected_indexes.items():
+                self.assertEqual(indexes.get(index_name), index_columns)
+            self.assertEqual(
+                indexes.get("ix_decision_signal_report_type_market_stock_action_horizon_phase"),
+                [
+                    "source_report_id", "source_type", "market", "stock_code",
+                    "action", "horizon", "market_phase",
+                ],
+            )
+            self.assertEqual(
+                indexes.get("ix_decision_signal_trace_type_market_stock_action_horizon_phase"),
+                [
+                    "trace_id", "source_type", "market", "stock_code",
+                    "action", "horizon", "market_phase",
+                ],
+            )
+
+            log_text = "\n".join(logs.output)
+            self.assertIn("candidate_count=16", log_text)
+            self.assertIn("backfilled_count=1", log_text)
+            self.assertIn("guard_skipped_count=0", log_text)
+            self.assertIn("missing_metadata_count=1", log_text)
+            self.assertIn("missing_profile_count=4", log_text)
+            self.assertIn("invalid_json_count=5", log_text)
+            self.assertIn("non_object_count=4", log_text)
+            self.assertIn("invalid_profile_count=1", log_text)
+            self.assertIn("skipped_existing_profile_count=0", log_text)
+
+            DatabaseManager.reset_instance()
+            with self.assertLogs("src.storage", level="INFO") as second_logs:
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+            second_log_text = "\n".join(second_logs.output)
+            self.assertIn("candidate_count=15", second_log_text)
+            self.assertIn("backfilled_count=0", second_log_text)
+            self.assertIn("guard_skipped_count=0", second_log_text)
+            self.assertIn("missing_metadata_count=1", second_log_text)
+            self.assertIn("missing_profile_count=4", second_log_text)
+            self.assertIn("invalid_json_count=5", second_log_text)
+            self.assertIn("non_object_count=4", second_log_text)
+            self.assertIn("invalid_profile_count=1", second_log_text)
+            self.assertIn("skipped_existing_profile_count=1", second_log_text)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_decision_signal_profile_migration_runs_when_column_already_exists(self):
+        DatabaseManager.reset_instance()
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "existing_decision_profile.db")
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """CREATE TABLE decision_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    stock_code TEXT,
+                    market TEXT,
+                    source_type TEXT,
+                    source_report_id INTEGER,
+                    trace_id TEXT,
+                    action TEXT,
+                    horizon TEXT,
+                    market_phase TEXT,
+                    created_at DATETIME,
+                    metadata_json TEXT,
+                    decision_profile VARCHAR(16)
+                )"""
+                )
+                conn.executemany(
+                    "INSERT INTO decision_signals (metadata_json, decision_profile) VALUES (?, ?)",
+                    [
+                        ('{"decision_profile":"aggressive"}', None),
+                        (None, None),
+                        ('{"decision_profile":"balanced"}', "conservative"),
+                        ('{"decision_profile":"balanced"}', ""),
+                    ],
+                )
+
+            with self.assertLogs("src.storage", level="INFO") as logs:
+                DatabaseManager(db_url=f"sqlite:///{db_path}")
+
+            with sqlite3.connect(db_path) as conn:
+                profiles = conn.execute(
+                    "SELECT decision_profile FROM decision_signals ORDER BY id"
+                ).fetchall()
+
+            self.assertEqual(
+                profiles,
+                [("aggressive",), (None,), ("conservative",), ("",)],
+            )
+            log_text = "\n".join(logs.output)
+            self.assertIn("candidate_count=2", log_text)
+            self.assertIn("backfilled_count=1", log_text)
+            self.assertIn("missing_metadata_count=1", log_text)
+            self.assertIn("skipped_existing_profile_count=2", log_text)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
+    def test_decision_signal_profile_migration_fails_when_column_inspection_fails(self):
+        class BrokenInspector:
+            def has_table(self, _table_name: str) -> bool:
+                return True
+
+            def get_columns(self, _table_name: str):
+                raise RuntimeError("inspection failed")
+
+        DatabaseManager.reset_instance()
+        try:
+            with patch("src.storage.inspect", return_value=BrokenInspector()):
+                with self.assertLogs("src.storage", level="ERROR") as logs:
+                    with self.assertRaises(RuntimeError):
+                        DatabaseManager(db_url="sqlite:///:memory:")
+
+            self.assertIn(
+                "profile migration cannot continue safely",
+                "\n".join(logs.output),
+            )
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
 
     def test_schema_migration_record_handles_concurrent_initialization(self):
         DatabaseManager.reset_instance()

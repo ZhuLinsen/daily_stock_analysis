@@ -16,6 +16,7 @@ FastAPI 应用工厂模块
 """
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -41,7 +42,12 @@ _INDEX_ASSET_REF_PATTERN = re.compile(
     r"""(?:src|href)\s*=\s*["'](/assets/[^"']+)["']""",
     re.IGNORECASE,
 )
-_SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset({"text/css", "text/javascript"})
+_FRONTEND_ASSET_MEDIA_TYPES = {
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+}
+_SAFE_MISSING_ASSET_MEDIA_TYPES = frozenset(_FRONTEND_ASSET_MEDIA_TYPES.values())
 _FRONTEND_INDEX_NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -115,9 +121,23 @@ def _resolve_asset_path(assets_dir: Path, asset_path: str) -> Optional[Path]:
     return candidate
 
 
+def _register_frontend_asset_mime_types() -> None:
+    """Keep Vite module assets loadable even when OS MIME maps are wrong."""
+    for suffix, media_type in _FRONTEND_ASSET_MEDIA_TYPES.items():
+        mimetypes.add_type(media_type, suffix)
+
+
+def _frontend_asset_media_type(asset_path: str) -> Optional[str]:
+    suffix = Path(asset_path).suffix.lower()
+    if suffix in _FRONTEND_ASSET_MEDIA_TYPES:
+        return _FRONTEND_ASSET_MEDIA_TYPES[suffix]
+    content_type, _ = mimetypes.guess_type(asset_path)
+    return content_type
+
+
 def _missing_asset_media_type(asset_path: str) -> str:
     """Return a safe media type for a missing asset response."""
-    content_type, _ = mimetypes.guess_type(asset_path)
+    content_type = _frontend_asset_media_type(asset_path)
     if content_type in _SAFE_MISSING_ASSET_MEDIA_TYPES:
         return content_type
     return "text/plain"
@@ -139,6 +159,14 @@ from api.v1.schemas.common import HealthResponse
 from src.auth import is_auth_enabled
 from src.data.stock_index_loader import find_existing_stock_index_path
 from src.services.system_config_service import SystemConfigService
+from src.services.runtime_scheduler import (
+    CLI_SCHEDULER_OWNER_ENV,
+    RUNTIME_SCHEDULER_ARGS_ENV,
+    RUNTIME_SCHEDULER_FORCE_ENABLED_ENV,
+    RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV,
+    RUNTIME_SCHEDULER_SUPPRESS_START_ENV,
+    RuntimeSchedulerService,
+)
 from src.services.stock_index_remote_service import (
     get_remote_stock_index_cache_path,
     refresh_remote_stock_index_cache,
@@ -180,10 +208,75 @@ def _schedule_stock_index_background_refresh(app: FastAPI, reason: str) -> None:
     )
 
 
+def _load_runtime_scheduler_args() -> dict:
+    raw_value = os.getenv(RUNTIME_SCHEDULER_ARGS_ENV)
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        logger.warning("Invalid %s payload; runtime scheduler uses default args", RUNTIME_SCHEDULER_ARGS_ENV)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("%s payload is not an object; runtime scheduler uses default args", RUNTIME_SCHEDULER_ARGS_ENV)
+        return {}
+    return parsed
+
+
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
-    app.state.system_config_service = SystemConfigService()
+    runtime_owns_schedule = os.getenv(CLI_SCHEDULER_OWNER_ENV, "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_force_enabled = os.getenv(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_suppress_start = os.getenv(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    runtime_run_immediately_override = os.getenv(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV)
+    if runtime_suppress_start or not runtime_owns_schedule:
+        runtime_run_immediately = False
+    elif runtime_run_immediately_override is None:
+        from src.config import get_config
+
+        runtime_run_immediately = bool(getattr(get_config(), "schedule_run_immediately", False))
+    else:
+        runtime_run_immediately = runtime_run_immediately_override.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    runtime_scheduler_args = _load_runtime_scheduler_args()
+    os.environ.pop(RUNTIME_SCHEDULER_FORCE_ENABLED_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_SUPPRESS_START_ENV, None)
+    os.environ.pop(RUNTIME_SCHEDULER_ARGS_ENV, None)
+    runtime_scheduler_service = RuntimeSchedulerService(
+        owns_schedule=runtime_owns_schedule,
+        force_enabled=runtime_force_enabled,
+        run_immediately_in_background=True,
+        schedule_args_overrides=runtime_scheduler_args,
+    )
+    app.state.runtime_scheduler_service = runtime_scheduler_service
+    if not runtime_suppress_start:
+        app.state.runtime_scheduler_service.reconcile_from_config(
+            run_immediately=runtime_run_immediately,
+        )
+    app.state.system_config_service = SystemConfigService(
+        runtime_scheduler=app.state.runtime_scheduler_service,
+    )
     _schedule_stock_index_background_refresh(app, "startup")
     try:
         yield
@@ -195,6 +288,10 @@ async def app_lifespan(app: FastAPI):
                 await refresh_task
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
+        runtime_scheduler = getattr(app.state, "runtime_scheduler_service", None)
+        if runtime_scheduler is not None:
+            runtime_scheduler.stop()
+            delattr(app.state, "runtime_scheduler_service")
 
 
 def create_app(static_dir: Optional[Path] = None) -> FastAPI:
@@ -208,6 +305,8 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         配置完成的 FastAPI 应用实例
     """
     # 默认静态文件目录
+    _register_frontend_asset_mime_types()
+
     if static_dir is None:
         static_dir = Path(__file__).parent.parent / "static"
     
@@ -265,7 +364,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 注册路由
     # ============================================================
     
-    app.include_router(api_v1_router)
+    app.include_router(api_v1_router, prefix="/api/v1")
     add_error_handlers(app)
     
     # ============================================================
@@ -438,7 +537,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                     return _frontend_index_response(static_dir)
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
-                content_type, _ = mimetypes.guess_type(str(file_path))
+                content_type = _frontend_asset_media_type(str(file_path))
                 return FileResponse(file_path, media_type=content_type)
 
             return _frontend_index_response(static_dir)

@@ -14,6 +14,7 @@ export type AlphaSiftStatus = {
   contractVersion?: string | null;
   version?: string | null;
   strategyCount?: number | null;
+  sourceHealth?: Record<string, Record<string, Record<string, unknown>>>;
   diagnostics?: Record<string, string>;
 };
 
@@ -153,6 +154,7 @@ export type AlphaSiftHotspotDetail = {
   route: AlphaSiftHotspotRouteItem[];
   timeline?: AlphaSiftHotspotRouteItem[];
   stocks: AlphaSiftHotspotStock[];
+  leaderStocks?: AlphaSiftHotspotStock[];
   stockCount: number;
   sourceErrors?: string[];
   qualityStatus?: 'available' | 'partial' | 'stale' | 'failed' | string;

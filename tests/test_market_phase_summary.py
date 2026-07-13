@@ -9,6 +9,7 @@ from src.market_phase_summary import (
     format_public_market_status_line,
     format_public_phase_pack_excerpt,
     normalize_analysis_phase_bucket,
+    rebuild_market_phase_summary_for_stock_code,
     render_market_phase_summary,
 )
 
@@ -123,6 +124,47 @@ def test_normalize_analysis_phase_bucket_maps_public_statistics_buckets() -> Non
     assert normalize_analysis_phase_bucket("non_trading") == "unknown"
     assert normalize_analysis_phase_bucket(None) == "unknown"
     assert normalize_analysis_phase_bucket("bad_phase") == "unknown"
+
+
+def test_rebuild_market_phase_summary_uses_auto_for_result_only_phases(monkeypatch) -> None:
+    calls = []
+
+    class FakeContext:
+        def to_dict(self) -> dict:
+            return {
+                **_phase_context(),
+                "market": "jp",
+                "phase": "non_trading",
+                "analysis_intent": "auto",
+                "warnings": [],
+            }
+
+    def fake_build_market_phase_context(**kwargs):
+        calls.append(kwargs)
+        return FakeContext()
+
+    monkeypatch.setattr(
+        "src.market_phase_summary.build_market_phase_context",
+        fake_build_market_phase_context,
+    )
+
+    summary = {
+        **_phase_context(),
+        "market": "cn",
+        "phase": "non_trading",
+        "analysis_intent": "non_trading",
+    }
+
+    rebuilt = rebuild_market_phase_summary_for_stock_code(
+        "7203.T",
+        {MARKET_PHASE_SUMMARY_KEY: summary},
+    )
+
+    assert rebuilt is not None
+    assert rebuilt["phase"] == "non_trading"
+    assert calls[0]["market"] == "jp"
+    assert calls[0]["analysis_phase"] == "auto"
+    assert calls[0]["analysis_intent"] == "auto"
 
 
 def test_format_public_phase_pack_excerpt_limits_and_redacts_public_fields() -> None:

@@ -13,6 +13,7 @@ from src.config import (
     get_effective_agent_primary_model,
     get_effective_agent_models_to_try,
 )
+from src.agent.litellm_route_resolution import resolve_agent_litellm_route
 from src.agent.provider_trace import (
     TRACE_MODEL_KEY,
     TRACE_PROVIDER_KEY,
@@ -21,6 +22,7 @@ from src.agent.provider_trace import (
     strip_trace_metadata,
     trace_model_matches,
 )
+from src.llm.usage import should_persist_usage_telemetry
 from src.storage import get_db, persist_llm_usage
 
 logger = logging.getLogger(__name__)
@@ -139,8 +141,11 @@ def build_agent_chat_context_bundle(
     state = _build_visible_history_state(session_id, llm_adapter, config)
     diagnostics = TraceDiagnostics(visible_tokens=state.visible_tokens)
     db = get_db()
-    candidate_models = get_effective_agent_models_to_try(config)
-    if not candidate_models:
+    resolution = resolve_agent_litellm_route(config)
+    candidate_models = resolution.models_to_try if resolution.available else []
+    if not candidate_models and not resolution.reason:
+        candidate_models = get_effective_agent_models_to_try(config)
+    if not candidate_models and not resolution.reason:
         candidate_models = [get_effective_agent_primary_model(config)]
     candidate_trace_targets = _build_trace_match_targets(candidate_models, config)
     turns = db.get_agent_provider_turns(session_id, must_roundtrip_only=True)
@@ -317,11 +322,13 @@ def _build_visible_history_state(
             source_message_count=len(to_summarize),
             estimated_tokens=estimated_tokens,
         )
-        persist_llm_usage(
-            getattr(response, "usage", {}) or {},
-            getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
-            call_type="agent",
-        )
+        usage = getattr(response, "usage", {}) or {}
+        if should_persist_usage_telemetry(usage):
+            persist_llm_usage(
+                usage,
+                getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
+                call_type="agent",
+            )
         messages = [build_summary_message(summary_text)] + _to_chat_messages(protected_tail, include_ids=True)
         return VisibleHistoryState(
             messages=messages,

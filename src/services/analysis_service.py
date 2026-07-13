@@ -180,6 +180,9 @@ class AnalysisService:
             explicit_action=getattr(result, "action", None),
             report_type=report_type,
             report_language=report_language,
+            sentiment_score=getattr(result, "sentiment_score", None),
+            guardrail_reason=getattr(result, "guardrail_reason", None),
+            align_with_score=True,
         )
         diagnostic_context = get_current_diagnostic_context()
         trace_id = diagnostic_context.trace_id if diagnostic_context is not None else query_id
@@ -238,7 +241,11 @@ class AnalysisService:
                 "risk_warning": result.risk_warning,
             }
         }
-        
+        if hasattr(result, "to_dict"):
+            raw_result_payload = result.to_dict()
+            if isinstance(raw_result_payload, dict):
+                report["details"]["raw_result"] = raw_result_payload
+
         return {
             "query_id": query_id,
             "trace_id": trace_id,

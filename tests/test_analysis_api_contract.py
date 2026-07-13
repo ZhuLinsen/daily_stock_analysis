@@ -5,11 +5,18 @@ import asyncio
 from concurrent.futures import Future
 from datetime import datetime
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
+
+_ORIGINAL_ENVIRON = dict(os.environ)
+_MODULE_TEMP_DIR = tempfile.TemporaryDirectory()
+_MODULE_ENV_FILE = Path(_MODULE_TEMP_DIR.name) / ".env"
+_MODULE_ENV_FILE.write_text("STOCK_LIST=600519,000001\n", encoding="utf-8")
+os.environ["ENV_FILE"] = str(_MODULE_ENV_FILE)
 
 from tests.litellm_stub import ensure_litellm_stub
 
@@ -42,6 +49,19 @@ from src.enums import ReportType
 from src.services.analysis_service import AnalysisService
 from src.services.image_stock_extractor import _call_litellm_vision
 from src.services.task_queue import AnalysisTaskQueue, TaskStatus
+
+
+def tearDownModule() -> None:
+    current_test = os.environ.get("PYTEST_CURRENT_TEST")
+    for key in list(os.environ):
+        if key == "PYTEST_CURRENT_TEST":
+            continue
+        if key not in _ORIGINAL_ENVIRON:
+            os.environ.pop(key, None)
+    os.environ.update(_ORIGINAL_ENVIRON)
+    if current_test is not None:
+        os.environ["PYTEST_CURRENT_TEST"] = current_test
+    _MODULE_TEMP_DIR.cleanup()
 
 
 def _analysis_context_pack_overview() -> dict:
@@ -98,6 +118,27 @@ def _analysis_context_pack_overview() -> dict:
         "metadata": {
             "trigger_source": "api",
             "news_result_count": 0,
+        },
+    }
+
+
+def _market_structure_context() -> dict:
+    return {
+        "schema_version": "market-structure-v1",
+        "status": "partial",
+        "market": "cn",
+        "market_theme_context": {
+            "schema_version": "market-theme-v1",
+            "status": "partial",
+            "market": "cn",
+            "active_themes": [{"name": "机器人概念"}],
+        },
+        "stock_market_position": {
+            "schema_version": "stock-market-position-v1",
+            "status": "partial",
+            "stock_code": "300024",
+            "market": "cn",
+            "primary_theme": {"name": "机器人概念"},
         },
     }
 
@@ -631,6 +672,252 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["summary"]["action"], "watch")
         self.assertEqual(status.result.report["summary"]["action_label"], "观望")
 
+    def test_get_analysis_status_preserves_zero_sentiment_score_when_aligning_action(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-zero-score",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {
+                        "query_id": "task-queue-zero-score",
+                        "stock_code": "600519",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                    },
+                    "summary": {
+                        "analysis_summary": "趋势显著恶化",
+                        "operation_advice": "持有",
+                        "sentiment_score": 0,
+                    },
+                    "details": {
+                        "raw_result": {
+                            "operation_advice": "持有",
+                            "report_language": "zh",
+                        },
+                    },
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            status = get_analysis_status("task-queue-zero-score")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.report["summary"]["sentiment_score"], 0)
+        self.assertEqual(status.result.report["summary"]["action"], "sell")
+        self.assertEqual(status.result.report["summary"]["action_label"], "卖出")
+
+    def test_get_analysis_status_preserves_zero_sentiment_score_when_enriching_report(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-zero-score-enriched",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {
+                        "query_id": "task-queue-zero-score-enriched",
+                        "stock_code": "600519",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                    },
+                    "summary": {
+                        "analysis_summary": "趋势显著恶化",
+                        "operation_advice": "持有",
+                        "sentiment_score": 0,
+                    },
+                    "details": {
+                        "raw_result": {
+                            "operation_advice": "持有",
+                            "report_language": "zh",
+                        },
+                    },
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=({}, None, None),
+             ):
+            status = get_analysis_status("task-queue-zero-score-enriched")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.report["summary"]["sentiment_score"], 0)
+        self.assertEqual(status.result.report["summary"]["action"], "sell")
+        self.assertEqual(status.result.report["summary"]["action_label"], "卖出")
+
+    def test_get_analysis_status_enriches_in_memory_market_structure_from_raw_result(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-market-structure-raw",
+            stock_code="300024",
+            stock_name="机器人",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "300024",
+                "stock_name": "机器人",
+                "report": {
+                    "meta": {
+                        "query_id": "task-queue-market-structure-raw",
+                        "stock_code": "300024",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                    },
+                    "summary": {"analysis_summary": "summary"},
+                    "details": {"news_summary": "news"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(
+                     None,
+                     None,
+                     {
+                         "model_used": "test-model",
+                         "report_language": "zh",
+                         "market_structure_context": market_structure,
+                     },
+                 ),
+             ) as load_sources:
+            status = get_analysis_status("task-queue-market-structure-raw")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            status.result.report["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            status.result.report["details"]["raw_result"],
+        )
+        load_sources.assert_called_once_with(
+            query_id="task-queue-market-structure-raw",
+            stock_code="300024",
+        )
+
+    def test_get_analysis_status_enriches_in_memory_market_structure_without_history_snapshot(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service = AnalysisService()
+        task_result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.1,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=lambda: {
+                    "analysis_summary": "summary",
+                    "operation_advice": "持有",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 80,
+                    "report_language": "zh",
+                    "news_summary": "news",
+                    "technical_analysis": "tech",
+                    "fundamental_analysis": "fundamental",
+                    "risk_warning": "risk",
+                    "market_structure_context": market_structure,
+                },
+            ),
+            "task-in-memory-no-history",
+            report_type="detailed",
+        )
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-in-memory-no-history",
+            stock_code="300024",
+            stock_name="机器人",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result=task_result,
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(None, None, None),
+             ):
+            status = get_analysis_status("task-in-memory-no-history")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+
     def test_get_analysis_status_preserves_queue_report_created_at_when_enriching(self) -> None:
         if get_analysis_status is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -662,7 +949,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch(
                  "api.v1.endpoints.analysis._load_sync_fundamental_sources",
-                 return_value=({}, None),
+                 return_value=({}, None, None),
              ):
             status = get_analysis_status("task-queue-2")
 
@@ -1051,6 +1338,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                          "market_phase_summary": phase_summary,
                      },
                      None,
+                     None,
                  ),
              ):
             result = _handle_sync_analysis(
@@ -1080,6 +1368,125 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         )
         self.assertNotIn("analysis_context_pack_overview", details["context_snapshot"])
         self.assertNotIn("market_phase_summary", details["context_snapshot"])
+
+    def test_handle_sync_analysis_restores_market_structure_from_raw_result_snapshot(self) -> None:
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = {
+            "stock_code": "300024",
+            "stock_name": "机器人",
+            "report": {
+                "meta": {"stock_code": "300024", "report_language": "zh"},
+                "summary": {"analysis_summary": "summary"},
+                "strategy": {},
+                "details": {"news_summary": "news"},
+            },
+        }
+
+        with patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-market-structure")), \
+             patch("src.services.analysis_service.AnalysisService", return_value=service_instance), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(
+                     None,
+                     None,
+                     {
+                         "model_used": "test-model",
+                         "report_language": "zh",
+                         "market_structure_context": market_structure,
+                     },
+                 ),
+             ):
+            result = _handle_sync_analysis(
+                "300024",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertEqual(
+            result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+
+    def test_handle_sync_analysis_carries_market_structure_from_service_without_fallback(self) -> None:
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service = AnalysisService()
+        service_result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.1,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=lambda: {
+                    "analysis_summary": "summary",
+                    "operation_advice": "持有",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 80,
+                    "report_language": "zh",
+                    "news_summary": "news",
+                    "technical_analysis": "tech",
+                    "fundamental_analysis": "fundamental",
+                    "risk_warning": "risk",
+                    "market_structure_context": market_structure,
+                },
+            ),
+            "q-sync-no-history",
+            report_type="detailed",
+        )
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = service_result
+
+        with patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-no-history")), \
+             patch("src.services.analysis_service.AnalysisService", return_value=service_instance), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(None, None, None),
+             ):
+            result = _handle_sync_analysis(
+                "300024",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            result.report["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            result.report["details"]["raw_result"],
+        )
 
     def test_build_analysis_response_localizes_placeholder_stock_name_for_english(self) -> None:
         service = AnalysisService()
@@ -1163,6 +1570,51 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(
             result["report"]["meta"]["market_phase_summary"]["phase"],
             "intraday",
+        )
+
+    def test_build_analysis_response_includes_market_structure_in_raw_result(self) -> None:
+        service = AnalysisService()
+        market_structure = _market_structure_context()
+
+        def _raw_result() -> dict:
+            return {
+                "analysis_summary": "summary",
+                "operation_advice": "持有",
+                "trend_prediction": "震荡",
+                "sentiment_score": 80,
+                "report_language": "zh",
+                "news_summary": "news",
+                "technical_analysis": "tech",
+                "fundamental_analysis": "fundamental",
+                "risk_warning": "risk",
+                "market_structure_context": market_structure,
+            }
+
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.01,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=_raw_result,
+            ),
+            "q-build-response",
+            report_type="detailed",
+        )
+
+        self.assertEqual(
+            result["report"]["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
         )
 
     def test_analysis_service_passes_analysis_phase_to_pipeline(self) -> None:
@@ -1258,6 +1710,31 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(report.summary.operation_advice, "不建议买入")
         self.assertEqual(report.summary.action, "avoid")
         self.assertEqual(report.summary.action_label, "回避")
+
+    def test_build_analysis_report_aligns_score_and_legacy_advice(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {"report_type": "detailed", "report_language": "zh"},
+                "summary": {
+                    "analysis_summary": "等待确认",
+                    "operation_advice": "持有",
+                    "sentiment_score": 72,
+                },
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q2",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot=None,
+            fallback_fundamental_payload=None,
+        )
+
+        self.assertEqual(report.summary.action, "buy")
+        self.assertEqual(report.summary.action_label, "买入")
 
     def test_build_analysis_report_reads_decision_action_from_raw_result(self) -> None:
         if _build_analysis_report is None:
@@ -1477,6 +1954,93 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertIsNotNone(report.meta.market_phase_summary)
         self.assertEqual(report.meta.market_phase_summary.phase, "intraday")
 
+    def test_build_analysis_report_repairs_bare_kr_code_and_phase_summary(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2025-01-02T16:10:00+09:00",
+            "session_date": "2025-01-02",
+            "effective_daily_bar_date": "2025-01-02",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+
+        with patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"):
+            report = _build_analysis_report(
+                report_data={
+                    "meta": {"stock_code": "005930"},
+                    "summary": {},
+                    "strategy": {},
+                    "details": {},
+                },
+                query_id="q-kr-phase",
+                stock_code="005930",
+                stock_name="三星电子",
+                context_snapshot={"market_phase_summary": persisted_phase_summary},
+                fallback_fundamental_payload=None,
+            )
+
+        self.assertEqual(report.meta.stock_code, "005930.KS")
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.market_phase_summary.market, "kr")
+        self.assertEqual(report.meta.market_phase_summary.phase, "postmarket")
+        self.assertEqual(
+            report.meta.market_phase_summary.market_local_time,
+            "2025-01-02T16:10:00+09:00",
+        )
+        self.assertEqual(report.meta.market_phase_summary.session_date, "2025-01-02")
+        self.assertEqual(
+            report.meta.market_phase_summary.effective_daily_bar_date,
+            "2025-01-02",
+        )
+        self.assertEqual(report.meta.market_phase_summary.trigger_source, "scheduled_job")
+        self.assertEqual(report.meta.market_phase_summary.analysis_intent, "postmarket")
+
+    def test_build_analysis_report_rebuilds_legacy_cn_market_summary_for_kr_code(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        legacy_cn_summary = {
+            **_market_phase_summary(),
+            "market": "cn",
+            "phase": "intraday",
+            "market_local_time": "2026-03-27T10:00:00+08:00",
+            "session_date": "2026-03-27",
+            "effective_daily_bar_date": "2026-03-26",
+            "analysis_intent": "intraday",
+            "trigger_source": "history_snapshot",
+            "warnings": ["legacy_cn_snapshot"],
+        }
+
+        with patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"):
+            report = _build_analysis_report(
+                report_data={
+                    "meta": {"stock_code": "005930"},
+                    "summary": {},
+                    "strategy": {},
+                    "details": {},
+                },
+                query_id="q-kr-legacy-cn",
+                stock_code="005930",
+                stock_name="三星电子",
+                context_snapshot={"market_phase_summary": legacy_cn_summary},
+                fallback_fundamental_payload=None,
+            )
+
+        self.assertIsNotNone(report.meta.market_phase_summary)
+        self.assertEqual(report.meta.stock_code, "005930.KS")
+        self.assertEqual(report.meta.market_phase_summary.market, "kr")
+        self.assertTrue(report.meta.market_phase_summary.market_local_time.endswith("+09:00"))
+        self.assertIn("legacy_cn_snapshot", report.meta.market_phase_summary.warnings)
+
     def test_build_analysis_report_merges_partial_top_level_context_with_fallback(self) -> None:
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -1671,7 +2235,17 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         mock_db = MagicMock()
-        mock_db.get_analysis_history.return_value = [SimpleNamespace(context_snapshot=None)]
+        raw_result_payload = {
+            "model_used": "test-model",
+            "report_language": "zh",
+            "market_structure_context": _market_structure_context(),
+        }
+        mock_db.get_analysis_history.return_value = [
+            SimpleNamespace(
+                context_snapshot=None,
+                raw_result=json.dumps(raw_result_payload, ensure_ascii=False),
+            )
+        ]
         fallback_payload = {
             "earnings": {
                 "data": {
@@ -1683,13 +2257,14 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         mock_db.get_latest_fundamental_snapshot.return_value = fallback_payload
 
         with patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
-            context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
+            context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
                 query_id="q_sync_001",
                 stock_code="600519",
             )
 
         self.assertIsNone(context_snapshot)
         self.assertEqual(fundamental_snapshot, fallback_payload)
+        self.assertEqual(raw_result_snapshot, raw_result_payload)
         mock_db.get_analysis_history.assert_called_once_with(
             query_id="q_sync_001",
             code="600519",
@@ -1748,6 +2323,66 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["meta"]["current_price"], 1234.5)
         self.assertEqual(status.result.report["meta"]["change_pct"], 0.0)
         self.assertEqual(status.result.report["meta"]["model_used"], "test-model")
+
+    def test_get_analysis_status_restores_market_structure_from_raw_result_without_snapshot(self) -> None:
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+                "active_themes": [{"name": "机器人概念"}],
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+            },
+        }
+        record = SimpleNamespace(
+            id=1,
+            code="300024",
+            name="机器人",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            raw_result=json.dumps(
+                {
+                    "model_used": "test-model",
+                    "report_language": "zh",
+                    "market_structure_context": market_structure,
+                }
+            ),
+            context_snapshot=None,
+            sentiment_score=80,
+            operation_advice="持有",
+            trend_prediction="震荡上行",
+            analysis_summary="summary",
+            ideal_buy=None,
+            secondary_buy=None,
+            stop_loss=None,
+            take_profit=None,
+        )
+        mock_db = MagicMock()
+        mock_db.get_analysis_history.return_value = [record]
+        mock_db.get_latest_fundamental_snapshot.return_value = None
+
+        with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
+             patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
+            queue_mock.return_value.get_task.return_value = None
+            status = get_analysis_status("task_market_structure_raw_1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
 
     def test_get_analysis_status_completed_db_snapshot_includes_agent_snapshot_board_details(self) -> None:
         if get_analysis_status is None:
@@ -1973,7 +2608,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
              patch(
                  "api.v1.endpoints.analysis._load_sync_fundamental_sources",
-                 return_value=(None, None),
+                 return_value=(None, None, None),
              ) as load_sources:
             queue_mock.return_value.get_task.return_value = task
             status = get_analysis_status("task_no_snapshot_in_memory_1")
@@ -2168,6 +2803,85 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             stock_codes=["AAPL.US"],
             stock_name=None,
             original_query="AAPL.US",
+            selection_source="manual",
+            report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_resolves_bare_code_from_stock_index_before_default_market(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"), \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="005930",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="005930",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["005930.KS"],
+            stock_name=None,
+            original_query="005930",
+            selection_source="manual",
+            report_type="detailed",
+            analysis_phase="auto",
+            force_refresh=False,
+            notify=True,
+        )
+
+    def test_trigger_analysis_resolves_bare_4_digit_jp_code_before_name_resolution(self) -> None:
+        if trigger_analysis is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        queue = MagicMock()
+        queue.submit_tasks_batch.return_value = ([], [])
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch("api.v1.endpoints.analysis.resolve_index_stock_code_for_analysis", return_value="7203.T") as resolve_index_mock, \
+             patch("api.v1.endpoints.analysis.resolve_name_to_code") as resolve_mock:
+            response = trigger_analysis(
+                request=SimpleNamespace(
+                    stock_code="7203",
+                    stock_codes=None,
+                    stock_name=None,
+                    original_query="7203",
+                    selection_source="manual",
+                    report_type="detailed",
+                    force_refresh=False,
+                    async_mode=True,
+                    notify=True,
+                    analysis_phase="auto",
+                ),
+                config=SimpleNamespace(),
+            )
+
+        self.assertEqual(response.status_code, 202)
+        resolve_index_mock.assert_called_once_with("7203")
+        resolve_mock.assert_not_called()
+        queue.submit_tasks_batch.assert_called_once_with(
+            stock_codes=["7203.T"],
+            stock_name=None,
+            original_query="7203",
             selection_source="manual",
             report_type="detailed",
             analysis_phase="auto",

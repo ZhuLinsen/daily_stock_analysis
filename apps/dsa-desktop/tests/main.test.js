@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const POSIX_PATH_DELIMITER = ':';
+
 function loadMainModule(t, options = {}) {
   const originalLoad = Module._load;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -134,6 +136,374 @@ test('buildMainPageUrl includes desktop version and cache buster', (t) => {
     mainModule.buildMainPageUrl(8123, 1234567890),
     'http://127.0.0.1:8123/?desktop_version=3.17.1&cache_bust=1234567890'
   );
+});
+
+test('buildMainPageUrl uses a connect host when provided', (t) => {
+  const mainModule = loadMainModule(t, {
+    app: {
+      getVersion: () => '3.17.1',
+    },
+  });
+
+  assert.equal(
+    mainModule.buildMainPageUrl(8123, 1234567890, '192.168.1.9'),
+    'http://192.168.1.9:8123/?desktop_version=3.17.1&cache_bust=1234567890'
+  );
+});
+
+test('resolveDesktopConnectHost keeps desktop navigation local for public binds', (t) => {
+  const mainModule = loadMainModule(t);
+
+  assert.equal(mainModule.resolveDesktopConnectHost('0.0.0.0'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('::'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('*'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('[::]'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('192.168.1.9'), '192.168.1.9');
+});
+
+test('buildBackendEnvironment extends macOS GUI PATH with Homebrew CLI directories', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'darwin' });
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    sourceEnv: {
+      PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+      CUSTOM_FLAG: 'kept',
+    },
+  });
+
+  const entries = env.PATH.split(POSIX_PATH_DELIMITER);
+  assert.deepEqual(entries.slice(0, 4), ['/usr/bin', '/bin', '/usr/sbin', '/sbin']);
+  assert.ok(entries.includes('/opt/homebrew/bin'));
+  assert.ok(entries.includes('/usr/local/bin'));
+  assert.ok(entries.includes('/opt/homebrew/sbin'));
+  assert.ok(entries.includes('/usr/local/sbin'));
+  assert.equal(env.CUSTOM_FLAG, 'kept');
+  assert.equal(env.DSA_DESKTOP_MODE, 'true');
+  assert.equal(env.ENV_FILE, '/tmp/dsa/.env');
+  assert.equal(env.DATABASE_PATH, '/tmp/dsa/data.db');
+  assert.equal(env.LOG_DIR, '/tmp/dsa/logs');
+  assert.equal(env.WEBUI_HOST, '127.0.0.1');
+});
+
+test('buildBackendEnvironment keeps non-macOS PATH unchanged', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'linux' });
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    sourceEnv: {
+      PATH: '/custom/bin:/usr/bin',
+    },
+  });
+
+  assert.equal(env.PATH, '/custom/bin:/usr/bin');
+});
+
+test('buildBackendEnvironment pins WEBUI_PORT to the Electron-selected backend port', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\.env',
+    dbPath: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\data\\stock_analysis.db',
+    logDir: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\logs',
+    port: 8000,
+    sourceEnv: {
+      PATH: 'C:\\Windows\\System32',
+      WEBUI_PORT: '18000',
+    },
+  });
+
+  assert.equal(env.WEBUI_PORT, '8000');
+  assert.equal(env.WEBUI_HOST, '127.0.0.1');
+});
+
+test('resolveBackendBindHost reads WEBUI_HOST from env file', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST=0.0.0.0 # allow LAN\nWEBUI_PORT=8000\n', 'utf-8');
+
+  assert.equal(mainModule.readEnvFileValue(envPath, 'WEBUI_HOST'), '0.0.0.0');
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '0.0.0.0'
+  );
+});
+
+test('resolveBackendBindHost expands WEBUI_HOST dotenv references', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'BIND_HOST=0.0.0.0\nWEBUI_HOST=${BIND_HOST}\n', 'utf-8');
+
+  assert.equal(mainModule.readEnvFileValue(envPath, 'WEBUI_HOST', {}), '0.0.0.0');
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '0.0.0.0'
+  );
+});
+
+test('resolveBackendBindHost handles quoted WEBUI_HOST with inline comment', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST="0.0.0.0" # allow LAN\n', 'utf-8');
+
+  assert.equal(mainModule.readEnvFileValue(envPath, 'WEBUI_HOST', {}), '0.0.0.0');
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '0.0.0.0'
+  );
+});
+
+test('resolveBackendBindHost supports dotenv default expansion', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST=${MISSING_HOST:-127.0.0.1}\n', 'utf-8');
+
+  assert.equal(mainModule.readEnvFileValue(envPath, 'WEBUI_HOST', {}), '127.0.0.1');
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '127.0.0.1'
+  );
+});
+
+test('resolveBackendBindHost keeps process WEBUI_HOST override ahead of env file', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST=0.0.0.0\n', 'utf-8');
+
+  assert.equal(
+    mainModule.resolveBackendBindHost({
+      envFile: envPath,
+      sourceEnv: { WEBUI_HOST: '192.168.1.9' },
+    }),
+    '192.168.1.9'
+  );
+});
+
+test('resolveBackendBindHost normalizes wildcard WEBUI_HOST values', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST=*\n', 'utf-8');
+
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '0.0.0.0'
+  );
+  assert.equal(
+    mainModule.resolveBackendBindHost({
+      envFile: envPath,
+      sourceEnv: { WEBUI_HOST: '[::]' },
+    }),
+    '::'
+  );
+});
+
+test('buildBackendEnvironment injects env file WEBUI_HOST into backend process', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'BIND_HOST=0.0.0.0\nWEBUI_HOST=${BIND_HOST}\n', 'utf-8');
+
+  const env = mainModule.buildBackendEnvironment({
+    envFile: envPath,
+    dbPath: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\data\\stock_analysis.db',
+    logDir: 'C:\\Users\\user\\AppData\\Roaming\\Daily Stock Analysis\\logs',
+    port: 8000,
+    sourceEnv: {
+      PATH: 'C:\\Windows\\System32',
+    },
+  });
+
+  assert.equal(env.WEBUI_HOST, '0.0.0.0');
+  assert.equal(env.WEBUI_PORT, '8000');
+});
+
+test('buildBackendEnvironment normalizes wildcard host for backend env', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  const wildcardEnv = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    port: 8000,
+    host: '*',
+    sourceEnv: {},
+  });
+  const ipv6Env = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    port: 8001,
+    host: '[::]',
+    sourceEnv: {},
+  });
+
+  assert.equal(wildcardEnv.WEBUI_HOST, '0.0.0.0');
+  assert.equal(ipv6Env.WEBUI_HOST, '::');
+});
+
+test('buildBackendArgs passes resolved host to main.py', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  assert.deepEqual(mainModule.buildBackendArgs({ host: '0.0.0.0', port: 8123 }), [
+    '--serve-only',
+    '--host',
+    '0.0.0.0',
+    '--port',
+    '8123',
+  ]);
+});
+
+test('buildBackendArgs normalizes wildcard hosts before spawning main.py', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  assert.deepEqual(mainModule.buildBackendArgs({ host: '*', port: 8123 }), [
+    '--serve-only',
+    '--host',
+    '0.0.0.0',
+    '--port',
+    '8123',
+  ]);
+  assert.deepEqual(mainModule.buildBackendArgs({ host: '[::]', port: 8124 }), [
+    '--serve-only',
+    '--host',
+    '::',
+    '--port',
+    '8124',
+  ]);
+});
+
+test('findAvailablePort listens on requested bind host', async (t) => {
+  let listenedHost = '';
+  const fakeNet = {
+    createServer: () => {
+      const server = new EventEmitter();
+      server.listen = (_port, host) => {
+        listenedHost = host;
+        process.nextTick(() => server.emit('listening'));
+      };
+      server.close = (callback) => {
+        if (callback) {
+          callback();
+        }
+      };
+      return server;
+    },
+  };
+  const mainModule = loadMainModule(t, { platform: 'win32', net: fakeNet });
+
+  const port = await mainModule.findAvailablePort(8123, 8123, '0.0.0.0');
+
+  assert.equal(port, 8123);
+  assert.equal(listenedHost, '0.0.0.0');
+});
+
+test('findAvailablePort normalizes wildcard bind hosts before listening', async (t) => {
+  const listenedHosts = [];
+  const fakeNet = {
+    createServer: () => {
+      const server = new EventEmitter();
+      server.listen = (_port, host) => {
+        listenedHosts.push(host);
+        process.nextTick(() => server.emit('listening'));
+      };
+      server.close = (callback) => {
+        if (callback) {
+          callback();
+        }
+      };
+      return server;
+    },
+  };
+  const mainModule = loadMainModule(t, { platform: 'win32', net: fakeNet });
+
+  await mainModule.findAvailablePort(8123, 8123, '*');
+  await mainModule.findAvailablePort(8124, 8124, '[::]');
+
+  assert.deepEqual(listenedHosts, ['0.0.0.0', '::']);
+});
+
+test('startBackend passes WEBUI_HOST from env file to backend args and env', (t) => {
+  const previousWebuiHost = process.env.WEBUI_HOST;
+  delete process.env.WEBUI_HOST;
+  t.after(() => {
+    if (previousWebuiHost === undefined) {
+      delete process.env.WEBUI_HOST;
+    } else {
+      process.env.WEBUI_HOST = previousWebuiHost;
+    }
+  });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'BIND_HOST=0.0.0.0\nWEBUI_HOST=${BIND_HOST}\n', 'utf-8');
+  const spawned = [];
+  const fakeBackendProcess = new EventEmitter();
+  fakeBackendProcess.stdout = new EventEmitter();
+  fakeBackendProcess.stderr = new EventEmitter();
+  fakeBackendProcess.exitCode = null;
+  fakeBackendProcess.signalCode = null;
+  fakeBackendProcess.kill = () => true;
+  const mainModule = loadMainModule(t, {
+    platform: 'win32',
+    childProcess: {
+      spawn: (command, args, options) => {
+        spawned.push({ command, args, options });
+        return fakeBackendProcess;
+      },
+    },
+  });
+  t.after(() => mainModule.__setBackendProcessForTest(null));
+
+  mainModule.startBackend({
+    port: 8123,
+    envFile: envPath,
+    dbPath: path.join(tmpDir, 'stock_analysis.db'),
+    logDir: path.join(tmpDir, 'logs'),
+  });
+
+  assert.equal(spawned.length, 1);
+  assert.deepEqual(spawned[0].args.slice(-5), [
+    '--serve-only',
+    '--host',
+    '0.0.0.0',
+    '--port',
+    '8123',
+  ]);
+  assert.equal(spawned[0].options.env.WEBUI_HOST, '0.0.0.0');
+});
+
+test('extendMacDesktopBackendPath preserves existing order and avoids duplicates', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'darwin' });
+
+  const extended = mainModule.extendMacDesktopBackendPath(
+    '/opt/homebrew/bin:/custom/bin:/usr/bin:/custom/bin'
+  );
+  const entries = extended.split(POSIX_PATH_DELIMITER);
+
+  assert.deepEqual(entries.slice(0, 3), ['/opt/homebrew/bin', '/custom/bin', '/usr/bin']);
+  assert.equal(entries.filter((entry) => entry === '/opt/homebrew/bin').length, 1);
+  assert.equal(entries.filter((entry) => entry === '/custom/bin').length, 1);
+  assert.ok(entries.includes('/usr/local/bin'));
+  assert.ok(entries.includes('/bin'));
+  assert.ok(entries.includes('/usr/sbin'));
+  assert.ok(entries.includes('/sbin'));
 });
 
 test('extractReleaseMetadata ignores releases without semver tags', (t) => {
@@ -445,6 +815,58 @@ test('desktop update backup list preserves AlphaSift caches', (t) => {
   assert.ok(files.includes(path.join('data', 'alphasift', 'hotspot.history.jsonl')));
   assert.ok(files.includes(path.join('data', 'alphasift', 'hotspot_details')));
   assert.ok(files.includes(path.join('data', 'alphasift', 'snapshot.last_good.json')));
+});
+
+test('desktop update backup and restore preserve generation backend env keys', (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-env-backup-'));
+  const appDir = path.join(tempRoot, 'app');
+  const userDataDir = path.join(tempRoot, 'userData');
+  const backupRoot = path.join(userDataDir, '.dsa-desktop-update-backup');
+  const envPath = path.join(appDir, '.env');
+  const envContent = [
+    'GENERATION_BACKEND=codex_cli',
+    'GENERATION_FALLBACK_BACKEND=litellm',
+    'CODEX_CLI_PRESET=codex',
+    'AGENT_GENERATION_BACKEND=codex_cli',
+    '',
+  ].join('\n');
+  let currentVersion = '3.12.0';
+
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'Uninstall Daily Stock Analysis.exe'), '');
+  fs.writeFileSync(envPath, envContent, 'utf-8');
+
+  const mainModule = loadMainModule(t, {
+    platform: 'win32',
+    app: {
+      isPackaged: true,
+      getPath: (name) => {
+        if (name === 'exe') {
+          return path.join(appDir, 'Daily Stock Analysis.exe');
+        }
+        return userDataDir;
+      },
+      getVersion: () => currentVersion,
+    },
+  });
+
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  mainModule.backupPackagedRuntimeState();
+  assert.equal(fs.readFileSync(path.join(backupRoot, '.env'), 'utf-8'), envContent);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(backupRoot, 'runtime-state.json'), 'utf-8')).files.includes('.env'));
+
+  fs.writeFileSync(envPath, 'GENERATION_BACKEND=litellm\n', 'utf-8');
+  currentVersion = '3.13.0';
+  const restoreResult = mainModule.restorePackagedRuntimeStateFromBackup();
+
+  assert.deepEqual(restoreResult.failed, []);
+  assert.ok(restoreResult.restored.includes('.env'));
+  assert.equal(fs.readFileSync(envPath, 'utf-8'), envContent);
+  assert.equal(fs.existsSync(backupRoot), false);
 });
 
 test('desktop update backup and restore preserve AlphaSift detail directories recursively', (t) => {

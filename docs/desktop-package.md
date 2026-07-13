@@ -7,6 +7,7 @@
 - React UI（Vite 构建）由本地 FastAPI 服务托管
 - Electron 启动时自动拉起后端服务，等待 `/api/health` 就绪后加载 UI
 - Windows 便携/安装模式下，用户配置文件 `.env` 和数据库放在 exe 同级目录；macOS 打包版使用 Electron 用户数据目录保存运行时配置
+- 桌面端会自动从本机 `8000-8100` 选择可用端口，并把实际选择的端口同步给内置后端；桌面端不依赖 `.env` 里的 `WEBUI_PORT` 来决定窗口连接地址，避免用户改端口后 Electron 仍等待旧端口导致启动超时
 
 ## 本地开发
 
@@ -189,7 +190,7 @@ npm install
 npm run build
 ```
 
-2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 依赖收集）
+2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 与 AkShare 数据文件收集）
 
 - Windows：
 
@@ -203,7 +204,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 bash scripts/build-backend-macos.sh
 ```
 
-该脚本会在安装依赖后执行 `--collect-all alphasift`，并校验打包产物中可导入 `alphasift.dsa_adapter`，避免分步命令遗漏内置 AlphaSift 模块。
+该脚本会在安装依赖后执行 `--collect-all alphasift` 和 `--collect-data akshare`。构建完成后会校验 `alphasift.dsa_adapter` 可导入，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在热点题材或日线增强路径中因缺少 package data 降级。
 
 3) 打包 Electron 桌面应用
 
@@ -266,6 +267,14 @@ win-unpacked/
 - 开发态 `npm run dev` 与打包态 `npm run build` / 安装包都会复用同一条版本注入链路，不再在 `preload.js` 里维护独立硬编码版本号
 - `README.md` 继续保留安装和运行入口说明；这类桌面端运行时细节统一落在本专题文档维护，避免入门文档膨胀
 
+### 局域网访问 Windows 桌面端 WebUI
+
+- 桌面端默认仍按 `WEBUI_HOST=127.0.0.1` 只允许本机访问，避免安装后无意暴露后端服务
+- 如需让同一局域网内其他设备访问，在桌面端 `.env` 或 `系统设置 -> WebUI 监听地址` 中设置 `WEBUI_HOST=0.0.0.0`，保存后重启桌面端
+- 桌面端会自动选择 `8000-8100` 中可用端口并传给后端；常见情况下仍是 `8000`，若端口被占用，可在 `logs/desktop.log` 查看 `Using port ...` 和 `Backend launch command=...`
+- Windows 防火墙或服务器安全组仍需放行实际监听端口；对外暴露前建议同时启用 `ADMIN_AUTH_ENABLED`
+- 即使后端绑定 `0.0.0.0`，桌面窗口自身仍会使用本机可访问地址完成健康检查和页面加载
+
 ### 桌面端更新提醒
 
 - 应用在主界面加载完成后会后台检查 GitHub Releases 的最新正式版，并与当前 `app.getVersion()` 做语义化版本比较
@@ -281,11 +290,14 @@ win-unpacked/
 
 1. 检查 `logs/desktop.log` 查看错误信息
 2. 确认 `.env` 文件存在且配置正确
-3. 确认端口 8000-8100 未被占用
+3. 确认端口 8000-8100 未被占用；桌面端会自动选择其中一个可用端口，无需通过 `.env` 手动改 `WEBUI_PORT`
+4. 如果日志里显示 Electron 等待的端口和后端实际监听端口不一致，优先升级到包含桌面端端口同步修复的版本
 
 ### 后端启动报 ModuleNotFoundError
 
-PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增加 `--hidden-import`。
+PyInstaller 打包时缺少模块，需要在 Windows 与 macOS 后端构建脚本中同步增加 `--hidden-import`，并对冻结产物执行运行时导入校验。当前脚本会显式安装、冻结并探测 LiteLLM 运行路径需要的 `orjson`；若日志包含 `No module named 'orjson'`，请升级到修复版本并重新构建，不能只在已发布目录中手工安装依赖。
+
+如果日志提示缺少 `akshare/file_fold/calendar.json`，说明后端冻结产物没有完整收集 AkShare package data。请使用仓库当前的 `scripts/build-backend.ps1` 或 `scripts/build-backend-macos.sh` 重新构建；脚本会在生成桌面包前检查该文件，缺失时直接终止构建。
 
 ### UI 加载空白
 

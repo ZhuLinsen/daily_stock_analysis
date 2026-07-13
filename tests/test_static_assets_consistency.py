@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -203,6 +204,29 @@ def test_existing_asset_is_served_from_explicit_assets_route(tmp_path: Path) -> 
     assert css_response.status_code == 200
     assert css_response.text == "body{color:#fff}"
     assert css_response.headers["content-type"].startswith("text/css")
+
+
+def test_existing_js_asset_overrides_bad_system_mime_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.app import create_app
+
+    monkeypatch.setitem(mimetypes.types_map, ".js", "text/plain")
+    monkeypatch.setitem(mimetypes.common_types, ".js", "text/plain")
+
+    static_dir = tmp_path / "static"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    js_file = assets_dir / "index-abc.js"
+    js_file.write_text("console.log('ok')", encoding="utf-8")
+    (assets_dir / "index-abc.css").write_text("body{color:#fff}", encoding="utf-8")
+    _write_index(static_dir, _vite_index("index-abc.js", "index-abc.css"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+
+    js_response = client.get("/assets/index-abc.js")
+
+    assert js_response.status_code == 200
+    assert js_response.text == "console.log('ok')"
+    assert js_response.headers["content-type"].startswith("text/javascript")
 
 
 def test_existing_asset_supports_head_and_conditional_requests(tmp_path: Path) -> None:

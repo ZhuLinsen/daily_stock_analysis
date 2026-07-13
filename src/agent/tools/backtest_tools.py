@@ -10,9 +10,21 @@ Tools:
 
 import logging
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+_BACKTEST_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["backtest:read"],
+    scope_dimensions=["stock"],
+)
+_BACKTEST_GLOBAL_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["db_read"],
+    permissions=["backtest:read"],
+)
 
 _backtest_service = None
 
@@ -123,6 +135,7 @@ get_skill_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_skill_backtest_summary,
     category="data",
+    policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
 
@@ -142,6 +155,7 @@ get_strategy_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_overall_backtest_summary,
     category="data",
+    policy=_BACKTEST_GLOBAL_READ_POLICY,
 )
 
 
@@ -231,6 +245,7 @@ get_stock_backtest_summary_tool = ToolDefinition(
     ],
     handler=_handle_get_stock_backtest_summary,
     category="data",
+    policy=_BACKTEST_READ_POLICY,
 )
 
 

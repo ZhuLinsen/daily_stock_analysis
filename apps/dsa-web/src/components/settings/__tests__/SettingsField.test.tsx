@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { UiLanguageProvider, useUiLanguage } from '../../../contexts/UiLanguageContext';
+import { getFieldDescriptionZh, getFieldTitleZh } from '../../../utils/systemConfigI18n';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { SettingsField } from '../SettingsField';
 
@@ -37,6 +38,73 @@ describe('SettingsField', () => {
     expect(screen.queryByLabelText('Stock List')).not.toBeInTheDocument();
   });
 
+  it('localizes TickFlow field descriptions instead of falling back to backend English schema', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'TICKFLOW_PRIORITY',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('TickFlow 日 K 优先级')).toBeInTheDocument();
+    expect(screen.getByText(/控制 TickFlow 在 A 股日 K 数据源回退链中的尝试顺序/)).toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
+  it('uses schema key for TickFlow localization when the runtime item key differs', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'runtime.tickflow.priority',
+          value: '2',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'TICKFLOW_PRIORITY',
+            title: 'TickFlow Priority',
+            description: 'Priority for TickFlow daily K-line fetcher. Lower numbers are tried earlier.',
+            category: 'data_source',
+            dataType: 'integer',
+            uiControl: 'number',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: { min: 0, max: 99 },
+            displayOrder: 16,
+            helpKey: 'settings.data_source.TICKFLOW_PRIORITY',
+          },
+        }}
+        value="2"
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText(getFieldTitleZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.getByText(getFieldDescriptionZh('TICKFLOW_PRIORITY', ''))).toBeInTheDocument();
+    expect(screen.queryByLabelText('TickFlow Priority')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Priority for TickFlow daily K-line fetcher/)).not.toBeInTheDocument();
+  });
   it('renders sensitive field metadata and validation errors', () => {
     const onChange = vi.fn();
 
@@ -161,6 +229,40 @@ describe('SettingsField', () => {
     expect(onChange).toHaveBeenCalledWith('NOTIFICATION_MIN_SEVERITY', '');
   });
 
+  it('shows the schema default for select fields when no explicit env value exists', () => {
+    const onChange = vi.fn();
+
+    render(
+      <SettingsField
+        item={{
+          key: 'GENERATION_BACKEND',
+          value: '',
+          rawValueExists: false,
+          isMasked: false,
+          schema: {
+            key: 'GENERATION_BACKEND',
+            title: 'Generation Backend',
+            category: 'ai_model',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            defaultValue: 'litellm',
+            options: [{ label: 'Default model settings', value: 'litellm' }],
+            validation: { enum: ['litellm'] },
+            displayOrder: 1,
+          },
+        }}
+        value=""
+        onChange={onChange}
+      />
+    );
+
+    expect(screen.getByLabelText('分析生成方式')).toHaveValue('litellm');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('renders localized labels for real system config select options', () => {
     const selectCases = [
       {
@@ -180,12 +282,6 @@ describe('SettingsField', () => {
         category: 'system',
         options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
         expectedLabels: ['调试', '信息', '警告', '错误', '严重'],
-      },
-      {
-        key: 'MARKET_REVIEW_REGION',
-        category: 'system',
-        options: ['cn', 'hk', 'us', 'both'],
-        expectedLabels: ['A 股', '港股', '美股', '全部市场'],
       },
     ] as const;
 
@@ -226,6 +322,45 @@ describe('SettingsField', () => {
 
       unmount();
     });
+  });
+
+  it('renders MARKET_REVIEW_REGION as free-text field with comma-separated defaults', () => {
+    const onChange = vi.fn();
+
+    render(
+      <SettingsField
+        item={{
+          key: 'MARKET_REVIEW_REGION',
+          value: 'cn,jp',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'MARKET_REVIEW_REGION',
+            category: 'system',
+            dataType: 'string',
+            uiControl: 'text',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [],
+            validation: {},
+            displayOrder: 1,
+          },
+        }}
+        value="cn,jp"
+        onChange={onChange}
+      />
+    );
+
+    const input = screen.getByLabelText('大盘复盘市场') as HTMLInputElement;
+    expect(input).toHaveValue('cn,jp');
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+
+    fireEvent.change(input, {
+      target: { value: 'cn,jp,kr' },
+    });
+
+    expect(onChange).toHaveBeenCalledWith('MARKET_REVIEW_REGION', 'cn,jp,kr');
   });
 
   it('renders context compression profile options with Chinese labels', () => {
@@ -415,6 +550,93 @@ describe('SettingsField', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '自选股列表' })).not.toBeInTheDocument();
+  });
+
+  it('keeps generation channel help user-facing without env key or examples', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'GENERATION_BACKEND',
+          value: 'litellm',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'GENERATION_BACKEND',
+            title: 'Generation Backend',
+            category: 'ai_model',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [{ label: 'Default model settings', value: 'litellm' }],
+            validation: { enum: ['litellm'] },
+            displayOrder: 1,
+            helpKey: 'settings.ai_model.GENERATION_BACKEND',
+            examples: ['GENERATION_BACKEND=litellm'],
+            warningCodes: [],
+          },
+        }}
+        value="litellm"
+        onChange={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 分析生成方式 配置说明' }));
+
+    const dialog = screen.getByRole('dialog', { name: '分析生成方式' });
+    expect(dialog).toHaveTextContent('决定系统用哪种方式生成');
+    expect(dialog).not.toHaveTextContent('GENERATION_BACKEND');
+    expect(dialog).not.toHaveTextContent('配置样例');
+    expect(dialog).not.toHaveTextContent('Phase 1');
+    expect(dialog).toHaveTextContent('本机已安装并登录对应 CLI');
+    expect(dialog).toHaveTextContent('默认模型配置会继续使用现有 API Key');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
+  });
+
+  it('describes agent auto generation without exposing implementation labels as the primary UI copy', () => {
+    render(
+      <SettingsField
+        item={{
+          key: 'AGENT_GENERATION_BACKEND',
+          value: 'auto',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'AGENT_GENERATION_BACKEND',
+            title: 'Agent Generation Backend',
+            category: 'agent',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [
+              { label: 'Auto', value: 'auto' },
+              { label: 'Default model settings', value: 'litellm' },
+            ],
+            validation: { enum: ['auto', 'litellm'] },
+            displayOrder: 1,
+            helpKey: 'settings.agent.AGENT_GENERATION_BACKEND',
+            examples: [],
+            warningCodes: [],
+          },
+        }}
+        value="auto"
+        onChange={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 问股生成方式 配置说明' }));
+
+    const dialog = screen.getByRole('dialog', { name: '问股生成方式' });
+    expect(dialog).toHaveTextContent('系统会选择当前可用的方式');
+    expect(dialog).toHaveTextContent('如果不确定，选择“自动”即可');
+    expect(dialog).toHaveTextContent('这项设置只影响问股助手');
+    expect(dialog).not.toHaveTextContent('高级说明');
+    expect(dialog).not.toHaveTextContent('LiteLLM');
+    expect(dialog).not.toHaveTextContent('优先选择当前可用');
   });
 
   it('uses per-field schema titles even when helpKey is shared by multiple fields', () => {

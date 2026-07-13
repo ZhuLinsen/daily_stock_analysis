@@ -13,11 +13,14 @@ from src.config import (
     ANSPIRE_LLM_BASE_URL_DEFAULT,
     ANSPIRE_LLM_MODEL_DEFAULT,
     Config,
+    get_configured_llm_models,
     get_effective_agent_models_to_try,
     get_effective_agent_primary_model,
     get_fixed_litellm_temperature,
     normalize_litellm_temperature,
 )
+from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
+from src.llm.hermes import open_hermes_no_proxy_client, parse_hermes_channel, route_has_hermes
 from src.llm.generation_params import (
     apply_litellm_generation_params,
     resolve_litellm_temperature_directive,
@@ -141,6 +144,568 @@ class LLMChannelConfigTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_hermes_channel_adds_deployment_marker(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.litellm_model, "openai/hermes-agent")
+        self.assertFalse(config.llm_blocks_legacy_fallback)
+        self.assertEqual(
+            config.llm_model_list[0]["model_info"],
+            {"dsa_channel": "hermes", "dsa_display_model": "hermes-agent"},
+        )
+        self.assertEqual(config.llm_model_list[0]["model_name"], "openai/hermes-agent")
+        self.assertEqual(config.llm_model_list[0]["litellm_params"]["model"], "openai/hermes-agent")
+        self.assertNotIn("dsa_channel", config.llm_model_list[0]["litellm_params"])
+
+    def test_hermes_no_proxy_client_does_not_create_transport_for_invalid_base_url(self) -> None:
+        with patch("httpx.Client") as http_client_cls:
+            with self.assertRaises(ValueError):
+                with open_hermes_no_proxy_client(
+                    api_key="sk-hermes-test-value",
+                    base_url="http://127.0.0.1:8642/v1?token=bad",
+                    timeout=5.0,
+                ):
+                    pass
+
+        http_client_cls.assert_not_called()
+
+    def test_hermes_parser_rejects_masked_secret_placeholder(self) -> None:
+        result = parse_hermes_channel(
+            enabled=True,
+            protocol="openai",
+            base_url="http://127.0.0.1:8642/v1",
+            api_key="******",
+            api_keys_raw="",
+            extra_headers_raw="",
+            models=["hermes-agent"],
+        )
+
+        self.assertIsNone(result.channel)
+        self.assertTrue(result.blocks_legacy_fallback)
+        self.assertTrue(
+            any(issue.field == "LLM_HERMES_API_KEY" and issue.code == "masked_secret_not_reusable" for issue in result.issues)
+        )
+
+    def test_route_has_hermes_uses_bare_candidates_without_provider_aliasing(self) -> None:
+        model_list = [
+            {
+                "model_name": "openai/hermes-agent",
+                "litellm_params": {"model": "openai/hermes-agent"},
+                "model_info": {"dsa_channel": "hermes"},
+            },
+            {
+                "model_name": "openai/shared-route",
+                "litellm_params": {"model": "openai/shared-route"},
+                "model_info": {"dsa_channel": "hermes"},
+            },
+            {
+                "model_name": "openai/shared-route",
+                "litellm_params": {"model": "openai/gpt-4o-mini"},
+            },
+            {
+                "model_name": "openai/anthropic/foo",
+                "litellm_params": {"model": "openai/anthropic/foo"},
+                "model_info": {"dsa_channel": "hermes"},
+            },
+            {
+                "model_name": "anthropic/foo",
+                "litellm_params": {"model": "anthropic/foo"},
+            },
+        ]
+
+        self.assertTrue(route_has_hermes(model_list, "hermes-agent"))
+        self.assertTrue(route_has_hermes(model_list, "openai/hermes-agent"))
+        self.assertTrue(route_has_hermes(model_list, "shared-route"))
+        self.assertTrue(route_has_hermes(model_list, "openai/shared-route"))
+        self.assertFalse(route_has_hermes(model_list, "anthropic/foo"))
+        self.assertTrue(route_has_hermes(model_list, "openai/anthropic/foo"))
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_hermes_models_use_canonical_openai_route_identity(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "hermes-agent,deepseek-ai/DeepSeek-V3,anthropic/foo,openai/foo",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        route_models = [entry["model_name"] for entry in config.llm_model_list]
+        self.assertEqual(
+            route_models,
+            [
+                "openai/hermes-agent",
+                "openai/deepseek-ai/DeepSeek-V3",
+                "openai/anthropic/foo",
+                "openai/foo",
+            ],
+        )
+        self.assertEqual(
+            [entry["litellm_params"]["model"] for entry in config.llm_model_list],
+            route_models,
+        )
+        self.assertEqual(config.llm_model_list[1]["model_info"]["dsa_display_model"], "deepseek-ai/DeepSeek-V3")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_invalid_hermes_blocks_legacy_inference_even_with_legacy_key(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "OPENAI_API_KEY": "sk-openai-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_blocks_legacy_fallback)
+        self.assertEqual(config.llm_model_list, [])
+        self.assertEqual(config.litellm_model, "")
+        self.assertEqual(config.openai_api_keys, ["sk-openai-test-value"])
+        issue = config.llm_channel_config_issues[0]
+        self.assertEqual(issue["field"], "LLM_HERMES_API_KEY")
+        self.assertEqual(issue["code"], "missing_api_key")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_hermes_api_keys_points_user_to_single_api_key(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEYS": "sk-hermes-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_blocks_legacy_fallback)
+        self.assertEqual(len(config.llm_channel_config_issues), 1)
+        issue = config.llm_channel_config_issues[0]
+        self.assertEqual(issue["field"], "LLM_HERMES_API_KEYS")
+        self.assertEqual(issue["code"], "unsupported_api_keys")
+        self.assertIn("LLM_HERMES_API_KEY", issue["message"])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_mode_true_does_not_enable_hermes_only_agent(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "AGENT_MODE": "true",
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_mode_unset_does_not_enable_hermes_only_agent(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertFalse(config._agent_mode_explicit)
+        self.assertFalse(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_mode_true_enables_non_hermes_agent_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "AGENT_MODE": "true",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_mode_false_disables_non_hermes_agent_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "AGENT_MODE": "false",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_mode_true_allows_mixed_route_via_non_hermes_deployment(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "AGENT_MODE": "true",
+            "LLM_CHANNELS": "hermes,remote",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "shared-route",
+            "LLM_REMOTE_PROTOCOL": "openai",
+            "LLM_REMOTE_BASE_URL": "https://api.example.com/v1",
+            "LLM_REMOTE_API_KEY": "sk-remote-test-value",
+            "LLM_REMOTE_MODELS": "shared-route",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_generation_backend_local_cli_is_unavailable_even_with_safe_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        for backend in sorted(GENERATION_ONLY_BACKEND_IDS):
+            with self.subTest(backend=backend):
+                env = {
+                    "AGENT_MODE": "true",
+                    "AGENT_GENERATION_BACKEND": backend,
+                    "LLM_CHANNELS": "remote",
+                    "LLM_REMOTE_PROTOCOL": "openai",
+                    "LLM_REMOTE_BASE_URL": "https://api.example.com/v1",
+                    "LLM_REMOTE_API_KEY": "sk-remote-test-value",
+                    "LLM_REMOTE_MODELS": "gpt-4o-mini",
+                }
+
+                with patch.dict(os.environ, env, clear=True):
+                    config = Config._load_from_env()
+
+                self.assertFalse(config.is_agent_available())
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_rejects_mixed_generation_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes,remote",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "shared-route",
+            "LLM_REMOTE_PROTOCOL": "openai",
+            "LLM_REMOTE_BASE_URL": "https://api.example.com/v1",
+            "LLM_REMOTE_API_KEY": "sk-remote-test-value",
+            "LLM_REMOTE_MODELS": "shared-route",
+            "LITELLM_MODEL": "openai/shared-route",
+            "LITELLM_FALLBACK_MODELS": "openai/shared-route",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(
+                issue.field == "LITELLM_MODEL"
+                and issue.code == "mixed_hermes_route_unsupported"
+                for issue in issues
+            )
+        )
+        self.assertTrue(
+            any(
+                issue.field == "LITELLM_FALLBACK_MODELS"
+                and issue.code == "mixed_hermes_route_unsupported"
+                for issue in issues
+            )
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_rejects_bare_mixed_generation_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes,remote",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "shared-route",
+            "LLM_REMOTE_PROTOCOL": "openai",
+            "LLM_REMOTE_BASE_URL": "https://api.example.com/v1",
+            "LLM_REMOTE_API_KEY": "sk-remote-test-value",
+            "LLM_REMOTE_MODELS": "shared-route",
+            "LITELLM_MODEL": "shared-route",
+            "LITELLM_FALLBACK_MODELS": "shared-route",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(
+                issue.field == "LITELLM_MODEL"
+                and issue.code == "mixed_hermes_route_unsupported"
+                for issue in issues
+            )
+        )
+        self.assertTrue(
+            any(
+                issue.field == "LITELLM_FALLBACK_MODELS"
+                and issue.code == "mixed_hermes_route_unsupported"
+                for issue in issues
+            )
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_requires_exact_primary_route_alias_for_channels(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            "LITELLM_MODEL": "gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertIn("openai/gpt-4o-mini", get_configured_llm_models(config.llm_model_list))
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(issue.field == "LITELLM_MODEL" for issue in issues),
+            issues,
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_requires_exact_fallback_route_alias_for_channels(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            "LITELLM_MODEL": "openai/gpt-4o-mini",
+            "LITELLM_FALLBACK_MODELS": "gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(issue.field == "LITELLM_FALLBACK_MODELS" for issue in issues),
+            issues,
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_does_not_apply_route_alias_check_to_legacy_env(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "OPENAI_API_KEY": "sk-openai-test-value",
+            "LITELLM_MODEL": "gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "legacy_env")
+        issues = config.validate_structured()
+        self.assertFalse(
+            any(issue.field == "LITELLM_MODEL" and issue.severity == "error" for issue in issues),
+            issues,
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_rejects_explicit_hermes_only_agent_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "hermes-agent",
+            "AGENT_LITELLM_MODEL": "openai/hermes-agent",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        issues = config.validate_structured()
+        self.assertTrue(
+            any(
+                issue.field == "AGENT_LITELLM_MODEL"
+                and issue.code == "explicit_agent_model_no_safe_deployment"
+                for issue in issues
+            )
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_validate_structured_allows_explicit_mixed_agent_route(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes,remote",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "shared-route",
+            "LLM_REMOTE_PROTOCOL": "openai",
+            "LLM_REMOTE_BASE_URL": "https://api.example.com/v1",
+            "LLM_REMOTE_API_KEY": "sk-remote-test-value",
+            "LLM_REMOTE_MODELS": "shared-route",
+            "AGENT_LITELLM_MODEL": "openai/shared-route",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        issues = config.validate_structured()
+        self.assertFalse(
+            any(
+                issue.field == "AGENT_LITELLM_MODEL"
+                and issue.code == "explicit_agent_model_no_safe_deployment"
+                for issue in issues
+            ),
+            issues,
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_disabled_hermes_does_not_block_legacy_inference(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes",
+            "LLM_HERMES_ENABLED": "false",
+            "OPENAI_API_KEY": "sk-openai-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.llm_blocks_legacy_fallback)
+        self.assertEqual(config.llm_models_source, "legacy_env")
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertTrue(config.llm_model_list)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_invalid_hermes_with_valid_sibling_uses_sibling_not_legacy(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes,primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://example.invalid/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-sibling",
+            "OPENAI_API_KEY": "sk-openai-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_blocks_legacy_fallback)
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.litellm_model, "openai/gpt-sibling")
+        self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-sibling")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_invalid_hermes_raw_model_records_blocking_candidates(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "hermes,primary",
+            "LLM_HERMES_API_KEY": "sk-hermes-test-value",
+            "LLM_HERMES_MODELS": "bad model",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://example.invalid/v1",
+            "LLM_PRIMARY_API_KEY": "sk-primary-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-sibling",
+            "OPENAI_API_KEY": "sk-openai-test-value",
+            "LITELLM_MODEL": "bad model",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.llm_blocks_legacy_fallback)
+        self.assertIn("bad model", config.llm_blocked_hermes_routes)
+        self.assertIn("openai/bad model", config.llm_blocked_hermes_routes)
+        self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-sibling")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_openai_compatible_channel_prefixes_non_provider_slash_models(self, _mock_parse_yaml, _mock_setup_env) -> None:
         env = {
             "LLM_CHANNELS": "siliconflow",
@@ -156,6 +721,37 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(
             config.llm_channels[0]["models"],
             ["openai/Qwen/Qwen3-8B", "openai/deepseek-ai/DeepSeek-V3"],
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_generation_backend_envs_do_not_change_channel_routing(
+        self, _mock_parse_yaml, _mock_setup_env
+    ) -> None:
+        env = {
+            "GENERATION_BACKEND": "litellm",
+            "GENERATION_FALLBACK_BACKEND": "litellm",
+            "AGENT_GENERATION_BACKEND": "auto",
+            "LLM_CHANNELS": "primary",
+            "LLM_PRIMARY_PROTOCOL": "openai",
+            "LLM_PRIMARY_BASE_URL": "https://api.example.com/v1",
+            "LLM_PRIMARY_API_KEY": "sk-test-value",
+            "LLM_PRIMARY_MODELS": "gpt-4o-mini",
+            "LITELLM_MODEL": "openai/gpt-4o-mini",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.generation_backend, "litellm")
+        self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_generation_backend, "auto")
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["models"], ["openai/gpt-4o-mini"])
+        self.assertEqual(config.llm_model_list[0]["model_name"], "openai/gpt-4o-mini")
+        self.assertEqual(
+            config.llm_model_list[0]["litellm_params"]["api_base"],
+            "https://api.example.com/v1",
         )
 
     @patch("src.config.setup_env")

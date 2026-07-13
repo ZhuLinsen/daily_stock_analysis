@@ -17,6 +17,7 @@ from src.agent.chat_context import (  # noqa: E402
 )
 from src.agent.llm_adapter import LLMToolAdapter  # noqa: E402
 from src.config import Config  # noqa: E402
+from src.llm.usage import normalize_litellm_usage  # noqa: E402
 from src.storage import DatabaseManager  # noqa: E402
 
 
@@ -311,6 +312,93 @@ def test_bundle_trace_is_replayed_only_for_matching_fallback_attempt() -> None:
     assert fallback_messages[-1]["content"] == "a1-final"
 
 
+def test_bundle_does_not_match_hermes_only_fallback_trace() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-hermes-fallback"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-hermes-fallback",
+        provider="openai",
+        model="openai/hermes-agent",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "content": "hermes-trace"}],
+        contains_reasoning=False,
+        contains_tool_calls=False,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = "openai/test-model"
+    config.litellm_model = "openai/test-model"
+    config.litellm_fallback_models = ["openai/hermes-agent"]
+    config.llm_model_list = [
+        {
+            "model_name": "openai/test-model",
+            "litellm_params": {"model": "openai/test-model", "api_key": "sk-openai"},
+        },
+        {
+            "model_name": "openai/hermes-agent",
+            "litellm_params": {
+                "model": "openai/hermes-agent",
+                "api_key": "sk-hermes",
+                "api_base": "http://127.0.0.1:8642/v1",
+            },
+            "model_info": {"dsa_channel": "hermes"},
+        },
+    ]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is False
+    assert bundle.diagnostics["model_mismatch"] == 1
+    assert [msg["content"] for msg in bundle.context_messages] == ["u1", "a1-final"]
+
+
+def test_bundle_does_not_fallback_to_unfiltered_try_order_for_hermes_only_agent() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-hermes-only-agent"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-hermes-only-agent",
+        provider="openai",
+        model="openai/hermes-agent",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "content": "hermes-trace"}],
+        contains_reasoning=False,
+        contains_tool_calls=False,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = ""
+    config.litellm_model = "openai/hermes-agent"
+    config.litellm_fallback_models = []
+    config.llm_model_list = [
+        {
+            "model_name": "openai/hermes-agent",
+            "litellm_params": {
+                "model": "openai/hermes-agent",
+                "api_key": "sk-hermes",
+                "api_base": "http://127.0.0.1:8642/v1",
+            },
+            "model_info": {"dsa_channel": "hermes"},
+        },
+    ]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is False
+    assert bundle.diagnostics["model_mismatch"] == 1
+
+
 def test_bundle_matches_slashless_router_alias_fallback_by_resolved_provider() -> None:
     db = _reset_db()
     session_id = "chat-trace-router-alias"
@@ -389,6 +477,124 @@ def test_over_trigger_generates_summary_and_updates_covered_message_id() -> None
     assert summary["source_message_count"] == 4
     assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
     assert [msg["content"] for msg in history[1:]] == ["u3"]
+
+
+def test_summary_compression_does_not_persist_agent_usage_without_provider_usage() -> None:
+    db = _reset_db()
+    session_id = "chat-summarize-no-usage"
+    _add_messages(
+        db,
+        session_id,
+        [
+            ("user", "u1"),
+            ("assistant", "a1"),
+            ("user", "u2"),
+        ],
+    )
+    adapter = MagicMock()
+    adapter.call_text.return_value = SimpleNamespace(
+        content="## 会话摘要\n新摘要",
+        provider="openai",
+        model="openai/test-model",
+        usage={},
+    )
+
+    with patch("src.agent.chat_context.estimate_messages_tokens", return_value=999999):
+        with patch("src.agent.chat_context.persist_llm_usage") as persist_usage:
+            history = build_visible_chat_history(session_id, adapter, _config(trigger=1, protected=1))
+
+    assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
+    persist_usage.assert_not_called()
+
+
+def test_summary_compression_does_not_persist_metadata_only_provider_usage() -> None:
+    db = _reset_db()
+    session_id = "chat-summarize-metadata-only-usage"
+    _add_messages(
+        db,
+        session_id,
+        [
+            ("user", "u1"),
+            ("assistant", "a1"),
+            ("user", "u2"),
+        ],
+    )
+    adapter = MagicMock()
+    adapter.call_text.return_value = SimpleNamespace(
+        content="## 会话摘要\n新摘要",
+        provider="openai",
+        model="openai/test-model",
+        usage=normalize_litellm_usage(
+            {"estimated_prefix_tokens": 123},
+            model="openai/gpt-4o",
+        ),
+    )
+
+    with patch("src.agent.chat_context.estimate_messages_tokens", return_value=999999):
+        with patch("src.agent.chat_context.persist_llm_usage") as persist_usage:
+            history = build_visible_chat_history(session_id, adapter, _config(trigger=1, protected=1))
+
+    assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
+    persist_usage.assert_not_called()
+
+
+def test_summary_compression_persists_invalid_provider_usage_diagnostics() -> None:
+    db = _reset_db()
+    session_id = "chat-summarize-invalid-usage"
+    _add_messages(
+        db,
+        session_id,
+        [
+            ("user", "u1"),
+            ("assistant", "a1"),
+            ("user", "u2"),
+        ],
+    )
+    usage = normalize_litellm_usage({"prompt_tokens": -1}, model="openai/gpt-4o")
+    adapter = MagicMock()
+    adapter.call_text.return_value = SimpleNamespace(
+        content="## 会话摘要\n新摘要",
+        provider="openai",
+        model="openai/test-model",
+        usage=usage,
+    )
+
+    with patch("src.agent.chat_context.estimate_messages_tokens", return_value=999999):
+        with patch("src.agent.chat_context.persist_llm_usage") as persist_usage:
+            history = build_visible_chat_history(session_id, adapter, _config(trigger=1, protected=1))
+
+    assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
+    assert usage["cache_observation"] == "invalid_provider_usage"
+    persist_usage.assert_called_once_with(usage, "openai/test-model", call_type="agent")
+
+
+def test_summary_compression_persists_agent_usage_with_provider_usage() -> None:
+    db = _reset_db()
+    session_id = "chat-summarize-with-usage"
+    _add_messages(
+        db,
+        session_id,
+        [
+            ("user", "u1"),
+            ("assistant", "a1"),
+            ("user", "u2"),
+        ],
+    )
+    usage = {"total_tokens": 3}
+    adapter = MagicMock()
+    adapter.call_text.return_value = SimpleNamespace(
+        content="## 会话摘要\n新摘要",
+        provider="openai",
+        model="openai/test-model",
+        usage=usage,
+    )
+
+    with patch("src.agent.chat_context.estimate_messages_tokens", return_value=999999):
+        with patch("src.agent.chat_context.persist_llm_usage") as persist_usage:
+            history = build_visible_chat_history(session_id, adapter, _config(trigger=1, protected=1))
+
+    assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
+    persist_usage.assert_called_once_with(usage, "openai/test-model", call_type="agent")
 
 
 def test_second_request_only_summarizes_incremental_unprotected_messages() -> None:

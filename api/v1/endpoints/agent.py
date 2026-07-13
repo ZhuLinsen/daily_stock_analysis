@@ -376,9 +376,14 @@ async def agent_chat_stream(request: ChatRequest):
     Chat with the AI Agent, streaming progress via SSE.
     Each SSE event is a JSON object with a 'type' field:
       - thinking: AI is deciding next action
+      - stage_start: an agent or orchestrator stage has begun
+      - stage_done: an agent or orchestrator stage finished
       - tool_start: a tool call has begun
       - tool_done: a tool call finished
       - generating: final answer being generated
+      - pipeline_timeout: analysis stopped because the stage/pipeline budget expired
+      - pipeline_budget_skipped: analysis stopped before an unstarted stage
+        because the remaining budget was too low for useful work
       - done: analysis complete, contains 'content' and 'success'
       - error: error occurred, contains 'message'
     """
