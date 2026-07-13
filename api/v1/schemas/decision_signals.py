@@ -61,7 +61,7 @@ class DecisionSignalCreateRequest(BaseModel):
         default=None,
         description="Optional metadata object. Omitted or null values are treated as absent.",
     )
-    report_language: Optional[Literal["zh", "en", "ko"]] = None
+    report_language: Optional[Literal["zh", "zh-tw", "en", "ko"]] = None
 
 
 class DecisionSignalReassessRequest(BaseModel):

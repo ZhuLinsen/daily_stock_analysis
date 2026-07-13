@@ -80,7 +80,7 @@ class AnalyzeRequest(BaseModel):
         True,
         description="是否发送推送通知（Telegram/企业微信等）"
     )
-    report_language: Optional[Literal["zh", "en", "ko"]] = Field(
+    report_language: Optional[Literal["zh", "zh-tw", "en", "ko"]] = Field(
         None,
         validation_alias=AliasChoices("report_language", "reportLanguage"),
         description="本次分析报告输出语言；未传时使用全局 REPORT_LANGUAGE",
