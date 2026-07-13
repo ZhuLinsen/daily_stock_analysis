@@ -105,7 +105,7 @@ class FinnhubFetcher(BaseFetcher):
             self.random_sleep(0.3, 0.8)
             resp = requests.get(
                 f"{_FINNHUB_BASE_URL}/quote",
-                params={'symbol': symbol, 'token': self._api_key},
+                params={'symbol': symbol, 'token': self._api_key, 'trade': 'true'},
                 timeout=15,
             )
             resp.raise_for_status()

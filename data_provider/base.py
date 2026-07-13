@@ -1780,34 +1780,70 @@ class DataFetcherManager:
             return None
 
         if is_us or is_hk:
-            prefer_lb = self._longbridge_preferred() and not is_us_index
             if is_us:
-                primary_src = "LongbridgeFetcher" if prefer_lb else "YfinanceFetcher"
-                secondary_src = "YfinanceFetcher" if prefer_lb else "LongbridgeFetcher"
                 market_label = "美股指数" if is_us_index else "美股"
-                primary_kw: dict = {}
-                secondary_kw: dict = {}
-            else:
-                primary_src = "LongbridgeFetcher" if prefer_lb else "AkshareFetcher"
-                secondary_src = "AkshareFetcher" if prefer_lb else "LongbridgeFetcher"
-                market_label = "港股"
-                primary_kw = {"source": "hk"} if primary_src == "AkshareFetcher" else {}
-                secondary_kw = {"source": "hk"} if secondary_src == "AkshareFetcher" else {}
+                # 美股使用可配置的数据源优先级（US_REALTIME_SOURCE_PRIORITY）
+                source_order = [
+                    s.strip().lower() for s in config.us_realtime_source_priority.split(',')
+                    if s.strip()
+                ]
+                _US_SRC_MAP: Dict[str, tuple] = {
+                    "yfinance": ("YfinanceFetcher", {}),
+                    "longbridge": ("LongbridgeFetcher", {}),
+                    "finnhub": ("FinnhubFetcher", {}),
+                    "alphavantage": ("AlphaVantageFetcher", {}),
+                }
+                primary_quote = None
+                fallback_from = None
+                for src_name in source_order:
+                    mapping = _US_SRC_MAP.get(src_name)
+                    if mapping is None:
+                        logger.debug("[实时行情] 美股 未知数据源 %s, 跳过", src_name)
+                        continue
+                    fetcher_name, kw = mapping
+                    quote = self._try_fetcher_quote(stock_code, fetcher_name, **kw)
+                    if quote is not None:
+                        primary_quote = quote
+                        if fallback_from is None:
+                            fallback_from = self._realtime_fetcher_token(fetcher_name, **kw)
+                        logger.info("[实时行情] %s %s 成功获取 (来源: %s)", market_label, stock_code, fetcher_name)
+                        break
+                # 用其余来源补充缺失字段
+                if primary_quote is not None:
+                    for src_name in source_order:
+                        mapping = _US_SRC_MAP.get(src_name)
+                        if mapping is None:
+                            continue
+                        fetcher_name, kw = mapping
+                        primary_quote = self._supplement_quote(
+                            stock_code, primary_quote, fetcher_name, **kw,
+                        )
+                if primary_quote is not None:
+                    return self._enrich_realtime_quote(
+                        primary_quote,
+                        fallback_from=fallback_from,
+                        realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
+                    )
+                if log_final_failure:
+                    logger.info("[实时行情] %s %s 无可用数据源", market_label, stock_code)
+                return None
+
+            # 港股（保持原有硬编码逻辑）
+            prefer_lb = self._longbridge_preferred()
+            primary_src = "LongbridgeFetcher" if prefer_lb else "AkshareFetcher"
+            secondary_src = "AkshareFetcher" if prefer_lb else "LongbridgeFetcher"
+            market_label = "港股"
+            primary_kw: dict = {"source": "hk"} if primary_src == "AkshareFetcher" else {}
+            secondary_kw: dict = {"source": "hk"} if secondary_src == "AkshareFetcher" else {}
 
             primary_token = self._realtime_fetcher_token(primary_src, **primary_kw)
             primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw)
             fallback_from = primary_token if primary_quote is None else None
             if primary_quote is not None:
-                logger.info(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: {primary_src})")
+                logger.info("[实时行情] %s %s 成功获取 (来源: %s)", market_label, stock_code, primary_src)
             primary_quote = self._supplement_quote(
                 stock_code, primary_quote, secondary_src, **secondary_kw,
             )
-            # 美股个股（非指数）尝试从 Finnhub/AlphaVantage 补充缺失字段
-            if is_us and not is_us_index and primary_quote is not None:
-                for extra_src in ["FinnhubFetcher", "AlphaVantageFetcher"]:
-                    primary_quote = self._supplement_quote(
-                        stock_code, primary_quote, extra_src,
-                    )
             if primary_quote is not None:
                 return self._enrich_realtime_quote(
                     primary_quote,
@@ -1815,7 +1851,7 @@ class DataFetcherManager:
                     realtime_cache_ttl=getattr(config, "realtime_cache_ttl", None),
                 )
             if log_final_failure:
-                logger.info(f"[实时行情] {market_label} {stock_code} 无可用数据源")
+                logger.info("[实时行情] %s %s 无可用数据源", market_label, stock_code)
             return None
         
         # 获取配置的数据源优先级

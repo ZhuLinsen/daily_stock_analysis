@@ -967,6 +967,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["provider_priority_order"],
     },
+    "US_REALTIME_SOURCE_PRIORITY": {
+        "title": "US Realtime Source Priority",
+        "description": "Comma-separated priority for US stock realtime quote providers. Default: yfinance,longbridge,finnhub,alphavantage. When Finnhub is listed before YFinance, extended-hours (pre/post market) data is preferred.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "yfinance,longbridge,finnhub,alphavantage",
+        "options": [],
+        "validation": {},
+        "display_order": 21,
+        "help_key": "settings.data_source.US_REALTIME_SOURCE_PRIORITY",
+        "examples": [
+            "US_REALTIME_SOURCE_PRIORITY=finnhub,yfinance,longbridge,alphavantage",
+            "US_REALTIME_SOURCE_PRIORITY=yfinance,longbridge,finnhub,alphavantage",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：数据源配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#数据源配置",
+            },
+        ],
+        "warning_codes": ["provider_priority_order"],
+    },
     "ENABLE_REALTIME_TECHNICAL_INDICATORS": {
         "title": "Realtime Technical Indicators",
         "description": "Use intraday realtime price for MA5/MA10/MA20 and trend analysis (Issue #234). Disable to use yesterday close.",
