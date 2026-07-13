@@ -251,7 +251,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
-        self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+        self.assertEqual(config.fundamental_fetch_timeout_seconds, 8.0)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

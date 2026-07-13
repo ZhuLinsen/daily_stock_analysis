@@ -33,6 +33,7 @@ from src.services.decision_signal_service import (
 )
 from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
 from src.services.decision_signal_reassess_service import (
+    UNSUPPORTED_PERSIST_MESSAGE,
     DecisionSignalReassessService,
     DecisionSignalReassessUnsupportedOperationError,
     DecisionSignalSourceReportNotFoundError,
@@ -143,6 +144,10 @@ def list_signals(
     stock_code: Optional[str] = Query(None, description="Optional stock code filter"),
     action: Optional[str] = Query(None, description="Optional decision action filter"),
     market_phase: Optional[str] = Query(None, description="Optional market phase filter"),
+    decision_profile: Optional[str] = Query(
+        None,
+        description="Optional decision profile filter: conservative/balanced/aggressive/unknown",
+    ),
     source_type: Optional[str] = Query(None, description="Optional source type filter"),
     source_report_id: Optional[int] = Query(None, description="Optional source report id filter"),
     trace_id: Optional[str] = Query(None, description="Optional trace id filter"),
@@ -168,6 +173,7 @@ def list_signals(
                 stock_code=stock_code,
                 action=action,
                 market_phase=market_phase,
+                decision_profile=decision_profile,
                 source_type=source_type,
                 source_report_id=source_report_id,
                 trace_id=trace_id,
@@ -328,10 +334,7 @@ def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalRea
     if request.persist:
         raise _error(
             400,
-            DecisionSignalReassessUnsupportedOperationError(
-                "Persisting reassessed decision_profile signals requires decision_profile "
-                "to be promoted to a first-class field."
-            ),
+            DecisionSignalReassessUnsupportedOperationError(UNSUPPORTED_PERSIST_MESSAGE),
             error="unsupported_operation",
         )
 
@@ -508,7 +511,8 @@ def put_feedback(signal_id: int, request: DecisionSignalFeedbackRequest) -> Deci
     },
     summary="更新决策信号状态",
     description=(
-        "只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存。"
+        "只更新合法状态和可选 metadata；省略 metadata 时保留原值，null 时清空，"
+        "object 时按整包替换并保持正式 decision_profile 身份。"
         "expired/invalidated/closed/archived 等 terminal 状态不能直接 PATCH 回 active。"
     ),
     operation_id="updateDecisionSignalStatus",

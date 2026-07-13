@@ -1061,7 +1061,7 @@ class Config:
     # 基本面阶段总预算（秒）
     fundamental_stage_timeout_seconds: float = FUNDAMENTAL_STAGE_TIMEOUT_SECONDS_DEFAULT
     # 单能力源调用超时（秒）
-    fundamental_fetch_timeout_seconds: float = 3.0
+    fundamental_fetch_timeout_seconds: float = 8.0
     # 单能力失败重试次数（已包含首次）
     fundamental_retry_max: int = 1
     # 基本面上下文短 TTL（秒）
@@ -2036,7 +2036,7 @@ class Config:
             ),
             fundamental_fetch_timeout_seconds=parse_env_float(
                 os.getenv('FUNDAMENTAL_FETCH_TIMEOUT_SECONDS'),
-                3.0,
+                8.0,
                 field_name='FUNDAMENTAL_FETCH_TIMEOUT_SECONDS',
                 minimum=0.0,
             ),

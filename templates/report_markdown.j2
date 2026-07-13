@@ -9,7 +9,7 @@
 ## 📊 {{ labels.summary_heading }}
 
 {% for e in enriched %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.localized_operation_advice }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
 {% endfor %}
 
 ---
@@ -23,11 +23,6 @@
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
-
-{% set signal_excerpt = decision_signal_excerpt(result) %}
-{% if signal_excerpt %}
-{{ signal_excerpt }}
-{% endif %}
 
 {% if intel %}
 ### 📰 {{ labels.info_heading }}
@@ -71,7 +66,7 @@
 {% if pos_advice %}
 | {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
 |---------|---------|
-| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', localize_operation_advice(result.operation_advice, report_language)) }} |
+| 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
 | 💼 **{{ labels.has_position_label }}** | {{ pos_advice.get('has_position', labels.continue_holding) }} |
 {% endif %}
 
@@ -215,7 +210,7 @@
 | {{ labels.time_label }} | {{ labels.score_label }} | {{ labels.advice_label }} | {{ labels.trend_label }} |
 |------|------|------|------|
 {% for h in hist %}
-| {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
+| {{ h.created_at[:16] if h.created_at else 'N/A' }} | {{ h.sentiment_score or 'N/A' }} | {{ h.action_label or localize_action_label(h.action, report_language) or localize_operation_advice(h.operation_advice or 'N/A', report_language) }} | {{ localize_trend_prediction(h.trend_prediction or 'N/A', report_language) }} |
 {% endfor %}
 {% endif %}
 

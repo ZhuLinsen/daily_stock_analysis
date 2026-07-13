@@ -45,17 +45,21 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
 
-if os.getenv("DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE") == "1":
+_packaged_import_probe = os.getenv("DSA_PACKAGED_IMPORT_PROBE")
+if _packaged_import_probe:
     import importlib
     import sys
 
     try:
-        importlib.import_module("alphasift.dsa_adapter")
+        importlib.import_module(_packaged_import_probe)
     except Exception as exc:
-        print(f"ERROR: packaged AlphaSift adapter import failed: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: packaged import failed for {_packaged_import_probe}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print("OK: packaged AlphaSift adapter import succeeded")
+    print(f"OK: packaged import succeeded for {_packaged_import_probe}")
     sys.exit(0)
 
 import argparse

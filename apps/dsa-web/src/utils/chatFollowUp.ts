@@ -9,6 +9,7 @@ export interface ChatFollowUpContext {
   previous_strategy?: unknown;
   previous_price?: number;
   previous_change_pct?: number;
+  market_structure_context?: unknown;
 }
 
 type ResolveChatFollowUpContextParams = {
@@ -49,6 +50,43 @@ export function sanitizeFollowUpStockName(stockName: string | null): string | nu
   }
 
   return normalized;
+}
+
+function toSnakeCaseKey(value: string): string {
+  return value
+    .replace(/([a-z\d])([A-Z])/g, '$1_$2')
+    .replace(/-/g, '_')
+    .toLowerCase();
+}
+
+function convertMarketStructureToSnakeCase(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => convertMarketStructureToSnakeCase(item));
+  }
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      toSnakeCaseKey(key),
+      convertMarketStructureToSnakeCase(item),
+    ]),
+  );
+}
+
+function getMarketStructureContextForAgent(report?: AnalysisReport | null): unknown | undefined {
+  const marketStructure = report?.details?.marketStructure;
+  if (marketStructure === null || typeof marketStructure !== 'object') {
+    return undefined;
+  }
+  if (Array.isArray(marketStructure)) {
+    return undefined;
+  }
+  if (!Object.keys(marketStructure).length) {
+    return undefined;
+  }
+  return convertMarketStructureToSnakeCase(marketStructure);
 }
 
 export function parseFollowUpRecordId(recordId: string | null): number | undefined {
@@ -94,6 +132,11 @@ export function buildChatFollowUpContext(
   if (report.meta) {
     context.previous_price = report.meta.currentPrice;
     context.previous_change_pct = report.meta.changePct;
+  }
+
+  const marketStructureContext = getMarketStructureContextForAgent(report);
+  if (marketStructureContext) {
+    context.market_structure_context = marketStructureContext;
   }
 
   return context;

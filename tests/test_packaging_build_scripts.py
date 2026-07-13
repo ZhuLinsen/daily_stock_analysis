@@ -20,14 +20,14 @@ def test_windows_backend_build_script_collects_alphasift_adapter() -> None:
     assert "--collect-all" in script
     assert "alphasift.dsa_adapter" in script
     assert "hiddenImports" in script
-    assert "Verifying packaged AlphaSift importability" in script
-    assert "DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE" in script
+    assert "Verifying packaged runtime imports" in script
+    assert "DSA_PACKAGED_IMPORT_PROBE" in script
     assert "Start-Process -FilePath $packagedEntry -Wait -PassThru" in script
     assert "$probeProcess.ExitCode" in script
     assert "& $packagedEntry" not in script
-    assert "Packaged backend cannot import alphasift.dsa_adapter" in script
-    assert "DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE" in main_py
-    assert 'importlib.import_module("alphasift.dsa_adapter")' in main_py
+    assert "Packaged backend cannot import $module" in script
+    assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
+    assert "importlib.import_module(_packaged_import_probe)" in main_py
 
 
 def test_macos_backend_build_script_collects_alphasift_adapter() -> None:
@@ -40,10 +40,10 @@ def test_macos_backend_build_script_collects_alphasift_adapter() -> None:
     assert "cmd+=(\"--collect-all\" \"alphasift\")" in script
     assert "packaged_entry=\"${packaged_root}/stock_analysis\"" in script
     assert "--help" in script
-    assert "DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE=1" in script
-    assert "alphasift-packaged-import.log" in script
+    assert 'DSA_PACKAGED_IMPORT_PROBE="${module}"' in script
+    assert "dsa-packaged-import.log" in script
     assert "PathFinder.find_spec(" not in script
     assert "zipfile" not in script
     assert 'normalized.startswith("alphasift/dsa_adapter.")' not in script
-    assert "DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE" in main_py
-    assert 'importlib.import_module("alphasift.dsa_adapter")' in main_py
+    assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
+    assert "importlib.import_module(_packaged_import_probe)" in main_py

@@ -190,7 +190,7 @@ npm install
 npm run build
 ```
 
-2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 依赖收集）
+2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 与 AkShare 数据文件收集）
 
 - Windows：
 
@@ -204,7 +204,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 bash scripts/build-backend-macos.sh
 ```
 
-该脚本会在安装依赖后执行 `--collect-all alphasift`，并校验打包产物中可导入 `alphasift.dsa_adapter`，避免分步命令遗漏内置 AlphaSift 模块。
+该脚本会在安装依赖后执行 `--collect-all alphasift` 和 `--collect-data akshare`。构建完成后会校验 `alphasift.dsa_adapter` 可导入，并确认 AkShare 的 `file_fold/calendar.json` 已进入冻结产物，避免发行包在热点题材或日线增强路径中因缺少 package data 降级。
 
 3) 打包 Electron 桌面应用
 
@@ -295,7 +295,9 @@ win-unpacked/
 
 ### 后端启动报 ModuleNotFoundError
 
-PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增加 `--hidden-import`。
+PyInstaller 打包时缺少模块，需要在 Windows 与 macOS 后端构建脚本中同步增加 `--hidden-import`，并对冻结产物执行运行时导入校验。当前脚本会显式安装、冻结并探测 LiteLLM 运行路径需要的 `orjson`；若日志包含 `No module named 'orjson'`，请升级到修复版本并重新构建，不能只在已发布目录中手工安装依赖。
+
+如果日志提示缺少 `akshare/file_fold/calendar.json`，说明后端冻结产物没有完整收集 AkShare package data。请使用仓库当前的 `scripts/build-backend.ps1` 或 `scripts/build-backend-macos.sh` 重新构建；脚本会在生成桌面包前检查该文件，缺失时直接终止构建。
 
 ### UI 加载空白
 

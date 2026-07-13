@@ -11,6 +11,7 @@ from sqlalchemy import inspect
 
 from src.config import Config
 from src.repositories.decision_signal_repo import DecisionSignalRepository
+from src.schemas.decision_profile import normalize_decision_profile_filter
 from src.storage import Base, DatabaseManager, DecisionSignalRecord, utc_naive_now
 
 
@@ -157,6 +158,37 @@ def test_create_if_absent_deduplicates_report_and_trace_keys(isolated_db) -> Non
     assert no_key_row2.id != no_key_row1.id
 
 
+def test_create_if_absent_does_not_dedup_same_report_across_profiles(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+
+    balanced = repo.create_if_absent(_fields(source_report_id=2351, decision_profile="balanced"))
+    aggressive = repo.create_if_absent(
+        _fields(source_report_id=2351, trace_id="trace-2351-aggressive", decision_profile="aggressive")
+    )
+    balanced_duplicate = repo.create_if_absent(
+        _fields(source_report_id=2351, trace_id="trace-2351-balanced-retry", decision_profile="balanced")
+    )
+
+    assert balanced.created is True
+    assert aggressive.created is True
+    assert aggressive.row.id != balanced.row.id
+    assert balanced_duplicate.created is False
+    assert balanced_duplicate.row.id == balanced.row.id
+
+    legacy = repo.create_if_absent(_fields(source_report_id=2352, trace_id="trace-2352-null"))
+    balanced_from_legacy_source = repo.create_if_absent(
+        _fields(source_report_id=2352, trace_id="trace-2352-balanced", decision_profile="balanced")
+    )
+    legacy_duplicate = repo.create_if_absent(
+        _fields(source_report_id=2352, trace_id="trace-2352-null-retry")
+    )
+    assert legacy.created is True
+    assert balanced_from_legacy_source.created is True
+    assert balanced_from_legacy_source.row.id != legacy.row.id
+    assert legacy_duplicate.created is False
+    assert legacy_duplicate.row.id == legacy.row.id
+
+
 def test_create_if_absent_relaxed_merge_only_fills_missing_default_dimensions(isolated_db) -> None:
     repo = DecisionSignalRepository(isolated_db)
 
@@ -244,6 +276,49 @@ def test_create_if_absent_relaxed_merge_only_fills_missing_default_dimensions(is
     assert different_phase.created is True
     assert different_phase_new.created is True
     assert different_phase_new.row.id != different_phase.row.id
+
+
+def test_create_if_absent_relaxed_merge_does_not_fill_across_profiles(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+
+    original = repo.create_if_absent(
+        _fields(
+            source_report_id=2411,
+            trace_id="trace-relaxed-profile-balanced",
+            decision_profile="balanced",
+            horizon=None,
+            market_phase=None,
+        )
+    )
+    aggressive = repo.create_if_absent(
+        _fields(
+            source_report_id=2411,
+            trace_id="trace-relaxed-profile-aggressive",
+            decision_profile="aggressive",
+            horizon="3d",
+            market_phase="intraday",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+    balanced_fill = repo.create_if_absent(
+        _fields(
+            source_report_id=2411,
+            trace_id="trace-relaxed-profile-balanced-fill",
+            decision_profile="balanced",
+            horizon="3d",
+            market_phase="intraday",
+        ),
+        allow_relaxed_horizon_fill=True,
+    )
+
+    assert original.created is True
+    assert aggressive.created is True
+    assert aggressive.row.id != original.row.id
+    assert balanced_fill.created is False
+    assert balanced_fill.refreshed is True
+    assert balanced_fill.row.id == original.row.id
+    assert balanced_fill.row.horizon == "3d"
+    assert balanced_fill.row.market_phase == "intraday"
 
 
 def test_create_if_absent_relaxed_merge_skips_terminal_candidates(isolated_db) -> None:
@@ -492,6 +567,104 @@ def test_create_if_absent_refreshes_expired_same_key_only_with_future_active(iso
     assert still_closed.reason == "closed old"
 
 
+def test_create_if_absent_expired_refresh_keeps_profile_identity(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+    expired_balanced = repo.create_if_absent(
+        _fields(
+            source_report_id=2361,
+            trace_id="trace-refresh-profile-balanced",
+            decision_profile="balanced",
+            status="expired",
+            expires_at=utc_naive_now() - timedelta(days=1),
+            reason="old balanced",
+        )
+    )
+
+    aggressive = repo.create_if_absent(
+        _fields(
+            source_report_id=2361,
+            trace_id="trace-refresh-profile-aggressive",
+            decision_profile="aggressive",
+            status="active",
+            expires_at=utc_naive_now() + timedelta(days=1),
+            reason="new aggressive",
+        )
+    )
+    refreshed_balanced = repo.create_if_absent(
+        _fields(
+            source_report_id=2361,
+            trace_id="trace-refresh-profile-balanced-new",
+            decision_profile="balanced",
+            status="active",
+            expires_at=utc_naive_now() + timedelta(days=1),
+            reason="new balanced",
+        )
+    )
+
+    assert expired_balanced.created is True
+    assert aggressive.created is True
+    assert aggressive.row.id != expired_balanced.row.id
+    assert refreshed_balanced.created is False
+    assert refreshed_balanced.refreshed is True
+    assert refreshed_balanced.row.id == expired_balanced.row.id
+    assert refreshed_balanced.row.decision_profile == "balanced"
+    assert refreshed_balanced.row.reason == "new balanced"
+
+
+def test_profile_filters_and_active_action_lookup_are_null_safe(isolated_db) -> None:
+    repo = DecisionSignalRepository(isolated_db)
+    legacy_buy = repo.create(_fields(source_report_id=2371, trace_id="trace-profile-null", decision_profile=None))
+    balanced_buy = repo.create(
+        _fields(source_report_id=2372, trace_id="trace-profile-balanced", decision_profile="balanced")
+    )
+    aggressive_buy = repo.create(
+        _fields(source_report_id=2373, trace_id="trace-profile-aggressive", decision_profile="aggressive")
+    )
+    repo.create(_fields(source_report_id=2374, trace_id="trace-profile-balanced-sell", action="sell", decision_profile="balanced"))
+
+    all_rows, all_total = repo.list(
+        stock_codes=["600519"],
+        decision_profile_filter=normalize_decision_profile_filter(None),
+        page=1,
+        page_size=10,
+    )
+    unknown_rows, unknown_total = repo.list(
+        stock_codes=["600519"],
+        decision_profile_filter=normalize_decision_profile_filter("unknown"),
+        page=1,
+        page_size=10,
+    )
+    balanced_rows, balanced_total = repo.list(
+        stock_codes=["600519"],
+        action="buy",
+        decision_profile_filter=normalize_decision_profile_filter("balanced"),
+        page=1,
+        page_size=10,
+    )
+
+    assert all_total == 4
+    assert {row.id for row in all_rows} >= {legacy_buy.id, balanced_buy.id, aggressive_buy.id}
+    assert unknown_total == 1
+    assert unknown_rows[0].id == legacy_buy.id
+    assert balanced_total == 1
+    assert balanced_rows[0].id == balanced_buy.id
+
+    legacy_active = repo.list_active_by_stock_actions(
+        market="cn",
+        stock_code="600519",
+        actions=["buy"],
+        decision_profile=None,
+    )
+    balanced_active = repo.list_active_by_stock_actions(
+        market="cn",
+        stock_code="600519",
+        actions=["buy"],
+        decision_profile="balanced",
+    )
+    assert [row.id for row in legacy_active] == [legacy_buy.id]
+    assert [row.id for row in balanced_active] == [balanced_buy.id]
+
+
 def test_create_all_is_idempotent_and_indexes_exist(isolated_db) -> None:
     Base.metadata.create_all(isolated_db._engine)
     Base.metadata.create_all(isolated_db._engine)
@@ -504,3 +677,6 @@ def test_create_all_is_idempotent_and_indexes_exist(isolated_db) -> None:
     assert "ix_decision_signal_market_status_time" in index_names
     assert "ix_decision_signal_report_type_market_stock_action_horizon_phase" in index_names
     assert "ix_decision_signal_trace_type_market_stock_action_horizon_phase" in index_names
+    assert "ix_decision_signal_market_stock_profile_created" in index_names
+    assert "ix_decision_signal_report_type_market_stock_profile_action_horizon_phase" in index_names
+    assert "ix_decision_signal_trace_type_market_stock_profile_action_horizon_phase" in index_names

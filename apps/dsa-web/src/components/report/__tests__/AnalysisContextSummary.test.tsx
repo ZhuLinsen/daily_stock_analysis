@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { historyApi } from '../../../api/history';
-import type { AnalysisContextPackOverview, AnalysisReport, AnalysisResult } from '../../../types/analysis';
+import type {
+  AnalysisContextPackOverview,
+  AnalysisReport,
+  AnalysisResult,
+  MarketStructureContext,
+} from '../../../types/analysis';
 import { AnalysisContextSummary } from '../AnalysisContextSummary';
 import { ReportSummary } from '../ReportSummary';
 
@@ -73,6 +78,42 @@ const overview: AnalysisContextPackOverview = {
   metadata: {
     triggerSource: 'api',
     newsResultCount: 3,
+  },
+};
+
+const marketStructure: MarketStructureContext = {
+  schemaVersion: 'market-structure-v1',
+  status: 'ok',
+  market: 'cn',
+  tradeDate: '2026-07-12',
+  marketThemeContext: {
+    schemaVersion: 'market-theme-v1',
+    status: 'ok',
+    market: 'cn',
+    activeThemes: [{ name: 'Robotics', rank: 1, source: 'concept' }],
+    leadingConcepts: [],
+    leadingIndustries: [],
+    laggingThemes: [],
+    themeBreadth: {
+      activeCount: 1,
+      leadingConceptCount: 0,
+      leadingIndustryCount: 0,
+      laggingCount: 0,
+    },
+    dataQuality: { status: 'ok', missingFields: [], sources: [], errors: [] },
+  },
+  stockMarketPosition: {
+    schemaVersion: 'stock-market-position-v1',
+    status: 'ok',
+    stockCode: '600519',
+    stockName: 'Kweichow Moutai',
+    market: 'cn',
+    primaryTheme: { name: 'Robotics', source: 'concept', rank: 1 },
+    relatedBoards: [],
+    stockRole: 'follower',
+    themePhase: 'accelerating',
+    riskTags: [],
+    missingFields: [],
   },
 };
 
@@ -253,6 +294,7 @@ describe('ReportSummary analysis context placement', () => {
       },
       details: {
         analysisContextPackOverview: overview,
+        marketStructure,
       },
     };
     const result: AnalysisResult = {
@@ -293,5 +335,7 @@ describe('ReportSummary analysis context placement', () => {
     expect(contextSummary.compareDocumentPosition(diagnostics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(diagnostics.compareDocumentPosition(traceability) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByText('AI 建议 / 决策信号')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '题材主线与个股位置' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Robotics')).not.toBeInTheDocument();
   });
 });

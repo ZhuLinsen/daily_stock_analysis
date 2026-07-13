@@ -27,6 +27,7 @@ export interface DecisionSignalItem {
   sourceAgent?: string | null;
   sourceReportId?: number | null;
   traceId?: string | null;
+  decisionProfile?: DecisionProfile | null;
   marketPhase?: MarketPhaseValue | null;
   triggerSource: string;
   action: DecisionAction;
@@ -61,6 +62,7 @@ export interface DecisionSignalCreateRequest {
   sourceAgent?: string | null;
   sourceReportId?: number | null;
   traceId?: string | null;
+  decisionProfile?: DecisionProfile;
   marketPhase?: MarketPhaseValue | null;
   triggerSource: string;
   action: DecisionAction;
@@ -92,6 +94,7 @@ export interface DecisionSignalListParams {
   stockCode?: string;
   action?: DecisionAction;
   marketPhase?: MarketPhaseValue;
+  decisionProfile?: DecisionProfileDisplay;
   sourceType?: DecisionSignalSourceType;
   sourceReportId?: number;
   traceId?: string;

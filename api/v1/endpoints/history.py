@@ -48,6 +48,7 @@ from src.utils.data_processing import (
     normalize_model_used,
     extract_fundamental_detail_fields,
     extract_board_detail_fields,
+    extract_market_structure_detail_field,
     extract_realtime_detail_fields,
 )
 from src.analysis_context_pack_overview import (
@@ -59,6 +60,7 @@ from src.market_phase_summary import extract_market_phase_summary
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_DELETE_BY_CODE_BATCH_SIZE = 10_000
 
 
 def _normalize_code_for_grouping(code: str) -> str:
@@ -232,6 +234,7 @@ def get_history_list(
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},
+        400: {"description": "股票代码不能为空", "model": ErrorResponse},
         404: {"description": "未找到记录", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
@@ -244,12 +247,33 @@ def delete_history_by_code(
 ) -> DeleteHistoryResponse:
     try:
         candidates = HistoryService._history_code_filter_candidates(stock_code)
-        records, _ = db_manager.get_analysis_history_paginated(code=candidates, limit=10000)
-        record_ids = [r.id for r in records if r.id is not None]
-        if not record_ids:
-            return DeleteHistoryResponse(deleted=0)
-        deleted = db_manager.delete_analysis_history_records(record_ids)
+        if not candidates:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_request", "message": "stock_code 不能为空"},
+            )
+
+        deleted = 0
+        while True:
+            records, _ = db_manager.get_analysis_history_paginated(
+                code=candidates,
+                limit=_DELETE_BY_CODE_BATCH_SIZE,
+            )
+            record_ids = [r.id for r in records if r.id is not None]
+            if not record_ids:
+                break
+
+            batch_deleted = db_manager.delete_analysis_history_records(record_ids)
+            if batch_deleted == 0:
+                raise RuntimeError("history deletion made no progress")
+            deleted += batch_deleted
+
+            if len(records) < _DELETE_BY_CODE_BATCH_SIZE:
+                break
+
         return DeleteHistoryResponse(deleted=deleted)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"按股票代码删除历史记录失败: {e}", exc_info=True)
         raise HTTPException(
@@ -385,9 +409,7 @@ def get_stock_bar(
                     action=action_fields["action"],
                     action_label=action_fields["action_label"],
                     analysis_count=analysis_count,
-                    last_analysis_time=(
-                        record.created_at.isoformat() if record.created_at else None
-                    ),
+                    last_analysis_time=service._serialize_created_at(record.created_at),
                     model_used=normalize_model_used(model_used),
                     market_phase_summary=service._display_market_phase_summary(
                         record.code,
@@ -541,6 +563,10 @@ def get_history_detail(
             context_snapshot=result.get("context_snapshot"),
             fallback_fundamental_payload=fallback_fundamental,
         )
+        market_structure = extract_market_structure_detail_field(
+            result.get("context_snapshot"),
+            result.get("raw_result"),
+        )
 
         details = ReportDetails(
             news_content=result.get("news_content"),
@@ -552,6 +578,7 @@ def get_history_detail(
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
+            market_structure=market_structure,
         )
         
         return AnalysisReport(

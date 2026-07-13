@@ -37,6 +37,7 @@ import type {
   DecisionSignalSourceType,
   DecisionSignalStatus,
   DecisionProfile,
+  DecisionProfileDisplay,
 } from '../types/decisionSignals';
 import type { Market, StockIndexItem } from '../types/stockIndex';
 import { cn } from '../utils/cn';
@@ -69,6 +70,7 @@ type TimelineFilters = {
   market: '' | DecisionSignalMarket;
   range: TimelineRange;
   status: TimelineStatusFilter;
+  decisionProfile: '' | DecisionProfileDisplay;
 };
 
 type TimelineMarketSource = 'context' | 'user' | null;
@@ -151,6 +153,7 @@ const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
   market: '',
   range: '90d',
   status: 'all',
+  decisionProfile: '',
 };
 
 const TIMELINE_RANGE_DAYS: Record<TimelineRange, number> = {
@@ -285,6 +288,7 @@ function toTimelineParams(filters: TimelineFilters, stockCode: string): Decision
     createdFrom: createdFrom.toISOString(),
     createdTo: createdTo.toISOString(),
     status: filters.status === 'active' ? 'active' : undefined,
+    decisionProfile: filters.decisionProfile || undefined,
     page: 1,
     pageSize: TIMELINE_PAGE_SIZE,
   };
@@ -1221,7 +1225,7 @@ const DecisionSignalsPage: React.FC = () => {
         </Card>
 
         <Card title={t('decisionSignals.timelineTitle')} subtitle={t('decisionSignals.timelineDescription')} padding="md">
-          <form className="grid gap-3 md:grid-cols-4" onSubmit={handleTimelineSearch}>
+          <form className="grid gap-3 md:grid-cols-5" onSubmit={handleTimelineSearch}>
             <select
               className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
               value={timelineFilters.market}
@@ -1255,6 +1259,23 @@ const DecisionSignalsPage: React.FC = () => {
             >
               <option value="all">{t('decisionSignals.timelineStatus.all')}</option>
               <option value="active">{t('decisionSignals.timelineStatus.active')}</option>
+            </select>
+            <select
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
+              value={timelineFilters.decisionProfile}
+              onChange={(event) => setTimelineFilters((current) => ({
+                ...current,
+                decisionProfile: event.target.value as TimelineFilters['decisionProfile'],
+              }))}
+              aria-label={t('decisionSignals.timelineProfile')}
+            >
+              <option value="">{t('decisionSignals.allProfiles')}</option>
+              {REASSESS_PROFILES.map((profile) => (
+                <option key={profile} value={profile}>
+                  {t(`decisionSignals.profile.${profile}` as UiTextKey)}
+                </option>
+              ))}
+              <option value="unknown">{t('decisionSignals.profile.unknown')}</option>
             </select>
             <button
               type="submit"
