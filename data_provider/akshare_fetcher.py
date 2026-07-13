@@ -114,6 +114,17 @@ def _is_etf_code(stock_code: str) -> bool:
     return code.startswith(etf_prefixes) and len(code) == 6
 
 
+def _is_lof_code(stock_code: str) -> bool:
+    """判断代码是否为 LOF 基金（上市型开放式基金）。
+
+    LOF 与部分 ETF 共用 16xxxx 前缀，需在 ETF 判断之前优先识别。
+    - 深交所 LOF: 16xxxx
+    - 上交所 LOF: 50xxxx
+    """
+    code = stock_code.strip().split('.')[0]
+    return len(code) == 6 and (code.startswith('16') or code.startswith('50'))
+
+
 def _is_hk_code(stock_code: str) -> bool:
     """
     判断代码是否为港股
@@ -472,6 +483,8 @@ class AkshareFetcher(BaseFetcher):
             )
         elif _is_hk_code(stock_code):
             return self._fetch_hk_data(stock_code, start_date, end_date)
+        elif _is_lof_code(stock_code):
+            return self._fetch_lof_data(stock_code, start_date, end_date)
         elif _is_etf_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
@@ -709,6 +722,43 @@ class AkshareFetcher(BaseFetcher):
             
             raise DataFetchError(f"Akshare 获取 ETF 数据失败: {e}") from e
     
+    def _fetch_lof_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取 LOF 基金历史数据。
+
+        数据源：ak.fund_lof_hist_em()
+        LOF（上市型开放式基金）与 ETF 共用 16xxxx 前缀，但 API 端点不同；
+        优先走 LOF 接口，失败时回退 ETF 接口以兼容同名前缀的 ETF。
+        """
+        import akshare as ak
+
+        self._set_random_user_agent()
+        self._enforce_rate_limit()
+
+        logger.info(
+            f"[API调用] ak.fund_lof_hist_em(symbol={stock_code}, period=daily, "
+            f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)"
+        )
+
+        try:
+            import time as _time
+            api_start = _time.time()
+            df = ak.fund_lof_hist_em(
+                symbol=stock_code,
+                period="daily",
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq",
+            )
+            api_elapsed = _time.time() - api_start
+            if df is not None and not df.empty:
+                logger.info(f"[API调用] ak.fund_lof_hist_em 成功: 行数 {len(df)}, 耗时 {api_elapsed:.2f}s")
+            else:
+                logger.warning(f"[API调用] ak.fund_lof_hist_em 返回空, 耗时 {api_elapsed:.2f}s")
+            return df
+        except Exception as e:
+            logger.info(f"[数据源] LOF API 失败，回退 ETF API: {stock_code} ({e})")
+            return self._fetch_etf_data(stock_code, start_date, end_date)
+
     def _fetch_us_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
         获取美股历史数据
