@@ -327,6 +327,31 @@ private reasoning that is not part of the response contract
 }
 ```""")
 
+    def test_validate_json_response_rejects_unknown_reasoning_fence_labels(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        for fence_label in ("cotton", "thinking-notes"):
+            with self.subTest(fence_label=fence_label):
+                with self.assertRaises(Exception) as context:
+                    analyzer._validate_json_response(f"""```{fence_label}
+content outside the supported reasoning wrapper contract
+```
+```json
+{{
+  "stock_name": "TestCo",
+  "sentiment_score": 66,
+  "trend_prediction": "bullish",
+  "operation_advice": "hold",
+  "analysis_summary": "final JSON"
+}}
+```""")
+
+                self.assertEqual(
+                    getattr(context.exception, "details", {}).get("reason"),
+                    "ambiguous_json",
+                )
+
     def test_validate_json_response_rejects_ambiguous_json_before_repair(self) -> None:
         analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
         analyzer._config_override = SimpleNamespace(generation_backend="litellm")

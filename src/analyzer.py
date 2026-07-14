@@ -4380,7 +4380,7 @@ class GeminiAnalyzer:
         )
         text = tag_pattern.sub("", text)
         fence_pattern = re.compile(
-            r"```[ \t]*(?:think|thinking|reasoning|cot|chain[-_ ]?of[-_ ]?thought)[^\n`]*\n?.*?```",
+            r"```[ \t]*(?:think|thinking|reasoning|cot|chain[-_ ]?of[-_ ]?thought)[ \t]*\r?\n.*?```",
             flags=re.IGNORECASE | re.DOTALL,
         )
         return fence_pattern.sub("", text)
