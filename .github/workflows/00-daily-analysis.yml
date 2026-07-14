@@ -529,13 +529,20 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "📊 分析完成"
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "📊 分析完成"
+          else
+            echo "📊 分析失败"
+          fi
           echo "=========================================="
           if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
             echo "生成的报告:"
             ls -la reports/
+          elif grep -R "非交易日，跳过执行" logs/ >/dev/null 2>&1; then
+            echo "今日相关市场非交易日，已按配置跳过，未生成报告文件。"
           else
-            echo "⚠️ 未生成报告文件"
+            echo "::error::未生成报告文件"
+            exit 1
           fi
           echo ""
           if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then

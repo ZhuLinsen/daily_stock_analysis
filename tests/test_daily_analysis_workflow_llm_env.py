@@ -58,6 +58,28 @@ def _load_daily_analysis_env() -> dict[str, str]:
     return analyze_step["env"]
 
 
+def _load_daily_analysis_step(name: str) -> dict:
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["analyze"]["steps"]
+    step = next((candidate for candidate in steps if candidate.get("name") == name), None)
+    available_step_names = [candidate.get("name", "<unnamed>") for candidate in steps]
+    assert step is not None, (
+        f"Expected 00-daily-analysis.yml job analyze to include a step named "
+        f"{name!r}; available step names: {available_step_names}"
+    )
+    return step
+
+
+def test_daily_analysis_summary_fails_when_reports_missing() -> None:
+    step = _load_daily_analysis_step("显示运行结果")
+    script = step["run"]
+
+    assert step.get("if") == "always()"
+    assert "非交易日，跳过执行" in script
+    assert '::error::未生成报告文件' in script
+    assert "exit 1" in script
+
+
 def test_daily_analysis_maps_all_provider_template_channels() -> None:
     templates = _extract_provider_templates()
     env = _load_daily_analysis_env()

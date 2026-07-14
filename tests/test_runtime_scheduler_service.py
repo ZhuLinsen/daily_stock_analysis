@@ -220,6 +220,29 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         self.assertIsNotNone(status["last_success_at"])
         self.assertIsNone(status["last_error"])
 
+    def test_global_analysis_lock_treats_only_explicit_false_as_failure(self) -> None:
+        from src.services.runtime_scheduler import run_with_global_analysis_lock
+
+        config = SimpleNamespace()
+        args = SimpleNamespace()
+
+        self.assertTrue(
+            run_with_global_analysis_lock(
+                task_runner=lambda *_: None,
+                config=config,
+                args=args,
+                stock_codes=None,
+            )
+        )
+        self.assertFalse(
+            run_with_global_analysis_lock(
+                task_runner=lambda *_: False,
+                config=config,
+                args=args,
+                stock_codes=None,
+            )
+        )
+
     def test_run_now_uses_shared_lock_across_service_instances(self) -> None:
         config = SimpleNamespace(
             schedule_enabled=True,

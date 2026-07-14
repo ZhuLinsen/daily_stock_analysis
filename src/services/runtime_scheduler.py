@@ -44,10 +44,10 @@ def run_with_global_analysis_lock(
     if not _RUNTIME_ANALYSIS_LOCK.acquire(blocking=blocking):
         return False
     try:
-        task_runner(config, args, stock_codes)
+        result = task_runner(config, args, stock_codes)
+        return False if result is False else True
     finally:
         _RUNTIME_ANALYSIS_LOCK.release()
-    return True
 
 
 def _agent_event_monitor_interval_seconds(config: Config) -> int:

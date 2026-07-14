@@ -2066,6 +2066,19 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIn("/app/logs", output)
         self.assertIn("官方 Docker 镜像启动入口会自动修复默认挂载目录权限", output)
 
+    def test_single_run_returns_failure_when_analysis_reports_failure(self) -> None:
+        """Normal one-shot CLI runs must not hide failed analysis behind exit code 0."""
+        args = self._make_args()
+        config = self._make_config(run_immediately=True)
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main.run_full_analysis", return_value=False):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+
     def test_run_full_analysis_import_failure_propagates(self) -> None:
         """P1: import failures in run_full_analysis must propagate, not be swallowed."""
         args = self._make_args()
