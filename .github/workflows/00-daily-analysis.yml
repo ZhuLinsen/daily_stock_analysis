@@ -535,15 +535,7 @@ jobs:
             echo "📊 分析失败"
           fi
           echo "=========================================="
-          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
-            echo "生成的报告:"
-            ls -la reports/
-          elif grep -R "非交易日，跳过执行" logs/ >/dev/null 2>&1; then
-            echo "今日相关市场非交易日，已按配置跳过，未生成报告文件。"
-          else
-            echo "::error::未生成报告文件"
-            exit 1
-          fi
+          .github/scripts/verify_daily_analysis_reports.sh logs/daily_analysis_outcome.json reports
           echo ""
           if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
             echo "📜 最近日志（最后 30 行）:"

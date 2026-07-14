@@ -79,6 +79,7 @@ from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
+_ANALYSIS_OUTCOME_FILENAME = "daily_analysis_outcome.json"
 
 
 def _get_active_env_path() -> Path:
@@ -203,6 +204,108 @@ def _setup_runtime_logging(log_dir: str, debug: bool = False) -> bool:
             exc,
         )
         return False
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _reports_dir() -> Path:
+    return _project_root() / "reports"
+
+
+def _analysis_outcome_path(config: Config) -> Path:
+    log_dir = Path(str(getattr(config, "log_dir", "./logs") or "./logs"))
+    if not log_dir.is_absolute():
+        log_dir = _project_root() / log_dir
+    return log_dir / _ANALYSIS_OUTCOME_FILENAME
+
+
+def _snapshot_report_files() -> Dict[str, Tuple[int, int]]:
+    reports_dir = _reports_dir()
+    if not reports_dir.exists():
+        return {}
+    snapshot = {}
+    for path in reports_dir.glob("*.md"):
+        try:
+            if path.is_file():
+                stat_result = path.stat()
+                snapshot[str(path.relative_to(_project_root()))] = (
+                    stat_result.st_mtime_ns,
+                    stat_result.st_size,
+                )
+        except OSError:
+            logger.warning("无法读取报告文件状态: %s", path)
+    return snapshot
+
+
+def _list_changed_report_files(baseline: Dict[str, Tuple[int, int]]) -> List[str]:
+    current = _snapshot_report_files()
+    return sorted(
+        report_file
+        for report_file, mtime_ns in current.items()
+        if baseline.get(report_file) != mtime_ns
+    )
+
+
+def _write_analysis_outcome(
+    config: Config,
+    *,
+    status: str,
+    reason: str,
+    report_files: Optional[List[str]] = None,
+) -> None:
+    outcome_path = _analysis_outcome_path(config)
+    payload = {
+        "status": status,
+        "reason": reason,
+        "report_files": list(report_files or []),
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        outcome_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = outcome_path.with_suffix(f"{outcome_path.suffix}.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        tmp_path.replace(outcome_path)
+    except OSError as exc:
+        logger.warning("写入分析结果状态文件失败: %s", exc)
+
+
+def _complete_report_outcome(
+    config: Config,
+    *,
+    report_baseline: Dict[str, Tuple[int, int]],
+    reports_required: bool,
+    success_reason: str = "reports_generated",
+) -> bool:
+    report_files = _list_changed_report_files(report_baseline)
+    if report_files:
+        _write_analysis_outcome(
+            config,
+            status="success",
+            reason=success_reason,
+            report_files=report_files,
+        )
+        return True
+    if reports_required:
+        _write_analysis_outcome(
+            config,
+            status="failed",
+            reason="no_reports_generated",
+            report_files=[],
+        )
+        logger.error("分析流程未生成本次运行的报告文件")
+        return False
+    _write_analysis_outcome(
+        config,
+        status="skipped",
+        reason="reports_not_required",
+        report_files=[],
+    )
+    return True
 
 
 def _get_stock_analysis_pipeline():
@@ -677,6 +780,7 @@ def run_full_analysis(
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
+    report_baseline = _snapshot_report_files()
     try:
         _refresh_stock_index_cache_for_analysis(config)
 
@@ -692,6 +796,12 @@ def run_full_analysis(
         if should_skip:
             logger.info(
                 "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
+            )
+            _write_analysis_outcome(
+                config,
+                status="skipped",
+                reason="non_trading_day",
+                report_files=[],
             )
             return True
         if set(filtered_codes) != set(effective_codes):
@@ -991,10 +1101,21 @@ def run_full_analysis(
         except Exception as e:
             logger.warning(f"自动回测失败（已忽略）: {e}")
 
-        return True
+        reports_required = not getattr(args, "dry_run", False)
+        return _complete_report_outcome(
+            config,
+            report_baseline=report_baseline,
+            reports_required=reports_required,
+        )
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
+        _write_analysis_outcome(
+            config,
+            status="failed",
+            reason="analysis_failed",
+            report_files=_list_changed_report_files(report_baseline),
+        )
         if raise_errors:
             raise
         return False
@@ -1411,6 +1532,7 @@ def main() -> int:
             from src.core.market_review import run_market_review
             from src.core.market_review_runtime import build_market_review_runtime
 
+            report_baseline = _snapshot_report_files()
             # Issue #373: Trading day check for market-review-only mode.
             # Do NOT use _compute_trading_day_filter here: that helper checks
             # config.market_review_enabled, which would wrongly block an
@@ -1424,21 +1546,50 @@ def main() -> int:
                 )
                 if effective_region == '':
                     logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
+                    _write_analysis_outcome(
+                        config,
+                        status="skipped",
+                        reason="non_trading_day",
+                        report_files=[],
+                    )
                     return 0
 
             logger.info("模式: 仅大盘复盘")
             notifier, analyzer, search_service = build_market_review_runtime(config)
 
-            _run_market_review_with_shared_lock(
+            try:
+                review_ok = _run_market_review_with_shared_lock(
+                    config,
+                    run_market_review,
+                    notifier=notifier,
+                    analyzer=analyzer,
+                    search_service=search_service,
+                    send_notification=not args.no_notify,
+                    override_region=effective_region,
+                    trigger_source="cli",
+                )
+            except Exception:
+                _write_analysis_outcome(
+                    config,
+                    status="failed",
+                    reason="analysis_failed",
+                    report_files=_list_changed_report_files(report_baseline),
+                )
+                raise
+            if review_ok is False:
+                _write_analysis_outcome(
+                    config,
+                    status="failed",
+                    reason="analysis_failed",
+                    report_files=_list_changed_report_files(report_baseline),
+                )
+                return 1
+            if not _complete_report_outcome(
                 config,
-                run_market_review,
-                notifier=notifier,
-                analyzer=analyzer,
-                search_service=search_service,
-                send_notification=not args.no_notify,
-                override_region=effective_region,
-                trigger_source="cli",
-            )
+                report_baseline=report_baseline,
+                reports_required=True,
+            ):
+                return 1
             return 0
 
         # 模式2: 定时任务模式

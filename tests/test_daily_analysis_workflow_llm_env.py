@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -13,6 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = ROOT_DIR / "apps/dsa-web/src/components/settings/llmProviderTemplates.ts"
 WORKFLOW_PATH = ROOT_DIR / ".github/workflows/00-daily-analysis.yml"
 ENV_EXAMPLE_PATH = ROOT_DIR / ".env.example"
+VERIFY_REPORTS_SCRIPT = ROOT_DIR / ".github/scripts/verify_daily_analysis_reports.sh"
 
 EXPECTED_TEMPLATE_CHANNELS = {
     "aihubmix",
@@ -70,14 +73,140 @@ def _load_daily_analysis_step(name: str) -> dict:
     return step
 
 
-def test_daily_analysis_summary_fails_when_reports_missing() -> None:
+def _write_outcome(
+    base_dir: Path,
+    *,
+    status: str,
+    reason: str,
+    report_files: list[str],
+) -> None:
+    logs_dir = base_dir / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "daily_analysis_outcome.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "reason": reason,
+                "report_files": report_files,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _run_report_verifier(base_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            str(VERIFY_REPORTS_SCRIPT),
+            "logs/daily_analysis_outcome.json",
+            "reports",
+        ],
+        cwd=base_dir,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_daily_analysis_summary_uses_report_verifier_script() -> None:
     step = _load_daily_analysis_step("显示运行结果")
     script = step["run"]
 
     assert step.get("if") == "always()"
-    assert "非交易日，跳过执行" in script
-    assert '::error::未生成报告文件' in script
-    assert "exit 1" in script
+    assert ".github/scripts/verify_daily_analysis_reports.sh" in script
+    assert "logs/daily_analysis_outcome.json" in script
+    assert "grep -R" not in script
+    assert "ls -A reports" not in script
+
+
+def test_daily_analysis_uploads_artifacts_before_report_verification() -> None:
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["analyze"]["steps"]
+    step_names = [step.get("name") for step in steps]
+    upload_index = step_names.index("上传分析报告")
+    summary_index = step_names.index("显示运行结果")
+    upload_step = steps[upload_index]
+
+    assert upload_index < summary_index
+    assert upload_step.get("if") == "always()"
+    assert "reports/" in upload_step["with"]["path"]
+    assert "logs/" in upload_step["with"]["path"]
+
+
+def test_daily_analysis_report_verifier_accepts_actual_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    report_path = reports_dir / "report_20260714.md"
+    report_path.write_text("# report\n", encoding="utf-8")
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=["reports/report_20260714.md"],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "reports/report_20260714.md" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_empty_subdir_only(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    (reports_dir / "empty").mkdir(parents=True)
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=[],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "::error::未生成报告文件" in result.stdout
+
+
+def test_daily_analysis_report_verifier_accepts_legitimate_skip(tmp_path: Path) -> None:
+    (tmp_path / "reports").mkdir()
+    _write_outcome(
+        tmp_path,
+        status="skipped",
+        reason="non_trading_day",
+        report_files=[],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "non_trading_day" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_failed_outcome(tmp_path: Path) -> None:
+    (tmp_path / "reports").mkdir()
+    _write_outcome(
+        tmp_path,
+        status="failed",
+        reason="analysis_failed",
+        report_files=[],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "status=failed" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_missing_outcome(tmp_path: Path) -> None:
+    (tmp_path / "reports").mkdir()
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "未找到分析结果状态文件" in result.stdout
 
 
 def test_daily_analysis_maps_all_provider_template_channels() -> None:

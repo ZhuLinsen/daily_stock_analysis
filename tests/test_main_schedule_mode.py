@@ -1050,6 +1050,119 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         run_full_analysis.assert_called_once_with(config, args, ["600519", "000001"])
 
+    def _read_analysis_outcome(self, config) -> dict:
+        outcome_path = Path(config.log_dir) / "daily_analysis_outcome.json"
+        self.assertTrue(outcome_path.exists(), f"missing outcome file: {outcome_path}")
+        return json.loads(outcome_path.read_text(encoding="utf-8"))
+
+    def test_run_full_analysis_fails_when_no_report_is_generated(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "no_reports_generated")
+        self.assertEqual(outcome["report_files"], [])
+        refresh.assert_called_once_with(config)
+
+    def test_run_full_analysis_succeeds_when_report_file_is_generated(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.side_effect = lambda **kwargs: (
+            Path("reports").mkdir(exist_ok=True),
+            Path("reports/report_20260714.md").write_text("# report\n", encoding="utf-8"),
+            [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ],
+        )[2]
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertTrue(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "success")
+        self.assertEqual(outcome["reason"], "reports_generated")
+        self.assertEqual(outcome["report_files"], ["reports/report_20260714.md"])
+
+    def test_run_full_analysis_dry_run_does_not_require_report_file(self) -> None:
+        args = self._make_args(no_market_review=True, dry_run=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.return_value = []
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertTrue(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "skipped")
+        self.assertEqual(outcome["reason"], "reports_not_required")
+
+    def test_run_full_analysis_writes_skip_outcome_for_non_trading_day(self) -> None:
+        args = self._make_args()
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("main._compute_trading_day_filter", return_value=([], "", True)), \
+             patch("src.core.pipeline.StockAnalysisPipeline") as pipeline_cls:
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertTrue(result)
+        pipeline_cls.assert_not_called()
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "skipped")
+        self.assertEqual(outcome["reason"], "non_trading_day")
+
     def test_run_full_analysis_skips_market_review_when_shared_lock_is_held(self) -> None:
         from src.core.market_review_lock import (
             release_market_review_lock,
@@ -1935,6 +2048,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     runtime_search_service,
                  ),
              ) as runtime_builder, \
+             patch("main._complete_report_outcome", return_value=True), \
              patch("src.core.market_review.run_market_review") as run_market_review, \
              patch("src.core.trading_calendar.get_open_markets_today", return_value={"cn", "us"}), \
              patch("src.core.trading_calendar.compute_effective_region", return_value="cn,us"):
@@ -1974,6 +2088,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                  "src.core.market_review_runtime.build_market_review_runtime",
                  return_value=(runtime_notifier, runtime_analyzer, runtime_search_service),
              ) as runtime_builder, \
+             patch("main._complete_report_outcome", return_value=True), \
              patch("src.core.market_review.run_market_review"), \
              patch("src.core.trading_calendar.get_open_markets_today", return_value={"jp", "kr"}):
             exit_code = main.main()
@@ -1984,6 +2099,56 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertIs(call_args.args[0], config)
         self.assertEqual(call_args.kwargs["override_region"], "jp,kr")
         self.assertEqual(call_args.kwargs["trigger_source"], "cli")
+
+    def test_market_review_mode_returns_failure_when_no_report_is_generated(self) -> None:
+        args = self._make_args(market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_region="cn",
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("main._run_market_review_with_shared_lock", return_value="review"), \
+             patch(
+                 "src.core.market_review_runtime.build_market_review_runtime",
+                 return_value=(MagicMock(), MagicMock(), MagicMock()),
+             ), \
+             patch("src.core.market_review.run_market_review"):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "no_reports_generated")
+
+    def test_market_review_mode_writes_skip_outcome_for_non_trading_day(self) -> None:
+        args = self._make_args(market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=True,
+            market_review_region="cn",
+            market_review_enabled=False,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+
+        with patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.setup_logging"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.trading_calendar.get_open_markets_today", return_value=set()), \
+             patch("src.core.trading_calendar.compute_effective_region", return_value=""), \
+             patch("main._run_market_review_with_shared_lock") as run_with_lock:
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_with_lock.assert_not_called()
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "skipped")
+        self.assertEqual(outcome["reason"], "non_trading_day")
 
     def test_bootstrap_logging_persists_when_config_load_fails(self) -> None:
         """Config load failure must be logged to stderr and return exit code 1.
