@@ -1391,13 +1391,8 @@ def _valid_reassess_context() -> dict:
     }
 
 
-def test_reassess_persist_true_rejects_before_db_lookup(client_and_db, monkeypatch) -> None:
+def test_reassess_persist_true_inherits_source_report_not_found(client_and_db) -> None:
     client, db = client_and_db
-
-    def fail_service(*_args, **_kwargs):
-        raise AssertionError("DecisionSignalReassessService must not be instantiated for persist=true")
-
-    monkeypatch.setattr("api.v1.endpoints.decision_signals.DecisionSignalReassessService", fail_service)
     before = _decision_signal_count(db)
 
     response = client.post(
@@ -1409,11 +1404,8 @@ def test_reassess_persist_true_rejects_before_db_lookup(client_and_db, monkeypat
         },
     )
 
-    assert response.status_code == 400, response.text
-    assert response.json()["error"] == "unsupported_operation"
-    assert response.json()["message"] == (
-        "Persisting reassessed decision_profile signals is tracked by #1757."
-    )
+    assert response.status_code == 404, response.text
+    assert response.json()["error"] == "source_report_not_found"
     assert _decision_signal_count(db) == before
 
 
@@ -1598,7 +1590,7 @@ def test_reassess_service_has_no_live_market_provider_imports() -> None:
     assert "build_decision_signal_payload_from_report" not in source
 
 
-def test_reassess_confidence_missing_buy_is_blocked_preview_not_persisted(client_and_db) -> None:
+def test_reassess_confidence_missing_buy_is_safe_non_actionable_preview(client_and_db) -> None:
     client, db = client_and_db
     record_id = _save_reassess_history(
         db,
@@ -1617,9 +1609,180 @@ def test_reassess_confidence_missing_buy_is_blocked_preview_not_persisted(client
     guardrail = payload["preview"]["metadata"]["guardrail_result"]
     assert guardrail["raw_action"] == "buy"
     assert guardrail["final_action"] in {"watch", "alert"}
-    assert guardrail["passed"] is False
+    assert guardrail["passed"] is True
+    assert guardrail["adjusted"] is True
     assert "missing_confidence" in guardrail["violations"]
-    assert payload["blocked_reason"]
+    assert payload["blocked_reason"] is None
     assert payload["warnings"]
-    assert {warning["code"] for warning in payload["warnings"]} >= {"action_blocked_by_guardrail"}
+    assert {warning["code"] for warning in payload["warnings"]} == {"action_adjusted_by_guardrail"}
+    assert all(warning["message"] for warning in payload["warnings"])
+    assert _decision_signal_count(db) == before
+
+
+def test_reassess_persist_writes_authoritative_item_and_deduplicates(client_and_db) -> None:
+    client, db = client_and_db
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(invalidation="跌破关键支撑且资金流转负"),
+        context_snapshot=_valid_reassess_context(),
+    )
+    request = {
+        "source_report_id": record_id,
+        "decision_profile": "aggressive",
+        "persist": True,
+    }
+
+    first = client.post("/api/v1/decision-signals/reassess", json=request)
+
+    assert first.status_code == 200, first.text
+    first_payload = first.json()
+    assert first_payload["preview"] is None
+    assert first_payload["created"] is True
+    item = first_payload["item"]
+    assert item["decision_profile"] == "aggressive"
+    assert item["source_type"] == "analysis"
+    assert item["source_report_id"] == record_id
+    assert item["source_agent"] == "decision_profile_reassess"
+    assert item["trigger_source"] == "web:decision_profile_reassess"
+    assert item["action"] == item["metadata"]["guardrail_result"]["final_action"]
+    assert item["metadata"]["profile_source"] == "user_selected"
+    assert item["metadata"]["profile_policy_version"] == "decision-profile-v1"
+    assert item["metadata"]["signal_generation_version"] == "decision-profile-reassess-v1"
+    assert item["metadata"]["scoring_version"] == "decision-profile-scoring-v1"
+    assert item["metadata"]["scoring_breakdown"]
+    assert item["metadata"]["data_quality_level"] == "medium"
+    assert item["metadata"]["guardrail_result"]["passed"] is True
+
+    second = client.post("/api/v1/decision-signals/reassess", json=request)
+    assert second.status_code == 200, second.text
+    assert second.json()["created"] is False
+    assert second.json()["item"]["id"] == item["id"]
+    assert _decision_signal_count(db) == 1
+
+    timeline = client.get(
+        "/api/v1/decision-signals",
+        params={"stock_code": "600519", "decision_profile": "aggressive", "page_size": 100},
+    )
+    assert timeline.status_code == 200, timeline.text
+    assert [signal["id"] for signal in timeline.json()["items"]] == [item["id"]]
+
+
+def test_reassess_persist_distinguishes_profiles(client_and_db) -> None:
+    client, db = client_and_db
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(invalidation="跌破关键支撑"),
+        context_snapshot=_valid_reassess_context(),
+    )
+
+    aggressive = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "aggressive", "persist": True},
+    )
+    conservative = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "conservative", "persist": True},
+    )
+
+    assert aggressive.status_code == 200, aggressive.text
+    assert conservative.status_code == 200, conservative.text
+    assert aggressive.json()["item"]["id"] != conservative.json()["item"]["id"]
+    assert aggressive.json()["item"]["decision_profile"] == "aggressive"
+    assert conservative.json()["item"]["decision_profile"] == "conservative"
+    assert _decision_signal_count(db) == 2
+
+
+def test_reassess_persist_invalidates_only_same_profile_opposing_signal(client_and_db) -> None:
+    client, db = client_and_db
+    balanced_sell = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            action="sell",
+            score=20,
+            decision_profile="balanced",
+            source_report_id=4101,
+            trace_id="trace-balanced-sell",
+        ),
+    ).json()["item"]
+    aggressive_sell = client.post(
+        "/api/v1/decision-signals",
+        json=_payload(
+            action="sell",
+            score=20,
+            decision_profile="aggressive",
+            source_report_id=4102,
+            trace_id="trace-aggressive-sell",
+        ),
+    ).json()["item"]
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(invalidation="跌破关键支撑"),
+        context_snapshot=_valid_reassess_context(),
+    )
+
+    persisted = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "aggressive", "persist": True},
+    )
+
+    assert persisted.status_code == 200, persisted.text
+    assert persisted.json()["item"]["action"] == "buy"
+    assert client.get(f"/api/v1/decision-signals/{aggressive_sell['id']}").json()["status"] == "invalidated"
+    assert client.get(f"/api/v1/decision-signals/{balanced_sell['id']}").json()["status"] == "active"
+
+
+def test_reassess_persist_saves_safe_guardrail_downgrade_with_audit_metadata(client_and_db) -> None:
+    client, db = client_and_db
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(confidence_level=None),
+        context_snapshot=_valid_reassess_context(),
+    )
+
+    response = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "aggressive", "persist": True},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    guardrail = payload["item"]["metadata"]["guardrail_result"]
+    assert payload["item"]["action"] == "watch"
+    assert guardrail["raw_action"] == "buy"
+    assert guardrail["final_action"] == "watch"
+    assert guardrail["passed"] is True
+    assert guardrail["adjusted"] is True
+    assert guardrail["violations"]
+    assert guardrail["adjustments"]
+    assert payload["warnings"]
+    assert all(warning["message"] for warning in payload["warnings"])
+    assert _decision_signal_count(db) == 1
+
+
+def test_reassess_persist_guardrail_block_returns_structured_error_without_write(client_and_db) -> None:
+    client, db = client_and_db
+    record_id = _save_reassess_history(
+        db,
+        raw_result=_valid_reassess_raw(invalidation="跌破关键支撑"),
+        context_snapshot=_valid_reassess_context(),
+        stop_loss=1900,
+        take_profit=1800,
+    )
+    before = _decision_signal_count(db)
+
+    response = client.post(
+        "/api/v1/decision-signals/reassess",
+        json={"source_report_id": record_id, "decision_profile": "balanced", "persist": True},
+    )
+
+    assert response.status_code == 400, response.text
+    payload = response.json()
+    assert payload["error"] == "guardrail_blocked"
+    assert payload["blocked_reason"]
+    assert {warning["code"] for warning in payload["warnings"]} >= {
+        "action_adjusted_by_guardrail",
+        "action_blocked_by_guardrail",
+    }
+    assert all(warning["message"] for warning in payload["warnings"])
+    assert "created" not in payload
     assert _decision_signal_count(db) == before
