@@ -1153,13 +1153,15 @@ class AgentOrchestrator:
         dashboard_block["intelligence"] = intelligence
         dashboard_block["battle_plan"] = battle
 
-        key_points = payload.get("key_points")
-        if not isinstance(key_points, list) or not key_points:
-            key_points = [
-                _truncate_text(op.reasoning, 120)
-                for op in ctx.opinions
-                if isinstance(op.reasoning, str) and op.reasoning.strip()
-            ][:5]
+        raw_key_points = payload.get("key_points")
+        if isinstance(raw_key_points, str):
+            key_points = raw_key_points.strip()
+        elif raw_key_points is None:
+            key_points = ""
+        else:
+            raise TypeError(
+                f"key_points must be a string, got {type(raw_key_points).__name__}"
+            )
 
         risk_warning = _first_non_empty_text(
             payload.get("risk_warning"),

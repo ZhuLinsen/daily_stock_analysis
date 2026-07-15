@@ -146,16 +146,25 @@ def test_top_level_report_schema_round_trip_preserves_explanation():
         )
     )
     orchestrator = _orchestrator()
-    explanation = _explanation(orchestrator, ctx)
+    resolved_dashboard, _ = orchestrator._resolve_final_output(
+        ctx,
+        parse_dashboard=True,
+    )
     report_payload = ctx.get_data("final_dashboard")
-    report_payload["dashboard"]["agent_disagreement_explanation"] = explanation
+    assert resolved_dashboard == report_payload
+    assert "agent_disagreement_explanation" in report_payload["dashboard"]
+
+    explanation = report_payload["dashboard"]["agent_disagreement_explanation"]
+    risk_control = explanation["risk_control"]
+    assert report_payload["decision_type"] == "hold"
+    assert risk_control["applied"] is True
+    assert risk_control["from_signal"] == "buy"
+    assert risk_control["to_signal"] == "hold"
+    assert risk_control["reason"] == "risk_veto"
 
     report = AnalysisReportSchema.model_validate(report_payload)
     dumped = report.model_dump()
-    json_dumped = json.loads(report.model_dump_json())
-    round_tripped = AnalysisReportSchema.model_validate(json_dumped).model_dump()
-
-    expected = dumped["dashboard"]["agent_disagreement_explanation"]
-    assert expected["risk_control"]["from_signal"] == "buy"
-    assert json_dumped["dashboard"]["agent_disagreement_explanation"] == expected
-    assert round_tripped["dashboard"]["agent_disagreement_explanation"] == expected
+    round_tripped = AnalysisReportSchema.model_validate_json(
+        report.model_dump_json()
+    )
+    assert round_tripped.model_dump() == dumped

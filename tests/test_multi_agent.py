@@ -910,7 +910,7 @@ class TestOrchestratorExecution(unittest.TestCase):
                 },
             },
             "analysis_summary": "test summary",
-            "key_points": ["technical fixture"],
+            "key_points": "technical fixture",
             "risk_warning": "",
         }, ensure_ascii=False)
 
