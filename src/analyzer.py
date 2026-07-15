@@ -3757,6 +3757,14 @@ class GeminiAnalyzer:
             prompt += market_structure_section
         if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
             prompt += analysis_context_pack_summary
+        
+        # A-Stock 补充数据
+        astock_supplementary = context.get("astock_supplementary") if isinstance(context, dict) else None
+        if astock_supplementary:
+            astock_section = self._build_astock_supplementary_section(astock_supplementary, report_language)
+            if astock_section:
+                prompt += astock_section
+        
         prompt += f"""
 
 ## 📈 技术面数据
@@ -4174,6 +4182,101 @@ class GeminiAnalyzer:
         
         return prompt
     
+    def _build_astock_supplementary_section(self, astock_data: Dict[str, Any], report_language: str = "zh") -> str:
+        """将 A-Stock Data 补充数据（龙虎榜/融资融券/大宗/股东/资金流/概念）渲染为提示词段落。"""
+        if not isinstance(astock_data, dict):
+            return ""
+        parts = []
+
+        dragon = astock_data.get("dragon_tiger")
+        if isinstance(dragon, dict):
+            records = dragon.get("records") or []
+            inst = dragon.get("institution")
+            lines = []
+            if records:
+                recent = records[0]
+                lines.append(
+                    f"- 最近上榜：{recent.get('date', 'N/A')}｜原因：{recent.get('reason', 'N/A')}｜"
+                    f"净买入：{recent.get('net_buy', 'N/A')} 万｜换手：{recent.get('turnover', 'N/A')}%"
+                )
+                if len(records) > 1:
+                    lines.append(f"- 近 {len(records)} 次上榜（近30日）")
+            if inst:
+                lines.append(
+                    f"- 机构席位：买方 {inst.get('buy_amt', 'N/A')} 万｜卖方 {inst.get('sell_amt', 'N/A')} 万｜"
+                    f"净额 {inst.get('net_amt', 'N/A')} 万"
+                )
+            seats = dragon.get("seats") or {}
+            for side in ("buy", "sell"):
+                seat_list = seats.get(side) or []
+                if seat_list:
+                    names = "、".join(
+                        f"{s.get('name', '?')}(净{s.get('net', 'N/A')})" for s in seat_list[:3]
+                    )
+                    lines.append(f"- 龙虎榜{'买' if side == 'buy' else '卖'}方席位：{names}")
+            if lines:
+                parts.append("### 🐯 龙虎榜\n" + "\n".join(lines))
+
+        margin = astock_data.get("margin_trading")
+        if isinstance(margin, list) and margin:
+            latest = margin[0]
+            parts.append(
+                "### 💰 融资融券（最新）\n"
+                f"- 日期：{latest.get('date', 'N/A')}｜融资余额：{latest.get('rzye', 'N/A')}｜"
+                f"融资买入：{latest.get('rzmre', 'N/A')}｜融资偿还：{latest.get('rzche', 'N/A')}｜"
+                f"融券余额：{latest.get('rqye', 'N/A')}｜融券卖出：{latest.get('rqmcl', 'N/A')}"
+            )
+
+        block = astock_data.get("block_trade")
+        if isinstance(block, list) and block:
+            rows = []
+            for b in block[:3]:
+                rows.append(
+                    f"- {b.get('date', 'N/A')}｜成交价 {b.get('price', 'N/A')}｜"
+                    f"溢价 {b.get('premium_pct', 'N/A')}%｜金额 {b.get('amount', 'N/A')}｜"
+                    f"买方：{b.get('buyer', 'N/A')}｜卖方：{b.get('seller', 'N/A')}"
+                )
+            parts.append("### 📜 大宗交易（近3笔）\n" + "\n".join(rows))
+
+        holder = astock_data.get("holder_change")
+        if isinstance(holder, list) and holder:
+            h = holder[0]
+            parts.append(
+                "### 👥 股东户数（最新）\n"
+                f"- 截止 {h.get('date', 'N/A')}｜户数 {h.get('holder_num', 'N/A')}｜"
+                f"变化 {h.get('change_num', 'N/A')}（{h.get('change_ratio', 'N/A')}%）｜"
+                f"户均持股 {h.get('avg_shares', 'N/A')}"
+            )
+
+        flow = astock_data.get("fund_flow")
+        if isinstance(flow, list) and flow:
+            recent_flow = flow[-1]
+            parts.append(
+                "### 🌊 主力资金流（最近交易日）\n"
+                f"- 日期：{recent_flow.get('date', 'N/A')}｜主力净：{recent_flow.get('main_net', 'N/A')}｜"
+                f"超大单净：{recent_flow.get('super_net', 'N/A')}｜大单净：{recent_flow.get('large_net', 'N/A')}｜"
+                f"中单净：{recent_flow.get('mid_net', 'N/A')}｜小单净：{recent_flow.get('small_net', 'N/A')}"
+            )
+            if len(flow) >= 5:
+                recent5 = flow[-5:]
+                avg_main = sum((f.get('main_net') or 0) for f in recent5) / len(recent5)
+                parts.append(f"- 近5日主力净流向均值：{round(avg_main, 1)}")
+
+        concept = astock_data.get("concept_blocks")
+        if isinstance(concept, dict):
+            tags = concept.get("concept_tags") or []
+            if tags:
+                parts.append("### 🏷️ 所属概念板块\n- " + "、".join(str(t) for t in tags[:15]))
+
+        if not parts:
+            return ""
+        header = (
+            "## 🇨🇳 A股特色补充数据\n\n"
+            if report_language != "en"
+            else "## 🇨🇳 A-Share Supplementary Data\n\n"
+        )
+        return header + "\n\n".join(parts) + "\n"
+
     def _format_volume(self, volume: Optional[float]) -> str:
         """格式化成交量显示"""
         if volume is None:

@@ -1,0 +1,71 @@
+name: Connectivity Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      check_mode:
+        description: 'Check mode'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - llm-only
+          - search-only
+          - list-models
+  schedule:
+    - cron: '0 8 * * 1'  # Weekly on Monday at 08:00 UTC
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  connectivity-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install litellm requests
+
+      - name: Run connectivity check
+        env:
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          MINIMAX_API_KEYS: ${{ secrets.MINIMAX_API_KEYS }}
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+          LLM_PRIMARY_API_KEYS: ${{ secrets.LLM_PRIMARY_API_KEYS }}
+          LLM_PRIMARY_MODELS: ${{ vars.LLM_PRIMARY_MODELS }}
+          LLM_GEMINI_API_KEYS: ${{ secrets.LLM_GEMINI_API_KEYS }}
+          LLM_GEMINI_MODELS: ${{ vars.LLM_GEMINI_MODELS }}
+          CONNECTIVITY_TIMEOUT: ${{ vars.CONNECTIVITY_TIMEOUT || '30' }}
+        run: |
+          MODE="${{ github.event.inputs.check_mode || 'all' }}"
+          ARGS=""
+          case "$MODE" in
+            llm-only)   ARGS="--llm-only" ;;
+            search-only) ARGS="--search-only" ;;
+            list-models) ARGS="--list-models" ;;
+          esac
+          python scripts/check_connectivity.py $ARGS
+
+      - name: Upload connectivity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectivity-report
+          path: reports/connectivity_*.md
+          retention-days: 30

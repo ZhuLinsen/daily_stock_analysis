@@ -672,6 +672,28 @@ class StockAnalysisPipeline:
             if isinstance(market_structure_context, dict):
                 enhanced_context["market_structure_context"] = market_structure_context
             
+            # Step 6.5: A-Stock Data 补充数据（龙虎榜/融资融券/大宗交易/股东户数/资金流/概念板块）
+            if market == "cn" and not is_bse_code(normalize_stock_code(code)):
+                try:
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+                    from data_provider.astock_data_provider import AstockDataProvider
+                    _trade_date = daily_market_target_date.isoformat() if daily_market_target_date else None
+                    _provider = AstockDataProvider()
+
+                    with ThreadPoolExecutor(max_workers=1) as _pool:
+                        _future = _pool.submit(_provider.get_supplementary_data, code, trade_date=_trade_date)
+                        try:
+                            _supplementary = _future.result(timeout=30)
+                        except (FuturesTimeout, Exception):
+                            _supplementary = {}
+
+                    _non_empty = {k: v for k, v in _supplementary.items() if v}
+                    if _non_empty:
+                        enhanced_context["astock_supplementary"] = _non_empty
+                        logger.info("%s(%s) A-Stock Data 补充数据: %s", stock_name, code, list(_non_empty.keys()))
+                except Exception as e:
+                    logger.debug("A-Stock Data 补充数据获取失败 %s: %s", code, e)
+            
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
                 analysis_context_pack_summary,

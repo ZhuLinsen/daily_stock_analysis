@@ -95,6 +95,17 @@ _etf_realtime_cache: Dict[str, Any] = {
 }
 
 
+def _is_lof_code(stock_code: str) -> bool:
+    """判断代码是否为 LOF 基金（上市型开放式基金）。
+
+    LOF 与部分 ETF 共用 16xxxx 前缀，需在 ETF 判断之前优先识别。
+    - 深交所 LOF: 16xxxx
+    - 上交所 LOF: 50xxxx
+    """
+    code = stock_code.strip().split('.')[0]
+    return len(code) == 6 and (code.startswith('16') or code.startswith('50'))
+
+
 def _is_etf_code(stock_code: str) -> bool:
     """
     判断代码是否为 ETF 基金
@@ -472,6 +483,8 @@ class AkshareFetcher(BaseFetcher):
             )
         elif _is_hk_code(stock_code):
             return self._fetch_hk_data(stock_code, start_date, end_date)
+        elif _is_lof_code(stock_code):
+            return self._fetch_lof_data(stock_code, start_date, end_date)
         elif _is_etf_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
@@ -708,6 +721,67 @@ class AkshareFetcher(BaseFetcher):
                 raise RateLimitError(f"Akshare 可能被限流: {e}") from e
             
             raise DataFetchError(f"Akshare 获取 ETF 数据失败: {e}") from e
+    
+    def _fetch_lof_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取 LOF 基金历史数据
+        
+        数据来源：ak.fund_lof_hist_em()
+        
+        Args:
+            stock_code: LOF 代码，如 '160119', '501009'
+            start_date: 开始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+            
+        Returns:
+            LOF 历史数据 DataFrame
+        """
+        import akshare as ak
+        
+        # 防封禁策略 1: 随机 User-Agent
+        self._set_random_user_agent()
+        
+        # 防封禁策略 2: 强制休眠
+        self._enforce_rate_limit()
+        
+        logger.info(f"[API调用] ak.fund_lof_hist_em(symbol={stock_code}, period=daily, "
+                   f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)")
+        
+        try:
+            import time as _time
+            api_start = _time.time()
+            
+            # 调用 akshare 获取 LOF 日线数据
+            df = ak.fund_lof_hist_em(
+                symbol=stock_code,
+                period="daily",
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"  # 前复权
+            )
+            
+            api_elapsed = _time.time() - api_start
+            
+            # 记录返回数据摘要
+            if df is not None and not df.empty:
+                logger.info(f"[API返回] ak.fund_lof_hist_em 成功: 返回 {len(df)} 行数据, 耗时 {api_elapsed:.2f}s")
+                logger.info(f"[API返回] 列名: {list(df.columns)}")
+                logger.info(f"[API返回] 日期范围: {df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}")
+                logger.debug(f"[API返回] 最新3条数据:\n{df.tail(3).to_string()}")
+            else:
+                logger.warning(f"[API返回] ak.fund_lof_hist_em 返回空数据, 耗时 {api_elapsed:.2f}s")
+            
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 检测反爬封禁
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                logger.warning(f"检测到可能被封禁: {e}")
+                raise RateLimitError(f"Akshare 可能被限流: {e}") from e
+            
+            raise DataFetchError(f"Akshare 获取 LOF 数据失败: {e}") from e
     
     def _fetch_us_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
