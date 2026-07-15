@@ -1055,6 +1055,15 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertTrue(outcome_path.exists(), f"missing outcome file: {outcome_path}")
         return json.loads(outcome_path.read_text(encoding="utf-8"))
 
+    def _write_valid_report(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# report\n\n"
+            "This generated report contains enough Markdown body content to be "
+            "accepted as an analysis artifact for the current run.\n",
+            encoding="utf-8",
+        )
+
     def test_run_full_analysis_fails_when_no_report_is_generated(self) -> None:
         args = self._make_args(no_market_review=True)
         config = self._make_config(
@@ -1094,8 +1103,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         )
         pipeline = MagicMock()
         pipeline.run.side_effect = lambda **kwargs: (
-            Path("reports").mkdir(exist_ok=True),
-            Path("reports/report_20260714.md").write_text("# report\n", encoding="utf-8"),
+            self._write_valid_report(Path("reports/report_20260714.md")),
             [
                 SimpleNamespace(
                     name="贵州茅台",
@@ -1106,7 +1114,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     get_emoji=lambda: "OK",
                 )
             ],
-        )[2]
+        )[1]
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
              patch("main._project_root", return_value=Path(self.temp_dir.name)), \
@@ -1118,6 +1126,122 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertEqual(outcome["status"], "success")
         self.assertEqual(outcome["reason"], "reports_generated")
         self.assertEqual(outcome["report_files"], ["reports/report_20260714.md"])
+
+    def test_run_full_analysis_rejects_zero_byte_report_file(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+
+        def run_with_empty_report(**kwargs):
+            reports_dir = Path("reports")
+            reports_dir.mkdir(exist_ok=True)
+            (reports_dir / "report_20260714.md").write_text("", encoding="utf-8")
+            return [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ]
+
+        pipeline.run.side_effect = run_with_empty_report
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "no_reports_generated")
+        self.assertEqual(outcome["report_files"], [])
+
+    def test_run_full_analysis_fails_closed_when_report_baseline_unavailable(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        stale_report = Path(self.temp_dir.name) / "reports" / "stale_report.md"
+        self._write_valid_report(stale_report)
+        original_stat = Path.stat
+
+        def stat_with_baseline_error(path, *args, **kwargs):
+            if Path(path) == stale_report:
+                raise OSError("injected stat failure")
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch.object(Path, "stat", stat_with_baseline_error), \
+             patch("src.core.pipeline.StockAnalysisPipeline") as pipeline_cls:
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        refresh.assert_not_called()
+        pipeline_cls.assert_not_called()
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "report_baseline_unavailable")
+        self.assertEqual(outcome["report_files"], [])
+
+    def test_run_full_analysis_fails_when_outcome_cannot_be_written(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        pipeline = MagicMock()
+        pipeline.run.side_effect = lambda **kwargs: (
+            self._write_valid_report(Path("reports/report_20260714.md")),
+            [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ],
+        )[1]
+        original_write_text = Path.write_text
+
+        def fail_only_outcome_write(path, *args, **kwargs):
+            if Path(path).name == "daily_analysis_outcome.json.tmp":
+                raise OSError("disk full")
+            return original_write_text(path, *args, **kwargs)
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch.object(Path, "write_text", fail_only_outcome_write):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        self.assertFalse((Path(config.log_dir) / "daily_analysis_outcome.json").exists())
 
     def test_run_full_analysis_dry_run_does_not_require_report_file(self) -> None:
         args = self._make_args(no_market_review=True, dry_run=True)

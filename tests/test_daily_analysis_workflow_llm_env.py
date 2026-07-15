@@ -96,6 +96,16 @@ def _write_outcome(
     )
 
 
+def _write_valid_report(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# report\n\n"
+        "This generated report contains enough Markdown body content to be "
+        "accepted as an analysis artifact for the current run.\n",
+        encoding="utf-8",
+    )
+
+
 def _run_report_verifier(base_dir: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -140,7 +150,7 @@ def test_daily_analysis_report_verifier_accepts_actual_report(tmp_path: Path) ->
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     report_path = reports_dir / "report_20260714.md"
-    report_path.write_text("# report\n", encoding="utf-8")
+    _write_valid_report(report_path)
     _write_outcome(
         tmp_path,
         status="success",
@@ -152,6 +162,23 @@ def test_daily_analysis_report_verifier_accepts_actual_report(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "reports/report_20260714.md" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_zero_byte_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "report_20260714.md").write_text("", encoding="utf-8")
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=["reports/report_20260714.md"],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "未生成有效 Markdown 报告文件" in result.stdout
 
 
 def test_daily_analysis_report_verifier_rejects_empty_subdir_only(tmp_path: Path) -> None:
@@ -167,7 +194,7 @@ def test_daily_analysis_report_verifier_rejects_empty_subdir_only(tmp_path: Path
     result = _run_report_verifier(tmp_path)
 
     assert result.returncode == 1
-    assert "::error::未生成报告文件" in result.stdout
+    assert "::error::未生成有效 Markdown 报告文件" in result.stdout
 
 
 def test_daily_analysis_report_verifier_accepts_legitimate_skip(tmp_path: Path) -> None:
@@ -183,6 +210,36 @@ def test_daily_analysis_report_verifier_accepts_legitimate_skip(tmp_path: Path) 
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert "non_trading_day" in result.stdout
+
+
+def test_daily_analysis_report_verifier_accepts_dry_run_skip(tmp_path: Path) -> None:
+    (tmp_path / "reports").mkdir()
+    _write_outcome(
+        tmp_path,
+        status="skipped",
+        reason="reports_not_required",
+        report_files=[],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "reports_not_required" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_invalid_skip_schema(tmp_path: Path) -> None:
+    (tmp_path / "reports").mkdir()
+    _write_outcome(
+        tmp_path,
+        status="skipped",
+        reason="typo_or_unimplemented_skip",
+        report_files=["../outside.md"],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "不支持的跳过原因" in result.stdout
 
 
 def test_daily_analysis_report_verifier_rejects_failed_outcome(tmp_path: Path) -> None:

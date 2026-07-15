@@ -17,7 +17,9 @@ A股自选股智能分析系统 - 通知层
 from __future__ import annotations
 
 import logging
+import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
@@ -2734,8 +2736,19 @@ class NotificationService(
 
         filepath = reports_dir / filename
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
+        tmp_path = filepath.with_name(f".{filepath.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp_path.replace(filepath)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)

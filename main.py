@@ -68,6 +68,7 @@ import sys
 import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
+from stat import S_ISDIR, S_ISREG
 
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
@@ -80,6 +81,19 @@ logger = logging.getLogger(__name__)
 _RUNTIME_ENV_FILE_KEYS = set()
 _PUBLIC_BIND_HOSTS = frozenset({"0.0.0.0", "::", "[::]", "*"})
 _ANALYSIS_OUTCOME_FILENAME = "daily_analysis_outcome.json"
+_ANALYSIS_SUCCESS_REASONS = frozenset({"reports_generated"})
+_ANALYSIS_SKIP_REASONS = frozenset({"non_trading_day", "reports_not_required"})
+_ANALYSIS_FAILURE_REASONS = frozenset({
+    "analysis_failed",
+    "no_reports_generated",
+    "report_baseline_unavailable",
+    "report_evidence_unavailable",
+})
+_MIN_REPORT_NON_WHITESPACE_CHARS = 80
+
+
+class ReportOutcomeError(RuntimeError):
+    """Raised when authoritative report evidence cannot be collected."""
 
 
 def _get_active_env_path() -> Path:
@@ -221,31 +235,94 @@ def _analysis_outcome_path(config: Config) -> Path:
     return log_dir / _ANALYSIS_OUTCOME_FILENAME
 
 
+def _relative_report_path(path: Path) -> str:
+    return path.relative_to(_project_root()).as_posix()
+
+
+def _is_valid_report_file(path: Path) -> bool:
+    try:
+        stat_result = path.stat()
+    except OSError:
+        raise
+
+    if not S_ISREG(stat_result.st_mode) or path.suffix != ".md" or stat_result.st_size <= 0:
+        return False
+
+    non_whitespace_chars = 0
+    has_heading = False
+    try:
+        with path.open("r", encoding="utf-8") as report_file:
+            for _ in range(50):
+                line = report_file.readline()
+                if line == "":
+                    break
+                stripped = line.strip()
+                non_whitespace_chars += len("".join(stripped.split()))
+                normalized = stripped.lstrip("\ufeff")
+                if normalized.startswith("# ") or normalized.startswith("## ") or normalized.startswith("### "):
+                    has_heading = True
+                if has_heading and non_whitespace_chars >= _MIN_REPORT_NON_WHITESPACE_CHARS:
+                    return True
+    except UnicodeDecodeError:
+        logger.warning("报告文件不是有效 UTF-8 Markdown: %s", path)
+        return False
+    return False
+
+
 def _snapshot_report_files() -> Dict[str, Tuple[int, int]]:
     reports_dir = _reports_dir()
-    if not reports_dir.exists():
+    try:
+        reports_dir_stat = reports_dir.stat()
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        raise ReportOutcomeError(f"无法读取报告目录状态: {reports_dir}") from exc
+    if not S_ISDIR(reports_dir_stat.st_mode):
+        raise ReportOutcomeError(f"报告路径不是目录: {reports_dir}")
     snapshot = {}
-    for path in reports_dir.glob("*.md"):
+    try:
+        report_paths = list(reports_dir.glob("*.md"))
+    except OSError as exc:
+        raise ReportOutcomeError(f"无法列出报告目录: {reports_dir}") from exc
+
+    for path in report_paths:
         try:
-            if path.is_file():
-                stat_result = path.stat()
-                snapshot[str(path.relative_to(_project_root()))] = (
-                    stat_result.st_mtime_ns,
-                    stat_result.st_size,
-                )
-        except OSError:
-            logger.warning("无法读取报告文件状态: %s", path)
+            stat_result = path.stat()
+        except OSError as exc:
+            raise ReportOutcomeError(f"无法读取报告文件状态: {path}") from exc
+        if S_ISREG(stat_result.st_mode):
+            snapshot[_relative_report_path(path)] = (
+                stat_result.st_mtime_ns,
+                stat_result.st_size,
+            )
     return snapshot
+
+
+def _valid_report_reference(report_file: str) -> bool:
+    report_path = Path(report_file)
+    if report_path.is_absolute() or report_path.parent != Path("reports"):
+        return False
+    if report_path.suffix != ".md":
+        return False
+    return _is_valid_report_file(_project_root() / report_path)
 
 
 def _list_changed_report_files(baseline: Dict[str, Tuple[int, int]]) -> List[str]:
     current = _snapshot_report_files()
     return sorted(
         report_file
-        for report_file, mtime_ns in current.items()
-        if baseline.get(report_file) != mtime_ns
+        for report_file, signature in current.items()
+        if baseline.get(report_file) != signature
+        and _is_valid_report_file(_project_root() / report_file)
     )
+
+
+def _safe_list_changed_report_files(baseline: Dict[str, Tuple[int, int]]) -> List[str]:
+    try:
+        return _list_changed_report_files(baseline)
+    except ReportOutcomeError as exc:
+        logger.error("无法读取失败路径的报告文件列表: %s", exc)
+        return []
 
 
 def _write_analysis_outcome(
@@ -254,12 +331,40 @@ def _write_analysis_outcome(
     status: str,
     reason: str,
     report_files: Optional[List[str]] = None,
-) -> None:
+) -> bool:
+    report_file_list = list(report_files or [])
+    if status == "success" and reason not in _ANALYSIS_SUCCESS_REASONS:
+        logger.error("分析结果状态文件包含不支持的成功原因: %s", reason)
+        return False
+    if status == "skipped" and reason not in _ANALYSIS_SKIP_REASONS:
+        logger.error("分析结果状态文件包含不支持的跳过原因: %s", reason)
+        return False
+    if status == "failed" and reason not in _ANALYSIS_FAILURE_REASONS:
+        logger.error("分析结果状态文件包含不支持的失败原因: %s", reason)
+        return False
+    if status == "success" and not report_file_list:
+        logger.error("分析结果状态文件 success 状态缺少报告文件")
+        return False
+    if status == "skipped" and report_file_list:
+        logger.error("分析结果状态文件 skipped 状态不能包含报告文件")
+        return False
+    for report_file in report_file_list:
+        if not isinstance(report_file, str) or not report_file.strip():
+            logger.error("分析结果状态文件包含无效报告路径")
+            return False
+        try:
+            if not _valid_report_reference(report_file):
+                logger.error("分析结果状态文件包含无效报告文件: %s", report_file)
+                return False
+        except OSError as exc:
+            logger.error("验证报告文件失败: %s", exc)
+            return False
+
     outcome_path = _analysis_outcome_path(config)
     payload = {
         "status": status,
         "reason": reason,
-        "report_files": list(report_files or []),
+        "report_files": report_file_list,
         "written_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -270,8 +375,10 @@ def _write_analysis_outcome(
             encoding="utf-8",
         )
         tmp_path.replace(outcome_path)
+        return True
     except OSError as exc:
-        logger.warning("写入分析结果状态文件失败: %s", exc)
+        logger.error("写入分析结果状态文件失败: %s", exc)
+        return False
 
 
 def _complete_report_outcome(
@@ -281,31 +388,39 @@ def _complete_report_outcome(
     reports_required: bool,
     success_reason: str = "reports_generated",
 ) -> bool:
-    report_files = _list_changed_report_files(report_baseline)
+    try:
+        report_files = _list_changed_report_files(report_baseline)
+    except ReportOutcomeError as exc:
+        logger.error("无法确认本次运行报告产物: %s", exc)
+        return _write_analysis_outcome(
+            config,
+            status="failed",
+            reason="report_evidence_unavailable",
+            report_files=[],
+        ) and False
+
     if report_files:
-        _write_analysis_outcome(
+        return _write_analysis_outcome(
             config,
             status="success",
             reason=success_reason,
             report_files=report_files,
         )
-        return True
     if reports_required:
-        _write_analysis_outcome(
+        wrote_outcome = _write_analysis_outcome(
             config,
             status="failed",
             reason="no_reports_generated",
             report_files=[],
         )
         logger.error("分析流程未生成本次运行的报告文件")
-        return False
-    _write_analysis_outcome(
+        return wrote_outcome and False
+    return _write_analysis_outcome(
         config,
         status="skipped",
         reason="reports_not_required",
         report_files=[],
     )
-    return True
 
 
 def _get_stock_analysis_pipeline():
@@ -780,7 +895,17 @@ def run_full_analysis(
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
-    report_baseline = _snapshot_report_files()
+    try:
+        report_baseline = _snapshot_report_files()
+    except ReportOutcomeError as exc:
+        logger.error("分析前无法建立报告文件基线: %s", exc)
+        _write_analysis_outcome(
+            config,
+            status="failed",
+            reason="report_baseline_unavailable",
+            report_files=[],
+        )
+        return False
     try:
         _refresh_stock_index_cache_for_analysis(config)
 
@@ -797,12 +922,13 @@ def run_full_analysis(
             logger.info(
                 "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
             )
-            _write_analysis_outcome(
+            if not _write_analysis_outcome(
                 config,
                 status="skipped",
                 reason="non_trading_day",
                 report_files=[],
-            )
+            ):
+                return False
             return True
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
@@ -1114,7 +1240,7 @@ def run_full_analysis(
             config,
             status="failed",
             reason="analysis_failed",
-            report_files=_list_changed_report_files(report_baseline),
+            report_files=_safe_list_changed_report_files(report_baseline),
         )
         if raise_errors:
             raise
@@ -1532,7 +1658,17 @@ def main() -> int:
             from src.core.market_review import run_market_review
             from src.core.market_review_runtime import build_market_review_runtime
 
-            report_baseline = _snapshot_report_files()
+            try:
+                report_baseline = _snapshot_report_files()
+            except ReportOutcomeError as exc:
+                logger.error("大盘复盘前无法建立报告文件基线: %s", exc)
+                _write_analysis_outcome(
+                    config,
+                    status="failed",
+                    reason="report_baseline_unavailable",
+                    report_files=[],
+                )
+                return 1
             # Issue #373: Trading day check for market-review-only mode.
             # Do NOT use _compute_trading_day_filter here: that helper checks
             # config.market_review_enabled, which would wrongly block an
@@ -1546,12 +1682,13 @@ def main() -> int:
                 )
                 if effective_region == '':
                     logger.info("今日大盘复盘相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。")
-                    _write_analysis_outcome(
+                    if not _write_analysis_outcome(
                         config,
                         status="skipped",
                         reason="non_trading_day",
                         report_files=[],
-                    )
+                    ):
+                        return 1
                     return 0
 
             logger.info("模式: 仅大盘复盘")
@@ -1573,7 +1710,7 @@ def main() -> int:
                     config,
                     status="failed",
                     reason="analysis_failed",
-                    report_files=_list_changed_report_files(report_baseline),
+                    report_files=_safe_list_changed_report_files(report_baseline),
                 )
                 raise
             if review_ok is False:
@@ -1581,7 +1718,7 @@ def main() -> int:
                     config,
                     status="failed",
                     reason="analysis_failed",
-                    report_files=_list_changed_report_files(report_baseline),
+                    report_files=_safe_list_changed_report_files(report_baseline),
                 )
                 return 1
             if not _complete_report_outcome(
