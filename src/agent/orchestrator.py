@@ -35,8 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from src.agent.chat_context import build_visible_chat_history
 from src.agent.disagreement import (
     build_agent_disagreement_summary,
-    build_base_agent_disagreement,
-    build_base_agent_disagreement_from_buckets,
+    summarize_agent_opinions,
 )
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
@@ -47,11 +46,8 @@ from src.agent.protocols import (
     normalize_decision_signal,
 )
 from src.agent.risk_override import (
-    RiskOverridePlan,
+    RiskOverrideApplication,
     build_risk_override_plan,
-    derive_risk_control_payload,
-    derive_risk_override_application,
-    parse_risk_override_application,
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
@@ -59,10 +55,7 @@ from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
-from src.schemas.report_schema import (
-    AgentDisagreementExplanation,
-    derive_agent_disagreement_decision_path,
-)
+from src.schemas.report_schema import AgentDisagreementExplanation
 
 if TYPE_CHECKING:
     from src.agent.executor import AgentResult
@@ -175,7 +168,6 @@ class AgentOrchestrator:
                 ctx,
                 stage=stage_name,
                 reason="timeout",
-                critical=False,
             )
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
@@ -222,7 +214,6 @@ class AgentOrchestrator:
                 ctx,
                 stage=stage_name,
                 reason="budget_skip",
-                critical=False,
             )
             dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
             if parse_dashboard and dashboard is not None:
@@ -613,7 +604,11 @@ class AgentOrchestrator:
                         tool_calls_log=all_tool_calls,
                     )
                 else:
-                    self._record_degraded_stage(ctx, agent.agent_name, result)
+                    self._record_degraded_event(
+                        ctx,
+                        stage=agent.agent_name,
+                        reason="non_critical_failure",
+                    )
                     logger.warning("[Orchestrator] stage '%s' failed (non-critical, degrading): %s", agent.agent_name, result.error)
 
             index += 1
@@ -776,16 +771,20 @@ class AgentOrchestrator:
     def _attach_agent_disagreement_explanation(self, ctx: AgentContext) -> None:
         """Attach the final low-sensitivity disagreement explanation to dashboard output."""
         dashboard = ctx.get_data("final_dashboard")
-        if not isinstance(dashboard, dict):
+        if dashboard is None:
             return
+        if not isinstance(dashboard, dict):
+            raise TypeError("final_dashboard must be a mapping when present")
 
         explanation = self._build_agent_disagreement_explanation(ctx)
-        if not explanation:
+        if explanation is None:
             return
 
         dashboard_block = dashboard.get("dashboard")
-        if not isinstance(dashboard_block, dict):
+        if dashboard_block is None:
             dashboard_block = {}
+        elif not isinstance(dashboard_block, dict):
+            raise TypeError("final_dashboard.dashboard must be a mapping when present")
         else:
             dashboard_block = dict(dashboard_block)
 
@@ -801,39 +800,12 @@ class AgentOrchestrator:
     def _build_agent_disagreement_explanation(self, ctx: AgentContext) -> Optional[Dict[str, Any]]:
         """Build the final dashboard disagreement explanation from runtime context."""
         dashboard = ctx.get_data("final_dashboard")
-        if not isinstance(dashboard, dict):
+        if dashboard is None:
             return None
+        if not isinstance(dashboard, dict):
+            raise TypeError("final_dashboard must be a mapping when present")
 
-        risk_plan = build_risk_override_plan(
-            ctx,
-            current_signal=dashboard.get("decision_type"),
-            override_enabled=getattr(self.config, "agent_risk_override", True),
-        )
-        return build_final_agent_disagreement_explanation(
-            ctx,
-            risk_plan,
-            normalize_report_language(ctx.meta.get("report_language", "zh")),
-        )
-
-    def _record_degraded_stage(
-        self,
-        ctx: AgentContext,
-        agent_name: str,
-        result: StageResult,
-    ) -> None:
-        """Record a low-sensitivity degraded stage marker for downstream synthesis."""
-        if result.status != StageStatus.FAILED:
-            raise ValueError("degraded stage markers are only produced for failed stages")
-
-        degraded_stages = ctx.meta.setdefault("degraded_stages", [])
-        if not isinstance(degraded_stages, list):
-            degraded_stages = []
-            ctx.meta["degraded_stages"] = degraded_stages
-        degraded_stages.append({
-            "stage_name": agent_name,
-            "status": result.status.value,
-            "non_critical": self._is_non_critical_stage(agent_name),
-        })
+        return build_final_agent_disagreement_explanation(ctx)
 
     @staticmethod
     def _record_degraded_event(
@@ -841,24 +813,26 @@ class AgentOrchestrator:
         *,
         stage: str,
         reason: str,
-        critical: bool,
     ) -> None:
         """Record a low-sensitivity runtime degradation event."""
-        events = ctx.meta.setdefault("degraded_events", [])
-        if not isinstance(events, list):
+        if reason not in {"stage_failure", "non_critical_failure", "timeout", "budget_skip"}:
+            raise ValueError(f"unsupported degraded event reason: {reason}")
+        events = ctx.meta.get("degraded_events")
+        if events is None:
             events = []
             ctx.meta["degraded_events"] = events
+        elif not isinstance(events, list):
+            raise TypeError("ctx.meta['degraded_events'] must be a list")
         event = {
-            "stage": _safe_text(stage) or "unknown",
-            "reason": _safe_text(reason) or "stage_failure",
-            "critical": bool(critical),
+            "stage": _require_text(stage, "degraded_events.stage"),
+            "reason": reason,
         }
         if event not in events:
             events.append(event)
 
     def _is_non_critical_stage(self, agent_name: str) -> bool:
         """Return whether a failed stage should degrade instead of aborting."""
-        normalized_name = str(agent_name or "").strip()
+        normalized_name = _require_text(agent_name, "agent_name")
         return (
             normalized_name in NON_CRITICAL_BASE_STAGES
             or normalized_name in getattr(self, "_skill_agent_names", set())
@@ -892,7 +866,6 @@ class AgentOrchestrator:
             analysis_context_pack_summary = context.get("analysis_context_pack_summary")
             if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
                 ctx.meta["analysis_context_pack_summary"] = analysis_context_pack_summary
-
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",
                              "trend_result", "news_context"):
@@ -1423,7 +1396,7 @@ class AgentOrchestrator:
 
         Idempotent: skips if already applied in this pipeline run.
         """
-        if ctx.get_data("risk_override_applied"):
+        if isinstance(ctx.get_data("risk_override_application"), RiskOverrideApplication):
             return
 
         dashboard = ctx.get_data("final_dashboard")
@@ -1435,13 +1408,30 @@ class AgentOrchestrator:
 
         plan = build_risk_override_plan(
             ctx,
-            current_signal=dashboard.get("decision_type", "hold"),
+            current_signal=_require_text(dashboard.get("decision_type"), "final_dashboard.decision_type"),
             override_enabled=getattr(self.config, "agent_risk_override", True),
         )
+        ctx.set_data("risk_override_plan", plan)
         if not plan.will_apply:
+            ctx.set_data(
+                "risk_override_application",
+                RiskOverrideApplication(
+                    applied=False,
+                    from_signal=None,
+                    to_signal=None,
+                    reason="final_signal_already_within_risk_limit",
+                ),
+            )
             return
 
-        application = derive_risk_override_application(plan)
+        if plan.current_signal is None or plan.target_signal is None:
+            raise RuntimeError("applied risk override requires source and target signals")
+        application = RiskOverrideApplication(
+            applied=True,
+            from_signal=plan.current_signal,
+            to_signal=plan.target_signal,
+            reason=plan.reason,
+        )
         current_signal = application.from_signal
         new_signal = application.to_signal
         dashboard["decision_type"] = new_signal
@@ -1490,7 +1480,7 @@ class AgentOrchestrator:
                         position["has_position"] = "优先控制回撤，建议减仓或退出高风险仓位。"
 
         ctx.set_data("final_dashboard", dashboard)
-        ctx.set_data("risk_override_applied", application.to_context_dict())
+        ctx.set_data("risk_override_application", application)
 
         for opinion in reversed(ctx.opinions):
             if opinion.agent_name == "decision":
@@ -1504,7 +1494,7 @@ class AgentOrchestrator:
             "[Orchestrator] risk override applied: %s -> %s (adjustment=%s, high_flag=%s)",
             current_signal,
             new_signal,
-            application.adjustment,
+            plan.adjustment,
             plan.has_high_flag,
         )
 
@@ -1531,203 +1521,27 @@ class AgentOrchestrator:
         return merged[:500]
 
 
-def build_final_agent_disagreement_explanation(
-    ctx: AgentContext,
-    risk_override_plan: RiskOverridePlan,
-    report_language: str,
-) -> Dict[str, Any]:
-    """Build and validate the deterministic final-state disagreement explanation."""
-    base_disagreement = _build_final_base_disagreement(ctx)
-    risk_control = _build_final_risk_control(ctx, risk_override_plan)
-    degraded_events = _build_final_degraded_events(ctx)
-    decision_path = _build_final_decision_path(base_disagreement, risk_control, degraded_events)
+def build_final_agent_disagreement_explanation(ctx: AgentContext) -> Dict[str, Any]:
+    """Build the dashboard presentation from plan and execution facts."""
+    plan = ctx.get_data("risk_override_plan")
+    application = ctx.get_data("risk_override_application")
+    if plan is None or not isinstance(application, RiskOverrideApplication):
+        raise RuntimeError("risk override execution must complete before dashboard explanation")
+
     explanation = AgentDisagreementExplanation.model_validate({
-        "base_disagreement": base_disagreement,
-        "risk_control": risk_control,
-        "degraded_events": degraded_events,
-        "decision_path": decision_path,
-        "summary": _format_final_disagreement_summary(
-            base_disagreement=base_disagreement,
-            risk_control=risk_control,
-            degraded_events=degraded_events,
-            report_language=report_language,
-        ),
+        "base_disagreement": summarize_agent_opinions(ctx, include_decision=False),
+        "risk_control": {
+            "evidence_present": plan.evidence_present,
+            "override_enabled": plan.override_enabled,
+            "trigger": plan.trigger,
+            "applied": application.applied,
+            "from_signal": application.from_signal,
+            "to_signal": application.to_signal,
+            "reason": application.reason,
+        },
+        "degraded_events": list(ctx.meta.get("degraded_events") or []),
     })
-    return explanation.model_dump()
-
-
-def _build_final_base_disagreement(ctx: AgentContext) -> Dict[str, Any]:
-    summary = ctx.meta.get("agent_disagreement_summary")
-    if isinstance(summary, dict):
-        return build_base_agent_disagreement_from_buckets(summary)
-    return build_base_agent_disagreement(ctx, include_decision=False)
-
-
-def _build_final_risk_control(ctx: AgentContext, plan: RiskOverridePlan) -> Dict[str, Any]:
-    application = parse_risk_override_application(ctx.get_data("risk_override_applied"))
-    return dict(derive_risk_control_payload(plan, application).to_public_dict())
-
-
-def _build_final_degraded_events(ctx: AgentContext) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    _append_degraded_events(events, ctx.meta.get("degraded_events"))
-    _append_degraded_stages(events, ctx.meta.get("degraded_stages"))
-
-    summary = ctx.meta.get("agent_disagreement_summary")
-    if isinstance(summary, dict):
-        degraded_result = summary.get("degraded_result")
-        if isinstance(degraded_result, dict):
-            _append_degraded_stages(events, degraded_result.get("stages"))
-    return events
-
-
-def _append_degraded_events(events: List[Dict[str, Any]], source: Any) -> None:
-    if not isinstance(source, list):
-        return
-    for item in source:
-        if not isinstance(item, dict):
-            continue
-        event = {
-            "stage": _safe_text(item.get("stage")) or _safe_text(item.get("stage_name")) or "unknown",
-            "reason": _safe_text(item.get("reason")) or "stage_failure",
-            "critical": item.get("critical") is True,
-        }
-        if event not in events:
-            events.append(event)
-
-
-def _append_degraded_stages(events: List[Dict[str, Any]], source: Any) -> None:
-    if not isinstance(source, list):
-        return
-    for item in source:
-        if not isinstance(item, dict):
-            continue
-        stage = _safe_text(item.get("stage_name") or item.get("stage"))
-        status = _safe_text(item.get("status")).lower()
-        if not stage:
-            continue
-        if status == "timeout":
-            reason = "timeout"
-        elif item.get("non_critical") is True:
-            reason = "non_critical_failure"
-        else:
-            reason = "stage_failure"
-        event = {
-            "stage": stage,
-            "reason": reason,
-            "critical": item.get("non_critical") is not True,
-        }
-        if event not in events:
-            events.append(event)
-
-
-def _build_final_decision_path(
-    base_disagreement: Dict[str, Any],
-    risk_control: Dict[str, Any],
-    degraded_events: List[Dict[str, Any]],
-) -> str:
-    return derive_agent_disagreement_decision_path(
-        base_disagreement_type=_safe_text(base_disagreement.get("type")),
-        risk_control_applied=risk_control.get("applied") is True,
-        risk_evidence_present=risk_control.get("evidence_present") is True,
-        degraded_events_present=bool(degraded_events),
-    )
-
-
-def _format_final_disagreement_summary(
-    *,
-    base_disagreement: Dict[str, Any],
-    risk_control: Dict[str, Any],
-    degraded_events: List[Dict[str, Any]],
-    report_language: str,
-) -> str:
-    base_type = base_disagreement.get("type")
-    risk_applied = bool(risk_control.get("applied"))
-    risk_evidence = bool(risk_control.get("evidence_present"))
-    has_degraded = bool(degraded_events)
-
-    if report_language == "en":
-        parts = [_english_base_summary(base_type)]
-        if risk_applied:
-            parts.append("Risk controls adjusted the final signal.")
-        elif risk_evidence:
-            parts.append("Risk evidence was reviewed, and the final signal did not require a mechanical downgrade.")
-        else:
-            parts.append("No mechanical risk-control trigger was found.")
-        if has_degraded:
-            parts.append("Some agent stages were degraded, so the result is based on partial completed inputs.")
-        return " ".join(parts)
-
-    if report_language == "ko":
-        parts = [_korean_base_summary(base_type)]
-        if risk_applied:
-            parts.append("위험 통제가 최종 신호를 조정했습니다.")
-        elif risk_evidence:
-            parts.append("위험 근거를 검토했지만 최종 신호는 기계적 하향 조정이 필요하지 않았습니다.")
-        else:
-            parts.append("기계적 위험 통제 트리거는 확인되지 않았습니다.")
-        if has_degraded:
-            parts.append("일부 Agent 단계가 강등되어 완료된 입력을 기준으로 결과를 구성했습니다.")
-        return " ".join(parts)
-
-    parts = [_chinese_base_summary(base_type)]
-    if risk_applied:
-        parts.append("风控规则已实际调整最终信号。")
-    elif risk_evidence:
-        parts.append("风控证据已检查，最终信号未触发机械下调。")
-    else:
-        parts.append("未发现需要机械接管的风控触发。")
-    if has_degraded:
-        parts.append("部分 Agent 阶段发生降级，结果基于已完成输入生成。")
-    return "".join(parts)
-
-
-def _chinese_base_summary(base_type: Any) -> str:
-    if base_type == "mixed_directional_signals":
-        return "基础 Agent 存在方向分歧。"
-    if base_type == "aligned_bullish":
-        return "基础 Agent 整体偏多。"
-    if base_type == "bullish_with_neutral":
-        return "基础 Agent 偏多，但仍有中性输入。"
-    if base_type == "aligned_bearish":
-        return "基础 Agent 整体偏空。"
-    if base_type == "bearish_with_neutral":
-        return "基础 Agent 偏空，但仍有中性输入。"
-    if base_type == "aligned_neutral":
-        return "基础 Agent 整体偏中性。"
-    return "基础 Agent 信息不足。"
-
-
-def _english_base_summary(base_type: Any) -> str:
-    if base_type == "mixed_directional_signals":
-        return "Base agents disagree on direction."
-    if base_type == "aligned_bullish":
-        return "Base agents are broadly bullish."
-    if base_type == "bullish_with_neutral":
-        return "Base agents lean bullish with neutral inputs."
-    if base_type == "aligned_bearish":
-        return "Base agents are broadly bearish."
-    if base_type == "bearish_with_neutral":
-        return "Base agents lean bearish with neutral inputs."
-    if base_type == "aligned_neutral":
-        return "Base agents are broadly neutral."
-    return "Base-agent evidence is limited."
-
-
-def _korean_base_summary(base_type: Any) -> str:
-    if base_type == "mixed_directional_signals":
-        return "기초 Agent 간 방향 판단이 엇갈립니다."
-    if base_type == "aligned_bullish":
-        return "기초 Agent 판단은 대체로 긍정적입니다."
-    if base_type == "bullish_with_neutral":
-        return "기초 Agent 판단은 긍정 쪽이지만 중립 입력도 있습니다."
-    if base_type == "aligned_bearish":
-        return "기초 Agent 판단은 대체로 부정적입니다."
-    if base_type == "bearish_with_neutral":
-        return "기초 Agent 판단은 부정 쪽이지만 중립 입력도 있습니다."
-    if base_type == "aligned_neutral":
-        return "기초 Agent 판단은 대체로 중립적입니다."
-    return "기초 Agent 근거가 제한적입니다."
+    return explanation.model_dump(exclude_none=True)
 
 
 # Common English words (2-5 uppercase letters) that should NOT be treated as
@@ -1944,6 +1758,15 @@ def _safe_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _require_text(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} must not be empty")
+    return text
 
 
 def _first_non_empty_text(*values: Any) -> str:
