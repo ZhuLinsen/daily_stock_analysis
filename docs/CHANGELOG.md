@@ -8,16 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [新功能] LOF 基金支持：新增 `_is_lof_code()` 检测 LOF 代码（16xxxx/Shenzhen, 50xxxx/Shanghai），`_fetch_lof_data()` 使用 `ak.fund_lof_hist_em()` 获取历史数据，失败时自动回退 ETF 接口。
-- [新功能] A 股补充数据提供者（`data_provider/astock_data_provider.py`）：集成龙虎榜、融资融券、大宗交易、股东户数、个股资金流120日、概念板块归属共 6 类东财独有数据维度。
-- [新功能] Pipeline Step 6.5：在 CN 市场个股分析流程中注入 A 股补充数据（30s 超时 fail-open），通过 `enhanced_context["astock_supplementary"]` 传递给 Analyzer。
-- [新功能] Analyzer 渲染 A 股补充数据：新增 `_build_astock_supplementary_section()` 方法，将龙虎榜/融资融券/大宗交易/股东户数/资金流/概念板块渲染为 Prompt 段落。
-- [新功能] 配置连通性自检脚本（`scripts/check_connectivity.py`）：验证 LLM 渠道、搜索 API Key 连通性，支持 `--llm-only`、`--search-only`、`--list-models` 模式。
-- [新功能] 配置连通性自检 GitHub Actions workflow（`.github/workflows/03-connectivity-check.yml`）：手动触发或每周一自动执行。
-- [改进] `_normalize_code()` 支持点号前缀格式（SH.600519、SZ.000001、BJ.920748），修复补充数据在带前缀代码时静默为空的问题。
-- [改进] 东财 API 节流器使用 `threading.Lock` 保证线程安全，避免并发场景下绕过最小调用间隔。
-- [修复] 龙虎榜无记录时不再返回零值 institution 字典，避免 Prompt 将缺失数据错误表达为零交易信号。
-- [测试] 新增 LOF 检测、代码标准化、线程安全节流、连通性检查器的单元测试。
 - [修复] 按股票代码删除历史记录时分批清理全部匹配项，并拒绝空白代码，避免超过 10000 条后残留记录或无筛选删除。
 - [修复] 市场结构概念排行为空或超时时复用本轮负结果，避免批量个股分析重复请求同一概念排行数据源。
 - [修复] Windows/macOS 桌面后端打包显式收集并校验 AkShare `file_fold/calendar.json`，避免发行包因缺少交易日历 package data 导致热点题材和选股日线增强降级。
@@ -47,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] 飞书推送新增文件上传能力：`FeishuSender.send_feishu_file(file_path)` 通过 App Bot SDK (`im.v1.file.create`) 上传文件并发送文件消息；Webhook 模式回退为发送文件内容文本；新增 `FEISHU_SEND_AS_FILE=true` 配置开关，开启后飞书以文件形式发送报告而非文字消息。
 - [新功能] 多 Agent 编排 Pipeline 新增子 Agent 独立超时钳位：支持 6 个环境变量为 TechnicalAgent、IntelAgent、RiskAgent、DecisionAgent、PortfolioAgent、SkillAgent 各自配置独立硬上限，互不挤占配额；默认 0 表示关闭钳位。
+- [新功能] LOF 基金支持：新增 `_is_lof_code()` 检测 LOF 代码（16xxxx/Shenzhen, 50xxxx/Shanghai），`_fetch_lof_data()` 使用 `ak.fund_lof_hist_em()` 获取历史数据，失败时自动回退 ETF 接口。
+- [新功能] A 股补充数据提供者（`data_provider/astock_data_provider.py`）：集成龙虎榜、融资融券、大宗交易、股东户数、个股资金流120日、概念板块归属共 6 类东财独有数据维度。
+- [新功能] Pipeline Step 6.5：在 CN 市场个股分析流程中注入 A 股补充数据（30s 超时 fail-open），通过 `enhanced_context["astock_supplementary"]` 传递给 Analyzer。
+- [新功能] Analyzer 渲染 A 股补充数据：新增 `_build_astock_supplementary_section()` 方法，将龙虎榜/融资融券/大宗交易/股东户数/资金流/概念板块渲染为 Prompt 段落。
+- [新功能] 配置连通性自检脚本（`scripts/check_connectivity.py`）：验证 LLM 渠道、搜索 API Key 连通性，支持 `--llm-only`、`--search-only`、`--list-models` 模式。
+- [新功能] 配置连通性自检 GitHub Actions workflow（`.github/workflows/03-connectivity-check.yml`）：手动触发或每周一自动执行。
+- [改进] `_normalize_code()` 支持点号前缀格式（SH.600519、SZ.000001、BJ.920748），修复补充数据在带前缀代码时静默为空的问题。
+- [改进] 东财 API 节流器使用 `threading.Lock` 保证线程安全，避免并发场景下绕过最小调用间隔。
+- [修复] 龙虎榜无记录时不再返回零值 institution 字典，避免 Prompt 将缺失数据错误表达为零交易信号。
+- [测试] 新增 LOF 检测、代码标准化、线程安全节流、连通性检查器的单元测试。
 
 ## [3.25.0] - 2026-07-03
 
