@@ -40,7 +40,7 @@ jobs:
 
       - name: 执行股票分析
         env:
-          STOCK_LIST: "603986,300308,mu"
+          STOCK_LIST: "09992,hood,mu,bac,bott,avgo,06809,sndk"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
