@@ -319,6 +319,7 @@ const persistedReassessResponse: DecisionSignalReassessResponse = {
   preview: null,
   item: persistedReassessItem,
   created: true,
+  persistStatus: 'created',
   warnings: [{ code: 'action_adjusted_by_guardrail', message: '已由风控调整为 watch。' }],
   blockedReason: null,
 };
@@ -343,6 +344,15 @@ function submitCurrentStock(value: string) {
   const input = screen.getByLabelText('当前股票');
   fireEvent.change(input, { target: { value } });
   fireEvent.click(screen.getByRole('button', { name: '查看股票' }));
+}
+
+async function persistReassessFromFirstSignal() {
+  await screen.findByText('贵州茅台');
+  fireEvent.click(screen.getAllByRole('button', { name: '查看 贵州茅台 AI 建议详情' })[0]);
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '生成预览' }));
+  fireEvent.click(await screen.findByRole('button', { name: '确认保存' }));
+  const confirmButtons = screen.getAllByRole('button', { name: '确认保存' });
+  fireEvent.click(confirmButtons[confirmButtons.length - 1]);
 }
 
 beforeEach(() => {
@@ -609,6 +619,170 @@ describe('DecisionSignalsPage', () => {
       page: 1,
       pageSize: 20,
     })));
+  });
+
+  it('keeps a newly persisted terminal history item out of latest active while retaining it in the timeline', async () => {
+    const terminalHistoryItem = makeSignal({
+      id: 92,
+      decisionProfile: 'balanced',
+      sourceAgent: 'decision_profile_reassess',
+      triggerSource: 'web:decision_profile_reassess',
+      action: 'buy',
+      status: 'invalidated',
+      createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    let persisted = false;
+    vi.mocked(decisionSignalsApi.reassess).mockImplementation(async (request) => {
+      if (!request.persist) return persistableReassessResponse;
+      persisted = true;
+      return {
+        preview: null,
+        item: terminalHistoryItem,
+        created: true,
+        persistStatus: 'created',
+        warnings: [],
+        blockedReason: null,
+      };
+    });
+    vi.mocked(decisionSignalsApi.list).mockImplementation(async () => (
+      listResponse(persisted ? [terminalHistoryItem, signal] : [signal])
+    ));
+    vi.mocked(decisionSignalsApi.getLatest).mockResolvedValue(listResponse([signal]));
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    submitCurrentStock('600519');
+    await persistReassessFromFirstSignal();
+
+    expect(await screen.findByText('已保存为新的 DecisionSignal #92。')).toBeInTheDocument();
+    expect(await screen.findByTestId('timeline-click-92')).toBeInTheDocument();
+    await waitFor(() => expect(
+      vi.mocked(decisionSignalsApi.list).mock.calls.filter(([params]) => params?.pageSize === 100),
+    ).toHaveLength(2));
+    expect(decisionSignalsApi.getLatest).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an auto-balanced exact match as existing without claiming a new save', async () => {
+    const autoBalancedItem = makeSignal({
+      id: 89,
+      decisionProfile: 'balanced',
+      sourceAgent: null,
+      triggerSource: 'api',
+      action: 'buy',
+      metadata: {
+        decision_profile: 'balanced',
+        profile_source: 'auto_default',
+        signal_generation_version: 'legacy-report-extractor-v1',
+      },
+    });
+    vi.mocked(decisionSignalsApi.reassess).mockImplementation(async (request) => (
+      request.persist
+        ? {
+          preview: null,
+          item: autoBalancedItem,
+          created: false,
+          persistStatus: 'existing',
+          warnings: [],
+          blockedReason: null,
+        }
+        : persistableReassessResponse
+    ));
+
+    renderPage();
+    await persistReassessFromFirstSignal();
+
+    expect(await screen.findByText('已复用现有信号')).toBeInTheDocument();
+    expect(screen.getByText(/DecisionSignal #89 已存在，本次没有重复创建/)).toBeInTheDocument();
+    expect(screen.queryByText(/已保存为新的 DecisionSignal #89/)).not.toBeInTheDocument();
+  });
+
+  it('reports an expired signal refresh separately and refreshes active views', async () => {
+    const refreshedItem = makeSignal({
+      id: 90,
+      decisionProfile: 'balanced',
+      sourceAgent: null,
+      triggerSource: 'api',
+      action: 'buy',
+      status: 'active',
+      metadata: {
+        decision_profile: 'balanced',
+        profile_source: 'user_selected',
+        signal_generation_version: 'decision-profile-reassess-v1',
+      },
+    });
+    let persisted = false;
+    vi.mocked(decisionSignalsApi.reassess).mockImplementation(async (request) => {
+      if (!request.persist) return persistableReassessResponse;
+      persisted = true;
+      return {
+        preview: null,
+        item: refreshedItem,
+        created: false,
+        persistStatus: 'refreshed',
+        warnings: [],
+        blockedReason: null,
+      };
+    });
+    vi.mocked(decisionSignalsApi.list).mockImplementation(async () => (
+      listResponse(persisted ? [refreshedItem, signal] : [signal])
+    ));
+    vi.mocked(decisionSignalsApi.getLatest).mockImplementation(async () => (
+      listResponse(persisted ? [refreshedItem, signal] : [signal])
+    ));
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    submitCurrentStock('600519');
+    await persistReassessFromFirstSignal();
+
+    expect(await screen.findByText('重评估信号已刷新')).toBeInTheDocument();
+    expect(screen.getByText(/DecisionSignal #90 已按存储契约完成过期续期或缺失维度补齐/)).toBeInTheDocument();
+    expect(await screen.findByTestId('timeline-click-90')).toBeInTheDocument();
+    await waitFor(() => expect(decisionSignalsApi.getLatest).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps a terminal existing item terminal and does not inject it into active views', async () => {
+    const terminalItem = makeSignal({
+      id: 91,
+      decisionProfile: 'balanced',
+      sourceAgent: null,
+      triggerSource: 'api',
+      action: 'buy',
+      status: 'closed',
+      metadata: {
+        decision_profile: 'balanced',
+        profile_source: 'auto_default',
+        signal_generation_version: 'legacy-report-extractor-v1',
+      },
+    });
+    vi.mocked(decisionSignalsApi.reassess).mockImplementation(async (request) => (
+      request.persist
+        ? {
+          preview: null,
+          item: terminalItem,
+          created: false,
+          persistStatus: 'existing',
+          warnings: [],
+          blockedReason: null,
+        }
+        : persistableReassessResponse
+    ));
+    vi.mocked(decisionSignalsApi.getLatest).mockResolvedValue(listResponse([signal]));
+    vi.mocked(decisionSignalsApi.list).mockResolvedValue(listResponse([signal]));
+
+    renderPage();
+    await screen.findByText('贵州茅台');
+    submitCurrentStock('600519');
+    await persistReassessFromFirstSignal();
+
+    expect(await screen.findByText('现有信号保持终态')).toBeInTheDocument();
+    expect(screen.getByText(/DecisionSignal #91 已处于“已关闭”状态/)).toBeInTheDocument();
+    expect(screen.queryByTestId('timeline-click-91')).not.toBeInTheDocument();
+    expect(screen.queryByText(/已保存为新的 DecisionSignal #91/)).not.toBeInTheDocument();
+    await waitFor(() => expect(
+      vi.mocked(decisionSignalsApi.list).mock.calls.filter(([params]) => params?.pageSize === 20),
+    ).toHaveLength(2));
+    expect(decisionSignalsApi.getLatest).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the authoritative persist result visible after refreshing a latest-sourced detail', async () => {

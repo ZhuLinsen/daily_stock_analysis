@@ -57,6 +57,9 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
     assert "source_agent=decision_profile_reassess" in topic
     assert "trigger_source=web:decision_profile_reassess" in topic
     assert "scoring_breakdown" in topic
+    assert "persist_status=created" in topic
+    assert "`existing` item 原样保留" in topic
+    assert "active relaxed dimension-fill 只补齐缺失的 horizon/market phase" in topic
     assert "HTTP 422" in topic
     assert "decision-signals.md" in full_guide
     assert "decision-signals.md" in full_guide_en

@@ -7009,6 +7009,22 @@
             "title": "Created",
             "default": false
           },
+          "persist_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "existing",
+                  "refreshed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Persist Status"
+          },
           "warnings": {
             "items": {
               "$ref": "#/components/schemas/DecisionSignalWarning"

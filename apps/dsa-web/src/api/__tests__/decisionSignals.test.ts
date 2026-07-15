@@ -276,6 +276,7 @@ describe('decisionSignalsApi', () => {
         },
         item: null,
         created: false,
+        persist_status: null,
         warnings: [
           {
             code: 'action_blocked_by_guardrail',
@@ -311,6 +312,7 @@ describe('decisionSignalsApi', () => {
       },
     });
     expect(response.blockedReason).toBe('actionable_signal_blocked_by_guardrail');
+    expect(response.persistStatus).toBeNull();
   });
 
   it('persists reassess and parses the authoritative server item', async () => {
@@ -336,6 +338,7 @@ describe('decisionSignalsApi', () => {
           },
         },
         created: true,
+        persist_status: 'created',
         warnings: [{ code: 'action_adjusted_by_guardrail', message: '已调整。' }],
         blocked_reason: null,
       },
@@ -360,6 +363,7 @@ describe('decisionSignalsApi', () => {
       guardrail_result: { raw_action: 'buy', final_action: 'watch', passed: true },
     });
     expect(response.created).toBe(true);
+    expect(response.persistStatus).toBe('created');
   });
 
   it('extracts structured guardrail blocked errors', () => {

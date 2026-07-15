@@ -118,6 +118,7 @@ class DecisionSignalReassessService:
                 "preview": preview,
                 "item": None,
                 "created": False,
+                "persist_status": None,
                 "warnings": policy.warnings,
                 "blocked_reason": policy.blocked_reason,
             }
@@ -135,16 +136,24 @@ class DecisionSignalReassessService:
             candidate=preview_candidate,
             metadata=metadata,
         )
+        market_phase_summary = _as_mapping(context_snapshot.get("market_phase_summary"))
+        if not market_phase_summary:
+            market_phase_summary = _as_mapping(raw_result.get("market_phase_summary"))
         try:
-            result = self.signal_service.create_signal(payload)
+            outcome = self.signal_service.create_history_bound_signal_with_outcome(
+                payload,
+                history_created_at=getattr(record, "created_at", None),
+                market_phase_summary=market_phase_summary,
+            )
         except ValueError as exc:
             raise DecisionSignalUnsupportedReportSnapshotError(
                 f"source report snapshot cannot produce a valid decision signal: {exc}"
             ) from exc
         return {
             "preview": None,
-            "item": result["item"],
-            "created": result["created"],
+            "item": outcome.item,
+            "created": outcome.created,
+            "persist_status": outcome.disposition,
             "warnings": policy.warnings,
             "blocked_reason": None,
         }

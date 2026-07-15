@@ -98,17 +98,21 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 - `source_report_id` 是唯一事实来源，重评估只读取对应持久化历史报告快照。
 - Request 只允许 `source_report_id`、`decision_profile`、`persist`。不支持 `signal_id`，也不接受客户端提交 `action`、`score`、`confidence`、`horizon`、`invalidation`、`stop_loss`、`target_price`、`metadata`、`scoring_breakdown` 或 `guardrail_result` 等权威字段；额外字段会返回 HTTP 422，不会被静默忽略。
 - 重评估不会静默抓取实时行情，也不会用当前市场数据补齐历史快照。
-- 来源验证在 preview/persist 中一致：缺失或非法 `source_report_id` 返回 HTTP 422；报告不存在返回 HTTP 404 `source_report_not_found`；非个股报告返回 HTTP 400 `unsupported_report_type`；持久化快照不足以生成决策信号时返回 HTTP 400 `unsupported_report_snapshot`。
+- 来源报告内容验证在 preview/persist 中一致：缺失或非法 `source_report_id` 返回 HTTP 422；报告不存在返回 HTTP 404 `source_report_not_found`；非个股报告返回 HTTP 400 `unsupported_report_type`；持久化快照不足以生成决策信号时返回 HTTP 400 `unsupported_report_snapshot`。Persist 还要求来源报告具有有效 `created_at`，否则返回 HTTP 400 `unsupported_report_snapshot` 且不写库；preview 不依赖该存储生命周期字段。
 - data quality 会归一为 `high`、`medium`、`low`、`poor`、`unknown`，guardrail 只使用归一化后的等级。
 - Preview 成功返回 `preview`、`item=null`、`created=false`；它不写库，也不进入列表、latest 或时间线。
-- Persist 成功返回 `preview=null` 与后端权威 `item`。`created=true` 表示新建，`created=false` 表示命中同 report + 同 profile 的字段化去重记录。
-- Persisted item 固定写入 `source_type=analysis`、原 `source_report_id`、`source_agent=decision_profile_reassess`、`trigger_source=web:decision_profile_reassess` 和正式 `decision_profile`。metadata 保存 `profile_source=user_selected`、`profile_policy_version`、`signal_generation_version`、`scoring_version`、`scoring_breakdown`、`data_quality_level` 和完整 `guardrail_result`。
+- Persist 成功返回 `preview=null`、后端权威 `item` 和 `persist_status`。`persist_status=created` 表示新建；`existing` 表示同一字段化 identity 的记录已存在且未被改写；`refreshed` 表示按既有 expired refresh / dimension-fill 语义复用并刷新记录。兼容字段 `created` 只在 `created` 时为 `true`。`persist_status` 只描述本次写入 disposition，不代表 `item.status` 必然为 active；新建的历史信号也可能因到期或被较新相反信号取代而以 `expired/invalidated` 返回。
+- Reassess persist 与 lazy backfill 使用同一历史生命周期：`created_at` 锚定来源报告时间，`expires_at` 从报告时间、horizon、market 及持久化的 `market_phase_summary` 计算。阶段摘要只保留 `phase/session_date/minutes_to_open/minutes_to_close`；不会用保存当天或实时行情重新赋予有效期。
+- 同 profile 相反信号的失效顺序同样按历史信号不可变的 `created_at` 判断，expired refresh 的 `updated_at` 不改变历史优先级。保存旧报告不得淘汰较新的相反信号；仍在有效期内但已被较新相反信号取代的历史 item 会以 `invalidated` 返回，且 API 返回失效处理后的最终数据库状态。
+- `created` item 写入 `source_type=analysis`、原 `source_report_id`、`source_agent=decision_profile_reassess`、`trigger_source=web:decision_profile_reassess` 和正式 `decision_profile`；metadata 保存 `profile_source=user_selected`、`profile_policy_version`、`signal_generation_version`、`scoring_version`、`scoring_breakdown`、`data_quality_level` 和完整 `guardrail_result`。
+- `existing` item 原样保留最初的 source fields 和 metadata。例如普通分析已经自动生成同 identity 的 `balanced/auto_default` 信号时，用户再次确认 balanced reassess 会返回该记录，不覆盖为 `user_selected`，也不会声称新建成功。终态 existing 不会重新激活。
+- `refreshed` item 保留不可变的原始创建 provenance（`source_type`、`source_report_id`、`source_agent`、`trigger_source`、`created_at` 等），并沿用 #1756 repository 的两个既有子语义：expired refresh 会更新允许变化的决策字段、有效期和本次 reassess audit metadata；active relaxed dimension-fill 只补齐缺失的 horizon/market phase，保留原 metadata。客户端必须以后端返回 item 为准，不能仅凭 `refreshed` 推断 metadata 已被替换。
 - `guardrail_result` 是机器审计数据，记录 `raw_action`、`final_action`、`passed`、`violations`、`adjustments`、`adjusted`；`warnings` 是用户可读摘要。测试和客户端逻辑应优先依赖 warning 的稳定 `code`，`message` 只用于首版展示。
 - `MIN_ACTIONABLE_CONFIDENCE = 0.5`。所有 `buy/add` 还必须具备 horizon、invalidation 或 stop loss、合法价格关系，且 data quality 不能是 `poor/unknown`；aggressive `buy/add` 额外要求明确 invalidation，且不接受 `long` horizon。
 - 缺失置信度/invalidation 或数据质量不足时，可审计地降级为 `watch`，并记录 `passed=true, adjusted=true`。价格关系互相矛盾时无法在不改写历史快照语义的前提下保存有效计划，因此记录 `passed=false`。
 - Preview-only 的 `passed=false` 仍以 HTTP 200 展示，UI 必须突出 `blocked_reason`。Persist 重算得到 `passed=false` 时返回 HTTP 400 `guardrail_blocked`，包含 `blocked_reason` 和结构化 `warnings`，不写库，也不返回 `created=true`。
-- Persisted `item.action` 始终等于 `guardrail_result.final_action`，且 persisted item 必须满足 `guardrail_result.passed=true`。
-- 默认分析和 lazy backfill 仍只生成 `balanced`；`conservative/aggressive` 只能由用户显式选择、预览并确认保存。
+- 每次 persist 重算都必须先满足 `guardrail_result.passed=true` 才能进入写入链；`created/refreshed` 的 `item.action` 等于本次 `guardrail_result.final_action`。`existing` 返回原记录及其原始 metadata，不伪造本次 guardrail audit。
+- 默认分析和 lazy backfill 仍只自动生成 `balanced`；用户可显式选择并确认保存 balanced、conservative 或 aggressive，其中 conservative/aggressive 不会自动生成。
 - aggressive 不是模型采样温度语义，也不会自动生成三套 profile 信号。
 
 ## Web 展示
@@ -129,7 +133,7 @@ Web 入口位于 `/decision-signals`：
 - Web 展示优先读取正式 `decision_profile` 字段，只有字段缺失时才回退 legacy metadata；历史缺失或非法 profile 的信号显示为 `unknown`，不会误标为 `balanced`。
 - market filter 在 API / 服务层与 Web 前端均已支持 `cn/hk/us/jp/kr/tw`；`jp/kr/tw` 的前端本地化标签均已补齐，`tw` 信号可经 API 正常写入、按 `market=tw` 查询，并可在 Web DecisionSignal 页面通过市场筛选项选择台股（tw）；告警（大盘红绿灯）市场支持 `cn/hk/us/jp/kr`。
 - 详情抽屉展示动作、状态、评分、置信度、周期、计划质量、市场阶段、价格计划、风险、观察条件、证据、数据质量和 metadata。
-- 详情抽屉或已有来源报告 ID 的页面上下文可以发起 reassess preview；没有可用来源报告 ID 时入口禁用。Preview 本身不加入列表、latest 或时间线；通过 guardrail 后可由用户二次确认保存。保存会重新请求 `persist=true`，成功后只使用响应中的后端 `item` 更新成功状态、列表、latest 和当前已应用时间线；不会把 preview 拼成本地信号。
+- 详情抽屉或已有来源报告 ID 的页面上下文可以发起 reassess preview；没有可用来源报告 ID 时入口禁用。Preview 本身不加入列表、latest 或时间线；通过 guardrail 后可由用户二次确认保存。保存会重新请求 `persist=true`，成功后只使用响应中的后端 `item`；`created`、`existing`、`refreshed` 使用不同反馈，existing 不会被描述为新建，终态 existing 不会被乐观注入 active latest/时间线，created/refreshed 才按返回状态更新并刷新相关视图。Web 不会把 preview 拼成本地信号。
 - 保存时的 guardrail 调整 warning 会保留显示。如果 persist 重算被 guardrail 阻断，Web 会显示 `blocked_reason` 和结构化 warning，保留 preview 供用户理解，且不会把失败结果加入时间线。
 - 首页分析表单不提供 `decision_profile`；默认自动生成路径仍只使用 `balanced`。
 - Web 只能把信号标记为 `closed`、`invalidated` 或 `archived`，不提供 terminal 状态恢复为 active。
@@ -154,7 +158,7 @@ Web 入口位于 `/decision-signals`：
 - PATCH metadata 省略时保留原值，显式 `null` 时清空为 SQL `NULL`，object 时整包替换。正式 profile 非 `NULL` 时会覆盖 metadata 中的冲突值；正式 profile 为 legacy `NULL` 时会移除请求 object 中的 profile key，且不会提升正式字段。
 - 自动失效写入同样遵循正式字段权威语义：正式 profile 非 `NULL` 时同步 metadata profile；legacy `NULL` 时只追加失效信息，保留原 legacy metadata，不注入或删除 profile。
 - Legacy / unknown 只用数据库 `NULL` 表示。普通自动生成与 lazy backfill 不写入 `scoring_version` 或 `scoring_breakdown`；只有用户显式发起的 reassess 路径根据 profile policy 生成并审计这些字段。这不代表自动生成三套 profile，也不包含 #1758 的 profile-aware outcome calibration。
-- Lazy backfill 语义：省略 profile 保留旧的 `source_type=analysis + source_report_id` 懒回填；`decision_profile=balanced` 可生成 balanced 回填；`decision_profile=unknown`、`conservative`、`aggressive` 不自动创建行。
+- Lazy backfill 语义：省略 profile 保留旧的 `source_type=analysis + source_report_id` 懒回填；`decision_profile=balanced` 可生成 balanced 回填；`decision_profile=unknown`、`conservative`、`aggressive` 不自动创建行。回填与 reassess persist 共享来源报告时间、历史 TTL 和 superseded 判断，不存在第二套历史生命周期。
 
 ## 市场结构 metadata
 

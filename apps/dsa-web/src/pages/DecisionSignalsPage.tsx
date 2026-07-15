@@ -776,10 +776,11 @@ const DecisionSignalsPage: React.FC = () => {
         persist: true,
       });
       if (reassessRequestIdRef.current !== requestId) return;
-      if (!response.item) {
-        throw new Error('DecisionSignal reassess persist response item is required');
+      if (!response.item || !response.persistStatus) {
+        throw new Error('DecisionSignal reassess persist response item and persist_status are required');
       }
       const authoritativeItem = response.item;
+      const shouldOptimisticallyUpsert = response.persistStatus !== 'existing';
       setReassessResponse(response);
       setSelected((current) => (
         current
@@ -787,6 +788,8 @@ const DecisionSignalsPage: React.FC = () => {
           : null
       ));
       if (
+        shouldOptimisticallyUpsert
+        &&
         activeStockContext
         && authoritativeItem.status === 'active'
         && itemMatchesStockContext(authoritativeItem, activeStockContext)
@@ -795,6 +798,8 @@ const DecisionSignalsPage: React.FC = () => {
         void loadLatestForContext(activeStockContext);
       }
       if (
+        shouldOptimisticallyUpsert
+        &&
         appliedTimelineContext
         && itemMatchesAppliedTimeline(authoritativeItem, appliedTimelineContext)
       ) {
@@ -960,6 +965,27 @@ const DecisionSignalsPage: React.FC = () => {
   const renderReassessPanel = () => {
     const preview = reassessResponse?.preview ?? null;
     const persistedItem = reassessResponse?.item ?? null;
+    const persistStatus = reassessResponse?.persistStatus ?? null;
+    const terminalExisting = persistStatus === 'existing' && persistedItem?.status !== 'active';
+    const persistedAlertVariant = terminalExisting
+      ? 'warning'
+      : persistStatus === 'existing'
+        ? 'info'
+        : 'success';
+    const persistedTitleKey: UiTextKey = terminalExisting
+      ? 'decisionSignals.reassessPersistedTerminalTitle'
+      : persistStatus === 'existing'
+        ? 'decisionSignals.reassessPersistedExistingTitle'
+        : persistStatus === 'refreshed'
+          ? 'decisionSignals.reassessPersistedRefreshedTitle'
+          : 'decisionSignals.reassessPersistedCreatedTitle';
+    const persistedMessageKey: UiTextKey = terminalExisting
+      ? 'decisionSignals.reassessPersistedTerminalExisting'
+      : persistStatus === 'existing'
+        ? 'decisionSignals.reassessPersistedExisting'
+        : persistStatus === 'refreshed'
+          ? 'decisionSignals.reassessPersistedRefreshed'
+          : 'decisionSignals.reassessPersistedCreated';
     const metadata = preview?.metadata ?? {};
     const guardrail = isRecord(metadata.guardrail_result) ? metadata.guardrail_result : null;
     const rawAction = typeof guardrail?.raw_action === 'string' ? guardrail.raw_action : null;
@@ -1033,13 +1059,14 @@ const DecisionSignalsPage: React.FC = () => {
         {persistedItem ? (
           <InlineAlert
             className="mt-3"
-            variant="success"
-            title={t('decisionSignals.reassessPersistedTitle')}
+            variant={persistedAlertVariant}
+            title={t(persistedTitleKey)}
             message={t(
-              reassessResponse?.created
-                ? 'decisionSignals.reassessPersistedCreated'
-                : 'decisionSignals.reassessPersistedExisting',
-              { id: persistedItem.id },
+              persistedMessageKey,
+              {
+                id: persistedItem.id,
+                status: t(STATUS_LABEL_KEYS[persistedItem.status]),
+              },
             )}
           />
         ) : null}

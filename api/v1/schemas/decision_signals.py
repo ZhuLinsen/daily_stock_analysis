@@ -264,6 +264,7 @@ class DecisionSignalReassessResponse(BaseModel):
     preview: Optional[DecisionSignalPreview] = None
     item: Optional[DecisionSignalItem] = None
     created: bool = False
+    persist_status: Optional[Literal["created", "existing", "refreshed"]] = None
     warnings: List[DecisionSignalWarning] = Field(default_factory=list)
     blocked_reason: Optional[str] = None
 

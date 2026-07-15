@@ -154,10 +154,13 @@ export interface DecisionSignalReassessPreview {
   metadata: Record<string, unknown>;
 }
 
+export type DecisionSignalPersistStatus = 'created' | 'existing' | 'refreshed';
+
 export interface DecisionSignalReassessResponse {
   preview?: DecisionSignalReassessPreview | null;
   item?: DecisionSignalItem | null;
   created: boolean;
+  persistStatus?: DecisionSignalPersistStatus | null;
   warnings: DecisionSignalWarning[];
   blockedReason?: string | null;
 }
