@@ -484,7 +484,11 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._fetch_hk_data(stock_code, start_date, end_date)
         elif _is_lof_code(stock_code):
-            return self._fetch_lof_data(stock_code, start_date, end_date)
+            try:
+                return self._fetch_lof_data(stock_code, start_date, end_date)
+            except DataFetchError as e:
+                logger.warning("LOF 数据获取失败，回退至 ETF: %s, 错误: %s", stock_code, e)
+                return self._fetch_etf_data(stock_code, start_date, end_date)
         elif _is_etf_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
