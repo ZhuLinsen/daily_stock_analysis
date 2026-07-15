@@ -98,12 +98,18 @@ _etf_realtime_cache: Dict[str, Any] = {
 def _is_lof_code(stock_code: str) -> bool:
     """判断代码是否为 LOF 基金（上市型开放式基金）。
 
-    LOF 与部分 ETF 共用 16xxxx 前缀，需在 ETF 判断之前优先识别。
-    - 深交所 LOF: 16xxxx
-    - 上交所 LOF: 50xxxx
+    LOF 代码规则：
+    - 深交所 LOF: 160xxx, 161xxx（不含 162xxx/163xxx 等 ETF 专用段）
+    - 上交所 LOF: 501xxx
     """
     code = stock_code.strip().split('.')[0]
-    return len(code) == 6 and (code.startswith('16') or code.startswith('50'))
+    if len(code) != 6:
+        return False
+    if code.startswith('160') or code.startswith('161'):
+        return True
+    if code.startswith('501'):
+        return True
+    return False
 
 
 def _is_etf_code(stock_code: str) -> bool:

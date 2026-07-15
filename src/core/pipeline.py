@@ -680,12 +680,15 @@ class StockAnalysisPipeline:
                     _trade_date = daily_market_target_date.isoformat() if daily_market_target_date else None
                     _provider = AstockDataProvider()
 
-                    with ThreadPoolExecutor(max_workers=1) as _pool:
-                        _future = _pool.submit(_provider.get_supplementary_data, code, trade_date=_trade_date)
+                    _executor = ThreadPoolExecutor(max_workers=1)
+                    try:
+                        _future = _executor.submit(_provider.get_supplementary_data, code, trade_date=_trade_date)
                         try:
                             _supplementary = _future.result(timeout=30)
                         except (FuturesTimeout, Exception):
                             _supplementary = {}
+                    finally:
+                        _executor.shutdown(wait=False, cancel_futures=True)
 
                     _non_empty = {k: v for k, v in _supplementary.items() if v}
                     if _non_empty:

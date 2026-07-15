@@ -29,6 +29,21 @@ class TestIsLofCode:
         from data_provider.akshare_fetcher import _is_lof_code
         assert _is_lof_code("159883") is False
 
+    def test_etf_162xxx_not_lof(self):
+        """162xxx are ETFs, not LOF."""
+        from data_provider.akshare_fetcher import _is_lof_code
+        assert _is_lof_code("162006") is False
+
+    def test_etf_163xxx_not_lof(self):
+        """163xxx are ETFs, not LOF."""
+        from data_provider.akshare_fetcher import _is_lof_code
+        assert _is_lof_code("163407") is False
+
+    def test_etf_500xxx_not_lof(self):
+        """500xxx are index ETFs, not LOF."""
+        from data_provider.akshare_fetcher import _is_lof_code
+        assert _is_lof_code("500050") is False
+
     def test_stock_code_not_lof(self):
         from data_provider.akshare_fetcher import _is_lof_code
         assert _is_lof_code("600519") is False
