@@ -18,6 +18,9 @@ import os
 import sys
 import unittest
 from unittest import mock
+import hashlib
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -131,6 +134,28 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
     def setUp(self):
         reset_notification_noise_state()
+
+    @mock.patch("src.notification.get_config")
+    def test_save_report_to_file_records_current_instance_artifact(self, mock_get_config):
+        mock_get_config.return_value = _make_config()
+        service = NotificationService()
+
+        with TemporaryDirectory() as temp_dir, \
+             mock.patch("src.notification.__file__", str(Path(temp_dir) / "src" / "notification.py")):
+            content = "# OK\n\nDone.\n"
+            filepath = service.save_report_to_file(content, "producer_bound.md")
+            saved_files = service.get_saved_report_files()
+            saved_artifacts = service.get_saved_report_artifacts()
+
+        self.assertEqual(saved_files, [filepath])
+        self.assertEqual(saved_artifacts, [{
+            "path": filepath,
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        }])
+        saved_files.append("/tmp/other.md")
+        saved_artifacts[0]["sha256"] = "0" * 64
+        self.assertEqual(service.get_saved_report_files(), [filepath])
+        self.assertNotEqual(service.get_saved_report_artifacts()[0]["sha256"], "0" * 64)
 
     @mock.patch("src.notification.get_config")
     def test_no_channels_service_unavailable_and_send_returns_false(self, mock_get_config):

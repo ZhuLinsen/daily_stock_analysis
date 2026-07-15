@@ -20,6 +20,7 @@ import logging
 import os
 import time
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
@@ -223,6 +224,8 @@ class NotificationService(
         self._config = config
         self._source_message = source_message
         self._context_channels: List[str] = []
+        self._saved_report_files: List[str] = []
+        self._saved_report_artifacts: List[Dict[str, str]] = []
 
         # Markdown 转图片（Issue #289）
         self._markdown_to_image_channels = set(
@@ -2735,11 +2738,13 @@ class NotificationService(
         reports_dir.mkdir(parents=True, exist_ok=True)
 
         filepath = reports_dir / filename
+        content_bytes = content.encode("utf-8")
+        content_sha256 = hashlib.sha256(content_bytes).hexdigest()
 
         tmp_path = filepath.with_name(f".{filepath.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with open(tmp_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            with open(tmp_path, 'wb') as f:
+                f.write(content_bytes)
                 f.flush()
                 os.fsync(f.fileno())
             tmp_path.replace(filepath)
@@ -2751,7 +2756,20 @@ class NotificationService(
             raise
 
         logger.info(f"日报已保存到: {filepath}")
+        self._saved_report_files.append(str(filepath))
+        self._saved_report_artifacts.append({
+            "path": str(filepath),
+            "sha256": content_sha256,
+        })
         return str(filepath)
+
+    def get_saved_report_files(self) -> List[str]:
+        """Return report files saved by this notifier instance."""
+        return list(self._saved_report_files)
+
+    def get_saved_report_artifacts(self) -> List[Dict[str, str]]:
+        """Return report file evidence saved by this notifier instance."""
+        return [dict(artifact) for artifact in self._saved_report_artifacts]
 
     def save_and_send_feishu_file(
         self,

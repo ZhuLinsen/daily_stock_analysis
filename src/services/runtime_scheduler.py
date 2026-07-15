@@ -45,7 +45,7 @@ def run_with_global_analysis_lock(
         return False
     try:
         result = task_runner(config, args, stock_codes)
-        return False if result is False else True
+        return result is not False
     finally:
         _RUNTIME_ANALYSIS_LOCK.release()
 

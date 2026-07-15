@@ -2,6 +2,7 @@
 """Regression tests for scheduled mode stock selection behavior."""
 
 import json
+import hashlib
 import logging
 import os
 import socket
@@ -1064,6 +1065,13 @@ class MainScheduleModeTestCase(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _report_artifact(self, path: Path | str) -> dict:
+        report_path = Path(path)
+        return {
+            "path": str(report_path),
+            "sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+        }
+
     def test_run_full_analysis_fails_when_no_report_is_generated(self) -> None:
         args = self._make_args(no_market_review=True)
         config = self._make_config(
@@ -1076,6 +1084,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = []
         pipeline.run.return_value = []
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
@@ -1102,9 +1111,14 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
-        pipeline.run.side_effect = lambda **kwargs: (
-            self._write_valid_report(Path("reports/report_20260714.md")),
-            [
+        report_path = Path("reports/report_20260714.md")
+
+        def run_with_report(**kwargs):
+            self._write_valid_report(report_path)
+            pipeline.notifier.get_saved_report_artifacts.return_value = [
+                self._report_artifact(report_path)
+            ]
+            return [
                 SimpleNamespace(
                     name="贵州茅台",
                     code="600519",
@@ -1113,8 +1127,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     trend_prediction="震荡",
                     get_emoji=lambda: "OK",
                 )
-            ],
-        )[1]
+            ]
+
+        pipeline.run.side_effect = run_with_report
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
              patch("main._project_root", return_value=Path(self.temp_dir.name)), \
@@ -1139,6 +1154,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = [
+            {"path": "reports/report_20260714.md", "sha256": "0" * 64}
+        ]
 
         def run_with_empty_report(**kwargs):
             reports_dir = Path("reports")
@@ -1165,10 +1183,10 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.assertFalse(result)
         outcome = self._read_analysis_outcome(config)
         self.assertEqual(outcome["status"], "failed")
-        self.assertEqual(outcome["reason"], "no_reports_generated")
+        self.assertEqual(outcome["reason"], "report_evidence_unavailable")
         self.assertEqual(outcome["report_files"], [])
 
-    def test_run_full_analysis_fails_closed_when_report_baseline_unavailable(self) -> None:
+    def test_run_full_analysis_ignores_reports_not_saved_by_current_producer(self) -> None:
         args = self._make_args(no_market_review=True)
         config = self._make_config(
             trading_day_check_enabled=False,
@@ -1179,27 +1197,132 @@ class MainScheduleModeTestCase(unittest.TestCase):
             analysis_delay=0,
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
-        stale_report = Path(self.temp_dir.name) / "reports" / "stale_report.md"
-        self._write_valid_report(stale_report)
-        original_stat = Path.stat
+        pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = []
 
-        def stat_with_baseline_error(path, *args, **kwargs):
-            if Path(path) == stale_report:
-                raise OSError("injected stat failure")
-            return original_stat(path, *args, **kwargs)
+        def run_with_foreign_report(**kwargs):
+            self._write_valid_report(Path("reports/foreign_process_report.md"))
+            return [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ]
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
              patch("main._project_root", return_value=Path(self.temp_dir.name)), \
-             patch.object(Path, "stat", stat_with_baseline_error), \
-             patch("src.core.pipeline.StockAnalysisPipeline") as pipeline_cls:
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            pipeline.run.side_effect = run_with_foreign_report
             result = main.run_full_analysis(config, args, ["600519"])
 
         self.assertFalse(result)
-        refresh.assert_not_called()
-        pipeline_cls.assert_not_called()
+        refresh.assert_called_once_with(config)
         outcome = self._read_analysis_outcome(config)
         self.assertEqual(outcome["status"], "failed")
-        self.assertEqual(outcome["reason"], "report_baseline_unavailable")
+        self.assertEqual(outcome["reason"], "no_reports_generated")
+        self.assertEqual(outcome["report_files"], [])
+
+    def test_run_full_analysis_rejects_report_overwritten_after_producer_save(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        report_path = Path("reports/report_20260714.md")
+        pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = []
+
+        def run_with_overwritten_report(**kwargs):
+            self._write_valid_report(report_path)
+            pipeline.notifier.get_saved_report_artifacts.return_value = [
+                self._report_artifact(report_path)
+            ]
+            report_path.write_text("# foreign\n\nDifferent run.\n", encoding="utf-8")
+            return [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ]
+
+        pipeline.run.side_effect = run_with_overwritten_report
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "report_evidence_unavailable")
+        self.assertEqual(outcome["report_files"], [])
+
+    def test_run_full_analysis_writes_failure_outcome_when_report_cannot_be_read(self) -> None:
+        args = self._make_args(no_market_review=True)
+        config = self._make_config(
+            trading_day_check_enabled=False,
+            market_review_enabled=False,
+            daily_market_context_enabled=False,
+            single_stock_notify=False,
+            merge_email_notification=False,
+            analysis_delay=0,
+            database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
+        )
+        report_path = Path(self.temp_dir.name) / "reports" / "report_20260714.md"
+        pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = []
+        original_read_bytes = Path.read_bytes
+
+        def run_with_report(**kwargs):
+            self._write_valid_report(report_path)
+            pipeline.notifier.get_saved_report_artifacts.return_value = [
+                {
+                    "path": str(report_path),
+                    "sha256": hashlib.sha256(original_read_bytes(report_path)).hexdigest(),
+                }
+            ]
+            return [
+                SimpleNamespace(
+                    name="贵州茅台",
+                    code="600519",
+                    operation_advice="持有",
+                    sentiment_score=1,
+                    trend_prediction="震荡",
+                    get_emoji=lambda: "OK",
+                )
+            ]
+
+        pipeline.run.side_effect = run_with_report
+
+        def fail_only_report_read(path, *args, **kwargs):
+            if Path(path).resolve() == report_path.resolve():
+                raise PermissionError("permission denied")
+            return original_read_bytes(path, *args, **kwargs)
+
+        with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
+             patch("main._project_root", return_value=Path(self.temp_dir.name)), \
+             patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
+             patch.object(Path, "read_bytes", fail_only_report_read):
+            result = main.run_full_analysis(config, args, ["600519"])
+
+        self.assertFalse(result)
+        outcome = self._read_analysis_outcome(config)
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(outcome["reason"], "report_evidence_unavailable")
         self.assertEqual(outcome["report_files"], [])
 
     def test_run_full_analysis_fails_when_outcome_cannot_be_written(self) -> None:
@@ -1214,9 +1337,14 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
-        pipeline.run.side_effect = lambda **kwargs: (
-            self._write_valid_report(Path("reports/report_20260714.md")),
-            [
+        report_path = Path("reports/report_20260714.md")
+
+        def run_with_report(**kwargs):
+            self._write_valid_report(report_path)
+            pipeline.notifier.get_saved_report_artifacts.return_value = [
+                self._report_artifact(report_path)
+            ]
+            return [
                 SimpleNamespace(
                     name="贵州茅台",
                     code="600519",
@@ -1225,19 +1353,21 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     trend_prediction="震荡",
                     get_emoji=lambda: "OK",
                 )
-            ],
-        )[1]
-        original_write_text = Path.write_text
+            ]
+
+        pipeline.run.side_effect = run_with_report
+        original_open = Path.open
 
         def fail_only_outcome_write(path, *args, **kwargs):
-            if Path(path).name == "daily_analysis_outcome.json.tmp":
+            path_name = Path(path).name
+            if path_name.startswith(".daily_analysis_outcome.json.") and path_name.endswith(".tmp"):
                 raise OSError("disk full")
-            return original_write_text(path, *args, **kwargs)
+            return original_open(path, *args, **kwargs)
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
              patch("main._project_root", return_value=Path(self.temp_dir.name)), \
              patch("src.core.pipeline.StockAnalysisPipeline", return_value=pipeline), \
-             patch.object(Path, "write_text", fail_only_outcome_write):
+             patch.object(Path, "open", fail_only_outcome_write):
             result = main.run_full_analysis(config, args, ["600519"])
 
         self.assertFalse(result)
@@ -1255,6 +1385,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         pipeline = MagicMock()
+        pipeline.notifier.get_saved_report_artifacts.return_value = []
         pipeline.run.return_value = []
 
         with patch.object(main, "_refresh_stock_index_cache_for_analysis"), \
@@ -2157,6 +2288,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         runtime_notifier = MagicMock()
+        runtime_notifier.get_saved_report_artifacts.return_value = []
         runtime_analyzer = MagicMock()
         runtime_search_service = MagicMock()
 
@@ -2201,6 +2333,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
         runtime_notifier = MagicMock()
+        runtime_notifier.get_saved_report_artifacts.return_value = []
         runtime_analyzer = MagicMock()
         runtime_search_service = MagicMock()
 
@@ -2232,6 +2365,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             market_review_enabled=False,
             database_path=str(Path(self.temp_dir.name) / "stock_analysis.db"),
         )
+        runtime_notifier = MagicMock()
+        runtime_notifier.get_saved_report_artifacts.return_value = []
 
         with patch("main.parse_arguments", return_value=args), \
              patch("main.get_config", return_value=config), \
@@ -2240,7 +2375,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._run_market_review_with_shared_lock", return_value="review"), \
              patch(
                  "src.core.market_review_runtime.build_market_review_runtime",
-                 return_value=(MagicMock(), MagicMock(), MagicMock()),
+                 return_value=(runtime_notifier, MagicMock(), MagicMock()),
              ), \
              patch("src.core.market_review.run_market_review"):
             exit_code = main.main()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import hashlib
 from pathlib import Path
 
 import yaml
@@ -79,15 +80,25 @@ def _write_outcome(
     status: str,
     reason: str,
     report_files: list[str],
+    report_artifacts: list[dict[str, str]] | None = None,
 ) -> None:
     logs_dir = base_dir / "logs"
     logs_dir.mkdir()
+    if report_artifacts is None and status == "success":
+        report_artifacts = [
+            {
+                "path": report_file,
+                "sha256": hashlib.sha256((base_dir / report_file).read_bytes()).hexdigest(),
+            }
+            for report_file in report_files
+        ]
     (logs_dir / "daily_analysis_outcome.json").write_text(
         json.dumps(
             {
                 "status": status,
                 "reason": reason,
                 "report_files": report_files,
+                "report_artifacts": report_artifacts or [],
             },
             ensure_ascii=False,
         )
@@ -96,14 +107,9 @@ def _write_outcome(
     )
 
 
-def _write_valid_report(path: Path) -> None:
+def _write_report(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "# report\n\n"
-        "This generated report contains enough Markdown body content to be "
-        "accepted as an analysis artifact for the current run.\n",
-        encoding="utf-8",
-    )
+    path.write_text(body, encoding="utf-8")
 
 
 def _run_report_verifier(base_dir: Path) -> subprocess.CompletedProcess[str]:
@@ -150,7 +156,7 @@ def test_daily_analysis_report_verifier_accepts_actual_report(tmp_path: Path) ->
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     report_path = reports_dir / "report_20260714.md"
-    _write_valid_report(report_path)
+    _write_report(report_path, "# report\n\nCurrent-run report body.\n")
     _write_outcome(
         tmp_path,
         status="success",
@@ -178,7 +184,69 @@ def test_daily_analysis_report_verifier_rejects_zero_byte_report(tmp_path: Path)
     result = _run_report_verifier(tmp_path)
 
     assert result.returncode == 1
-    assert "未生成有效 Markdown 报告文件" in result.stdout
+    assert "报告文件为空" in result.stdout
+
+
+def test_daily_analysis_report_verifier_rejects_digest_mismatch(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    report_path = reports_dir / "report_20260714.md"
+    _write_report(report_path, "# report\n\nCurrent-run report body.\n")
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=["reports/report_20260714.md"],
+        report_artifacts=[
+            {
+                "path": "reports/report_20260714.md",
+                "sha256": "0" * 64,
+            }
+        ],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 1
+    assert "报告文件内容摘要不匹配" in result.stdout
+
+
+def test_daily_analysis_report_verifier_accepts_short_markdown_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    report_path = reports_dir / "short_atx.md"
+    _write_report(report_path, "# OK\n\nDone.\n")
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=["reports/short_atx.md"],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "reports/short_atx.md" in result.stdout
+
+
+def test_daily_analysis_report_verifier_accepts_setext_heading_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    report_path = reports_dir / "setext.md"
+    _write_report(
+        report_path,
+        "Market Review\n"
+        "=============\n\n"
+        "This custom template uses a standard Setext heading and remains valid Markdown.\n",
+    )
+    _write_outcome(
+        tmp_path,
+        status="success",
+        reason="reports_generated",
+        report_files=["reports/setext.md"],
+    )
+
+    result = _run_report_verifier(tmp_path)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "reports/setext.md" in result.stdout
 
 
 def test_daily_analysis_report_verifier_rejects_empty_subdir_only(tmp_path: Path) -> None:
@@ -194,7 +262,7 @@ def test_daily_analysis_report_verifier_rejects_empty_subdir_only(tmp_path: Path
     result = _run_report_verifier(tmp_path)
 
     assert result.returncode == 1
-    assert "::error::未生成有效 Markdown 报告文件" in result.stdout
+    assert "success 状态缺少报告产物证据" in result.stdout
 
 
 def test_daily_analysis_report_verifier_accepts_legitimate_skip(tmp_path: Path) -> None:
