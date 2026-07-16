@@ -33,7 +33,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.chat_context import build_visible_chat_history
-from src.agent.disagreement import build_agent_disagreement_summary
+from src.agent.disagreement import (
+    DegradedReason,
+    build_agent_disagreement_explanation,
+    build_agent_disagreement_summary,
+)
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.protocols import (
     AgentContext,
@@ -42,7 +46,11 @@ from src.agent.protocols import (
     StageStatus,
     normalize_decision_signal,
 )
-from src.agent.risk_override import build_risk_override_plan
+from src.agent.risk_override import (
+    RiskOverrideApplication,
+    build_risk_override_application,
+    build_risk_override_plan,
+)
 from src.agent.runner import parse_dashboard_json
 from src.agent.stock_scope import resolve_stock_scope
 from src.agent.stream_events import stream_event
@@ -440,6 +448,11 @@ class AgentOrchestrator:
             )
             if timeout_exhausted:
                 logger.error("[Orchestrator] pipeline timed out before stage '%s'", agent.agent_name)
+                self._record_degraded_event(
+                    ctx,
+                    stage=agent.agent_name,
+                    reason=DegradedReason.TIMEOUT,
+                )
                 if progress_callback:
                     progress_callback(stream_event(
                         "pipeline_timeout",
@@ -463,6 +476,11 @@ class AgentOrchestrator:
                     agent.agent_name,
                     remaining_budget,
                     stage_min_budget_s,
+                )
+                self._record_degraded_event(
+                    ctx,
+                    stage=agent.agent_name,
+                    reason=DegradedReason.BUDGET_SKIP,
                 )
                 if progress_callback:
                     progress_callback(stream_event(
@@ -545,6 +563,11 @@ class AgentOrchestrator:
 
             if timeout_s and elapsed_s >= timeout_s:
                 logger.error("[Orchestrator] pipeline timed out after stage '%s'", agent.agent_name)
+                self._record_degraded_event(
+                    ctx,
+                    stage=agent.agent_name,
+                    reason=DegradedReason.TIMEOUT,
+                )
                 if progress_callback:
                     progress_callback(stream_event(
                         "pipeline_timeout",
@@ -566,9 +589,6 @@ class AgentOrchestrator:
                 final_text = result.meta.get("raw_text")
                 if isinstance(final_text, str) and final_text.strip():
                     ctx.set_data("final_response_text", final_text.strip())
-
-            if result.success and agent.agent_name == "decision":
-                self._apply_risk_override(ctx)
 
             # Abort pipeline on critical failure.
             # Non-critical stages that degrade gracefully:
@@ -764,6 +784,39 @@ class AgentOrchestrator:
             "status": result.status.value,
             "non_critical": self._is_non_critical_stage(agent_name),
         })
+        failure_reason = result.failure_reason
+        reason = (
+            DegradedReason(failure_reason)
+            if failure_reason in {
+                DegradedReason.TIMEOUT.value,
+                DegradedReason.BUDGET_SKIP.value,
+            }
+            else DegradedReason.STAGE_FAILURE
+        )
+        self._record_degraded_event(ctx, stage=agent_name, reason=reason)
+
+    @staticmethod
+    def _record_degraded_event(
+        ctx: AgentContext,
+        *,
+        stage: str,
+        reason: DegradedReason,
+    ) -> None:
+        """Record one deduplicated low-sensitivity runtime degradation fact."""
+        normalized_stage = str(stage or "").strip()
+        if not normalized_stage:
+            raise ValueError("degraded event requires a stage")
+        normalized_reason = DegradedReason(reason)
+        degraded_events = ctx.meta.setdefault("degraded_events", [])
+        if not isinstance(degraded_events, list):
+            degraded_events = []
+            ctx.meta["degraded_events"] = degraded_events
+        degraded_event = {
+            "stage": normalized_stage,
+            "reason": normalized_reason.value,
+        }
+        if degraded_event not in degraded_events:
+            degraded_events.append(degraded_event)
 
     def _is_non_critical_stage(self, agent_name: str) -> bool:
         """Return whether a failed stage should degrade instead of aborting."""
@@ -894,13 +947,32 @@ class AgentOrchestrator:
             return None
 
         ctx.set_data("final_dashboard", dashboard)
-        # Apply risk override (idempotent — safe to call even if already
-        # applied in _execute_pipeline after the decision stage).
         self._apply_risk_override(ctx)
         overridden = ctx.get_data("final_dashboard")
         if isinstance(overridden, dict):
-            return overridden
+            dashboard = overridden
+        self._inject_agent_disagreement_explanation(ctx, dashboard)
         return dashboard
+
+    @staticmethod
+    def _inject_agent_disagreement_explanation(
+        ctx: AgentContext,
+        dashboard: Dict[str, Any],
+    ) -> None:
+        """Validate and inject the deterministic final explanation."""
+        from src.schemas.report_schema import AgentDisagreementExplanation
+
+        payload = build_agent_disagreement_explanation(ctx, dashboard)
+        explanation = AgentDisagreementExplanation.model_validate(payload)
+        dashboard_block = dashboard.get("dashboard")
+        if not isinstance(dashboard_block, dict):
+            dashboard_block = {}
+            dashboard["dashboard"] = dashboard_block
+        dashboard_block["agent_disagreement_explanation"] = explanation.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        ctx.set_data("final_dashboard", dashboard)
 
     def _normalize_dashboard_payload(
         self,
@@ -1326,17 +1398,19 @@ class AgentOrchestrator:
             tagged["dashboard"] = nested
         return tagged
 
-    def _apply_risk_override(self, ctx: AgentContext) -> None:
-        """Apply risk-agent veto/downgrade rules to the final dashboard.
-
-        Idempotent: skips if already applied in this pipeline run.
-        """
-        if ctx.get_data("risk_override_applied"):
-            return
-
+    def _apply_risk_override(self, ctx: AgentContext) -> Optional[RiskOverrideApplication]:
+        """Evaluate and, when needed, apply risk rules to the final dashboard."""
         dashboard = ctx.get_data("final_dashboard")
         if not isinstance(dashboard, dict):
-            return
+            return None
+
+        current_signal = normalize_decision_signal(dashboard.get("decision_type", "hold"))
+        existing = ctx.meta.get("risk_override_application")
+        if (
+            isinstance(existing, RiskOverrideApplication)
+            and existing.final_signal.value == current_signal
+        ):
+            return existing
 
         risk_opinion = next((op for op in reversed(ctx.opinions) if op.agent_name == "risk"), None)
         risk_raw = risk_opinion.raw_data if risk_opinion and isinstance(risk_opinion.raw_data, dict) else {}
@@ -1346,11 +1420,13 @@ class AgentOrchestrator:
             current_signal=dashboard.get("decision_type", "hold"),
             override_enabled=getattr(self.config, "agent_risk_override", True),
         )
-        if not plan.will_apply or plan.target_signal is None or plan.current_signal is None:
-            return
+        application = build_risk_override_application(plan)
+        if not application.applied:
+            ctx.meta["risk_override_application"] = application
+            return application
 
-        current_signal = plan.current_signal
-        new_signal = plan.target_signal
+        current_signal = application.from_signal.value
+        new_signal = application.to_signal.value
         dashboard["decision_type"] = new_signal
         dashboard["risk_warning"] = self._merge_risk_warning(
             dashboard.get("risk_warning"),
@@ -1419,6 +1495,8 @@ class AgentOrchestrator:
             plan.adjustment or ("veto" if plan.veto_buy else "none"),
             plan.has_high_flag,
         )
+        ctx.meta["risk_override_application"] = application
+        return application
 
     @staticmethod
     def _merge_risk_warning(

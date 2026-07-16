@@ -47,6 +47,12 @@ Requirements:
 - Use Markdown when helpful
 - Keep the response practical and specific
 - Highlight the main signal, key reasoning, and major risks
+- Treat `agent_disagreement_summary` as internal decision context that may be
+  used to synthesize the recommendation
+- Do not generate `dashboard.agent_disagreement_explanation`; the Orchestrator
+  deterministically injects that field during final post-processing
+- Do not copy raw reasoning, raw data, raw errors, tokens, secrets, or private
+  payloads from the internal disagreement context
 - Do NOT output JSON or code fences unless the user explicitly asks for them
 """
             if report_language == "en":
@@ -109,6 +115,14 @@ Important: ``decision_type`` must stay within the existing enum
 ``buy|hold|sell``. Express stronger conviction via ``confidence_level``,
 ``sentiment_score``, and the natural-language fields instead of inventing
 new decision_type values.
+
+## Internal Disagreement Context Boundary
+`agent_disagreement_summary` is internal decision context. You may use its
+low-sensitivity facts to synthesize the final recommendation, but you must not
+generate `dashboard.agent_disagreement_explanation`. The Orchestrator owns that
+field and deterministically injects it during final post-processing. Do not
+copy raw reasoning, raw data, raw errors, tokens, secrets, or private payloads
+into any output field.
 
 The nested ``dashboard`` object must include ``phase_decision`` with these
 keys: ``phase_context``, ``action_window``, ``immediate_action``,

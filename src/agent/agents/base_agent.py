@@ -130,6 +130,7 @@ class BaseAgent(ABC):
             result.meta["raw_text"] = loop_result.content
             result.meta["models_used"] = loop_result.models_used
             result.meta["tool_calls_log"] = loop_result.tool_calls_log
+            result.failure_reason = getattr(loop_result, "failure_reason", None)
 
             if not loop_result.success:
                 result.status = StageStatus.FAILED
@@ -146,6 +147,11 @@ class BaseAgent(ABC):
 
             result.status = StageStatus.COMPLETED
 
+        except TimeoutError as exc:
+            logger.error("[%s] execution timed out: %s", self.agent_name, exc, exc_info=True)
+            result.status = StageStatus.FAILED
+            result.error = str(exc)
+            result.failure_reason = "timeout"
         except Exception as exc:
             logger.error("[%s] execution failed: %s", self.agent_name, exc, exc_info=True)
             result.status = StageStatus.FAILED

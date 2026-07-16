@@ -647,6 +647,68 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertIn("agent:gemini", result.data_sources)
         self.assertIsNotNone(result.dashboard)
 
+    def test_convert_preserves_agent_disagreement_explanation(self):
+        """Nested final explanation must survive AgentResult unwrapping."""
+        pipeline_module = importlib.import_module("src.core.pipeline")
+        pipeline = pipeline_module.StockAnalysisPipeline.__new__(
+            pipeline_module.StockAnalysisPipeline
+        )
+        pipeline.config = SimpleNamespace(report_language="zh")
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        explanation = {
+            "base_disagreement": {
+                "type": "insufficient_opinions",
+                "agents": [
+                    {"agent": "technical", "signal": "buy", "confidence": 0.82},
+                ],
+            },
+            "risk_control": {
+                "evidence_present": False,
+                "override_enabled": True,
+                "trigger": "none",
+                "applied": False,
+                "reason": "no_risk_evidence",
+                "final_signal": "buy",
+            },
+            "degraded_events": [],
+            "decision_path": "limited_opinion_synthesis",
+        }
+        dashboard = {
+            "stock_name": "Test Stock",
+            "sentiment_score": 80,
+            "trend_prediction": "bullish",
+            "operation_advice": "buy",
+            "decision_type": "buy",
+            "confidence_level": "high",
+            "analysis_summary": "Testing",
+            "dashboard": {
+                "core_conclusion": {"one_sentence": "test"},
+                "agent_disagreement_explanation": explanation,
+            },
+        }
+        agent_result = AgentResult(
+            success=True,
+            content=json.dumps(dashboard),
+            dashboard=dashboard,
+            provider="test",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result,
+            "600519",
+            "Test Stock",
+            ReportType.SIMPLE,
+            "q-explanation",
+        )
+
+        self.assertEqual(
+            result.dashboard["agent_disagreement_explanation"],
+            explanation,
+        )
+
     def test_convert_preserves_top_level_phase_decision_with_nested_dashboard(self):
         """Agent top-level phase_decision should survive nested dashboard unwrapping."""
         pipeline = self._make_pipeline()

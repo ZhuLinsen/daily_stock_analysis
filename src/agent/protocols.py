@@ -171,6 +171,7 @@ class StageResult:
     status: StageStatus = StageStatus.PENDING
     opinion: Optional[AgentOpinion] = None
     error: Optional[str] = None
+    failure_reason: Optional[str] = None
     duration_s: float = 0.0
     tokens_used: int = 0
     tool_calls_count: int = 0

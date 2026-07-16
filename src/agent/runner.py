@@ -95,6 +95,7 @@ class RunLoopResult:
     provider: str = ""
     models_used: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    failure_reason: Optional[str] = None
     # Raw messages list at the end of the loop (callers may want to persist)
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -277,6 +278,7 @@ def _build_timeout_result(
         provider=provider_used,
         models_used=models_used,
         error=f"Agent timed out after {elapsed:.2f}s (limit: {max_wall_clock_seconds:.2f}s)",
+        failure_reason="timeout",
         messages=messages,
     )
 
@@ -306,6 +308,7 @@ def _build_budget_guard_result(
             "Agent step skipped due to insufficient budget: "
             f"{remaining_timeout_s:.2f}s remaining, minimum {min_step_budget_s:.1f}s required"
         ),
+        failure_reason="budget_skip",
         messages=messages,
     )
 
