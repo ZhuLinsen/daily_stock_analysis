@@ -3,6 +3,9 @@ name: Daily Stock Analysis
 on:
   push:
   workflow_dispatch:
+  schedule:
+    # 国际标准时间 00:00 对应北京时间 08:00，周一至周五自动运行
+    - cron: '0 0 * * 1-6'
     inputs:
       mode:
         description: '模式'
