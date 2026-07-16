@@ -63,6 +63,7 @@ import sys
 import time
 import uuid
 from datetime import date, datetime, timezone, timedelta
+from analyzer import get_stock_sentiment
 
 from data_provider.base import canonical_stock_code
 from src.webui_frontend import prepare_webui_frontend_assets
