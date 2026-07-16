@@ -4,6 +4,9 @@ import requests
 
 def get_stock_sentiment(ticker: str) -> str:
     """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
+    import os
+    import requests
+
     api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
     if not api_key:
         return ""
@@ -22,10 +25,15 @@ def get_stock_sentiment(ticker: str) -> str:
             ticker_data = item.get("ticker_sentiment", [])
             label = "Neutral"
             for t in ticker_data:
+                # 融合点：兼顾大小写转换，防止美股小写代码匹配失败
                 if t.get("ticker").upper() == ticker.upper():
                     label = t.get("ticker_sentiment_label")
                     break
             sentiment_summary.append(f"- 【{label}】{title}")
+
+        return "\n".join(sentiment_summary)
+    except Exception:
+        return ""
 
         return "\n".join(sentiment_summary)
     except Exception:
@@ -53,30 +61,6 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
-from src.agent.llm_adapter import (
-    get_thinking_extra_body,
-    resolve_fallback_litellm_wire_models,
-    register_fallback_model_pricing,
-)
-from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
-from src.config import (
-    Config,
-    extra_litellm_params,
-    get_api_keys_for_model,
-    get_config,
-    get_configured_llm_models,
-    normalize_litellm_temperature,
-    resolve_litellm_wire_model,
-    resolve_news_window_days,
-)
-from src.llm.generation_params import apply_litellm_generation_params
-from src.llm.errors import call_litellm_with_param_recovery
-from src.storage import persist_llm_usage
-from src.data.stock_mapping import STOCK_NAME_MAP
-from src.report_language import (
-    get_signal_level,
-    get_no_data_text,
-    get_placeholder_text,
     get_unknown_text,
     get_chip_unavailable_text,
     infer_decision_type_from_advice,
