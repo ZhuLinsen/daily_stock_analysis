@@ -87,3 +87,10 @@ jobs:
           fi
           
           python main.py $ARGS
+          - name: Run analysis
+      env:
+          # 👇 这一行非常关键，用来将 GitHub 密钥转换为 Python 能读取到的环境变量
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          # 如果有其他 API 密钥，也一并写在这里
+          run: python main.py  # 或者是你仓库里实际运行的脚本文件名
