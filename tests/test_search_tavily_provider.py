@@ -23,12 +23,15 @@ class _FakeTavilyClient:
     response_payload = {"results": []}
     init_api_keys = []
     search_calls = []
+    search_error = None
 
     def __init__(self, api_key=None, **_kwargs):
         type(self).init_api_keys.append(api_key)
 
     def search(self, **kwargs):
         type(self).search_calls.append(kwargs)
+        if type(self).search_error is not None:
+            raise type(self).search_error
         return type(self).response_payload
 
     @classmethod
@@ -36,6 +39,7 @@ class _FakeTavilyClient:
         cls.response_payload = {"results": []}
         cls.init_api_keys = []
         cls.search_calls = []
+        cls.search_error = None
 
 
 def _fake_tavily_module() -> ModuleType:
@@ -121,6 +125,22 @@ class TestTavilySearchProvider(unittest.TestCase):
         self.assertTrue(resp.success)
         self.assertEqual(len(_FakeTavilyClient.search_calls), 1)
         self.assertNotIn("topic", _FakeTavilyClient.search_calls[0])
+
+    def test_usage_limit_disables_key_for_current_provider_run(self) -> None:
+        provider = TavilySearchProvider(["dummy_key"])
+
+        with self._patch_tavily({"results": []}):
+            _FakeTavilyClient.search_error = RuntimeError(
+                "This request exceeds your plan's set usage limit."
+            )
+            first = provider.search("first query")
+            second = provider.search("second query")
+
+        self.assertFalse(first.success)
+        self.assertIn("配额已用尽", first.error_message or "")
+        self.assertFalse(second.success)
+        self.assertIn("本次运行已熔断", second.error_message or "")
+        self.assertEqual(len(_FakeTavilyClient.search_calls), 1)
 
     def test_search_stock_news_keeps_tavily_results_with_supported_date_fields(self) -> None:
         published_dt = datetime.now(timezone.utc).replace(microsecond=0)

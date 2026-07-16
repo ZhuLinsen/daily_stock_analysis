@@ -333,6 +333,27 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertIn(f"https://public-{max_attempts}.example/search", last_search_url)
 
     @patch("src.search_service.requests.get")
+    def test_public_mode_penalizes_failed_instances_across_queries(self, mock_get):
+        feed_urls = ["https://public-1.example/", "https://public-2.example/"]
+        mock_get.side_effect = [
+            self._response(json_payload=self._public_feed(feed_urls)),
+            self._response(status_code=429, text="Too Many Requests", headers={"content-type": "text/plain"}),
+            self._response(json_payload={"results": []}),
+            self._response(json_payload={"results": []}),
+        ]
+
+        provider = self._create_provider(use_public_instances=True)
+        first = provider.search("first", max_results=5)
+        second = provider.search("second", max_results=5)
+
+        self.assertTrue(first.success)
+        self.assertTrue(second.success)
+        self.assertEqual(mock_get.call_count, 4)
+        self.assertIn("https://public-1.example/search", mock_get.call_args_list[1][0][0])
+        self.assertIn("https://public-2.example/search", mock_get.call_args_list[2][0][0])
+        self.assertIn("https://public-2.example/search", mock_get.call_args_list[3][0][0])
+
+    @patch("src.search_service.requests.get")
     def test_public_mode_rotates_start_instance_across_requests(self, mock_get):
         feed_urls = [
             "https://public-1.example/",

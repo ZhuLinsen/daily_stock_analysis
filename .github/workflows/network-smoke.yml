@@ -30,13 +30,15 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
-      - name: 🌐 Run pytest network smoke (non-blocking)
+      - name: 🌐 Run pytest network smoke
+        id: network_tests
         continue-on-error: true
         run: |
           set -o pipefail
           python -m pytest -m network -q | tee pytest-network.log
 
-      - name: 🚀 Run quick smoke (non-blocking)
+      - name: 🚀 Run quick smoke
+        id: quick_smoke
         continue-on-error: true
         run: |
           set -o pipefail
@@ -51,3 +53,47 @@ jobs:
             pytest-network.log
             quick-smoke.log
           if-no-files-found: ignore
+
+      - name: ✅ Enforce minimum network viability
+        if: always()
+        env:
+          NETWORK_TESTS_OUTCOME: ${{ steps.network_tests.outcome }}
+          QUICK_SMOKE_OUTCOME: ${{ steps.quick_smoke.outcome }}
+        run: |
+          echo "pytest network smoke: ${NETWORK_TESTS_OUTCOME}"
+          echo "quick smoke: ${QUICK_SMOKE_OUTCOME}"
+          {
+            echo "## Network Smoke viability"
+            echo "- pytest network smoke: ${NETWORK_TESTS_OUTCOME}"
+            echo "- quick smoke: ${QUICK_SMOKE_OUTCOME}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$NETWORK_TESTS_OUTCOME" != "success" ] && [ "$QUICK_SMOKE_OUTCOME" != "success" ]; then
+            echo "Both network validation paths failed; minimum viability was not met."
+            exit 1
+          fi
+
+      - name: Telegram 网络冒烟失败告警
+        if: failure()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram network alert skipped: credentials are not configured."
+            exit 0
+          fi
+          message="❌ 网络冒烟检查未达到最低可用阈值
+          仓库：${GITHUB_REPOSITORY}
+          运行：${RUN_URL}"
+          args=(
+            --fail --silent --show-error --retry 2
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"
+            --data-urlencode "text=${message}"
+          )
+          if [ -n "${TELEGRAM_MESSAGE_THREAD_ID:-}" ]; then
+            args+=(--data-urlencode "message_thread_id=${TELEGRAM_MESSAGE_THREAD_ID}")
+          fi
+          curl "${args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"

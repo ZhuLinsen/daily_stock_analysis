@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "00-daily-analysis.yml"
+UPSTREAM_WORKFLOW = ROOT / ".github" / "workflows" / "upstream-sync.yml"
 
 
 def main() -> int:
@@ -19,14 +20,19 @@ def main() -> int:
         "dynamic candidate selector": "scripts/select_intraday_candidates.py",
         "candidate count default": "AUTO_SELECT_COUNT: ${{ vars.AUTO_SELECT_COUNT || '10' }}",
         "candidate amount default": "AUTO_SELECT_MIN_AMOUNT: ${{ vars.AUTO_SELECT_MIN_AMOUNT || '100000000' }}",
+        "daily failure alert": "Telegram 失败告警",
     }
     missing = [label for label, snippet in required_snippets.items() if snippet not in text]
     required_files = [
         ROOT / "scripts" / "select_intraday_candidates.py",
         ROOT / "trigger_daily_stock_analysis.command",
         ROOT / ".github" / "dependabot.yml",
+        ROOT / ".github" / "workflows" / "codeql.yml",
     ]
     missing.extend(str(path.relative_to(ROOT)) for path in required_files if not path.is_file())
+    upstream_text = UPSTREAM_WORKFLOW.read_text(encoding="utf-8")
+    if "Send Telegram alert when automatic sync is blocked" not in upstream_text:
+        missing.append("upstream sync Telegram alert")
     if missing:
         raise SystemExit("Personal automation contract is incomplete: " + ", ".join(missing))
     print("Personal automation contract is intact.")
