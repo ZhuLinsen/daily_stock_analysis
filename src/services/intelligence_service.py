@@ -20,7 +20,7 @@ from xml.etree import ElementTree as ET
 import requests
 from sqlalchemy.exc import IntegrityError
 
-from src.config import get_config
+from src.config import Config, get_config
 from src.repositories.intelligence_repo import IntelligenceRepository
 from src.storage import IntelligenceSource, INTELLIGENCE_ITEM_NULL_SCOPE_VALUE
 from src.services.run_diagnostics import sanitize_diagnostic_text
@@ -36,6 +36,7 @@ _UPSTREAM_FETCH_FAILURE_MESSAGE = "fetch failed: upstream request failed"
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _DISABLE_REQUEST_PROXIES = {"http": None, "https": None}
 _DNS_GUARD_LOCK = threading.Lock()
+_AUTO_FETCH_MIN_INTERVAL_SECONDS = 60 * 60
 _BUILTIN_SOURCE_TEMPLATES = [
     {
         "template_id": "sec-company-news",
@@ -121,9 +122,27 @@ class FeedEntry:
 class IntelligenceService:
     """Fetch, validate, persist and query configurable intelligence sources."""
 
-    def __init__(self, repository: Optional[IntelligenceRepository] = None):
+    _auto_fetch_lock = threading.Lock()
+    _auto_fetch_condition = threading.Condition(_auto_fetch_lock)
+    _auto_fetch_in_progress = False
+    _auto_fetch_last_run_at: Optional[datetime] = None
+    _auto_fetch_last_result: Optional[Dict[str, Any]] = None
+
+    def __init__(
+        self,
+        repository: Optional[IntelligenceRepository] = None,
+        config: Optional[Config] = None,
+    ):
         self.repo = repository or IntelligenceRepository()
-        self.config = get_config()
+        self.config = config or get_config()
+
+    @classmethod
+    def reset_auto_fetch_state(cls) -> None:
+        with cls._auto_fetch_condition:
+            cls._auto_fetch_in_progress = False
+            cls._auto_fetch_last_run_at = None
+            cls._auto_fetch_last_result = None
+            cls._auto_fetch_condition.notify_all()
 
     def create_source(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         fields = self._normalize_source_fields(payload)
@@ -181,6 +200,35 @@ class IntelligenceService:
             created_count += 1
             items.append({"created": True, "source": source})
         return {"items": items, "created_count": created_count, "total": len(items)}
+
+    def ensure_default_sources_enabled(self) -> Dict[str, Any]:
+        """Create missing built-in sources and enable existing built-ins for auto mode."""
+        created_count = 0
+        enabled_count = 0
+        errors = []
+        templates = self._builtin_source_templates()
+        for template in templates:
+            name = str(template["name"])
+            try:
+                existing = self.repo.get_source_by_name(name)
+                if existing is not None:
+                    if not existing.enabled:
+                        self.repo.update_source_enabled(existing.id, True)
+                        enabled_count += 1
+                    continue
+                payload = {key: value for key, value in template.items() if key != "template_id"}
+                payload["enabled"] = True
+                self.create_source(payload)
+                created_count += 1
+            except Exception as exc:
+                errors.append({"source": name, "error": self._sanitize_error(exc)})
+        return {
+            "created_count": created_count,
+            "enabled_count": enabled_count,
+            "error_count": len(errors),
+            "errors": errors,
+            "total": len(templates),
+        }
 
     def list_items(self, **filters: Any) -> Dict[str, Any]:
         rows, total = self.repo.list_items(**filters)
@@ -255,6 +303,59 @@ class IntelligenceService:
             "results": results,
             "saved_count": sum(int(item.get("saved_count") or 0) for item in results),
         }
+
+    def refresh_auto_sources(self, *, force: bool = False) -> Dict[str, Any]:
+        """Fail-open runtime refresh for opt-in local intelligence evidence."""
+        if not getattr(self.config, "news_intel_auto_fetch_enabled", False):
+            return {"ok": True, "skipped": True, "reason": "disabled"}
+
+        now = datetime.now()
+        cls = type(self)
+        with cls._auto_fetch_condition:
+            waited_for_in_progress = False
+            while cls._auto_fetch_in_progress:
+                waited_for_in_progress = True
+                cls._auto_fetch_condition.wait()
+            if waited_for_in_progress and cls._auto_fetch_last_result is not None:
+                return dict(cls._auto_fetch_last_result)
+            if (
+                not force
+                and cls._auto_fetch_last_run_at is not None
+                and (now - cls._auto_fetch_last_run_at).total_seconds() < _AUTO_FETCH_MIN_INTERVAL_SECONDS
+            ):
+                return {"ok": True, "skipped": True, "reason": "cooldown"}
+            cls._auto_fetch_in_progress = True
+
+        result: Dict[str, Any]
+        try:
+            bootstrap = self.ensure_default_sources_enabled()
+            fetch = self.fetch_enabled_sources()
+            result = {
+                "ok": True,
+                "skipped": False,
+                "bootstrap": bootstrap,
+                "fetch": fetch,
+                "saved_count": int(fetch.get("saved_count") or 0),
+            }
+            logger.info(
+                "Intelligence auto fetch completed: sources=%s saved=%s created=%s enabled=%s errors=%s",
+                fetch.get("source_count"),
+                result["saved_count"],
+                bootstrap.get("created_count"),
+                bootstrap.get("enabled_count"),
+                bootstrap.get("error_count"),
+            )
+        except Exception as exc:
+            error = self._sanitize_error(exc)
+            logger.warning("Intelligence auto fetch failed (fail-open): %s", error)
+            result = {"ok": False, "skipped": False, "error": error}
+        finally:
+            with cls._auto_fetch_condition:
+                cls._auto_fetch_last_run_at = datetime.now()
+                cls._auto_fetch_last_result = dict(result)
+                cls._auto_fetch_in_progress = False
+                cls._auto_fetch_condition.notify_all()
+        return result
 
     def _normalize_source_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         name = str(payload.get("name") or "").strip()

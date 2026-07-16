@@ -16,6 +16,26 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_stock_list_accepts_common_copy_paste_separators(
+        self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519，300750  hk00700;AAPL、7203.T\n005930.KS",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(
+            config.stock_list,
+            ["600519", "300750", "HK00700", "AAPL", "7203.T", "005930.KS"],
+        )
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_load_from_env_reads_tickflow_api_key(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
@@ -231,7 +251,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
-        self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+        self.assertEqual(config.fundamental_fetch_timeout_seconds, 8.0)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -298,6 +318,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             "NEWS_INTEL_RETENTION_DAYS": "45",
             "NEWS_INTEL_FETCH_TIMEOUT_SEC": "5.5",
             "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "25",
+            "NEWS_INTEL_AUTO_FETCH_ENABLED": "true",
             "NEWSNOW_BASE_URL": "https://newsnow.example.com/",
         })
         with patch.dict(os.environ, news_intel_env, clear=True):
@@ -311,6 +332,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(with_news_intel.news_intel_fetch_timeout_sec, 5.5)
         self.assertEqual(with_news_intel.news_intel_max_items_per_source, 25)
         self.assertEqual(with_news_intel.news_intel_retention_days, 45)
+        self.assertTrue(with_news_intel.news_intel_auto_fetch_enabled)
         self.assertEqual(with_news_intel.newsnow_base_url, "https://newsnow.example.com")
 
     @patch("src.config.setup_env")
@@ -521,6 +543,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 "NEWS_INTEL_RETENTION_DAYS": "14",
                 "NEWS_INTEL_FETCH_TIMEOUT_SEC": "12",
                 "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "75",
+                "NEWS_INTEL_AUTO_FETCH_ENABLED": "yes",
                 "NEWSNOW_BASE_URL": "https://newsnow.example.com/base/",
             },
             clear=True,
@@ -533,6 +556,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.news_intel_retention_days, 14)
         self.assertEqual(config.news_intel_fetch_timeout_sec, 12.0)
         self.assertEqual(config.news_intel_max_items_per_source, 75)
+        self.assertTrue(config.news_intel_auto_fetch_enabled)
         self.assertEqual(config.newsnow_base_url, "https://newsnow.example.com/base")
 
     @patch("src.config.setup_env")
@@ -863,6 +887,22 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertTrue(
             any(issue.severity == "error" and issue.field == "STOCK_LIST" for issue in issues)
         )
+
+    def test_refresh_stock_list_accepts_runtime_env_common_separators(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_env_path = Path(temp_dir) / "missing.env"
+            config = Config(stock_list=["600519"])
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_FILE": str(missing_env_path),
+                    "STOCK_LIST": "600519，300750 AAPL",
+                },
+                clear=True,
+            ):
+                config.refresh_stock_list()
+
+        self.assertEqual(config.stock_list, ["600519", "300750", "AAPL"])
 
     def test_parse_report_language_accepts_known_alias_without_warning(self) -> None:
         with self.assertNoLogs("src.config", level="WARNING"):

@@ -70,6 +70,7 @@ export function useHomeDashboardState() {
       loadMoreStockHistory: state.loadMoreStockHistory,
       stockBarItems: state.stockBarItems,
       isLoadingStockBar: state.isLoadingStockBar,
+      stockBarRefreshFailed: state.stockBarRefreshFailed,
       loadStockBar: state.loadStockBar,
       refreshStockBar: state.refreshStockBar,
     })),

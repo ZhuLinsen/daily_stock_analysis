@@ -154,6 +154,48 @@ describe('useSystemConfig', () => {
     expect(result.current.load).toBe(firstLoad);
   });
 
+  it('normalizes STOCK_LIST separators before saving', async () => {
+    const savedConfig = {
+      ...sampleConfig,
+      items: sampleConfig.items.map((item) => (
+        item.key === 'STOCK_LIST'
+          ? { ...item, value: 'SH600000,SH600519,AAPL' }
+          : item
+      )),
+    };
+
+    getConfig.mockResolvedValueOnce(sampleConfig);
+    getConfig.mockResolvedValueOnce(savedConfig);
+
+    const { result } = renderHook(() => useSystemConfig());
+
+    await act(async () => {
+      await result.current.load();
+    });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    act(() => {
+      result.current.setDraftValue('STOCK_LIST', 'SH600000，SH600519\nAAPL');
+    });
+
+    await act(async () => {
+      await result.current.save();
+    });
+
+    expect(validate).toHaveBeenCalledWith({
+      items: [{ key: 'STOCK_LIST', value: 'SH600000,SH600519,AAPL' }],
+    });
+    expect(update).toHaveBeenCalledWith({
+      configVersion: 'v1',
+      maskToken: '******',
+      reloadNow: true,
+      items: [{ key: 'STOCK_LIST', value: 'SH600000,SH600519,AAPL' }],
+    });
+  });
+
   it('keeps legacy LLM provider fields in save payload without hidden-field migration', async () => {
     const savedConfig = {
       ...sampleLlmConfig,

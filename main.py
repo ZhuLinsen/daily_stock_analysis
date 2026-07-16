@@ -45,17 +45,21 @@ if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").low
     os.environ["http_proxy"] = proxy_url
     os.environ["https_proxy"] = proxy_url
 
-if os.getenv("DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE") == "1":
+_packaged_import_probe = os.getenv("DSA_PACKAGED_IMPORT_PROBE")
+if _packaged_import_probe:
     import importlib
     import sys
 
     try:
-        importlib.import_module("alphasift.dsa_adapter")
+        importlib.import_module(_packaged_import_probe)
     except Exception as exc:
-        print(f"ERROR: packaged AlphaSift adapter import failed: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: packaged import failed for {_packaged_import_probe}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print("OK: packaged AlphaSift adapter import succeeded")
+    print(f"OK: packaged import succeeded for {_packaged_import_probe}")
     sys.exit(0)
 
 import argparse
@@ -68,6 +72,7 @@ from datetime import date, datetime, timezone, timedelta
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.services.stock_list_parser import split_stock_list
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
 
@@ -101,6 +106,13 @@ def _warn_if_public_webui_without_auth(host: str) -> None:
         "boundary or enable admin authentication before exposing it.",
         host,
     )
+
+
+def _resolve_web_service_bind(args: argparse.Namespace, config: Config) -> Tuple[str, int]:
+    """Resolve the effective Web/API bind address from CLI first, then config."""
+    host = args.host if args.host is not None else (config.webui_host or "127.0.0.1")
+    port = args.port if args.port is not None else config.webui_port
+    return host, port
 
 
 def _read_active_env_values() -> Optional[Dict[str, str]]:
@@ -373,15 +385,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--port',
         type=int,
-        default=8000,
-        help='FastAPI 服务端口（默认 8000）'
+        default=None,
+        help='FastAPI 服务端口（默认使用 WEBUI_PORT，未配置时为 8000）'
     )
 
     parser.add_argument(
         '--host',
         type=str,
-        default='0.0.0.0',
-        help='FastAPI 服务监听地址（默认 0.0.0.0）'
+        default=None,
+        help='FastAPI 服务监听地址（默认使用 WEBUI_HOST，未配置时为 127.0.0.1）'
     )
 
     parser.add_argument(
@@ -1283,7 +1295,7 @@ def main() -> int:
     if args.stocks:
         stock_codes = [
             resolve_index_stock_code_for_analysis(c)
-            for c in args.stocks.split(',')
+            for c in split_stock_list(args.stocks)
             if (c or "").strip()
         ]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
@@ -1301,12 +1313,8 @@ def main() -> int:
     # === 启动 Web 服务 (如果启用) ===
     start_serve = (args.serve or args.serve_only) and os.getenv("GITHUB_ACTIONS") != "true"
 
-    # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
     if start_serve:
-        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
-            args.host = os.getenv('WEBUI_HOST')
-        if args.port == 8000 and os.getenv('WEBUI_PORT'):
-            args.port = int(os.getenv('WEBUI_PORT'))
+        args.host, args.port = _resolve_web_service_bind(args, config)
         _warn_if_public_webui_without_auth(args.host)
 
     bot_clients_started = False

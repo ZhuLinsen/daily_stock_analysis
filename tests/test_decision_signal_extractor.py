@@ -147,6 +147,7 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
     assert payload["source_type"] == "analysis"
     assert payload["source_report_id"] == 88
     assert payload["trace_id"] == "trace-88"
+    assert payload["decision_profile"] == "balanced"
     assert payload["trigger_source"] == "api"
     assert payload["action"] == "buy"
     assert payload["confidence"] == 0.8
@@ -174,6 +175,52 @@ def test_build_payload_maps_report_context_and_price_plan() -> None:
         "minutes_to_close": 120,
     }
     assert payload["metadata"]["holding_state"] == "holding"
+
+
+def test_build_payload_adds_market_structure_metadata() -> None:
+    context_snapshot = {
+        "market_structure_context": {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+                "theme_phase": "accelerating",
+                "stock_role": "follower",
+                "risk_tags": [{"code": "theme_data_partial", "message": "partial"}],
+            },
+        }
+    }
+
+    payload = build_decision_signal_payload_from_report(
+        _result(code="300024", name="机器人"),
+        context_snapshot=context_snapshot,
+        source_report_id=91,
+        trace_id="trace-market-structure",
+        query_source="api",
+        report_type="full",
+        profile_source=BUILD_PROFILE_SOURCE,
+    )
+
+    assert payload is not None
+    metadata = payload["metadata"]
+    assert metadata["market_structure_version"] == "market-structure-v1"
+    assert metadata["market_theme_version"] == "market-theme-v1"
+    assert metadata["stock_market_position_version"] == "stock-market-position-v1"
+    assert metadata["market_structure_status"] == "partial"
+    assert metadata["primary_theme"] == "机器人概念"
+    assert metadata["theme_phase"] == "accelerating"
+    assert metadata["stock_role"] == "follower"
+    assert metadata["market_structure_risk_tags"] == ["theme_data_partial"]
 
 
 def test_build_payload_uses_result_fallbacks_and_optional_catalysts() -> None:

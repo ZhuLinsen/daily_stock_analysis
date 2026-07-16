@@ -27,6 +27,7 @@ type SnapshotQuery = {
   accountId?: number;
   asOf?: string;
   costMethod?: PortfolioCostMethod;
+  includeRealtime?: boolean;
 };
 
 type FxRefreshQuery = {
@@ -66,6 +67,9 @@ function buildSnapshotParams(query: SnapshotQuery): Record<string, string | numb
   }
   if (query.costMethod) {
     params.cost_method = query.costMethod;
+  }
+  if (query.includeRealtime !== undefined) {
+    params.include_realtime = query.includeRealtime ? 'true' : 'false';
   }
   return params;
 }

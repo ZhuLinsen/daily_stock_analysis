@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any, Optional
 
 from src.schemas.decision_action import build_action_fields, normalize_decision_action
+from src.schemas.decision_profile import normalize_decision_profile
 from src.schemas.decision_scale import action_for_score, score_action_conflicts_without_guardrail
 from src.services.decision_profile_policy import (
     PROFILE_POLICY_VERSION,
@@ -23,8 +24,7 @@ from src.utils.sniper_points import find_sniper_points, parse_sniper_value
 
 
 UNSUPPORTED_PERSIST_MESSAGE = (
-    "Persisting reassessed decision_profile signals requires decision_profile "
-    "to be promoted to a first-class field."
+    "Persisting reassessed decision_profile signals is tracked by #1757."
 )
 
 
@@ -59,6 +59,9 @@ class DecisionSignalReassessService:
     ) -> dict[str, Any]:
         if persist:
             raise DecisionSignalReassessUnsupportedOperationError(UNSUPPORTED_PERSIST_MESSAGE)
+        decision_profile_norm = normalize_decision_profile(decision_profile)
+        if decision_profile_norm is None:
+            raise ValueError("decision_profile is required")
 
         record = self.db.get_analysis_history_by_id(source_report_id)
         if record is None:
@@ -77,12 +80,12 @@ class DecisionSignalReassessService:
         )
         policy = apply_decision_profile_policy(
             candidate,
-            decision_profile=decision_profile,
+            decision_profile=decision_profile_norm,
             data_quality_level=data_quality_level,
         )
         preview_candidate = policy.candidate
         metadata = {
-            "decision_profile": decision_profile,
+            "decision_profile": decision_profile_norm,
             "profile_source": "user_selected",
             "profile_policy_version": PROFILE_POLICY_VERSION,
             "signal_generation_version": SIGNAL_GENERATION_VERSION,

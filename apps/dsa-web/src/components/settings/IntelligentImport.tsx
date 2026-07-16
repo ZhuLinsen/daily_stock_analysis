@@ -6,6 +6,7 @@ import { systemConfigApi, SystemConfigConflictError } from '../../api/systemConf
 import { Badge, Button, InlineAlert } from '../common';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import type { UiLanguage } from '../../i18n/uiText';
+import { parseStockListValue } from '../../utils/stockList';
 
 const IMG_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 const IMG_MAX = 5 * 1024 * 1024; // 5MB
@@ -114,10 +115,7 @@ export const IntelligentImport: React.FC<IntelligentImportProps> = ({
   const dataFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const parseCurrentList = useCallback(() => {
-    return stockListValue
-      .split(',')
-      .map((c) => c.trim())
-      .filter(Boolean);
+    return parseStockListValue(stockListValue);
   }, [stockListValue]);
 
   const addItems = useCallback((newItems: ExtractItem[]) => {

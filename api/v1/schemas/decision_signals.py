@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.v1.schemas.market_phase import MarketPhaseValue
 from src.schemas.decision_action import DecisionAction
+from src.schemas.decision_profile import DecisionProfile
 
 
 DecisionSignalSourceType = Literal["analysis", "agent", "alert", "market_review", "manual"]
@@ -21,7 +22,6 @@ DecisionSignalOutcomeStatus = Literal["completed", "unable"]
 DecisionSignalOutcomeValue = Literal["hit", "miss", "neutral"]
 DecisionSignalFeedbackValue = Literal["useful", "not_useful"]
 DecisionSignalFeedbackSource = Literal["web", "api"]
-DecisionProfile = Literal["conservative", "balanced", "aggressive"]
 
 
 class DecisionSignalCreateRequest(BaseModel):
@@ -32,6 +32,10 @@ class DecisionSignalCreateRequest(BaseModel):
     source_agent: Optional[str] = Field(None, json_schema_extra={"maxLength": 64})
     source_report_id: Optional[int] = None
     trace_id: Optional[str] = Field(None, json_schema_extra={"maxLength": 64})
+    decision_profile: DecisionProfile = Field(
+        default=None,
+        description="Optional decision profile. Omit to use server-side default/fallback; explicit null is rejected.",
+    )
     market_phase: Optional[MarketPhaseValue] = None
     trigger_source: str = Field(..., min_length=1, json_schema_extra={"maxLength": 64})
     action: DecisionAction
@@ -53,7 +57,10 @@ class DecisionSignalCreateRequest(BaseModel):
     plan_quality: Optional[DecisionSignalPlanQuality] = None
     status: Optional[DecisionSignalStatus] = None
     expires_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional metadata object. Omitted or null values are treated as absent.",
+    )
     report_language: Optional[Literal["zh", "en", "ko"]] = None
 
 
@@ -98,7 +105,14 @@ class DecisionSignalPreview(BaseModel):
 
 class DecisionSignalStatusUpdateRequest(BaseModel):
     status: DecisionSignalStatus
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional replacement metadata. Omit to preserve the stored value; "
+            "null clears it; an object replaces it while preserving the formal "
+            "decision_profile identity."
+        ),
+    )
 
 
 class DecisionSignalOutcomeRunRequest(BaseModel):
@@ -214,6 +228,7 @@ class DecisionSignalItem(BaseModel):
     source_agent: Optional[str] = None
     source_report_id: Optional[int] = None
     trace_id: Optional[str] = None
+    decision_profile: Optional[DecisionProfile] = None
     market_phase: Optional[str] = None
     trigger_source: str
     action: str

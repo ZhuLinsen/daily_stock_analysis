@@ -23,7 +23,8 @@ import {
   SettingsSectionCard,
 } from '../components/settings';
 import { WEB_BUILD_INFO } from '../utils/constants';
-import { getCategoryDescription } from '../utils/systemConfigI18n';
+import { parseStockListValue } from '../utils/stockList';
+import { getCategoryDescription, getCategoryTitle } from '../utils/systemConfigI18n';
 import type {
   ConfigValidationIssue,
   SchedulerStatusResponse,
@@ -324,10 +325,7 @@ function getConfigItem(items: SystemConfigItem[], key: string) {
 }
 
 function parseSetupStockList(value: unknown) {
-  return String(value ?? '')
-    .split(/[,\n\r;，、\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return parseStockListValue(String(value ?? ''));
 }
 
 function isEnabledConfigValue(value: unknown) {
@@ -1367,24 +1365,30 @@ const SettingsPage: React.FC = () => {
       ? <>Check and provide the desktop log <code>desktop.log</code>, plus the release version, Windows version, and trigger path.</>
       : <>请查看并提供桌面端日志 <code>desktop.log</code>，同时补充 release 版本、Windows 版本和触发入口。</>
     : t('settings.diagnosticHintWeb');
+  const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
+  const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);
   const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
-      title={t('settings.activePanelTitle')}
-      description={getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage) || t('settings.activePanelDescription')}
+      title={activeCategoryTitle}
+      description={activeCategoryDescription || t('settings.activePanelDescription')}
     >
-      {visibleActiveItems.map((item) => (
-        <SettingsField
-          key={item.key}
-          item={item}
-          value={item.value}
-          disabled={isSaving}
-          onChange={setDraftValue}
-          issues={issueByKey[item.key] || []}
-        />
-      ))}
+      {visibleActiveItems.length ? (
+        <div className="divide-y divide-[var(--settings-border-soft)] overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)]">
+          {visibleActiveItems.map((item) => (
+            <SettingsField
+              key={item.key}
+              item={item}
+              value={item.value}
+              disabled={isSaving}
+              onChange={setDraftValue}
+              issues={issueByKey[item.key] || []}
+            />
+          ))}
+        </div>
+      ) : null}
       {promptCacheAdvancedItems.length ? (
-        <details className="group/prompt-cache rounded-[1.15rem] border border-[var(--settings-border)] bg-[var(--settings-surface)] p-4 shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
-          <summary className="flex cursor-pointer list-none items-start justify-between gap-3 [&::-webkit-details-marker]:hidden">
+        <details className="group/prompt-cache overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)] transition-colors duration-200 hover:bg-[var(--settings-surface-hover)]">
+          <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-4 py-4 [&::-webkit-details-marker]:hidden">
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-semibold text-foreground">
                 {t('settings.promptCacheAdvancedTitle')}
@@ -1395,7 +1399,7 @@ const SettingsPage: React.FC = () => {
             </div>
             <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-text transition-transform group-open/prompt-cache:rotate-180" aria-hidden="true" />
           </summary>
-          <div className="mt-4 space-y-4">
+          <div className="divide-y divide-[var(--settings-border-soft)] border-t border-[var(--settings-border-soft)]">
             {promptCacheAdvancedItems.map((item) => (
               <SettingsField
                 key={item.key}
@@ -1420,11 +1424,11 @@ const SettingsPage: React.FC = () => {
 
   return (
     <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
-      <div className="mb-5 rounded-[1.5rem] border settings-border bg-card/94 px-5 py-5 shadow-soft-card-strong backdrop-blur-sm">
+      <div className="mb-4 rounded-lg border settings-border bg-card/90 px-4 py-4 shadow-soft-card backdrop-blur-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">{t('settings.pageTitle')}</h1>
-            <p className="text-xs leading-6 text-muted-text">
+            <p className="max-w-3xl text-xs leading-5 text-muted-text sm:text-sm sm:leading-6">
               {t('settings.pageDescription')}
             </p>
           </div>
@@ -1433,25 +1437,31 @@ const SettingsPage: React.FC = () => {
             <Button
               type="button"
               variant="settings-secondary"
+              size="sm"
+              className="px-2.5"
               onClick={resetDraft}
               disabled={isLoading || isSaving}
             >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
               {t('settings.reset')}
             </Button>
-              <Button
-                type="button"
-                variant="settings-primary"
-                onClick={() => void handleSaveConfig()}
-                disabled={!effectiveHasDirty || isSaving || isLoading}
-                isLoading={isSaving}
-                loadingText={t('settings.saving')}
-              >
-                {isSaving
-                  ? t('settings.saving')
-                  : effectiveDirtyCount
-                    ? t('settings.saveConfigWithCount', { count: effectiveDirtyCount })
-                    : t('settings.saveConfig')}
-              </Button>
+            <Button
+              type="button"
+              variant="settings-primary"
+              size="sm"
+              className="px-2.5"
+              onClick={() => void handleSaveConfig()}
+              disabled={!effectiveHasDirty || isSaving || isLoading}
+              isLoading={isSaving}
+              loadingText={t('settings.saving')}
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              {isSaving
+                ? t('settings.saving')
+                : effectiveDirtyCount
+                  ? t('settings.saveConfigWithCount', { count: effectiveDirtyCount })
+                  : t('settings.saveConfig')}
+            </Button>
           </div>
         </div>
 
@@ -1477,7 +1487,7 @@ const SettingsPage: React.FC = () => {
       {isLoading ? (
         <SettingsLoading />
       ) : (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px_1fr]">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <SettingsCategoryNav
               categories={categories}

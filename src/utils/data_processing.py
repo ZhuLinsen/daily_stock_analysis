@@ -94,6 +94,15 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -117,32 +126,47 @@ def _normalize_sector_ranking_items(value: Any) -> List[Dict[str, Any]]:
         change_pct = _safe_float(item.get("change_pct"))
         if change_pct is not None:
             ranking_item["change_pct"] = change_pct
+        rank = _safe_int(item.get("rank"))
+        if rank is not None:
+            ranking_item["rank"] = rank
         normalized.append(ranking_item)
     return normalized
 
 
-def _normalize_sector_rankings(value: Any) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+def _normalize_sector_rankings(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, dict):
         return None
 
-    return {
+    status = value.get("status")
+    status_text = status.strip().lower() if isinstance(status, str) else None
+    normalized: Dict[str, Any] = {
         "top": _normalize_sector_ranking_items(value.get("top")),
         "bottom": _normalize_sector_ranking_items(value.get("bottom")),
     }
+    if status_text:
+        normalized["status"] = status_text
+    return normalized
 
 
-def _extract_ranking_payload_from_block(value: Any) -> Any:
+def _extract_ranking_payload_from_block(value: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(value, dict):
         return None
     if "top" in value or "bottom" in value:
         return value
 
     status = value.get("status")
-    if status not in {"ok", "partial", None}:
+    if not isinstance(status, str):
+        status_is_valid = status is None
+    else:
+        status_is_valid = status.strip().lower() in {"ok", "partial"}
+    if not status_is_valid:
         return None
     data = value.get("data")
     if isinstance(data, dict):
-        return data
+        payload = dict(data)
+        if isinstance(status, str):
+            payload["status"] = status.strip().lower()
+        return payload
     return None
 
 
@@ -292,6 +316,38 @@ def extract_board_detail_fields(
         "sector_rankings": _normalize_sector_rankings(sector_rankings),
         "concept_rankings": _normalize_sector_rankings(concept_rankings),
     }
+
+
+def extract_market_structure_detail_field(
+    context_snapshot: Any,
+    fallback_raw_result_payload: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Extract the stable market_structure detail payload from persisted payloads."""
+    snapshot_obj = parse_json_field(context_snapshot)
+
+    candidates = []
+    if isinstance(snapshot_obj, dict):
+        candidates.append(snapshot_obj.get("market_structure_context"))
+        enhanced = snapshot_obj.get("enhanced_context")
+        if isinstance(enhanced, dict):
+            candidates.append(enhanced.get("market_structure_context"))
+
+    raw_result_obj = parse_json_field(fallback_raw_result_payload)
+    if isinstance(raw_result_obj, dict):
+        candidates.append(raw_result_obj.get("market_structure_context"))
+
+    for candidate in candidates:
+        payload = parse_json_field(candidate)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("schema_version") != "market-structure-v1":
+            continue
+        if not isinstance(payload.get("market_theme_context"), dict):
+            continue
+        if not isinstance(payload.get("stock_market_position"), dict):
+            continue
+        return payload
+    return None
 
 
 def normalize_signal_attribution_values(signal_attr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

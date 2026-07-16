@@ -224,7 +224,7 @@ def write_reports(candidates: Iterable[Candidate], json_path: Path, md_path: Pat
         encoding="utf-8",
     )
     lines = [
-        "# 10:00 A股盘中候选池",
+        "# A股盘中候选池",
         "",
         f"生成时间：{datetime.now(SHANGHAI_TZ):%Y-%m-%d %H:%M:%S}（北京时间）",
         "",

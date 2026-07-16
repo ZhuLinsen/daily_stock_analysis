@@ -1,10 +1,12 @@
 name: 每日股票分析
 
 on:
-  # 每个工作日北京时间 09:55 唤醒任务，避开 GitHub Actions 整点调度高峰；
-  # 后续步骤会等待到北京时间 10:00 再开始选股分析。
+  # GitHub Actions 的 cron 使用 UTC。每次提前 5 分钟唤醒，再在工作流内
+  # 等待到北京时间目标时刻，降低共享 runner 调度漂移的影响。
   schedule:
-    - cron: '55 1 * * 1-5'
+    - cron: '42 1 * * 1-5'  # 北京时间 09:42 唤醒，09:47 盘中选股推送
+    - cron: '2 6 * * 1-5'   # 北京时间 14:02 唤醒，14:07 盘中选股推送
+    - cron: '15 7 * * 1-5'  # 北京时间 15:15 唤醒，15:20 收盘复盘推送
   
   # 手动触发
   workflow_dispatch:
@@ -57,22 +59,48 @@ jobs:
         run: |
           mkdir -p data logs reports
 
-      - name: 等待北京时间 10:00
+      - name: 确定本次运行计划
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ github.event.inputs.mode || 'full' }}
+        run: |
+          case "$EVENT_SCHEDULE" in
+            '42 1 * * 1-5')
+              echo "RUN_MODE=stocks-only" >> "$GITHUB_ENV"
+              echo "TARGET_TIME=09:47" >> "$GITHUB_ENV"
+              ;;
+            '2 6 * * 1-5')
+              echo "RUN_MODE=stocks-only" >> "$GITHUB_ENV"
+              echo "TARGET_TIME=14:07" >> "$GITHUB_ENV"
+              ;;
+            '15 7 * * 1-5')
+              echo "RUN_MODE=market-only" >> "$GITHUB_ENV"
+              echo "TARGET_TIME=15:20" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "RUN_MODE=$INPUT_MODE" >> "$GITHUB_ENV"
+              echo "TARGET_TIME=" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: 等待北京时间目标时刻
         if: github.event_name == 'schedule'
         run: |
           python - <<'PY'
+          import os
           import time
           from datetime import datetime
           from zoneinfo import ZoneInfo
 
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
-          target = now.replace(hour=10, minute=0, second=0, microsecond=0)
+          hour, minute = map(int, os.environ["TARGET_TIME"].split(":"))
+          target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
           wait_seconds = max(0, int((target - now).total_seconds()))
           if wait_seconds:
-              print(f"⏳ 当前北京时间 {now:%H:%M:%S}，等待 {wait_seconds} 秒后于 10:00 开始分析")
+              print(f"⏳ 当前北京时间 {now:%H:%M:%S}，等待 {wait_seconds} 秒后于 {hour:02d}:{minute:02d} 开始分析")
               time.sleep(wait_seconds)
           else:
-              print(f"⏰ 当前北京时间 {now:%H:%M:%S}，已到 10:00，立即开始分析")
+              print(f"⏰ 当前北京时间 {now:%H:%M:%S}，目标时刻已到，立即开始分析")
           PY
       
       - name: 执行股票分析
@@ -270,6 +298,12 @@ jobs:
           # 数据源
           # ==========================================
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          # TickFlow（A 股日 K、实时行情、股票列表/名称与大盘复盘增强；不设则走免费源 fallback）
+          TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
+          TICKFLOW_PRIORITY: ${{ vars.TICKFLOW_PRIORITY || secrets.TICKFLOW_PRIORITY }}
+          TICKFLOW_KLINE_ADJUST: ${{ vars.TICKFLOW_KLINE_ADJUST || secrets.TICKFLOW_KLINE_ADJUST }}
+          TICKFLOW_BATCH_DAILY_ENABLED: ${{ vars.TICKFLOW_BATCH_DAILY_ENABLED || secrets.TICKFLOW_BATCH_DAILY_ENABLED }}
+          TICKFLOW_BATCH_SIZE: ${{ vars.TICKFLOW_BATCH_SIZE || secrets.TICKFLOW_BATCH_SIZE }}
           # Longbridge OpenAPI（美股/港股实时行情字段补充；不设则仅 YFinance/AkShare，无 [Longbridge] 调用）
           LONGBRIDGE_OAUTH_CLIENT_ID: ${{ vars.LONGBRIDGE_OAUTH_CLIENT_ID || secrets.LONGBRIDGE_OAUTH_CLIENT_ID }}
           LONGBRIDGE_OAUTH_TOKEN_CACHE_B64: ${{ secrets.LONGBRIDGE_OAUTH_TOKEN_CACHE_B64 }}
@@ -312,7 +346,9 @@ jobs:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD || secrets.FEISHU_WEBHOOK_KEYWORD }}
-          
+          # 钉钉 Webhook
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
           # 方式三：Telegram
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -358,6 +394,7 @@ jobs:
           FEISHU_CHAT_ID: ${{ vars.FEISHU_CHAT_ID || secrets.FEISHU_CHAT_ID }}
           FEISHU_RECEIVE_ID_TYPE: ${{ vars.FEISHU_RECEIVE_ID_TYPE || secrets.FEISHU_RECEIVE_ID_TYPE }}
           FEISHU_DOMAIN: ${{ vars.FEISHU_DOMAIN || secrets.FEISHU_DOMAIN }}
+          FEISHU_SEND_AS_FILE: ${{ vars.FEISHU_SEND_AS_FILE || secrets.FEISHU_SEND_AS_FILE }}
 
           # 方式十：AstrBot
           ASTRBOT_URL: ${{ secrets.ASTRBOT_URL }}
@@ -414,8 +451,8 @@ jobs:
           # 筹码分布：默认 false（云端接口不稳定）；需启用时在 Settings → Variables 添加 ENABLE_CHIP_DISTRIBUTION=true
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
           # 实时行情数据源优先级（腾讯有量比且稳定，推荐首选）
-          # 可选值: tencent, akshare_sina, efinance, akshare_em, tushare
-          # 如果有 Tushare Pro 高积分账号，可将 tushare 放在首位
+          # 可选值: tencent, akshare_sina, efinance, akshare_em, tickflow, tushare
+          # 如果有 TickFlow 或 Tushare Pro，可按权限把 tickflow / tushare 放在更靠前位置
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
@@ -440,7 +477,7 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          MODE="$RUN_MODE"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -468,6 +505,7 @@ jobs:
           echo ""
           echo "【数据源】"
           echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  TickFlow:      $([ -n "$TICKFLOW_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           if [ -n "$LONGBRIDGE_APP_KEY" ] && [ -n "$LONGBRIDGE_APP_SECRET" ] && [ -n "$LONGBRIDGE_ACCESS_TOKEN" ]; then
             echo "  Longbridge: ✅ 已配置（Legacy API Key）"
           elif [ -n "$LONGBRIDGE_OAUTH_CLIENT_ID" ] || { [ -n "$LONGBRIDGE_APP_KEY" ] && [ -z "$LONGBRIDGE_ACCESS_TOKEN" ]; }; then
@@ -500,6 +538,7 @@ jobs:
           echo "  ntfy: $([ -n "$NTFY_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Gotify: $([ -n "$GOTIFY_URL" ] && [ -n "$GOTIFY_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  钉钉: $( [ -n "$DINGTALK_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置' )"
           echo "  飞书: $( ([ -n "$FEISHU_WEBHOOK_URL" ] || ([ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && [ -n "$FEISHU_CHAT_ID" ]) ) && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Telegram: $([ -n "$TELEGRAM_BOT_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  Discord: $([ -n "$DISCORD_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"

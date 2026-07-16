@@ -108,7 +108,7 @@ daily_stock_analysis/
 
 > *注：至少配置一个渠道，配置多个则同时推送。启动时配置校验会提示 Telegram / 邮件成对字段缺失，以及常见 Webhook URL 未以 `http://` 或 `https://` 开头的问题。
 >
-> 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境。所以分组邮箱功能目前不适用于仓库自带默认 GitHub Actions workflow；它适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
+> 当前默认 `00-daily-analysis.yml` 只显式映射固定 Secret / Variable 名称，不会自动把 `STOCK_GROUP_1`、`EMAIL_GROUP_1` 这类任意编号变量导入运行环境，也不会自动导入 `NEWS_INTEL_AUTO_FETCH_ENABLED` 这类新增可选开关。所以分组邮箱功能和本地资讯自动刷新能力目前不适用于仓库自带默认 GitHub Actions workflow；它们适用于本地 `.env`、Docker，或你自行显式扩展过 `env:` 映射的运行环境。Actions 已显式映射 `CUSTOM_WEBHOOK_BODY_TEMPLATE`、`WEBHOOK_VERIFY_SSL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_WEBHOOK_KEYWORD`、`PUSHPLUS_TOPIC`、`NTFY_URL`、`NTFY_TOKEN`、`GOTIFY_URL`、`GOTIFY_TOKEN`、P3 通知路由键以及 P4 通知降噪键；`MARKDOWN_TO_IMAGE_CHANNELS` 和 `MERGE_EMAIL_NOTIFICATION` 仍作为行为开关不在默认 workflow 中自动映射。
 
 #### 推送行为配置
 
@@ -153,7 +153,7 @@ daily_stock_analysis/
 
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
-| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS` | ✅ |
+| `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`；推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | ✅ |
 | `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
@@ -163,6 +163,7 @@ daily_stock_analysis/
 | `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json）；留空时默认自动发现公共实例 | 可选 |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 为空时自动从 `searx.space` 获取公共实例（默认 `true`） | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
+| `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
 | `LONGBRIDGE_APP_KEY` | Longbridge Legacy App Key；无 `LONGBRIDGE_ACCESS_TOKEN` 时也可作为 OAuth client_id 兼容别名 | 可选 |
@@ -179,7 +180,7 @@ daily_stock_analysis/
 | `LONGBRIDGE_PRINT_QUOTE_PACKAGES` | 连接时是否打印行情包（未设置时默认 `false`；设为 `1`/`true`/`yes` 开启） | 可选 |
 | `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布（Actions 默认 false；需筹码数据时在 Variables 中设为 true，接口可能不稳定） | 可选 |
 
-> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把上表中的 `LONGBRIDGE_*` 映射到任务环境。OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
+> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
 
 > **Longbridge 运行时行为：** 未配置凭据时不会实例化 Longbridge 这个可选 fetcher；若运行时遇到 `client is closed`、`context closed`、`connection closed` 等连接关闭类异常，会进入冷却期（默认 15 秒，可用 `LONGBRIDGE_CONNECTION_COOLDOWN_SECONDS` 调整），冷却期内美股/港股的实时与日线请求会自动跳过 Longbridge，退回 YFinance / AkShare 等兜底链路。
 
@@ -334,6 +335,7 @@ daily_stock_analysis/
 | `FEISHU_APP_ID` | 飞书应用 ID | 可选 |
 | `FEISHU_APP_SECRET` | 飞书应用 Secret | 可选 |
 | `FEISHU_FOLDER_TOKEN` | 飞书云盘文件夹 Token | 可选 |
+| `FEISHU_SEND_AS_FILE` | 飞书 App Bot 以文件形式发送报告（默认 `false`） | 可选 |
 
 > 飞书云文档配置步骤：
 > 1. 在 [飞书开发者后台](https://open.feishu.cn/app) 创建应用
@@ -407,7 +409,7 @@ daily_stock_analysis/
 | `REALTIME_SOURCE_PRIORITY` | 实时行情源优先级，逗号分隔，例如 `tencent,akshare_sina,efinance,akshare_em`；需要显式加入 `tickflow` 才会使用 TickFlow 实时行情。 | 见 `.env.example` | 可选 |
 | `ENABLE_FUNDAMENTAL_PIPELINE` | 基本面聚合总开关；关闭时仅返回 `not_supported` 块，不改变原分析链路 | `true` | 可选 |
 | `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | 基本面阶段总时延预算（秒） | `8.0` | 可选 |
-| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒） | `3.0` | 可选 |
+| `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒）；市场结构行业/概念排行也复用该预算 | `8.0` | 可选 |
 | `FUNDAMENTAL_RETRY_MAX` | 基本面能力重试次数（含首次） | `1` | 可选 |
 | `FUNDAMENTAL_CACHE_TTL_SECONDS` | 基本面聚合缓存 TTL（秒），短缓存减轻重复拉取 | `120` | 可选 |
 | `FUNDAMENTAL_CACHE_MAX_ENTRIES` | 基本面缓存最大条目数（TTL 内按时间淘汰） | `256` | 可选 |
@@ -424,6 +426,7 @@ daily_stock_analysis/
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
 > - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
 > - TickFlow 能力按套餐权限分层：有限权限套餐仍可使用主指数查询；支持 `CN_Equity_A` 标的池查询的套餐才会启用 TickFlow 市场统计。
+> - TickFlow 可通过申万一级行业标的池与全 A 股行情生成行业涨跌排行，并优先参与市场结构行业主线 fallback；概念题材排行仍由现有 AkShare / Tushare / Efinance 链路提供。
 > - TickFlow 官方 quickstart 提供了 `quotes.get(universes=["CN_Equity_A"])` 用法，但不同 API Key 不一定拥有对应权限；批量日 K、深度和财务等能力也按权限 fail-open。
 > - TickFlow 实际返回的 `change_pct` / `amplitude` 为比例值；系统已在接入层统一转换为百分比值，确保与现有数据源字段语义一致。
 > - A 股大盘复盘报告采用盘后工作台式结构：固定包含盘面信号、指数明细、板块 Top 表、近三日市场线索、明日交易计划和风险提示；盘面信号以 `66/100（偏暖，可进攻）` 这类纯文本分数表达，避免色块进度条在不同终端显示不一致；近三日市场线索只列标题、来源和链接，不再展示搜索摘要片段；若部分数据源缺失，则保留可用区块并在对应位置降级展示。
@@ -869,6 +872,12 @@ P3 在普通分析和 Agent 初始上下文中接入 `AnalysisContextPack` 低�
 
 P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report metadata，不改变报告 JSON schema，也不把完整 pack 暴露到历史、通知或 Web。Agent 工具级复用 pack 数据和 P5 数据质量评分留给后续阶段。
 
+#### Multi-Agent 决策分歧摘要输入（Issue #1904 P1 plumbing）
+
+Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
+
+该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
 P4 新增 `report.details.analysis_context_pack_overview`，历史详情和 completed `/api/v1/analysis/status/{task_id}` 会从已持久化的 `context_snapshot` 返回同一份低敏 overview；同步分析响应也会读取本次已落库的 `analysis_history.context_snapshot` 提取 overview，因此 `SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回该字段。Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后展示数据块状态、来源、warning、missing reason、状态计数和新闻结果数。API 返回的 `details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`，避免透明度面板重复展示 raw snapshot。
@@ -890,6 +899,16 @@ P6 只做文档与配置可见性收口，不新增 pack runtime、不新增 pac
 `SAVE_CONTEXT_SNAPSHOT` 是既有环境变量，P6 只是把它同步到 `.env.example`、配置注册表和 Web 设置帮助。默认 `true`；设为 `false` 或 CLI 使用 `--no-context-snapshot` 时，新历史记录不再持久化整份 `analysis_history.context_snapshot`，包括 `enhanced_context`、`market_phase_summary`、`analysis_context_pack_overview`、诊断快照和 raw snapshot 字段。该设置不关闭当次 `AnalysisContextPack` 构建，不移除 Prompt 中的低敏 `analysis_context_pack_summary`，也不改变分析结果 JSON schema 或 API 请求参数。
 
 当前没有运行时 pack 总开关；如果需要关闭 P3-P5 的 pack Prompt 摘要、overview 或数据质量接入，只能通过发布回滚或代码回滚完成。旧历史记录没有 `analysis_context_pack_overview` / `data_quality` 时继续返回空字段，报告读取保持兼容。
+
+#### 市场结构上下文（Issue #1909）
+
+个股分析现在新增低敏 `market_structure_context`，并通过 `AnalysisReport.details.market_structure` 对历史详情、同步分析响应和 completed 任务状态暴露。该字段采用两层结构：`market_theme_context` 表示大盘/题材层，包含 A 股行业/概念榜单、活跃题材、领涨行业/概念、题材宽度和数据质量；`stock_market_position` 表示个股位置层，包含个股所属板块、主关联题材、题材阶段、个股位置、风险标签和缺失证据。
+
+首版市场结构由 DSA 原生服务基于 `DataFetcherManager.get_sector_rankings()`、`get_concept_rankings()` 和 `fundamental_context.belong_boards` 生成，不依赖 AlphaSift runtime。AlphaSift 中已有的热点详情、发酵路线、成分股和 leader stocks 可作为后续可选数据源迁移，但在未迁移前不会被普通个股分析隐式调用。缺少成分股或 leader 证据时，`stock_role` 默认保持 `follower/edge/unknown`，并在 `missing_fields` 中标记 `hotspot_constituents`、`leader_stocks`，避免把普通关联股误写成题材龙头。
+
+兼容性边界：`market_structure_context` 中的 provider / model 快照字段（含 `model_used`、`market_structure_context.*.source.provider` 等）仅用于历史回溯和页面展示，不构成 LLM provider 路由、`base URL`、`provider/model` 运行时配置输入；不会触发 `.env` 配置清理、回写、迁移或静默变更。
+
+普通 LLM、single Agent 和 multi-agent prompt 会注入市场结构低敏摘要；DecisionSignal 自动提取会把 `primary_theme`、`theme_phase`、`stock_role`、版本号和风险标签写入 metadata，不改变主字段、去重键或生命周期规则。Web 报告页在概览后展示“市场位置”卡片，分别呈现大盘题材层和个股位置层；旧历史记录缺少该字段时不展示。非 A 股市场首版返回 `not_supported`，不影响原有报告。
 
 #### 盘中决策护栏与质量校验（Issue #1386 P5）
 
@@ -1387,25 +1406,25 @@ P2 自动提取的市场阶段优先读取保存快照中的 `market_phase_summa
 
 P3 开始，生命周期由 `DecisionSignalService` 统一补齐：显式传入的 `horizon` / `expires_at` 永远优先；未传 `horizon` 时，`alert` 或 `premarket/intraday/lunch_break/closing_auction` 默认 `intraday`，`postmarket/non_trading/unknown` 或无阶段上下文时默认 `3d`；未传 `expires_at` 时，`intraday` 优先读取 `metadata.market_phase_summary.minutes_to_close/minutes_to_open`，无上下文时使用确定性 TTL fallback（A 股 4h、港股 5.5h、美股 6.5h、未知 4h），`1d/3d/5d/10d` 按自然日，`swing/long` 不自动过期。fallback TTL 只是缺少交易日历上下文时的降级策略，不等价于真实交易所收盘时间。自动提取只把 `market_phase_summary.phase/session_date/minutes_to_open/minutes_to_close` 作为低敏 hint 写入 `metadata.market_phase_summary`，最终 `horizon/expires_at` 仍由 service 计算。
 
-核心字段包括 `stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`market_phase`、`trigger_source`、`action`、`action_label`、`confidence`、`score`、`horizon`、`entry_low`、`entry_high`、`stop_loss`、`target_price`、`invalidation`、`watch_conditions`、`reason`、`risk_summary`、`catalyst_summary`、`evidence`、`data_quality_summary`、`plan_quality`、`status`、`expires_at`、`created_at`、`updated_at` 和 `metadata`。`action` 复用八态建议动作；`market_phase` 复用市场阶段枚举；`source_type` 支持 `analysis|agent|alert|market_review|manual`；`status` 支持 `active|expired|invalidated|closed|archived`；`horizon` 支持 `intraday|1d|3d|5d|10d|swing|long`。
+核心字段包括 `stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`decision_profile`、`market_phase`、`trigger_source`、`action`、`action_label`、`confidence`、`score`、`horizon`、`entry_low`、`entry_high`、`stop_loss`、`target_price`、`invalidation`、`watch_conditions`、`reason`、`risk_summary`、`catalyst_summary`、`evidence`、`data_quality_summary`、`plan_quality`、`status`、`expires_at`、`created_at`、`updated_at` 和 `metadata`。`action` 复用八态建议动作；`decision_profile` 支持 `conservative|balanced|aggressive`，数据库 `NULL` 仅表示 legacy/unknown；`market_phase` 复用市场阶段枚举；`source_type` 支持 `analysis|agent|alert|market_review|manual`；`status` 支持 `active|expired|invalidated|closed|archived`；`horizon` 支持 `intraday|1d|3d|5d|10d|swing|long`。
 
 `confidence` 为 `0.0-1.0`，`score` 为 `0-100`，与历史报告的 `sentiment_score` 解耦。价格计划字段 `entry_low`、`entry_high`、`stop_loss`、`target_price` 必须是有限正数，且同时传入 `entry_low` 和 `entry_high` 时要求 `entry_low <= entry_high`。`plan_quality` 支持 `complete|partial|minimal|unknown`：调用方显式传入合法值时直接保存；未传时由 service 计算，入场区间（`entry_low` 或 `entry_high` 任一有值）算 1 项，`stop_loss`、`target_price`、`invalidation`、`watch_conditions` 各算 1 项，满足 2 项为 `partial`，满足 4 项及以上为 `complete`，仅有 action/reason 为 `minimal`。
 
 新增 API：
 
-- `POST /api/v1/decision-signals`：创建或按同源键去重，返回 `{ item, created }`，HTTP 200。精确去重键为 `(source_report_id, source_type, market, stock_code, action, horizon, market_phase)`；没有 report 但有 `trace_id` 时使用 `(trace_id, source_type, market, stock_code, action, horizon, market_phase)`；两者皆无则不去重。精确匹配失败后，会按同源 + `source_type/market/stock_code/action` 做窄 relaxed fallback，只填补旧记录为空的 `horizon/market_phase`，且 `horizon` 只有在新值由 service 默认生成时才可填补；显式不同期限或已有不同阶段仍保留多条。若命中同源 expired 记录，且新请求为 active 并携带未来 `expires_at`，会原地刷新该记录并返回 `created=false`，这次续期按新的 active 激活事件处理。active 新建或 expired 续期后的 bullish 信号（`buy/add`）会把更早的 active defensive 信号（`reduce/sell/avoid`）标记为 `invalidated`，反向同理；active duplicate retry 也会重跑该失效修复，以恢复上次创建成功但失效写入失败的 partial create；普通旧 duplicate/replay 不作为新的激活事件。`hold/watch/alert` 不触发自动失效。API 响应 schema 不变，刷新或重复命中都对外返回 `created=false`；本功能不提供并发唯一性保证。
-- `GET /api/v1/decision-signals`：分页查询，支持 `market`、`stock_code`、`action`、`market_phase`、`source_type`、`source_report_id`、`trace_id`、`trigger_source`、`status`、时间范围、`holding_only`、`account_id`。
+- `POST /api/v1/decision-signals`：创建或按同源键去重，返回 `{ item, created }`，HTTP 200。新写入可省略 `decision_profile` 并默认 `balanced`，也可传合法 `conservative|balanced|aggressive`；顶层显式 `null`、空值或非法值会被拒绝。顶层缺失时才 fallback 合法 `metadata.decision_profile`，写入前会同步 `metadata.decision_profile` 为正式字段值；metadata 省略或显式 `null` 均按无 metadata 处理，object 会浅复制，非 object 会被拒绝。精确去重键为 `(source_report_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`；没有 report 但有 `trace_id` 时使用 `(trace_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`；两者皆无则不去重。精确匹配、relaxed fallback、horizon/phase fill、expired refresh、active invalidation 和 stale backfill invalidation 都遵循 same-profile 语义：`NULL` 只匹配 `NULL`，非空 profile 只匹配相同 profile；expired duplicate refresh 不会改写 `decision_profile`。精确匹配失败后，会按同源 + `source_type/market/stock_code/decision_profile/action` 做窄 relaxed fallback，只填补旧记录为空的 `horizon/market_phase`，且 `horizon` 只有在新值由 service 默认生成时才可填补；显式不同期限、已有不同阶段或不同 profile 仍保留多条。若命中同源 expired 同 profile 记录，且新请求为 active 并携带未来 `expires_at`，会原地刷新该记录并返回 `created=false`，这次续期按新的 active 激活事件处理。active 新建或 expired 续期后的 bullish 信号（`buy/add`）会把更早同 profile 的 active defensive 信号（`reduce/sell/avoid`）标记为 `invalidated`，反向同理；不同非空 profile 可并存，即使动作相反。active duplicate retry 也会重跑同 profile 失效修复，以恢复上次创建成功但失效写入失败的 partial create；普通旧 duplicate/replay 不作为新的激活事件。`hold/watch/alert` 不触发自动失效。刷新或重复命中都对外返回 `created=false`；本功能不提供并发唯一性保证。
+- `GET /api/v1/decision-signals`：分页查询，支持 `market`、`stock_code`、`action`、`market_phase`、`decision_profile`、`source_type`、`source_report_id`、`trace_id`、`trigger_source`、`status`、时间范围、`holding_only`、`account_id`。省略或传空 `decision_profile` 不加 profile 条件，返回所有 profile；`decision_profile=unknown` 查询 legacy `NULL` 行；合法 profile 精确匹配。
 - `GET /api/v1/decision-signals/{signal_id}`：查询单条，不存在返回 404。
-- `PATCH /api/v1/decision-signals/{signal_id}/status`：更新合法状态和可选 `metadata`；传入 `metadata` 时按整包替换保存。`expired/invalidated/closed/archived` 等 terminal 状态不能直接 PATCH 回 `active`，expired 续期仍只能重新 `POST` active + 未来 `expires_at`。
+- `PATCH /api/v1/decision-signals/{signal_id}/status`：更新合法状态和可选 `metadata`；省略 metadata 时保留原值，显式 `null` 时清空为 SQL `NULL`，object 时整包替换。正式 `decision_profile` 非 `NULL` 时会覆盖 metadata 中的冲突 profile；正式字段为 legacy `NULL` 时会移除请求 object 中的 profile key，且不会提升正式字段。`expired/invalidated/closed/archived` 等 terminal 状态不能直接 PATCH 回 `active`，expired 续期仍只能重新 `POST` active + 未来 `expires_at`。
 - `GET /api/v1/decision-signals/latest/{stock_code}`：按股票查询最新 active 信号，默认 `limit=1`。
 
-读取入口会懒过期：列表、详情和 latest 查询前会把已到 `expires_at` 的 active 信号标为 expired；创建时已过期的 active 信号会直接保存为 expired；同源 expired 信号只能通过重新 `POST` active + 未来 `expires_at` 的方式延展，`PATCH /status` 不接受 `expires_at`。`expired|invalidated|closed|archived` 不会被 PATCH 直接复活，`closed|invalidated|archived` 也不会被 create 路径复活。相反信号自动失效会合并写入旧信号 `metadata`：`invalidated_by_signal_id`、`invalidated_reason`、`invalidated_at`、`previous_status`；旧 metadata JSON 损坏时会替换为失效 metadata 并写入 `metadata_replaced_due_to_invalid_json=true`，不阻断新信号创建。时间字段按 UTC 归一化为无时区 `datetime` 保存和比较；带时区输入会先转为 UTC 后去掉 `tzinfo`，无时区输入按 UTC 处理，API 响应继续返回不带时区后缀的 ISO 字符串。股票代码入库与查询按 `market` 确定性归一化：A 股 `600519`、`SH600519`、`600519.SH` 等常见变体按同一代码匹配；港股 `00700`、`HK00700`、`00700.HK` 按 `HK00700` 匹配；美股 ticker 统一大写。`holding_only=true` 只读取 active 账户下 `portfolio_positions` 中 `quantity > 0` 的缓存持仓，并按持仓 `(market, stock_code)` 匹配信号，可选 active `account_id`；该查询不会调用组合 snapshot replay，无缓存时返回空结果，需先通过 portfolio snapshot API 刷新缓存。
+读取入口会懒过期：列表、详情和 latest 查询前会把已到 `expires_at` 的 active 信号标为 expired；创建时已过期的 active 信号会直接保存为 expired；同源 expired 信号只能通过重新 `POST` active + 未来 `expires_at` 的方式延展，`PATCH /status` 不接受 `expires_at`。`expired|invalidated|closed|archived` 不会被 PATCH 直接复活，`closed|invalidated|archived` 也不会被 create 路径复活。相反信号自动失效会合并写入旧信号 `metadata`：`invalidated_by_signal_id`、`invalidated_reason`、`invalidated_at`、`previous_status`；正式 profile 非 `NULL` 时同步 metadata profile，正式 profile 为 legacy `NULL` 时保留原 metadata profile 且不提升正式字段。旧 metadata JSON 损坏或不是 object 时会替换为失效 metadata 并写入对应 replacement marker，不阻断新信号创建。时间字段按 UTC 归一化为无时区 `datetime` 保存和比较；带时区输入会先转为 UTC 后去掉 `tzinfo`，无时区输入按 UTC 处理，API 响应继续返回不带时区后缀的 ISO 字符串。股票代码入库与查询按 `market` 确定性归一化：A 股 `600519`、`SH600519`、`600519.SH` 等常见变体按同一代码匹配；港股 `00700`、`HK00700`、`00700.HK` 按 `HK00700` 匹配；美股 ticker 统一大写。`holding_only=true` 只读取 active 账户下 `portfolio_positions` 中 `quantity > 0` 的缓存持仓，并按持仓 `(market, stock_code)` 匹配信号，可选 active `account_id`；该查询不会调用组合 snapshot replay，无缓存时返回空结果，需先通过 portfolio snapshot API 刷新缓存。
 
 `source_report_id` 可为空且不强制校验历史记录存在；删除历史记录时只显式清理 `source_type=analysis` 且 `source_report_id` 命中实际删除 ID 的历史绑定信号，`manual/agent/alert/market_review` 等弱引用信号不会仅因 ID 碰撞被删除；列表接口支持按 `source_report_id` 和 `trace_id` 做 typed filter。`task_id`、`alert_trigger_id` 等后续关联字段先放入 `metadata`，P1 不新增独立列，也不提供 typed filter，后续联动阶段再提升为独立契约。JSON 字段、长文本字段和展示型短文本字段（`stock_name/source_agent/trigger_source/action_label`）会在写入前执行信号专用脱敏，覆盖敏感 key、Bearer、Authorization/Cookie header 或赋值、token-like 字符串、其他敏感赋值、webhook URL、URL userinfo 以及带敏感 query/fragment 参数的 URL；普通证据 URL 会保留以保证来源可追溯，且长文本不会套用诊断文本的 300 字符截断。`trace_id` 是同源去重身份字段，若包含会被脱敏的敏感 credential，API 会拒绝请求而不是保存有损 redaction 后的值。
 
 这些接口继承现有 `/api/v1/*` 管理员鉴权：`ADMIN_AUTH_ENABLED=true` 时必须携带有效管理员会话 Cookie；本功能不新增独立认证方式。
 
-#1390 P4 在 Web 端接入已有 `DecisionSignal` API，不新增后端契约、数据库表或配置项。侧边栏“AI 建议”入口 `/decision-signals` 是结构化决策信号的集中查询入口，默认展示 `status=active` 的信号，并支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选；页面还提供按股票代码查询最新 active 信号的入口。信号详情展示动作、置信度/评分、horizon、plan_quality、market_phase、价格计划、风险、观察条件、来源报告和数据质量；Web 只允许把信号标记为 `closed`、`invalidated` 或 `archived`，不提供 terminal 状态恢复为 active。
+#1390 P4 在 Web 端接入已有 `DecisionSignal` API。#1756 后侧边栏“AI 建议”入口 `/decision-signals` 仍是结构化决策信号的集中查询入口，默认展示 `status=active` 的信号，并支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选；时间线区域新增 profile filter，复用 list API 的 server-side `decision_profile` 查询，`unknown` 仅用于筛选和展示 legacy `NULL` 行，普通高级列表不新增 profile filter。页面还提供按股票代码查询最新 active 信号的入口。卡片、详情和时间线展示优先读取正式 `decision_profile` 字段，只有字段缺失时才 fallback legacy metadata；显式 `null`、历史缺失或非法 profile 显示为 unknown。信号详情展示动作、风格、置信度/评分、horizon、plan_quality、market_phase、价格计划、风险、观察条件、来源报告和数据质量；Web 只允许把信号标记为 `closed`、`invalidated` 或 `archived`，不提供 terminal 状态恢复为 active。
 
 #1390 P5 新增信号级反馈、后验评估和统计 sidecar，不扩展 `decision_signals` 主表，也不复用绑定 `analysis_history_id` 的 `BacktestResult`。`decision_signal_feedback` 按 `signal_id` 保存最新 `useful|not_useful` 反馈、可选原因/备注和来源；`decision_signal_outcomes` 按 `(signal_id, horizon, engine_version)` 幂等保存后验结果，当前 `engine_version=decision-signal-v1`。Outcome 在评估时冻结 `action/market/market_phase/source_type/source_agent/plan_quality/data_quality_level/holding_state` 等统计维度，历史统计不依赖后续 live join 改写。删除历史报告时，会先找出 `source_type=analysis` 且绑定被删历史 ID 的信号，再清理对应 feedback/outcome 子表。
 
@@ -1417,7 +1436,7 @@ P5 在 Web `/decision-signals` 页面筛选区下方展示当前 outcome engine 
 
 #1390 P6 将 `DecisionSignal` 复用到告警、通知和组合风险，不新增表、迁移或配置。真实股票级告警触发会优先关联同标的 latest active 信号，并把低敏 `decision_signal_summary` 写入 `alert_triggers.diagnostics`；没有 active 信号时，worker 只创建最小 `source_type=alert`、`action=alert` 信号，`trace_id=alert-rule-<hash>` 仅用于同源重试的 best-effort 幂等去重，不覆盖 active 信号本体，且不写 `market_phase` 避免跨阶段重复。告警通知和分析通知只引用摘要中的 `action/horizon/reason/watch_conditions/risk_summary/source_report_id` 等公开字段，通知失败不影响 trigger 或信号写入。`GET /api/v1/portfolio/risk` 追加 `decision_signal_risk` 聚合块，只统计当前持仓中的 active `sell/reduce/alert` 信号，明确排除 `avoid/buy/add/hold/watch`；信号查询失败时风险接口 fail-open，Web 风险区显示降级状态。
 
-#1390 P7 的收口文档见 [DecisionSignal 决策信号专题](decision-signals.md)。P7 不新增 `DECISION_SIGNAL_*` 配置、数据库 migration、API 字段或运行时开关；当前回滚方式为 revert 对应代码。回滚后信号提取和写入停止，既有报告保存、告警触发、通知发送和组合风险主流程不依赖信号池继续运行；历史 signal、feedback 和 outcome 数据不会自动清理。
+#1390 P7 的收口文档见 [DecisionSignal 决策信号专题](decision-signals.md)。#1756 不新增 `DECISION_SIGNAL_*` 配置或运行时开关，但会为 `decision_signals` 增加 nullable `decision_profile` 字段、API 请求/响应字段和 profile-aware index；existing SQLite 只在缺列时 `ALTER TABLE ADD COLUMN`，不会 drop/rebuild 表，也不会删除旧 index。迁移会幂等创建 profile-aware index，并 row-by-row 防御解析 `metadata_json`，仅合法 `metadata.decision_profile` 回填，invalid JSON、非 object 或非法 profile 保持 `NULL`。当前回滚方式为 revert 对应代码。回滚后信号提取和写入停止，既有报告保存、告警触发、通知发送和组合风险主流程不依赖信号池继续运行；历史 signal、feedback 和 outcome 数据不会自动清理。
 
 普通个股历史报告详情不再内嵌展示该报告提取出的 `source_type=analysis` 信号，也不会因打开报告详情而发起 `source_report_id=<recordId>` 的信号查询；需要查看结构化 AI 建议时统一进入 `/decision-signals` 页面筛选来源报告 ID、打开 `/decision-signals?sourceReportId=<recordId>` deep link，或按股票查询。填写来源报告 ID 或使用该 URL 参数时，Web 会发起 `source_type=analysis + source_report_id=<recordId>` 的精确查询，不叠加默认 `status=active` 等其他列表筛选，以保留旧报告 best-effort 懒回填语义。
 
@@ -1489,15 +1508,18 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 ### 功能特性
 
 - 📝 **配置管理** - 查看/修改自选股列表
+- 🗂️ **首页三视图** - 首页新增「历史 / 自选 / 今日」工作区，默认进入历史视图；自选页支持批量提交全部或仅提交“今日未分析”股票
 - 🧭 **界面语言切换** - 登录态与退出态均支持界面语言快速切换（`zh` / `en`），独立于 `REPORT_LANGUAGE`，用于静态 UI 文案与导航骨架
 - 🚀 **快速分析** - 通过 API 接口触发个股分析；首页也提供“大盘复盘”按钮，可在 Docker/server 模式下后台触发大盘复盘
 - 🎯 **策略选择** - 首页支持显式选择分析策略 skill；不传 `skills` 时按系统默认策略运行，便于保持与历史行为兼容
+- 🧪 **今日状态/任务刷新防抖** - 首页「今日」与「自选」通过带有时区感知的历史区间判断并发起分页历史查询；任务完成后由最新一次 stock bar 刷新成功才清除失败态，避免旧请求乱序覆盖新状态导致重复提交
 - 🧭 **首次配置提示** - 首页会读取只读配置状态，缺少 LLM 主渠道、自选股等基础项时提示缺口并引导进入系统设置
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行；普通分析链路在进入 LLM 阶段后会优先尝试 LiteLLM 流式生成，并通过任务 SSE 回灌更细粒度的 `message/progress`
 - 🧪 **AlphaSift 选股任务可恢复** - 选股页提交后台任务后轮询状态，切换页面再返回会恢复当前任务进度或最终结果，避免外部快照/行情/LLM 变慢时丢失反馈
 - 🗂️ **大盘复盘任务可见性** - 首页触发大盘复盘后会返回 `task_id` 并轮询 `GET /api/v1/analysis/status/{task_id}`，在进行中/完成/失败场景给出可见反馈，失败时直接透出报错内容
 - 🗂️ **市场复盘历史独立入口** - 大盘复盘历史通过专用入口与普通个股历史隔离；建议通过 `stock_code=MARKET` + `report_type=market_review` 直接查询与回放大盘复盘记录
 - 🧾 **市场复盘历史可复用** - 大盘复盘任务会持久化到分析历史，`report_type` 为 `market_review`，可直接通过历史列表/详情打开对应 Markdown 或详情页，不会重新触发分析重算
+- 🧭 **市场位置卡片** - A 股普通分析报告会展示市场题材层和个股位置层，区分大盘主线、主关联题材、题材阶段、个股位置和缺失证据
 - 🧩 **输入数据块可见** - 普通分析报告会在历史详情、同步响应和 completed 任务状态中返回低敏 `AnalysisContextPack` overview，Web 报告页在策略点位和资讯之后默认折叠展示数据块状态、来源、缺失原因和降级摘要
 - 💬 **问股追问上下文** - 从历史报告进入问股后，后续追问会持续携带当前 `stock_code/stock_name`；切回或重载已有问股会话时，会从已加载的历史用户消息恢复基础当前标的；只有用户明确切换标的时才切换上下文，含比较/对比/vs/差异/相比等明确比较意图或多个非当前明确股票代码的问题不会污染当前标的
 - 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
@@ -1527,7 +1549,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/history/{record_id}/diagnostics` | GET | 查询历史报告运行诊断摘要与脱敏复制文本 |
 | `/api/v1/history/{record_id}/flow` | GET | 查询历史报告运行流快照，普通个股和 `MARKET/market_review` 大盘复盘复用同一契约 |
 | `/api/v1/decision-signals` | POST | 显式创建或按同源键去重决策信号，返回 `{ item, created }` |
-| `/api/v1/decision-signals` | GET | 分页查询决策信号，支持股票、市场、动作、阶段、来源、状态、时间范围和 cache-only 持仓过滤 |
+| `/api/v1/decision-signals` | GET | 分页查询决策信号，支持股票、市场、动作、阶段、风格、来源、状态、时间范围和 cache-only 持仓过滤 |
 | `/api/v1/decision-signals/outcomes/run` | POST | 显式触发信号后验评估，默认跳过 completed/终态 unable、重算可恢复 unable，`force=true` 重算覆盖 |
 | `/api/v1/decision-signals/outcomes` | GET | 分页查询信号后验结果 |
 | `/api/v1/decision-signals/outcomes/stats` | GET | 查询当前后验引擎统计，默认排除 archived 信号 |
@@ -1564,7 +1586,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 > 说明：`market_review_payload` 中的 `breadth` 仅在行情宽度数据真实可用时下发；当美股/港股或接口暂不可用时不下发该字段。前端显示层需按“字段缺失”降级为“暂无数据”而不是展示 0。
 > 说明：该端点若返回 `task_id`，WebUI 会轮询 `GET /api/v1/analysis/status/{task_id}` 展示状态。状态为 `completed` 时给出完成提示（报告已生成并按配置推送），状态为 `failed` 时在前端错误区域显示 `error` 原因。
 > 说明：`GET /api/v1/history/{record_id}/diagnostics` 支持历史记录主键 ID 或 `query_id`，返回 `normal/degraded/failed/unknown` 摘要、关键链路组件和可复制的脱敏 `copy_text`；旧报告缺少诊断快照时返回 `unknown`，不影响报告读取。
-> 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
+> 说明：`GET /api/v1/history` 的列表摘要可按 `stock_code` 分页查询同一股票历史，并返回趋势判断、分析摘要、模型名与分析时价格/涨跌幅等可选字段；旧记录缺少快照字段时返回空值。`created_at` 与 `/api/v1/history/stocks` 的 `last_analysis_time` 使用带服务器时区偏移的 ISO 8601 时间戳；日期筛选仍按服务器本地日期解释。Web 报告页的“历史趋势”抽屉复用该接口加载同股历史。
 > 说明：`GET /api/v1/usage/dashboard` 复用 `llm_usage` 审计表，不新增配置项或数据库迁移。接口仅返回已落库的调用次数、Prompt/Completion/Total Token 聚合、模型维度用量和最近调用记录，不推导模型上下文窗口或 provider 元数据。
 > 说明（Issue #1520）：列表中的模型名展示字段仅来源于历史快照中的 `model_used`，仅用于历史回溯展示，不影响运行时模型模型路由（`litellm_model`、`llm_model_list`）、Provider、Base URL 与配置迁移/清理语义。回退方式为回退本次提交，现网历史查询/抽屉/接口链路兼容性保持不变。
 > 说明：历史详情、同步分析响应和 completed 任务状态会在 `report.details.analysis_context_pack_overview` 返回低敏输入数据块 overview；其中同步分析响应依赖本次已持久化的 `analysis_history.context_snapshot`，`SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回 overview。`details.context_snapshot` 会剥离该顶层字段，不返回完整 `AnalysisContextPack` 或 Prompt summary。
@@ -1680,7 +1702,7 @@ A: 企业微信/飞书有消息长度限制，系统已自动分段发送。如�
 A: AkShare 使用爬虫机制，可能被临时限流。系统已配置重试机制，一般等待几分钟后重试即可。
 
 ### Q: 如何添加自选股？
-A: 修改 `STOCK_LIST` 环境变量，多个代码用逗号分隔。
+A: 修改 `STOCK_LIST` 环境变量，多个代码推荐用英文逗号分隔。系统也会识别中文逗号、顿号、分号、空格和换行，并在 Web 设置页保存或自选增删后规范为英文逗号。
 
 ### Q: GitHub Actions 没有执行？
 A: 检查是否启用了 Actions，以及 cron 表达式是否正确（注意是 UTC 时间）。
@@ -1767,7 +1789,7 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - 删除账户使用软删除语义：默认账户列表、快照、风险、录入入口和事件列表不再显示该账户，但交易、现金流水和公司行动不会被物理清理；如需纠正单条流水，需在账户归档前使用事件列表里的删除修正入口。
 - 交易去重优先使用账户内唯一的 `trade_uid`，缺失时回退到基于日期、代码、方向、数量、价格、费用、税费、币种的确定性哈希。
 - 卖出会先校验可用数量，超卖返回 `409 portfolio_oversell`；并发写入冲突时可能返回 `409 portfolio_busy`。
-- 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价，历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
+- 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照默认会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价；传入 `include_realtime=false` 时会跳过实时行情并直接使用本地历史收盘价回退路径，Web 持仓页用该模式优先渲染持仓列表，避免外部实时行情源变慢时阻塞首屏。历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
 - 汇率刷新会先尝试在线源；若在线获取失败，则回退到最近一次缓存并标记 `is_stale=true`，避免快照和风险页整体不可用。
 - 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，手动刷新接口会明确返回“在线刷新已禁用”，页面不会误导为“当前没有可刷新的汇率对”。
 - 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 会优先尝试按板块归类，失败时降级到 `UNCLASSIFIED`，不会阻断风险结果返回。

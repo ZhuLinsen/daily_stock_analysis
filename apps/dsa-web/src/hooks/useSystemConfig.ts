@@ -7,6 +7,7 @@ import type {
   SystemConfigItem,
   SystemConfigUpdateItem,
 } from '../types/systemConfig';
+import { serializeStockListValue } from '../utils/stockList';
 
 type ToastState = {
   type: 'success';
@@ -52,6 +53,10 @@ function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boo
 }
 
 function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] | undefined): string {
+  if ((schema?.key ?? '').toUpperCase() === 'STOCK_LIST') {
+    return serializeStockListValue(value);
+  }
+
   if (!isMultiValueSchema(schema)) {
     return value;
   }

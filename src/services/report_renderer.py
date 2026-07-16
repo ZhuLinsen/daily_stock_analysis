@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 from src.analyzer import AnalysisResult
 from src.config import get_config
 from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
-from src.services.decision_signal_summary import format_decision_signal_excerpt
 from src.report_language import (
     get_localized_stock_name,
     get_report_labels,
@@ -27,6 +26,12 @@ from src.report_language import (
     localize_operation_advice,
     localize_trend_prediction,
     normalize_report_language,
+)
+from src.schemas.decision_action import (
+    display_action_fields_for_result,
+    display_decision_type_for_result,
+    display_operation_advice_for_result,
+    localize_action_label,
 )
 from src.utils.data_processing import (
     normalize_model_used,
@@ -126,20 +131,42 @@ def render(
     sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
     sorted_enriched = []
     for r in sorted_results:
-        st, se, _ = get_signal_level(r.operation_advice, r.sentiment_score, report_language)
+        display_action = display_action_fields_for_result(
+            r,
+            report_language=report_language,
+        )["action"]
+        display_advice = display_operation_advice_for_result(
+            r,
+            report_language=report_language,
+        )
+        signal_action = {
+            "buy": "buy",
+            "add": "buy",
+            "hold": "hold",
+            "reduce": "reduce",
+            "sell": "sell",
+            "watch": "watch",
+            "avoid": "hold",
+            "alert": "sell",
+        }.get(display_action, display_action)
+        _, se, _ = get_signal_level(signal_action or display_advice, r.sentiment_score, report_language)
         rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
-            "signal_text": st,
+            "signal_text": display_advice,
             "signal_emoji": se,
             "stock_name": _escape_md(rn),
-            "localized_operation_advice": localize_operation_advice(r.operation_advice, report_language),
+            "localized_operation_advice": display_advice,
             "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
         })
 
-    buy_count = sum(1 for r in results if getattr(r, "decision_type", "") == "buy")
-    sell_count = sum(1 for r in results if getattr(r, "decision_type", "") == "sell")
-    hold_count = sum(1 for r in results if getattr(r, "decision_type", "") in ("hold", ""))
+    display_buckets = [
+        display_decision_type_for_result(r, report_language=report_language)
+        for r in results
+    ]
+    buy_count = sum(1 for bucket in display_buckets if bucket == "buy")
+    sell_count = sum(1 for bucket in display_buckets if bucket == "sell")
+    hold_count = len(display_buckets) - buy_count - sell_count
     show_llm_model = bool(getattr(get_config(), "report_show_llm_model", True))
     models_used: List[str] = []
     if show_llm_model:
@@ -159,12 +186,6 @@ def render(
             getattr(result, "market_phase_summary", None),
             getattr(result, "analysis_context_pack_overview", None),
             source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
-            report_language=report_language,
-        )
-
-    def decision_signal_excerpt(result: AnalysisResult) -> str:
-        return format_decision_signal_excerpt(
-            getattr(result, "decision_signal_summary", None),
             report_language=report_language,
         )
 
@@ -197,11 +218,11 @@ def render(
         "clean_sniper": _clean_sniper_value,
         "failed_checks": failed_checks,
         "phase_pack_excerpt": phase_pack_excerpt,
-        "decision_signal_excerpt": decision_signal_excerpt,
         "history_by_code": {},
         "get_chip_unavailable_reason": get_chip_unavailable_reason,
         "is_chip_structure_unavailable": is_chip_structure_unavailable,
         "localize_operation_advice": localize_operation_advice,
+        "localize_action_label": localize_action_label,
         "localize_trend_prediction": localize_trend_prediction,
         "localize_chip_health": localize_chip_health,
         "signal_attribution_has_content": signal_attribution_has_content,

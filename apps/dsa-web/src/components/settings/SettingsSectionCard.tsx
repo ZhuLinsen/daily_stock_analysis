@@ -17,15 +17,15 @@ export const SettingsSectionCard: React.FC<SettingsSectionCardProps> = ({
   className = '',
 }) => {
   return (
-    <div className={cn('rounded-[1.5rem] border settings-border bg-card/94 p-5 shadow-soft-card-strong backdrop-blur-sm', className)}>
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <section className={cn('rounded-lg border settings-border bg-card/90 p-4 shadow-soft-card backdrop-blur-sm md:p-5', className)}>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1">
-          <h2 className="text-sm font-semibold tracking-tight text-foreground uppercase tracking-wider">{title}</h2>
-          {description ? <p className="text-xs leading-6 text-muted-text">{description}</p> : null}
+          <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
+          {description ? <p className="text-sm leading-6 text-muted-text">{description}</p> : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       </div>
-      <div className="space-y-5">{children}</div>
-    </div>
+      <div className="space-y-4">{children}</div>
+    </section>
   );
 };

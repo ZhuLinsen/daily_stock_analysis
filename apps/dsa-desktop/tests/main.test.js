@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const POSIX_PATH_DELIMITER = ':';
+
 function loadMainModule(t, options = {}) {
   const originalLoad = Module._load;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
@@ -154,6 +156,8 @@ test('resolveDesktopConnectHost keeps desktop navigation local for public binds'
 
   assert.equal(mainModule.resolveDesktopConnectHost('0.0.0.0'), '127.0.0.1');
   assert.equal(mainModule.resolveDesktopConnectHost('::'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('*'), '127.0.0.1');
+  assert.equal(mainModule.resolveDesktopConnectHost('[::]'), '127.0.0.1');
   assert.equal(mainModule.resolveDesktopConnectHost('192.168.1.9'), '192.168.1.9');
 });
 
@@ -170,7 +174,7 @@ test('buildBackendEnvironment extends macOS GUI PATH with Homebrew CLI directori
     },
   });
 
-  const entries = env.PATH.split(path.delimiter);
+  const entries = env.PATH.split(POSIX_PATH_DELIMITER);
   assert.deepEqual(entries.slice(0, 4), ['/usr/bin', '/bin', '/usr/sbin', '/sbin']);
   assert.ok(entries.includes('/opt/homebrew/bin'));
   assert.ok(entries.includes('/usr/local/bin'));
@@ -289,6 +293,26 @@ test('resolveBackendBindHost keeps process WEBUI_HOST override ahead of env file
   );
 });
 
+test('resolveBackendBindHost normalizes wildcard WEBUI_HOST values', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const envPath = path.join(tmpDir, '.env');
+  fs.writeFileSync(envPath, 'WEBUI_HOST=*\n', 'utf-8');
+
+  assert.equal(
+    mainModule.resolveBackendBindHost({ envFile: envPath, sourceEnv: {} }),
+    '0.0.0.0'
+  );
+  assert.equal(
+    mainModule.resolveBackendBindHost({
+      envFile: envPath,
+      sourceEnv: { WEBUI_HOST: '[::]' },
+    }),
+    '::'
+  );
+});
+
 test('buildBackendEnvironment injects env file WEBUI_HOST into backend process', (t) => {
   const mainModule = loadMainModule(t, { platform: 'win32' });
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-host-'));
@@ -310,6 +334,30 @@ test('buildBackendEnvironment injects env file WEBUI_HOST into backend process',
   assert.equal(env.WEBUI_PORT, '8000');
 });
 
+test('buildBackendEnvironment normalizes wildcard host for backend env', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  const wildcardEnv = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    port: 8000,
+    host: '*',
+    sourceEnv: {},
+  });
+  const ipv6Env = mainModule.buildBackendEnvironment({
+    envFile: '/tmp/dsa/.env',
+    dbPath: '/tmp/dsa/data.db',
+    logDir: '/tmp/dsa/logs',
+    port: 8001,
+    host: '[::]',
+    sourceEnv: {},
+  });
+
+  assert.equal(wildcardEnv.WEBUI_HOST, '0.0.0.0');
+  assert.equal(ipv6Env.WEBUI_HOST, '::');
+});
+
 test('buildBackendArgs passes resolved host to main.py', (t) => {
   const mainModule = loadMainModule(t, { platform: 'win32' });
 
@@ -319,6 +367,25 @@ test('buildBackendArgs passes resolved host to main.py', (t) => {
     '0.0.0.0',
     '--port',
     '8123',
+  ]);
+});
+
+test('buildBackendArgs normalizes wildcard hosts before spawning main.py', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  assert.deepEqual(mainModule.buildBackendArgs({ host: '*', port: 8123 }), [
+    '--serve-only',
+    '--host',
+    '0.0.0.0',
+    '--port',
+    '8123',
+  ]);
+  assert.deepEqual(mainModule.buildBackendArgs({ host: '[::]', port: 8124 }), [
+    '--serve-only',
+    '--host',
+    '::',
+    '--port',
+    '8124',
   ]);
 });
 
@@ -345,6 +412,31 @@ test('findAvailablePort listens on requested bind host', async (t) => {
 
   assert.equal(port, 8123);
   assert.equal(listenedHost, '0.0.0.0');
+});
+
+test('findAvailablePort normalizes wildcard bind hosts before listening', async (t) => {
+  const listenedHosts = [];
+  const fakeNet = {
+    createServer: () => {
+      const server = new EventEmitter();
+      server.listen = (_port, host) => {
+        listenedHosts.push(host);
+        process.nextTick(() => server.emit('listening'));
+      };
+      server.close = (callback) => {
+        if (callback) {
+          callback();
+        }
+      };
+      return server;
+    },
+  };
+  const mainModule = loadMainModule(t, { platform: 'win32', net: fakeNet });
+
+  await mainModule.findAvailablePort(8123, 8123, '*');
+  await mainModule.findAvailablePort(8124, 8124, '[::]');
+
+  assert.deepEqual(listenedHosts, ['0.0.0.0', '::']);
 });
 
 test('startBackend passes WEBUI_HOST from env file to backend args and env', (t) => {
@@ -403,7 +495,7 @@ test('extendMacDesktopBackendPath preserves existing order and avoids duplicates
   const extended = mainModule.extendMacDesktopBackendPath(
     '/opt/homebrew/bin:/custom/bin:/usr/bin:/custom/bin'
   );
-  const entries = extended.split(path.delimiter);
+  const entries = extended.split(POSIX_PATH_DELIMITER);
 
   assert.deepEqual(entries.slice(0, 3), ['/opt/homebrew/bin', '/custom/bin', '/usr/bin']);
   assert.equal(entries.filter((entry) => entry === '/opt/homebrew/bin').length, 1);

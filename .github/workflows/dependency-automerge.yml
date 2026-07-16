@@ -1,0 +1,77 @@
+name: Dependency Auto Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  classify:
+    if: github.event_name == 'pull_request_target' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mark non-major update for merge after CI
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh label create dependencies-automerge \
+            --repo "$GITHUB_REPOSITORY" \
+            --color 0E8A16 \
+            --description "Merge this Dependabot update after CI passes" \
+            --force
+          gh pr edit "$PR_URL" --add-label dependencies-automerge
+
+      - name: Keep major updates for manual review
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr edit "$PR_URL" --remove-label dependencies-automerge || true
+          echo "Major dependency update detected; leaving the PR for manual compatibility review."
+
+  merge-after-ci:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge approved Dependabot update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$GITHUB_EVENT_PATH")"
+          if [ -z "$pr_number" ]; then
+            echo "The completed CI run is not associated with a pull request."
+            exit 0
+          fi
+
+          author="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json author --jq '.author.login')"
+          labels="$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')"
+          if [[ "$author" != "dependabot" && "$author" != "app/dependabot" ]]; then
+            echo "PR #$pr_number is not authored by Dependabot."
+            exit 0
+          fi
+          if ! grep -qx 'dependencies-automerge' <<< "$labels"; then
+            echo "PR #$pr_number is not approved for automatic dependency merge."
+            exit 0
+          fi
+
+          gh pr merge "$pr_number" \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash \
+            --delete-branch

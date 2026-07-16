@@ -6,14 +6,14 @@
 
 - `DecisionSignal` 只记录建议、证据摘要、风险、观察条件、生命周期和来源，不执行下单或调仓。
 - 写入失败、提取失败、告警信号关联失败和通知发送失败都不阻断主分析、告警触发或报告保存。
-- P7 不新增 API、数据库字段、环境变量、config registry 项或 `.env.example` 内容。
+- #1756 只将 `decision_profile` 字段化并修正 server-side filter、去重、续期和 active 失效语义；不新增环境变量、config registry 项或 `.env.example` 内容。
 - 当前没有 `DECISION_SIGNAL_*` 开关；信号功能的关闭或回滚通过 revert 对应代码完成。
 
 ## 字段与枚举
 
 核心字段由 `api/v1/schemas/decision_signals.py` 定义，主要包括：
 
-- 身份与来源：`stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`trigger_source`。
+- 身份与来源：`stock_code`、`stock_name`、`market`、`source_type`、`source_agent`、`source_report_id`、`trace_id`、`decision_profile`、`trigger_source`。
 - 建议语义：`action`、`action_label`、`confidence`、`score`、`horizon`、`market_phase`、`plan_quality`、`status`。
 - 计划与解释：`entry_low`、`entry_high`、`stop_loss`、`target_price`、`invalidation`、`watch_conditions`、`reason`、`risk_summary`、`catalyst_summary`。
 - 证据与质量：`evidence`、`data_quality_summary`、`metadata`。
@@ -28,6 +28,7 @@
 | `market_phase` | `premarket`、`intraday`、`lunch_break`、`closing_auction`、`postmarket`、`non_trading`、`unknown` |
 | `action` | `buy`、`add`、`hold`、`reduce`、`sell`、`watch`、`avoid`、`alert` |
 | `horizon` | `intraday`、`1d`、`3d`、`5d`、`10d`、`swing`、`long` |
+| `decision_profile` | `conservative`、`balanced`、`aggressive`；数据库 `NULL` 表示 legacy / unknown |
 | `plan_quality` | `complete`、`partial`、`minimal`、`unknown` |
 | `status` | `active`、`expired`、`invalidated`、`closed`、`archived` |
 
@@ -57,15 +58,17 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 - 未传 `horizon` 时，`alert` 或盘前/盘中/午间休市/集合竞价阶段默认 `intraday`，盘后、非交易时段、未知阶段或缺少阶段时默认 `3d`。
 - `intraday` 过期时间优先读取低敏 `metadata.market_phase_summary.minutes_to_close/minutes_to_open`；缺失时按市场 fallback TTL。
 - `expired`、`invalidated`、`closed`、`archived` 不能通过 `PATCH /status` 直接恢复为 `active`。
-- 同源去重优先使用 `(source_report_id, source_type, market, stock_code, action, horizon, market_phase)`；没有 report 但有 `trace_id` 时使用 trace 维度。
-- 新的相反 active 信号会把旧 active 信号标记为 `invalidated`，并把失效来源写入 metadata。
+- 同源去重优先使用 `(source_report_id, source_type, market, stock_code, decision_profile, action, horizon, market_phase)`；没有 report 但有 `trace_id` 时使用 trace 维度。
+- `decision_profile` 参与信号身份：`NULL` 只与 `NULL` 匹配，非空 profile 只与相同 profile 匹配。Exact dedup、relaxed dedup、horizon/phase fill、expired refresh、active invalidation 和 stale backfill invalidation 都遵循该 same-profile 语义。
+- 新的相反 active 信号只会把同 profile 的旧 active 信号标记为 `invalidated`，并把失效来源写入 metadata。不同非 `NULL` profile 可并存，即使 action 相反。
+- Expired duplicate refresh 不会改写 `decision_profile`，只能刷新同 profile 记录。
 
 ## API
 
 当前公开接口由 `api/v1/endpoints/decision_signals.py` 和 `docs/architecture/api_spec.json` 描述：
 
 - `POST /api/v1/decision-signals`：创建或按同源键去重，返回 `{ item, created }`。
-- `GET /api/v1/decision-signals`：分页查询，支持市场、股票、动作、阶段、来源、状态、时间范围和持仓过滤。
+- `GET /api/v1/decision-signals`：分页查询，支持市场、股票、动作、阶段、`decision_profile`、来源、状态、时间范围和持仓过滤。省略或传空 `decision_profile` 不加 profile 条件，返回所有 profile；`decision_profile=unknown` 查询 `NULL` 行；合法 profile 精确匹配。
 - `GET /api/v1/decision-signals/{signal_id}`：查询单条。
 - `PATCH /api/v1/decision-signals/{signal_id}/status`：更新状态和可选 metadata。
 - `GET /api/v1/decision-signals/latest/{stock_code}`：查询股票最新 active 信号。
@@ -94,7 +97,7 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 - `source_report_id` 是唯一事实来源，重评估只读取对应持久化历史报告快照。
 - 不支持 `signal_id`，也不接受客户端提交 `action`、`score`、`confidence`、价格、metadata 或 guardrail 结果；额外字段会被请求校验拒绝。
-- `persist=true` 当前固定返回 HTTP 400，错误码为 `unsupported_operation`。保存重评估结果依赖后续将 `decision_profile` 字段化。
+- `persist=true` 当前固定返回 HTTP 400，错误码为 `unsupported_operation`。保存重评估结果留给 #1757。
 - 重评估不会静默抓取实时行情，也不会用当前市场数据补齐历史快照。
 - 历史报告不存在、非个股报告或快照缺少结构化决策输入时，分别返回明确错误。
 - data quality 会归一为 `high`、`medium`、`low`、`poor`、`unknown`，guardrail 只使用归一化后的等级。
@@ -107,11 +110,17 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 Web 入口位于 `/decision-signals`：
 
 - 默认查询 `status=active`。
-- 支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态筛选。
-- 新增单支股票信号时间线，复用现有 `GET /api/v1/decision-signals` list API，不新增 timeline endpoint。时间线必须输入非空 `stockCode` 后才会查询；空 `stockCode` 只显示引导态，不拉取 market-only 或 global timeline。
+- 页面顶部提供页面级“当前股票”主路径，独立于高级列表筛选。用户提交主股票、选择自动补全候选或点击候选 chip 后，latest active 与时间线共用同一个已应用股票上下文；只修改输入草稿不会触发 latest 或时间线查询。
+- 当前股票候选优先展示最近分析过的股票；如果没有历史候选，或历史候选加载失败，则降级展示股票索引中 active 且 popularity 较高的热门股票。候选只作为手动点击入口，页面加载时不会自动提交查询；历史和股票索引都不可用时仅显示无候选降级文案。
+- 当前股票上下文会显示已应用的代码、名称和可推导市场，并提供清空入口。清空会让 latest 与时间线回到引导态，不影响高级列表筛选或列表来源详情抽屉。
+- 支持按市场、股票代码、动作、市场阶段、来源、来源报告 ID 和状态进行高级列表筛选；这些筛选不等同于当前股票上下文，也不会污染 latest active 查询。
+- 单支股票信号时间线复用现有 `GET /api/v1/decision-signals` list API，不新增 timeline endpoint。时间线必须先应用非空当前股票后才会查询；没有当前股票时只显示引导态，不拉取 market-only 或 global timeline。
 - 时间线只支持 `30d`、`90d`、`180d` 三个时间范围，默认 `90d`；每次最多请求 100 条。若返回 `total > items.length`，Web 会显示“仅展示最近 100 条信号，请缩小时间范围”，避免静默展示不完整轨迹。
+- 时间线筛选保留独立的 market、range、status 表单和查询按钮。选择新当前股票时，如果能推导市场，只在这一次初始化时间线 market；用户之后可以手动改 market，查询以按钮提交时的表单快照为准。
 - 时间线 status filter 只支持 `all` 与 `active`：`all` 不传 `status`，`active` 传 `status=active`。P1 不提供 terminal status filter，也不做前端 terminal 过滤。
-- P1 不提供 profile filter；`decision_profile` 仍只存在于 metadata 中，不能可靠 server-side 过滤。历史缺失或非法 profile 的信号在 Web 中显示为 `unknown`，不会误标为 `balanced`。
+- 时间线支持 profile filter，复用 list API 的 server-side `decision_profile` 查询；`unknown` 只用于筛选和展示 legacy `NULL` 行。普通高级列表不新增 profile filter。
+- 信号表现统计保持全局已复盘 outcome 口径，不等于当前可见信号数量，也不随当前股票或高级列表筛选变化；当已复盘样本数为 0 时，Web 显示零样本空状态而不是一组 `0/-` 指标。
+- Web 展示优先读取正式 `decision_profile` 字段，只有字段缺失时才回退 legacy metadata；历史缺失或非法 profile 的信号显示为 `unknown`，不会误标为 `balanced`。
 - market filter 在 API / 服务层与 Web 前端均已支持 `cn/hk/us/jp/kr/tw`；`jp/kr/tw` 的前端本地化标签均已补齐，`tw` 信号可经 API 正常写入、按 `market=tw` 查询，并可在 Web DecisionSignal 页面通过市场筛选项选择台股（tw）；告警（大盘红绿灯）市场支持 `cn/hk/us/jp/kr`。
 - 详情抽屉展示动作、状态、评分、置信度、周期、计划质量、市场阶段、价格计划、风险、观察条件、证据、数据质量和 metadata。
 - 详情抽屉或已有来源报告 ID 的页面上下文可以发起 reassess preview；没有可用来源报告 ID 时入口禁用。Preview 不加入列表、latest 或时间线，也不提供保存按钮。
@@ -121,9 +130,9 @@ Web 入口位于 `/decision-signals`：
 
 所有用户可见枚举必须使用 i18n 标签；技术 ID、股票代码、API 字段名、env key、URL 示例可以保留英文。
 
-## Decision profile metadata
+## Decision profile identity
 
-P1 自动生成的 `source_type=analysis` 信号会在 metadata 中写入默认决策风格元数据：
+#1756 后 `decision_profile` 是 `decision_signals` 的正式 nullable 字段，同时 metadata 保留兼容字段：
 
 - `decision_profile=balanced`
 - `profile_source=auto_default`：普通新分析生成路径。
@@ -132,7 +141,29 @@ P1 自动生成的 `source_type=analysis` 信号会在 metadata 中写入默认�
 - `signal_generation_version=legacy-report-extractor-v1`
 - `decision_signal_metadata_version=decision-signal-metadata-v1`
 
-`profile_policy_version` 只表示默认 profile metadata contract version，不代表已经实现独立 profile policy engine、scoring engine 或多 profile 生成。P1/P2 不写入 `scoring_version` 或 `scoring_breakdown`；这些字段如需引入，应由后续 reassess / scoring issue 定义。
+- 新写入时，顶层合法 `decision_profile` 优先；顶层显式 `null`、空值或非法值直接拒绝。顶层缺失时才 fallback 合法 `metadata.decision_profile`；二者都缺失或 metadata profile 非法时默认写入 `balanced`。
+- 新写入会同步 `metadata.decision_profile` 为正式字段值，避免双源冲突；metadata 省略或显式 `null` 均按无 metadata 处理，object 会浅复制，非 object 会被拒绝。
+- PATCH metadata 省略时保留原值，显式 `null` 时清空为 SQL `NULL`，object 时整包替换。正式 profile 非 `NULL` 时会覆盖 metadata 中的冲突值；正式 profile 为 legacy `NULL` 时会移除请求 object 中的 profile key，且不会提升正式字段。
+- 自动失效写入同样遵循正式字段权威语义：正式 profile 非 `NULL` 时同步 metadata profile；legacy `NULL` 时只追加失效信息，保留原 legacy metadata，不注入或删除 profile。
+- Legacy / unknown 只用数据库 `NULL` 表示。`profile_policy_version` 只表示默认 profile metadata contract version，不代表已经实现独立 profile policy engine、scoring engine 或多 profile 生成。P1/P2 不写入 `scoring_version` 或 `scoring_breakdown`；这些字段如需引入，应由后续 reassess / scoring issue 定义。
+- Lazy backfill 语义：省略 profile 保留旧的 `source_type=analysis + source_report_id` 懒回填；`decision_profile=balanced` 可生成 balanced 回填；`decision_profile=unknown`、`conservative`、`aggressive` 不自动创建行。
+
+## 市场结构 metadata
+
+普通个股分析和 Agent 个股分析如果携带 `market_structure_context`，自动提取 `DecisionSignal` 时会把以下低敏字段追加到 metadata：
+
+- `market_structure_version`
+- `market_theme_version`
+- `stock_market_position_version`
+- `market_structure_status`
+- `primary_theme`
+- `theme_phase`
+- `stock_role`
+- `market_structure_risk_tags`
+
+这些字段只用于解释信号所处题材背景，不参与 `action`、`score`、`horizon`、同源去重键或生命周期计算。它们也不是题材龙头证明；当 `market_structure_risk_tags` 或缺失证据显示成分股、leader stocks 不完整时，客户端和后验分析应按降级题材证据处理。
+
+快照字段中的 `provider` / `dataset` 来自市场结构抽取链路元数据，属于运行后持久化证据，不参与 LLM provider/model 路由、`base URL` 解析、`.env` 写回或配置迁移；可核验范围见 `src/schemas/market_structure.py`。
 
 ## 告警、通知与组合风险
 
@@ -140,6 +171,7 @@ P1 自动生成的 `source_type=analysis` 信号会在 metadata 中写入默认�
 - 没有 active 信号时，告警 worker 只创建最小 `source_type=alert/action=alert` 信号。
 - 告警信号的 `trace_id=alert-rule-<hash>` 只用于同源重试的 best-effort 去重，不覆盖 active 信号本体。
 - 通知只引用公开摘要字段：`action`、`horizon`、`reason`、`watch_conditions`、`risk_summary`、`source_report_id`。
+- 通知中的 `reason` 在脱敏后完整展示，避免固定字符数在句中截断；`watch_conditions` 和 `risk_summary` 仍保持紧凑摘要上限。
 - 通知不得输出 signal `metadata`、`evidence`、raw diagnostics、webhook URL、token 或 cookie。
 - `GET /api/v1/portfolio/risk` 的 `decision_signal_risk` 只统计当前持仓中的 active `sell/reduce/alert` 信号，查询失败时 fail-open。
 
@@ -169,11 +201,13 @@ P7 的全局验收是确认信号池、通知摘要和 Web 展示不泄露 token
 
 ## 迁移与回滚
 
-本功能在 P1-P6 已完成所需表和 sidecar 结构；P7 不新增 migration。
+#1756 对 SQLite 执行非破坏性 migration。
 
 迁移说明：
 
 - 升级后无需新增 `.env`、`.env.example` 或 Web 设置项。
+- Existing SQLite 只在缺列时 `ALTER TABLE ADD COLUMN decision_profile`，不会 drop/rebuild `decision_signals`，也不会删除旧 index。
+- Migration 会幂等创建 profile-aware indexes，并 row-by-row 防御解析 `metadata_json`：仅合法 `metadata.decision_profile` 回填到正式字段；invalid JSON、非 object 或非法 profile 保持 `NULL`。启动日志会记录 backfilled、invalid JSON、non-object、invalid profile 和 skipped existing profile 统计，这些统计只用于诊断，不阻断启动。
 - 旧历史报告不会批量回填。只有显式调用信号列表接口或在 Web AI 建议页按来源报告 ID 触发精确查询 `source_type=analysis + source_report_id` 且无命中时，才会 best-effort 懒回填。
 - 已存在的 `decision_signals`、feedback 和 outcome 数据保持兼容。
 

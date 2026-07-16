@@ -76,6 +76,7 @@ from src.notification_contracts import (
 from src.notification_noise import validate_notification_timezone
 from src.notification_sender.gotify_sender import resolve_gotify_message_endpoint
 from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
+from src.services.stock_list_parser import split_stock_list
 from src.services.generation_backend_status_service import GenerationBackendStatusService
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,7 @@ class SystemConfigService:
         "FEISHU_WEBHOOK_SECRET": ("feishu_webhook_secret", "string"),
         "FEISHU_WEBHOOK_KEYWORD": ("feishu_webhook_keyword", "string"),
         "FEISHU_MAX_BYTES": ("feishu_max_bytes", "int"),
+        "FEISHU_SEND_AS_FILE": ("feishu_send_as_file", "bool"),
         "DINGTALK_WEBHOOK_URL": ("dingtalk_webhook_url", "string"),
         "DINGTALK_SECRET": ("dingtalk_secret", "string"),
         "FEISHU_APP_ID": ("feishu_app_id", "string"),
@@ -3666,7 +3668,7 @@ class SystemConfigService:
         )
 
     def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        stocks = self._split_csv(effective_map.get("STOCK_LIST") or "")
+        stocks = split_stock_list(effective_map.get("STOCK_LIST") or "")
         if stocks:
             return self._setup_check(
                 "stock_list",

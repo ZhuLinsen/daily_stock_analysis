@@ -26,7 +26,6 @@ from enum import Enum
 from src.config import Config, get_config
 from src.enums import ReportType
 from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
-from src.services.decision_signal_summary import format_decision_signal_excerpt
 from src.notification_routing import (
     get_notification_route_config,
     split_notification_route_channels,
@@ -45,9 +44,13 @@ from src.report_language import (
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
     localize_chip_health,
-    localize_operation_advice,
     localize_trend_prediction,
     normalize_report_language,
+)
+from src.schemas.decision_action import (
+    display_action_fields_for_result,
+    display_decision_type_for_result,
+    display_operation_advice_for_result,
 )
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
@@ -230,7 +233,7 @@ class NotificationService(
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
         self._report_summary_only = getattr(config, 'report_summary_only', False)
         self._report_show_llm_model = getattr(config, 'report_show_llm_model', True)
-        self._history_compare_cache: Dict[Tuple[int, Tuple[Tuple[str, str], ...]], Dict[str, List[Dict[str, Any]]]] = {}
+        self._history_compare_cache: Dict[Tuple[int, str, Tuple[Tuple[str, str], ...]], Dict[str, List[Dict[str, Any]]]] = {}
 
         # 初始化各渠道
         AstrbotSender.__init__(self, config)
@@ -298,8 +301,11 @@ class NotificationService(
         if history_compare_n <= 0 or not results:
             return {"history_by_code": {}}
 
+        report_language = self._get_report_language(results)
+
         cache_key = (
             history_compare_n,
+            report_language,
             tuple(sorted((r.code, getattr(r, 'query_id', '') or '') for r in results)),
         )
         if cache_key in self._history_compare_cache:
@@ -318,6 +324,7 @@ class NotificationService(
                 codes,
                 limit=history_compare_n,
                 exclude_query_ids=exclude_ids,
+                report_language=report_language,
             )
         except Exception as e:
             logger.debug("History comparison skipped: %s", e)
@@ -353,12 +360,6 @@ class NotificationService(
             getattr(result, "market_phase_summary", None),
             getattr(result, "analysis_context_pack_overview", None),
             source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
-            report_language=report_language,
-        )
-
-    def _decision_signal_excerpt(self, result: AnalysisResult, report_language: str) -> str:
-        return format_decision_signal_excerpt(
-            getattr(result, "decision_signal_summary", None),
             report_language=report_language,
         )
 
@@ -830,10 +831,7 @@ class NotificationService(
             reverse=True
         )
 
-        # 统计信息 - 使用 decision_type 字段准确统计
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
 
         report_lines.extend([
@@ -854,10 +852,10 @@ class NotificationService(
         if self._report_summary_only:
             report_lines.extend([f"## 📊 {labels['summary_heading']}", ""])
             for r in sorted_results:
-                _, emoji, _ = self._get_signal_level(r)
+                signal_text, emoji, _ = self._get_signal_level(r)
                 report_lines.append(
                     f"{emoji} **{self._get_display_name(r, report_language)}({r.code})**: "
-                    f"{localize_operation_advice(r.operation_advice, report_language)} | "
+                    f"{signal_text} | "
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
@@ -865,21 +863,18 @@ class NotificationService(
             report_lines.extend([f"## 📈 {labels['report_title']}", ""])
             # 逐个股票的详细分析
             for result in sorted_results:
-                _, emoji, _ = self._get_signal_level(result)
+                signal_text, emoji, _ = self._get_signal_level(result)
                 confidence_stars = result.get_confidence_stars() if hasattr(result, 'get_confidence_stars') else '⭐⭐'
 
                 report_lines.extend([
                     f"### {emoji} {self._get_display_name(result, report_language)} ({result.code})",
                     "",
-                    f"**{labels['action_advice_label']}：{localize_operation_advice(result.operation_advice, report_language)}** | "
+                    f"**{labels['action_advice_label']}：{signal_text}** | "
                     f"**{labels['score_label']}：{result.sentiment_score}** | "
                     f"**{labels['trend_label']}：{localize_trend_prediction(result.trend_prediction, report_language)}** | "
                     f"**Confidence：{confidence_stars}**",
                     "",
                 ])
-                signal_excerpt = self._decision_signal_excerpt(result, report_language)
-                if signal_excerpt:
-                    report_lines.extend([signal_excerpt, ""])
                 self._append_market_snapshot(report_lines, result)
 
                 # 核心看点
@@ -1096,12 +1091,57 @@ class NotificationService(
                 report_lines.append(f"- {limitation}")
             report_lines.append("")
 
+    def _get_display_operation_advice(
+        self,
+        result: AnalysisResult,
+        report_language: Optional[str] = None,
+    ) -> str:
+        return display_operation_advice_for_result(
+            result,
+            report_language=report_language or self._get_report_language(result),
+        )
+
+    def _count_display_decisions(
+        self,
+        results: List[AnalysisResult],
+        report_language: Optional[str] = None,
+    ) -> Tuple[int, int, int]:
+        language = report_language or self._get_report_language(results)
+        buckets = [
+            display_decision_type_for_result(result, report_language=language)
+            for result in results
+        ]
+        buy_count = sum(1 for bucket in buckets if bucket == "buy")
+        sell_count = sum(1 for bucket in buckets if bucket == "sell")
+        hold_count = len(buckets) - buy_count - sell_count
+        return buy_count, sell_count, hold_count
+
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
-        """Get localized signal level and color based on operation advice."""
-        return get_signal_level(
-            result.operation_advice,
+        """Get display text and signal metadata from the resolved action."""
+        report_language = self._get_report_language(result)
+        display_fields = display_action_fields_for_result(
+            result,
+            report_language=report_language,
+        )
+        signal_advice = {
+            "buy": "buy",
+            "add": "buy",
+            "hold": "hold",
+            "reduce": "reduce",
+            "sell": "sell",
+            "watch": "watch",
+            "avoid": "hold",
+            "alert": "sell",
+        }.get(display_fields["action"])
+        _, emoji, signal_tag = get_signal_level(
+            signal_advice or self._get_display_operation_advice(result, report_language),
             result.sentiment_score,
-            self._get_report_language(result),
+            report_language,
+        )
+        return (
+            self._get_display_operation_advice(result, report_language),
+            emoji,
+            signal_tag,
         )
 
     def generate_dashboard_report(
@@ -1159,10 +1199,7 @@ class NotificationService(
         # 按评分排序（高分在前）
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
 
-        # 统计信息 - 使用 decision_type 字段准确统计
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
 
         report_lines = [
             f"# 🎯 {report_date} {labels['dashboard_title']}",
@@ -1179,11 +1216,11 @@ class NotificationService(
                 "",
             ])
             for r in sorted_results:
-                _, signal_emoji, _ = self._get_signal_level(r)
+                signal_text, signal_emoji, _ = self._get_signal_level(r)
                 display_name = self._get_display_name(r, report_language)
                 report_lines.append(
                     f"{signal_emoji} **{display_name}({r.code})**: "
-                    f"{localize_operation_advice(r.operation_advice, report_language)} | "
+                    f"{signal_text} | "
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
@@ -1206,10 +1243,6 @@ class NotificationService(
                     f"## {signal_emoji} {stock_name} ({result.code})",
                     "",
                 ])
-                signal_excerpt = self._decision_signal_excerpt(result, report_language)
-                if signal_excerpt:
-                    report_lines.extend([signal_excerpt, ""])
-
                 # ========== 舆情与基本面概览（放在最前面）==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
                 if intel:
@@ -1264,7 +1297,7 @@ class NotificationService(
                     report_lines.extend([
                         f"| {labels['position_status_label']} | {labels['action_advice_label']} |",
                         "|---------|---------|",
-                        f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', localize_operation_advice(result.operation_advice, report_language))} |",
+                        f"| 🆕 **{labels['no_position_label']}** | {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))} |",
                         f"| 💼 **{labels['has_position_label']}** | {pos_advice.get('has_position', labels['continue_holding'])} |",
                         "",
                     ])
@@ -1496,10 +1529,7 @@ class NotificationService(
         # 按评分排序
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
 
-        # 统计 - 使用 decision_type 字段准确统计
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
 
         lines = [
             f"## 🎯 {report_date} {labels['dashboard_title']}",
@@ -1514,11 +1544,11 @@ class NotificationService(
             lines.append(f"**📊 {labels['summary_heading']}**")
             lines.append("")
             for r in sorted_results:
-                _, signal_emoji, _ = self._get_signal_level(r)
+                signal_text, signal_emoji, _ = self._get_signal_level(r)
                 stock_name = self._get_display_name(r, report_language)
                 lines.append(
                     f"{signal_emoji} **{stock_name}({r.code})**: "
-                    f"{localize_operation_advice(r.operation_advice, report_language)} | "
+                    f"{signal_text} | "
                     f"{labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
@@ -1542,11 +1572,6 @@ class NotificationService(
                 if one_sentence:
                     lines.append(f"📌 **{one_sentence[:80]}**")
                     lines.append("")
-                signal_excerpt = self._decision_signal_excerpt(result, report_language)
-                if signal_excerpt:
-                    lines.append(signal_excerpt)
-                    lines.append("")
-
                 # 重要信息区（舆情+基本面）
                 info_lines = []
 
@@ -1650,10 +1675,7 @@ class NotificationService(
         # 按评分排序
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
 
-        # 统计 - 使用 decision_type 字段准确统计
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
 
         lines = [
@@ -1667,12 +1689,12 @@ class NotificationService(
 
         # 每只股票精简信息（控制长度）
         for result in sorted_results:
-            _, emoji, _ = self._get_signal_level(result)
+            signal_text, emoji, _ = self._get_signal_level(result)
 
             # 核心信息行
             lines.append(f"### {emoji} {self._get_display_name(result, report_language)}({result.code})")
             lines.append(
-                f"**{localize_operation_advice(result.operation_advice, report_language)}** | "
+                f"**{signal_text}** | "
                 f"{labels['score_label']}:{result.sentiment_score} | "
                 f"{localize_trend_prediction(result.trend_prediction, report_language)}"
             )
@@ -1743,9 +1765,7 @@ class NotificationService(
         if not results:
             return f"# {report_date} {labels['brief_title']}\n\n{labels['no_results']}"
         sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
-        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
-        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
-        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        buy_count, sell_count, hold_count = self._count_display_decisions(results, report_language)
         lines = [
             f"# {report_date} {labels['brief_title']}",
             "",
@@ -1753,14 +1773,14 @@ class NotificationService(
         ]
         self._append_market_status_line(lines, results, report_language)
         for r in sorted_results:
-            _, emoji, _ = self._get_signal_level(r)
+            signal_text, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)
             dash = r.dashboard or {}
             core = dash.get('core_conclusion', {}) or {}
             one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
             lines.append(
                 f"**{name}({r.code})** {emoji} "
-                f"{localize_operation_advice(r.operation_advice, report_language)} | "
+                f"{signal_text} | "
                 f"{labels['score_label']} {r.sentiment_score} | {one}"
             )
         lines.append("")
@@ -1804,10 +1824,6 @@ class NotificationService(
         excerpt = self._public_phase_pack_excerpt(result, report_language)
         if excerpt:
             lines.extend([excerpt, ""])
-
-        signal_excerpt = self._decision_signal_excerpt(result, report_language)
-        if signal_excerpt:
-            lines.extend([signal_excerpt, ""])
 
         self._append_market_snapshot(lines, result)
 
@@ -1913,7 +1929,7 @@ class NotificationService(
             lines.extend([
                 f"### 💼 {labels['position_advice_heading']}",
                 "",
-                f"- 🆕 **{labels['no_position_label']}**: {pos_advice.get('no_position', localize_operation_advice(result.operation_advice, report_language))}",
+                f"- 🆕 **{labels['no_position_label']}**: {pos_advice.get('no_position', self._get_display_operation_advice(result, report_language))}",
                 f"- 💼 **{labels['has_position_label']}**: {pos_advice.get('has_position', labels['continue_holding'])}",
                 "",
             ])
@@ -2395,6 +2411,7 @@ class NotificationService(
         image_bytes: Optional[bytes],
         email_stock_codes: Optional[List[str]],
         email_send_to_all: bool,
+        route_type: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
         if channel == NotificationChannel.WECHAT:
@@ -2402,6 +2419,12 @@ class NotificationService(
                 return self._send_wechat_image(image_bytes)
             return self.send_to_wechat(content)
         if channel == NotificationChannel.FEISHU:
+            if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
+                date_str = datetime.now().strftime('%Y%m%d')
+                filepath = self.save_report_to_file(
+                    content, filename=f"report_{date_str}.md"
+                )
+                return self.send_feishu_file(filepath)
             return self.send_to_feishu(content)
         if channel == NotificationChannel.DINGTALK:
             return self.send_to_dingtalk(content)
@@ -2604,6 +2627,7 @@ class NotificationService(
                     image_bytes=image_bytes,
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
+                    route_type=route_type,
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -2716,6 +2740,28 @@ class NotificationService(
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)
 
+    def save_and_send_feishu_file(
+        self,
+        content: str,
+        filename: Optional[str] = None,
+    ) -> bool:
+        """
+        Save report content to a local markdown file and upload it to Feishu.
+
+        This is a convenience wrapper around :meth:`save_report_to_file` +
+        :meth:`send_feishu_file`.
+
+        Args:
+            content: Report content (Markdown).
+            filename: Optional file name; auto-generated from date when omitted.
+
+        Returns:
+            Whether the Feishu file upload succeeded.
+        """
+        filepath = self.save_report_to_file(content, filename=filename)
+        logger.info("将上传文件到飞书: %s", filepath)
+        return self.send_feishu_file(filepath)
+
 
 class NotificationBuilder:
     """
@@ -2762,10 +2808,32 @@ class NotificationBuilder:
         lines = [f"📊 **{labels['summary_heading']}**", ""]
 
         for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
-            _, emoji, _ = get_signal_level(r.operation_advice, r.sentiment_score, report_language)
+            display_action = display_action_fields_for_result(
+                r,
+                report_language=report_language,
+            )["action"]
+            signal_action = {
+                "buy": "buy",
+                "add": "buy",
+                "hold": "hold",
+                "reduce": "reduce",
+                "sell": "sell",
+                "watch": "watch",
+                "avoid": "hold",
+                "alert": "sell",
+            }.get(display_action)
+            display_advice = display_operation_advice_for_result(
+                r,
+                report_language=report_language,
+            )
+            signal_text, emoji, _ = get_signal_level(
+                signal_action or display_advice,
+                r.sentiment_score,
+                report_language,
+            )
             name = get_localized_stock_name(r.name, r.code, report_language)
             lines.append(
-                f"{emoji} {name}({r.code}): {localize_operation_advice(r.operation_advice, report_language)} | "
+                f"{emoji} {name}({r.code}): {display_advice} | "
                 f"{labels['score_label']} {r.sentiment_score}"
             )
 
