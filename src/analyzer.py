@@ -87,6 +87,44 @@ def _normalize_risk_warning_values(value: Any) -> List[str]:
     text = str(value).strip()
     return [text] if text else []
 
+import os
+import requests
+
+
+def get_stock_sentiment(ticker: str) -> str:
+    """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
+    # 从系统环境变量中读取你在 GitHub Secrets 配置的 Key
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        return ""
+
+    # 请求 Alpha Vantage 的新闻与情绪接口
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
+
+    try:
+        response = requests.get(url).json()
+        feed = response.get("feed", [])
+        if not feed:
+            return f"\n### {ticker} 暂无近期网络舆情"
+
+        sentiment_summary = [f"\n### {ticker} 舆情风向标："]
+        # 提取前 3 条核心新闻舆情
+        for item in feed[:3]:
+            title = item.get("title")
+
+            # 过滤出当前股票对应的情绪标签 (Bearish/Bullish/Neutral)
+            ticker_data = item.get("ticker_sentiment", [])
+            label = "Neutral"
+            for t in ticker_data:
+                if t.get("ticker").upper() == ticker.upper():
+                    label = t.get("ticker_sentiment_label")
+                    break
+
+            sentiment_summary.append(f"- 【{label}】{title}")
+
+        return "\n".join(sentiment_summary)
+    except Exception:
+        return ""
 
 def _today_has_realtime_overlay(today: Any) -> bool:
     if not isinstance(today, dict):
