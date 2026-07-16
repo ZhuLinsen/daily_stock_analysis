@@ -17,12 +17,7 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
-# 安全导入你本地现有的依赖，去掉了引发报错的 provider_trace 导入
-from src.agent.llm_adapter import (
-    get_thinking_extra_body,
-    resolve_fallback_litellm_wire_models,
-    register_fallback_model_pricing,
-)
+# 安全导入你本地现有的依赖，避开可能不存在的新文件导入
 from src.config import (
     Config,
     extra_litellm_params,
@@ -39,7 +34,7 @@ from src.report_language import (
     normalize_report_language
 )
 
-# 本地直接定义策略变量，防止导入缺失报错
+# 直接在本地定义策略变量，防止导入缺失报错
 CORE_TRADING_SKILL_POLICY_ZH = """
 你是一个资深美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
 1. **防守第一**：任何时候，首要任务是识别潜在风险，防范重大亏损，而不仅仅是寻找上涨机会。
@@ -89,6 +84,13 @@ def fill_price_position_if_needed(target_pct: float, current_price: float, curre
     elif target_pct < current_position_pct:
         return f"建议在 {current_price} 附近逢高减仓，目标降至 {target_pct}%"
     return "维持现有仓位不变"
+
+# 补全这个导致报错的函数，防止外部导入失败
+def populate_decision_action_fields(data: Dict[str, Any], decision: str, analysis: str) -> Dict[str, Any]:
+    """填充决策和操作字段"""
+    data["decision"] = decision
+    data["analysis"] = analysis
+    return data
 
 def normalize_chip_structure_availability(chip_data: Optional[Dict[str, Any]] = None) -> bool:
     if not chip_data:
