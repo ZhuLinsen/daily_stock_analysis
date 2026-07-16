@@ -327,6 +327,54 @@ def test_single_technical_opinion_uses_limited_opinion_synthesis():
     assert explanation["decision_path"] == "limited_opinion_synthesis"
 
 
+def test_single_skill_consensus_is_internal_not_an_independent_base_opinion():
+    ctx = AgentContext(stock_code="600519")
+    _opinion(ctx, "skill_xxx", "buy", 0.82)
+    _opinion(ctx, "skill_consensus", "buy", 0.82)
+
+    _, explanation = _finalize(_orchestrator(), ctx, "buy")
+
+    assert explanation["base_disagreement"]["agents"] == [
+        {"agent": "skill_xxx", "signal": "buy", "confidence": 0.82},
+    ]
+    assert explanation["base_disagreement"]["type"] == "insufficient_opinions"
+    assert explanation["decision_path"] == "limited_opinion_synthesis"
+    assert [opinion.agent_name for opinion in ctx.opinions] == [
+        "skill_xxx",
+        "skill_consensus",
+    ]
+
+
+def test_multiple_skill_consensus_does_not_duplicate_base_opinions():
+    ctx = AgentContext(stock_code="600519")
+    _opinion(ctx, "skill_a", "buy", 0.82)
+    _opinion(ctx, "skill_b", "hold", 0.68)
+    _opinion(ctx, "skill_consensus", "buy", 0.76)
+
+    _, explanation = _finalize(_orchestrator(), ctx, "buy")
+
+    assert explanation["base_disagreement"]["agents"] == [
+        {"agent": "skill_a", "signal": "buy", "confidence": 0.82},
+        {"agent": "skill_b", "signal": "hold", "confidence": 0.68},
+    ]
+    assert explanation["base_disagreement"]["type"] == "bullish_with_neutral"
+    assert explanation["decision_path"] == "non_conflicting_signals_synthesized"
+
+
+def test_legacy_strategy_consensus_is_not_an_independent_base_opinion():
+    ctx = AgentContext(stock_code="600519")
+    _opinion(ctx, "strategy_a", "sell", 0.74)
+    _opinion(ctx, "strategy_consensus", "sell", 0.74)
+
+    _, explanation = _finalize(_orchestrator(), ctx, "sell")
+
+    assert explanation["base_disagreement"]["agents"] == [
+        {"agent": "strategy_a", "signal": "sell", "confidence": 0.74},
+    ]
+    assert explanation["base_disagreement"]["type"] == "insufficient_opinions"
+    assert explanation["decision_path"] == "limited_opinion_synthesis"
+
+
 def test_non_critical_failure_keeps_legacy_marker_and_deduplicates_public_event():
     ctx = AgentContext(stock_code="600519")
     orchestrator = _orchestrator()

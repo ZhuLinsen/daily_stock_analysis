@@ -12,8 +12,9 @@ from collections.abc import Iterable
 from enum import Enum
 from typing import Any, Dict, List
 
-from src.agent.protocols import AgentContext, normalize_decision_signal
+from src.agent.protocols import AgentContext, AgentOpinion, normalize_decision_signal
 from src.agent.risk_override import RiskOverrideApplication, build_risk_override_plan
+from src.agent.skills.defaults import is_skill_consensus_name
 
 _BULLISH_SIGNALS = {"strong_buy", "buy"}
 _BEARISH_SIGNALS = {"strong_sell", "sell"}
@@ -123,7 +124,7 @@ def build_agent_disagreement_explanation(
 
     agents: List[Dict[str, Any]] = []
     for opinion in ctx.opinions:
-        if str(opinion.agent_name or "").strip().lower() == "decision":
+        if not _is_base_agent_opinion(opinion):
             continue
         signal = _effective_signal(opinion.agent_name, opinion.signal)
         agents.append({
@@ -148,6 +149,19 @@ def build_agent_disagreement_explanation(
         "degraded_events": degraded_events,
         "decision_path": decision_path,
     }
+
+
+def _is_base_agent_opinion(opinion: AgentOpinion) -> bool:
+    """Return whether an opinion is an independently executed upstream fact.
+
+    Base opinions come from independently executed upstream agents. Skill and
+    strategy consensus opinions are derived from those base opinions, while the
+    decision opinion consumes them to produce the final decision. Neither a
+    derived consensus nor the decision result may participate again as an
+    independent base opinion in the public disagreement explanation.
+    """
+    agent_name = str(opinion.agent_name or "").strip().lower()
+    return agent_name != "decision" and not is_skill_consensus_name(agent_name)
 
 
 def _build_final_degraded_events(ctx: AgentContext) -> List[Dict[str, Any]]:
