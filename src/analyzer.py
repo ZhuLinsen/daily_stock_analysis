@@ -17,12 +17,12 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
+# 安全导入你本地现有的依赖，去掉了引发报错的 provider_trace 导入
 from src.agent.llm_adapter import (
     get_thinking_extra_body,
     resolve_fallback_litellm_wire_models,
     register_fallback_model_pricing,
 )
-from src.agent.provider_trace import resolved_model_provider_identity
 from src.config import (
     Config,
     extra_litellm_params,
@@ -39,7 +39,7 @@ from src.report_language import (
     normalize_report_language
 )
 
-# 直接在本地定义策略变量，避免从外部 skills.defaults 导入报错
+# 本地直接定义策略变量，防止导入缺失报错
 CORE_TRADING_SKILL_POLICY_ZH = """
 你是一个资深美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
 1. **防守第一**：任何时候，首要任务是识别潜在风险，防范重大亏损，而不仅仅是寻找上涨机会。
