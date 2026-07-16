@@ -65,6 +65,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          # 👇 在这里安全追加我们需要的飞书和舆情 API 变量
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
         run: |
           # 根据手动触发时传入的参数来组合运行命令
           ARGS=""
@@ -73,24 +76,17 @@ jobs:
           elif [ "${{ github.event.inputs.mode }}" = "market_only" ]; then
             ARGS="$ARGS --market-review --serve-only"
           fi
-          
+
           if [ -n "${{ github.event.inputs.stocks }}" ]; then
             ARGS="$ARGS --stocks ${{ github.event.inputs.stocks }}"
           fi
-          
+
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
-          
+
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             ARGS="$ARGS --force"
           fi
-          
+
           python main.py $ARGS
-          - name: Run analysis
-      env:
-          # 👇 这一行非常关键，用来将 GitHub 密钥转换为 Python 能读取到的环境变量
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
-          # 如果有其他 API 密钥，也一并写在这里
-          run: python main.py  # 或者是你仓库里实际运行的脚本文件名
