@@ -98,7 +98,11 @@ def _fake_api(
     *,
     accounts=None,
     positions_by_account=None,
+    console_log_calls=None,
 ):
+    if console_log_calls is None:
+        console_log_calls = []
+
     def open_trade_context(*, filter_trdmarket, host, port, security_firm):
         context = _TradeContext(
             filter_trdmarket=filter_trdmarket,
@@ -123,6 +127,9 @@ def _fake_api(
         RET_OK=0,
         SecurityFirm=SimpleNamespace(FUTUSECURITIES="FUTUSECURITIES"),
         SecurityType=SimpleNamespace(STOCK="STOCK"),
+        SysConfig=SimpleNamespace(
+            enable_console_log=lambda enabled: console_log_calls.append(enabled)
+        ),
         TrdEnv=SimpleNamespace(REAL="REAL"),
         TrdMarket=SimpleNamespace(NONE="NONE"),
     )
@@ -157,6 +164,71 @@ def _load_codes_for_accounts(accounts, positions_by_account):
 
 
 class FutuPortfolioServiceTest(unittest.TestCase):
+    def test_sdk_console_log_defaults_to_enabled(self):
+        trade_contexts = []
+        quote_contexts = []
+        console_log_calls = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            console_log_calls=console_log_calls,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"FUTU_SECURITY_FIRM": "FUTUSECURITIES"},
+            clear=True,
+        ), patch.object(service, "_load_futu_api", return_value=api):
+            service.load_futu_stock_codes()
+
+        self.assertEqual(console_log_calls, [True])
+
+    def test_sdk_console_log_can_be_disabled(self):
+        trade_contexts = []
+        quote_contexts = []
+        console_log_calls = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            console_log_calls=console_log_calls,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "FUTU_SECURITY_FIRM": "FUTUSECURITIES",
+                "FUTU_SDK_CONSOLE_LOG_ENABLED": "false",
+            },
+            clear=True,
+        ), patch.object(service, "_load_futu_api", return_value=api):
+            service.load_futu_stock_codes()
+
+        self.assertEqual(console_log_calls, [False])
+
+    def test_invalid_sdk_console_log_value_fails_before_opening_context(self):
+        trade_contexts = []
+        quote_contexts = []
+        console_log_calls = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            console_log_calls=console_log_calls,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"FUTU_SDK_CONSOLE_LOG_ENABLED": "quiet"},
+            clear=True,
+        ), patch.object(service, "_load_futu_api", return_value=api), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "FUTU_SDK_CONSOLE_LOG_ENABLED 必须是布尔值",
+        ):
+            service.load_futu_stock_codes()
+
+        self.assertEqual(console_log_calls, [])
+        self.assertEqual(trade_contexts, [])
+        self.assertEqual(quote_contexts, [])
+
     def test_load_futu_stock_codes_uses_real_accounts_and_keeps_only_stocks(self):
         trade_contexts = []
         quote_contexts = []

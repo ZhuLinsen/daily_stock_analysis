@@ -34,6 +34,7 @@ class _FutuApi:
     RET_OK: Any
     SecurityFirm: Any
     SecurityType: Any
+    SysConfig: Any
     TrdEnv: Any
     TrdMarket: Any
 
@@ -64,6 +65,7 @@ def _load_futu_api() -> _FutuApi:
             RET_OK,
             SecurityFirm,
             SecurityType,
+            SysConfig,
             TrdEnv,
             TrdMarket,
         )
@@ -80,6 +82,7 @@ def _load_futu_api() -> _FutuApi:
         RET_OK=RET_OK,
         SecurityFirm=SecurityFirm,
         SecurityType=SecurityType,
+        SysConfig=SysConfig,
         TrdEnv=TrdEnv,
         TrdMarket=TrdMarket,
     )
@@ -144,6 +147,22 @@ def _connection_settings() -> tuple[str, int]:
     if not host or not 1 <= port <= 65535:
         raise FutuPortfolioError(f"Futu OpenD 地址无效: {host!r}:{port}")
     return host, port
+
+
+def _configure_sdk_console_logging(api: _FutuApi) -> None:
+    """Apply the process-wide Futu SDK console logging preference."""
+
+    raw_value = (os.getenv("FUTU_SDK_CONSOLE_LOG_ENABLED") or "true").strip().lower()
+    if raw_value in {"1", "true", "yes", "on"}:
+        enabled = True
+    elif raw_value in {"0", "false", "no", "off"}:
+        enabled = False
+    else:
+        raise FutuPortfolioError(
+            "FUTU_SDK_CONSOLE_LOG_ENABLED 必须是布尔值 "
+            "（true/false、1/0、yes/no 或 on/off）"
+        )
+    api.SysConfig.enable_console_log(enabled)
 
 
 def _configured_account_id() -> Optional[int]:
@@ -407,14 +426,16 @@ def load_futu_stock_codes() -> List[str]:
     read-only and always refreshes position data.
     """
     api = _load_futu_api()
+    _configure_sdk_console_logging(api)
     host, port = _connection_settings()
     accounts = _discover_real_accounts(api, host, port)
     position_codes = _load_position_codes(api, host, port, accounts)
     stock_codes = _filter_stock_codes(api, host, port, position_codes)
     logger.info(
-        "已从 Futu 真实账户加载 %d 只正股（账户数: %d，原始非零多头持仓数: %d）",
+        "已从 Futu 真实账户加载 %d 只正股（账户数: %d，原始非零多头持仓数: %d）: %s",
         len(stock_codes),
         len(accounts),
         len(position_codes),
+        ", ".join(stock_codes),
     )
     return stock_codes
