@@ -27,12 +27,36 @@ from typing import Any, Callable, Dict, List, Optional
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
+from src.agent.tools.execution import (
+    _build_tool_cache_key,
+    _guard_tool_stock_scope,
+    _is_non_retriable_tool_result,
+    _is_stock_scoped_tool,
+    _normalize_guard_stock_code,
+    _normalize_tool_stock_code,
+    execute_runner_tool_call,
+    serialize_tool_result,
+)
 from src.agent.stock_scope import StockScope
 from src.llm.usage import should_persist_usage_telemetry
 from src.utils.data_processing import normalize_report_signal_attribution
 from src.storage import persist_llm_usage as _persist_usage
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "RunLoopResult",
+    "parse_dashboard_json",
+    "run_agent_loop",
+    "serialize_tool_result",
+    "try_parse_json",
+    "_build_tool_cache_key",
+    "_guard_tool_stock_scope",
+    "_is_non_retriable_tool_result",
+    "_is_stock_scoped_tool",
+    "_normalize_guard_stock_code",
+    "_normalize_tool_stock_code",
+]
 
 # Tool name → friendly label for progress messages
 _THINKING_TOOL_LABELS: Dict[str, str] = {
@@ -83,130 +107,6 @@ class RunLoopResult:
 # ============================================================
 # Helpers
 # ============================================================
-
-def serialize_tool_result(result: Any) -> str:
-    """Serialize a tool result to a JSON string consumable by an LLM."""
-    if result is None:
-        return json.dumps({"result": None})
-    if isinstance(result, str):
-        return result
-    if isinstance(result, (dict, list)):
-        try:
-            return json.dumps(result, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            return str(result)
-    if hasattr(result, "__dict__"):
-        try:
-            d = {k: v for k, v in result.__dict__.items() if not k.startswith("_")}
-            return json.dumps(d, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            return str(result)
-    return str(result)
-
-
-def _normalize_tool_stock_code(value: Any) -> Any:
-    """Canonicalize stock code arguments so equivalent HK variants share one cache key."""
-    if not isinstance(value, str):
-        return value
-
-    text = value.strip().upper()
-    if not text:
-        return text
-
-    if text.endswith(".HK"):
-        base = text[:-3]
-        if base.isdigit() and 1 <= len(base) <= 5:
-            return f"HK{base.zfill(5)}"
-
-    if text.startswith("HK"):
-        base = text[2:]
-        if base.isdigit() and 1 <= len(base) <= 5:
-            return f"HK{base.zfill(5)}"
-
-    if text.isdigit() and len(text) == 5:
-        return f"HK{text}"
-
-    try:
-        from data_provider.base import canonical_stock_code, normalize_stock_code
-
-        return canonical_stock_code(normalize_stock_code(text))
-    except Exception:
-        return text
-
-
-def _build_tool_cache_key(tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-    """Build a stable cache key for tool calls with normalized stock-code arguments."""
-    if not isinstance(arguments, dict):
-        return None
-
-    normalized_args: Dict[str, Any] = {}
-    for key, value in arguments.items():
-        if key == "stock_code":
-            normalized_args[key] = _normalize_tool_stock_code(value)
-        else:
-            normalized_args[key] = value
-
-    try:
-        payload = json.dumps(normalized_args, ensure_ascii=False, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        return None
-    return f"{tool_name}:{payload}"
-
-
-def _is_non_retriable_tool_result(result: Any) -> bool:
-    """Return True when a tool result explicitly tells the agent not to retry."""
-    return (
-        isinstance(result, dict)
-        and bool(result.get("error"))
-        and result.get("retriable") is False
-    )
-
-
-def _is_stock_scoped_tool(tool_registry: ToolRegistry, tool_name: str) -> bool:
-    tool_def = tool_registry.resolve(tool_name)
-    if tool_def is None:
-        return False
-    return any(param.name == "stock_code" for param in tool_def.parameters)
-
-
-def _normalize_guard_stock_code(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    raw = value if isinstance(value, str) else str(value)
-    normalized = _normalize_tool_stock_code(raw)
-    return normalized if isinstance(normalized, str) else str(normalized)
-
-
-def _guard_tool_stock_scope(tool_registry: ToolRegistry, tool_name: str, arguments: Dict[str, Any], stock_scope: Optional[StockScope]) -> Optional[Dict[str, Any]]:
-    if stock_scope is None or not isinstance(arguments, dict):
-        return None
-    if not _is_stock_scoped_tool(tool_registry, tool_name):
-        return None
-    if "stock_code" not in arguments:
-        return None
-
-    requested = _normalize_guard_stock_code(arguments.get("stock_code"))
-
-    expected = _normalize_guard_stock_code(stock_scope.expected_stock_code)
-    allowed = {
-        normalized
-        for code in stock_scope.allowed_stock_codes
-        for normalized in [_normalize_guard_stock_code(code)]
-        if normalized
-    }
-    if requested and (requested == expected or requested in allowed):
-        return None
-
-    return {
-        "error": "stock_scope_violation",
-        "expected_stock_code": expected,
-        "requested_stock_code": requested,
-        "allowed_stock_codes": sorted(allowed),
-        "retriable": False,
-    }
-
 
 def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     """Extract and parse a Decision Dashboard JSON from agent text.
@@ -709,44 +609,12 @@ def _execute_tools(
     """
 
     def _exec_single(tc_item):
-        t0 = time.time()
-        cache_key = _build_tool_cache_key(tc_item.name, tc_item.arguments)
-        guard_result = _guard_tool_stock_scope(tool_registry, tc_item.name, tc_item.arguments, stock_scope)
-        if guard_result is not None:
-            dur = round(time.time() - t0, 2)
-            result_str = serialize_tool_result(guard_result)
-            if cache_key and non_retriable_tool_results is not None:
-                non_retriable_tool_results[cache_key] = result_str
-            logger.warning(
-                "Tool '%s' blocked by stock scope: requested=%s expected=%s allowed=%s",
-                tc_item.name,
-                guard_result.get("requested_stock_code"),
-                guard_result.get("expected_stock_code"),
-                guard_result.get("allowed_stock_codes"),
-            )
-            return tc_item, result_str, False, dur, False, guard_result
-
-        if cache_key and non_retriable_tool_results is not None and cache_key in non_retriable_tool_results:
-            dur = round(time.time() - t0, 2)
-            logger.info(
-                "Tool '%s' skipped via non-retriable cache for arguments=%s",
-                tc_item.name,
-                tc_item.arguments,
-            )
-            return tc_item, non_retriable_tool_results[cache_key], False, dur, True, None
-
-        try:
-            res = tool_registry.execute(tc_item.name, **tc_item.arguments)
-            res_str = serialize_tool_result(res)
-            ok = True
-            if cache_key and non_retriable_tool_results is not None and _is_non_retriable_tool_result(res):
-                non_retriable_tool_results[cache_key] = res_str
-        except Exception as e:
-            res_str = json.dumps({"error": str(e)})
-            ok = False
-            logger.warning("Tool '%s' failed: %s", tc_item.name, e)
-        dur = round(time.time() - t0, 2)
-        return tc_item, res_str, ok, dur, False, None
+        return execute_runner_tool_call(
+            tool_call=tc_item,
+            tool_registry=tool_registry,
+            stock_scope=stock_scope,
+            non_retriable_tool_results=non_retriable_tool_results,
+        )
 
     results: List[Dict[str, Any]] = []
 

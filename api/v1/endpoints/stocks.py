@@ -39,6 +39,7 @@ from src.services.import_parser import (
     parse_import_from_text,
 )
 from src.services.stock_service import StockService
+from src.services.stock_list_parser import split_stock_list
 from src.services.system_config_service import SystemConfigService
 from data_provider.base import normalize_stock_code
 
@@ -58,7 +59,7 @@ def _read_watchlist_codes(service: SystemConfigService) -> list:
         if item.get("key") == "STOCK_LIST":
             stock_list_str = str(item.get("value", ""))
             break
-    return [c.strip() for c in stock_list_str.split(",") if c.strip()]
+    return split_stock_list(stock_list_str)
 
 
 def _write_watchlist_codes(service: SystemConfigService, codes: list) -> None:

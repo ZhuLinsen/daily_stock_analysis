@@ -224,6 +224,41 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual(pos["price_source"], "history_close")
         self.assertTrue(pos["price_available"])
 
+    def test_current_snapshot_can_skip_realtime_quote_for_fast_load(self) -> None:
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=today,
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", today - timedelta(days=1), 118.0)
+
+        with patch.object(
+            PortfolioService,
+            "_fetch_realtime_position_price",
+            side_effect=AssertionError("fast portfolio snapshot should not fetch realtime quote"),
+        ):
+            snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=today,
+                cost_method="fifo",
+                include_realtime=False,
+            )
+
+        pos = snapshot["accounts"][0]["positions"][0]
+        self.assertAlmostEqual(pos["last_price"], 118.0, places=6)
+        self.assertEqual(pos["price_source"], "history_close")
+        self.assertEqual(pos["price_date"], (today - timedelta(days=1)).isoformat())
+        self.assertTrue(pos["price_stale"])
+        self.assertTrue(pos["price_available"])
+
     def test_current_snapshot_does_not_serialize_non_bulk_realtime_prefetch(self) -> None:
         today = date.today()
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

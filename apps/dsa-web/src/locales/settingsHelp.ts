@@ -18,7 +18,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.base.STOCK_LIST': {
     title: '自选股列表',
     summary: '配置需要分析的股票代码列表，是手动分析、定时任务和通知报告的基础输入。',
-    usage: '多个股票代码使用英文逗号分隔。A 股可直接填写 6 位代码，港股可使用 hk 前缀，美股可填写 ticker。',
+    usage: '多个股票代码推荐使用英文逗号分隔；从表格或聊天中粘贴时，也会识别中文逗号、顿号、分号、空格和换行，并在保存后规范为英文逗号。',
     valueNotes: [
       '定时模式每次触发前会重新读取当前保存的 STOCK_LIST。',
       '如果命令行临时传入 --stocks，只影响本次手动运行，不会锁定后续计划任务。',
@@ -28,7 +28,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '影响主分析任务、市场报告中的个股范围、通知推送内容和历史报告记录。',
     ],
     notes: [
-      '股票代码之间不要使用中文逗号。',
+      '保存后的 STOCK_LIST 会统一写成英文逗号分隔。',
       '修改后保存配置即可供后续任务读取。',
     ],
   },
@@ -570,7 +570,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制 WebUI 服务绑定在哪个网络地址上。',
     usage: '本机访问通常使用 127.0.0.1；云服务器、Docker 或需要外部访问时通常使用 0.0.0.0。',
     valueNotes: [
-      '当前启动逻辑会在 host 为默认 0.0.0.0 时读取 WEBUI_HOST；即使显式传入 --host 0.0.0.0，也可能被 .env 中的 WEBUI_HOST 覆盖。',
+      '启动时显式传入的 --host 会优先生效；若未传 --host，则会使用运行时配置中的 WEBUI_HOST（或其默认值）。',
       '在设置页保存后，只会写入 .env 并重载运行时配置对象，不会让当前 WebUI/API 进程重新绑定监听地址。',
       'Docker Compose 中通常会在容器内使用 0.0.0.0，宿主机访问还取决于端口映射。',
     ],
@@ -588,6 +588,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制 WebUI 服务监听的端口。',
     usage: '本地默认 8000；如端口冲突可改为其他 1-65535 范围内端口。',
     valueNotes: [
+      '启动时显式传入的 --port 会优先生效；若未传 --port，则会使用运行时配置中的 WEBUI_PORT（或其默认值）。',
       'Docker 或云服务器访问还取决于宿主机端口映射和安全组。',
       '设置页保存只会写入 .env，不会让当前 WebUI/API 进程重新绑定端口。',
     ],
@@ -1199,14 +1200,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.base.STOCK_LIST': {
     title: 'Watchlist',
     summary: 'Defines the stock codes used by analysis jobs and notification reports.',
-    usage: 'Separate symbols with commas. A-shares can use six-digit codes, HK stocks can use the hk prefix, and US stocks can use ticker symbols.',
+    usage: 'English commas are recommended. Pasted Chinese commas, enumeration commas, semicolons, spaces, and newlines are also recognized and normalized to English commas when saved.',
     valueNotes: [
       'Scheduled mode rereads the saved STOCK_LIST before each run.',
       'A temporary --stocks argument only affects that manual run.',
       'STOCK_GROUP_N should be a subset of STOCK_LIST and only affects grouped email routing.',
     ],
     impact: ['Affects analysis scope, notification content, and saved history reports.'],
-    notes: ['Use English commas between symbols.', 'Save the setting before later tasks can read it.'],
+    notes: ['Saved STOCK_LIST values are written with English commas.', 'Save the setting before later tasks can read it.'],
   },
   'settings.ai_model.GENERATION_BACKEND': {
     title: 'Analysis Generation Method',
@@ -1713,7 +1714,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls the network address the WebUI service binds to.',
     usage: 'Use 127.0.0.1 for local-only access. Use 0.0.0.0 for cloud, Docker, or external access.',
     valueNotes: [
-      'Current startup logic reads WEBUI_HOST when the host is the default 0.0.0.0; even an explicit --host 0.0.0.0 can still be overwritten by WEBUI_HOST in .env.',
+      'An explicit --host has higher priority at startup; if --host is not provided, runtime-configured WEBUI_HOST (or its default) is used.',
       'Saving it from the settings page writes .env and reloads runtime config objects, but the running WebUI/API process will not rebind its host.',
       'Docker Compose commonly binds 0.0.0.0 inside the container; host access also depends on port mapping.',
     ],
@@ -1729,6 +1730,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls the port the WebUI service listens on.',
     usage: 'Default is 8000. Use another port in the 1-65535 range when needed.',
     valueNotes: [
+      'An explicit --port has higher priority at startup; if --port is not provided, runtime-configured WEBUI_PORT (or its default) is used.',
       'Docker or cloud access also depends on host port mappings and firewall rules.',
       'Saving from the settings page only writes .env; it does not rebind the running WebUI/API process.',
     ],

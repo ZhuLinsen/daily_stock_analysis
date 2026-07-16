@@ -87,7 +87,7 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "STOCK_LIST": {
         "title": "Stock List",
-        "description": "Comma-separated watchlist stock codes.",
+        "description": "Watchlist stock codes. English commas are recommended; common pasted separators are normalized on save.",
         "category": "base",
         "data_type": "array",
         "ui_control": "textarea",

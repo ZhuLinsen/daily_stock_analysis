@@ -817,6 +817,10 @@ class TestOrchestratorModes(unittest.TestCase):
         orch = self._make_orchestrator()
         phase_context = {"phase": "intraday", "is_partial_bar": True}
         pack_summary = "\n## 分析上下文包摘要\n- 数据块状态：行情 available\n"
+        market_structure_context = {
+            "market_theme_context": {"status": "ok", "active_themes": []},
+            "stock_market_position": {"status": "ok", "primary_theme": {"name": "机器人概念"}},
+        }
 
         ctx = orch._build_context(
             "Analyze 600519",
@@ -825,13 +829,16 @@ class TestOrchestratorModes(unittest.TestCase):
                 "stock_name": "贵州茅台",
                 "market_phase_context": phase_context,
                 "analysis_context_pack_summary": pack_summary,
+                "market_structure_context": market_structure_context,
             },
         )
 
         self.assertEqual(ctx.meta["market_phase_context"], phase_context)
         self.assertEqual(ctx.meta["analysis_context_pack_summary"], pack_summary)
+        self.assertEqual(ctx.meta["market_structure_context"], market_structure_context)
         self.assertNotIn("market_phase_context", ctx.data)
         self.assertNotIn("analysis_context_pack_summary", ctx.data)
+        self.assertNotIn("market_structure_context", ctx.data)
 
     def test_build_context_extracts_code_from_query(self):
         orch = self._make_orchestrator()
@@ -867,6 +874,89 @@ class TestOrchestratorExecution(unittest.TestCase):
         result.meta["raw_text"] = raw_text
         result.meta["models_used"] = ["test/model"]
         return result
+
+    @staticmethod
+    def _decision_agent():
+        from src.agent.agents.decision_agent import DecisionAgent
+
+        return DecisionAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+
+    @staticmethod
+    def _dashboard_json(decision_type="buy"):
+        return json.dumps({
+            "stock_name": "Test Stock",
+            "sentiment_score": 72,
+            "trend_prediction": "up",
+            "operation_advice": "buy",
+            "decision_type": decision_type,
+            "confidence_level": "Medium",
+            "dashboard": {
+                "phase_decision": {
+                    "phase_context": "regular",
+                    "action_window": "now",
+                    "immediate_action": "watch",
+                    "watch_conditions": [],
+                    "next_check_time": "next session",
+                    "confidence_reason": "test fixture",
+                    "data_limitations": [],
+                },
+                "core_conclusion": {
+                    "one_sentence": "test decision",
+                    "signal_type": "buy",
+                    "position_advice": {
+                        "no_position": "watch",
+                        "has_position": "hold",
+                    },
+                },
+            },
+            "analysis_summary": "test summary",
+            "key_points": ["technical fixture"],
+            "risk_warning": "",
+        }, ensure_ascii=False)
+
+    class _OpinionStage:
+        def __init__(
+            self,
+            agent_name,
+            *,
+            signal="hold",
+            confidence=0.5,
+            reasoning="fixture opinion",
+            raw_data=None,
+        ):
+            self.agent_name = agent_name
+            self.signal = signal
+            self.confidence = confidence
+            self.reasoning = reasoning
+            self.raw_data = raw_data or {}
+
+        def run(self, ctx, progress_callback=None, timeout_seconds=None):
+            ctx.add_opinion(AgentOpinion(
+                agent_name=self.agent_name,
+                signal=self.signal,
+                confidence=self.confidence,
+                reasoning=self.reasoning,
+                raw_data=self.raw_data,
+            ))
+            result = StageResult(stage_name=self.agent_name, status=StageStatus.COMPLETED)
+            result.meta["raw_text"] = self.reasoning
+            result.meta["models_used"] = ["test/model"]
+            return result
+
+    class _FailedStage:
+        def __init__(self, agent_name, error="stage failed"):
+            self.agent_name = agent_name
+            self.error = error
+
+        def run(self, ctx, progress_callback=None, timeout_seconds=None):
+            result = StageResult(
+                stage_name=self.agent_name,
+                status=StageStatus.FAILED,
+                error=self.error,
+            )
+            result.meta["raw_text"] = ""
+            result.meta["models_used"] = ["test/model"]
+            return result
 
     def test_prepare_agent_uses_default_constant_as_raise_threshold(self):
         orch = self._make_orchestrator()
@@ -939,6 +1029,230 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIn("Analysis Summary", result.content)
         skill.run.assert_called_once()
         decision.run.assert_called_once()
+
+    def test_pipeline_summary_and_risk_override_share_disabled_override_contract(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=False))
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="buy"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        risk = self._OpinionStage(
+            "risk",
+            signal="sell",
+            confidence=0.9,
+            raw_data={"veto_buy": True},
+        )
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, risk, decision]):
+            with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                    result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.dashboard["decision_type"], "buy")
+        self.assertIsNone(ctx.get_data("risk_override_applied"))
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertEqual(combined.count("## Agent Disagreement Summary"), 1)
+        self.assertIn('"risk_override_present": false', combined)
+        self.assertIn('"override_enabled": false', combined)
+        self.assertIn('"override_trigger_present": true', combined)
+        self.assertNotIn('"conflict_type": "risk_override"', combined)
+        self.assertNotIn("[Pre-fetched: agent_disagreement_summary]", combined)
+
+    def test_pipeline_risk_level_high_is_evidence_not_runtime_override(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="buy"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        risk = self._OpinionStage(
+            "risk",
+            signal="sell",
+            confidence=0.9,
+            raw_data={"risk_level": "high"},
+        )
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, risk, decision]):
+            with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                    result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.dashboard["decision_type"], "buy")
+        self.assertIsNone(ctx.get_data("risk_override_applied"))
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertEqual(combined.count("## Agent Disagreement Summary"), 1)
+        self.assertIn('"evidence_present": true', combined)
+        self.assertIn('"override_trigger_present": false', combined)
+        self.assertIn('"risk_override_present": false', combined)
+        self.assertNotIn('"conflict_type": "risk_override"', combined)
+
+    def test_pipeline_enabled_risk_veto_is_reflected_in_summary_and_final_dashboard(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="buy"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        risk = self._OpinionStage(
+            "risk",
+            signal="sell",
+            confidence=0.9,
+            raw_data={"veto_buy": True, "reasoning": "material risk"},
+        )
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, risk, decision]):
+            with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                    result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.dashboard["decision_type"], "hold")
+        self.assertEqual(ctx.get_data("risk_override_applied"), {
+            "from": "buy",
+            "to": "hold",
+            "adjustment": "veto",
+            "reason": "risk_veto",
+        })
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertEqual(combined.count("## Agent Disagreement Summary"), 1)
+        self.assertIn('"conflict_type": "risk_override"', combined)
+        self.assertIn('"risk_override_present": true', combined)
+        self.assertIn('"override_enabled": true', combined)
+        self.assertIn('"override_trigger_present": true', combined)
+
+    def test_pipeline_degraded_directional_input_is_not_reported_as_consensus(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="buy"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="buy", confidence=0.8)
+        intel = self._FailedStage("intel", error="news source failed")
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, decision]):
+            with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                    result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(ctx.meta["degraded_stages"], [
+            {"stage_name": "intel", "status": "failed", "non_critical": True}
+        ])
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertEqual(combined.count("## Agent Disagreement Summary"), 1)
+        self.assertIn('"conflict_type": "partial_bullish_with_degraded_inputs"', combined)
+        self.assertIn('"decision_path_hint": "state_degraded_inputs_before_any_bullish_lean"', combined)
+        self.assertIn('"stage_name": "intel"', combined)
+        self.assertIn('"non_critical": true', combined)
+        self.assertNotIn('"conflict_type": "aligned_bullish"', combined)
+
+    def test_pipeline_specialist_failure_uses_runtime_non_critical_contract_in_summary(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_risk_override=True))
+        orch.mode = "specialist"
+        ctx = AgentContext(query="test", stock_code="600519")
+        captured_messages = []
+
+        def fake_run_agent_loop(messages, **kwargs):
+            captured_messages.append(messages)
+            return SimpleNamespace(
+                success=True,
+                content=self._dashboard_json(decision_type="sell"),
+                total_tokens=11,
+                tool_calls_log=[],
+                models_used=["test/model"],
+            )
+
+        technical = self._OpinionStage("technical", signal="sell", confidence=0.8)
+        intel = self._OpinionStage("intel", signal="hold", confidence=0.5)
+        risk = self._OpinionStage("risk", signal="hold", confidence=0.5)
+        specialist = self._FailedStage("chan_theory", error="specialist failed")
+        decision = self._decision_agent()
+
+        with patch.object(orch, "_build_agent_chain", return_value=[technical, intel, risk, decision]):
+            with patch.object(orch, "_build_specialist_agents", return_value=[specialist]):
+                with patch.object(orch, "_aggregate_skill_opinions", return_value=None):
+                    with patch("src.agent.runner.parse_dashboard_json", side_effect=lambda raw: json.loads(raw)):
+                        with patch("src.agent.agents.base_agent.run_agent_loop", side_effect=fake_run_agent_loop):
+                            result = orch._execute_pipeline(ctx, parse_dashboard=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(ctx.meta["degraded_stages"], [
+            {"stage_name": "chan_theory", "status": "failed", "non_critical": True}
+        ])
+
+        combined = "\n".join(
+            str(message.get("content", ""))
+            for messages in captured_messages
+            for message in messages
+        )
+        self.assertEqual(combined.count("## Agent Disagreement Summary"), 1)
+        self.assertIn('"conflict_type": "partial_bearish_with_degraded_inputs"', combined)
+        self.assertIn('"stage_name": "chan_theory"', combined)
+        self.assertIn('"non_critical_stage_present": true', combined)
+        self.assertIn('"non_critical": true', combined)
 
     def test_execute_pipeline_skips_stage_when_remaining_budget_below_minimum(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20))
@@ -1136,6 +1450,121 @@ class TestOrchestratorExecution(unittest.TestCase):
             result.dashboard["dashboard"]["battle_plan"]["sniper_points"]["stop_loss"],
             295.0,
         )
+
+    # --- Sub-agent timeout clamp regression (AGENT_*_TIMEOUT_S) ---
+
+    def _make_config_with_sub_agent_timeouts(self, **kwargs):
+        """Return a SimpleNamespace config with sub-agent timeout fields."""
+        defaults = {
+            "agent_orchestrator_timeout_s": 0,
+            "agent_technical_agent_timeout_s": 0,
+            "agent_intel_agent_timeout_s": 0,
+            "agent_risk_agent_timeout_s": 0,
+            "agent_decision_agent_timeout_s": 0,
+            "agent_portfolio_agent_timeout_s": 0,
+            "agent_skill_agent_timeout_s": 0,
+            "agent_risk_override": True,
+        }
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_run_stage_agent_no_pipeline_budget_uses_sub_agent_limit(self):
+        """When pipeline budget is 0 (timeout_seconds=None), sub-agent limit applies standalone."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=180,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=None)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 180)
+
+    def test_run_stage_agent_pipeline_budget_larger_than_agent_limit_clamps_to_agent(self):
+        """Pipeline remaining > sub-agent limit → use smaller agent limit."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=120,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 120)
+
+    def test_run_stage_agent_pipeline_budget_smaller_than_agent_limit_uses_pipeline(self):
+        """Pipeline remaining < sub-agent limit → use smaller pipeline remaining."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_technical_agent_timeout_s=300,
+            )
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=60)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 60)
+
+    def test_run_stage_agent_no_sub_agent_limit_passes_pipeline_budget_through(self):
+        """No sub-agent limit configured (all 0) → pipeline budget passed through unchanged."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(),
+        )
+        agent = MagicMock(agent_name="technical")
+        result = self._stage_result("technical")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 300)
+
+    def test_run_stage_agent_skill_agent_fallback_applies_skill_clamp(self):
+        """Skill agents (in _skill_agent_names) use the 'skill' clamp key as fallback."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_skill_agent_timeout_s=90,
+            )
+        )
+        orch._skill_agent_names = {"bull_trend_specialist", "volume_breakout_specialist"}
+        agent = MagicMock(agent_name="bull_trend_specialist")
+        result = self._stage_result("bull_trend_specialist")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        self.assertEqual(call_kwargs["timeout_seconds"], 90)
+
+    def test_run_stage_agent_skill_agent_exact_name_match_wins_over_skill_fallback(self):
+        """Exact agent_name match takes priority over _skill_agent_names fallback."""
+        orch = self._make_orchestrator(
+            config=self._make_config_with_sub_agent_timeouts(
+                agent_skill_agent_timeout_s=90,
+                agent_decision_agent_timeout_s=150,
+            )
+        )
+        orch._skill_agent_names = {"decision"}
+        agent = MagicMock(agent_name="decision")
+        result = self._stage_result("decision")
+        agent.run.return_value = result
+
+        orch._run_stage_agent(agent, AgentContext(query="test"), timeout_seconds=300)
+
+        call_kwargs = agent.run.call_args.kwargs
+        # Exact name "decision" → 150, not skill fallback 90
+        self.assertEqual(call_kwargs["timeout_seconds"], 150)
 
     def test_run_wraps_orchestrator_result(self):
         from src.agent.orchestrator import OrchestratorResult
@@ -1957,6 +2386,10 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         agent = self._make_agent(memory)
         ctx = AgentContext(query="test", stock_code="600519")
         ctx.meta["market_phase_context"] = {"phase": "intraday"}
+        ctx.meta["market_structure_context"] = {
+            "market_theme_context": {"status": "ok"},
+            "stock_market_position": {"status": "ok"},
+        }
         ctx.meta["analysis_context_pack_summary"] = "\n## 分析上下文包摘要\n- 数据块状态：行情 available\n"
         ctx.set_data("realtime_quote", {"price": 1880.0})
 
@@ -1965,6 +2398,8 @@ class TestBaseAgentMemoryIntegration(unittest.TestCase):
         self.assertIn("[Pre-fetched: realtime_quote]", injected)
         self.assertNotIn("market_phase_context", injected)
         self.assertNotIn("[Pre-fetched: market_phase_context]", injected)
+        self.assertNotIn("market_structure_context", injected)
+        self.assertNotIn("[Pre-fetched: market_structure_context]", injected)
         self.assertNotIn("analysis_context_pack_summary", injected)
         self.assertNotIn("[Pre-fetched: analysis_context_pack_summary]", injected)
         self.assertNotIn("分析上下文包摘要", injected)
@@ -2141,6 +2576,31 @@ class TestRiskOverride(unittest.TestCase):
         orch._apply_risk_override(ctx)
 
         self.assertEqual(dashboard["decision_type"], "buy")
+        self.assertIsNone(ctx.get_data("risk_override_applied"))
+
+    def test_risk_level_high_alone_does_not_override_buy_signal(self):
+        from src.agent.orchestrator import AgentOrchestrator
+
+        orch = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            config=SimpleNamespace(agent_risk_override=True),
+        )
+        ctx = AgentContext(query="test", stock_code="600519")
+        dashboard = self._make_dashboard()
+        ctx.set_data("final_dashboard", dashboard)
+        ctx.add_opinion(AgentOpinion(agent_name="decision", signal="buy", confidence=0.8, reasoning="base"))
+        ctx.add_opinion(AgentOpinion(
+            agent_name="risk",
+            signal="sell",
+            confidence=0.9,
+            raw_data={"risk_level": "high"},
+        ))
+
+        orch._apply_risk_override(ctx)
+
+        self.assertEqual(dashboard["decision_type"], "buy")
+        self.assertIsNone(ctx.get_data("risk_override_applied"))
 
 
 # ============================================================

@@ -1,0 +1,100 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '17 21 * * *'  # 北京时间每日 05:17 检查上游更新
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Detect upstream updates
+        id: detect
+        run: |
+          git remote add upstream https://github.com/ZhuLinsen/daily_stock_analysis.git
+          git fetch --prune upstream main --tags
+          ahead_count="$(git rev-list --count HEAD..upstream/main)"
+          echo "ahead_count=$ahead_count" >> "$GITHUB_OUTPUT"
+          if [ "$ahead_count" -gt 0 ]; then
+            echo "update_available=true" >> "$GITHUB_OUTPUT"
+            echo "Found $ahead_count new upstream commit(s)."
+          else
+            echo "update_available=false" >> "$GITHUB_OUTPUT"
+            echo "Fork is already up to date."
+          fi
+
+      - name: Merge upstream main
+        id: merge
+        if: steps.detect.outputs.update_available == 'true'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if git merge --no-edit upstream/main; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            conflicts="$(git diff --name-only --diff-filter=U | paste -sd ',' -)"
+            git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            echo "conflicts=$conflicts" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate personal automation contract
+        id: validate
+        if: steps.merge.outputs.status == 'success'
+        continue-on-error: true
+        run: |
+          python .github/scripts/validate_personal_automation.py
+          python scripts/check_ai_assets.py
+          python -m py_compile main.py scripts/select_intraday_candidates.py
+
+      - name: Push validated update to main
+        id: push
+        if: steps.merge.outputs.status == 'success' && steps.validate.outcome == 'success'
+        continue-on-error: true
+        run: git push origin HEAD:main
+
+      - name: Create a maintenance issue when automatic sync is blocked
+        if: >-
+          always() && steps.detect.outputs.update_available == 'true' &&
+          (steps.merge.outputs.status != 'success' ||
+          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_STATUS: ${{ steps.merge.outputs.status }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+        run: |
+          title="chore: automatic upstream sync needs attention"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [ -z "$existing" ]; then
+            gh issue create \
+              --title "$title" \
+              --body "上游自动同步未能安全完成。merge=${MERGE_STATUS:-skipped}; conflicts=${CONFLICTS:-none}; validate=${VALIDATE_OUTCOME:-skipped}; push=${PUSH_OUTCOME:-skipped}。请检查 Sync Upstream 工作流日志后人工处理。"
+          else
+            echo "Maintenance issue #$existing is already open."
+          fi
+
+      - name: Fail when update was not published
+        if: >-
+          always() && steps.detect.outputs.update_available == 'true' &&
+          (steps.merge.outputs.status != 'success' ||
+          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+        run: exit 1

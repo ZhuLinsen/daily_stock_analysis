@@ -1,0 +1,67 @@
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /apps/dsa-web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:40"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    labels: [dependencies, web]
+    groups:
+      web-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /apps/dsa-desktop
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:50"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    labels: [dependencies, desktop]
+    groups:
+      desktop-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 10
+    labels: [dependencies, github-actions]
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:10"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    labels: [dependencies, docker]
+    groups:
+      docker-minor-and-patch:
+        update-types: [minor, patch]

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BarChart3, RefreshCw, Search, ShieldCheck } from 'lucide-react';
 import { decisionSignalsApi } from '../api/decisionSignals';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
+import { historyApi } from '../api/history';
 import {
   ApiErrorAlert,
   AppPage,
@@ -19,9 +20,11 @@ import {
   DecisionSignalDetails,
 } from '../components/decision-signals/DecisionSignalDisplay';
 import { DecisionSignalTimeline } from '../components/decision-signals/DecisionSignalTimeline';
+import { StockAutocomplete } from '../components/StockAutocomplete';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
+import { useStockIndex } from '../hooks/useStockIndex';
 import type { UiTextKey } from '../i18n/uiText';
-import type { DecisionAction, MarketPhaseValue } from '../types/analysis';
+import type { DecisionAction, MarketPhaseValue, StockBarItem } from '../types/analysis';
 import type {
   DecisionSignalItem,
   DecisionSignalFeedbackItem,
@@ -34,7 +37,9 @@ import type {
   DecisionSignalSourceType,
   DecisionSignalStatus,
   DecisionProfile,
+  DecisionProfileDisplay,
 } from '../types/decisionSignals';
+import type { Market, StockIndexItem } from '../types/stockIndex';
 import { cn } from '../utils/cn';
 import { buildDecisionActionLabelMap } from '../utils/decisionAction';
 import {
@@ -45,6 +50,7 @@ import {
 
 const PAGE_SIZE = 20;
 const TIMELINE_PAGE_SIZE = 100;
+const STOCK_CANDIDATE_LIMIT = 8;
 const DAY_MS = 86400_000;
 
 type ListFilters = {
@@ -62,9 +68,31 @@ type TimelineStatusFilter = 'all' | 'active';
 
 type TimelineFilters = {
   market: '' | DecisionSignalMarket;
-  stockCode: string;
   range: TimelineRange;
   status: TimelineStatusFilter;
+  decisionProfile: '' | DecisionProfileDisplay;
+};
+
+type TimelineMarketSource = 'context' | 'user' | null;
+
+type TimelineFilterUpdate = {
+  filters: TimelineFilters;
+  marketSource: TimelineMarketSource;
+};
+
+type AppliedTimelineContext = TimelineFilters & {
+  stockCode: string;
+};
+
+type StockContext = {
+  code: string;
+  displayCode?: string;
+  name?: string;
+  market?: DecisionSignalMarket;
+};
+
+type StockCandidate = StockContext & {
+  source: 'history' | 'popular';
 };
 
 type PendingStatusChange = {
@@ -123,9 +151,9 @@ const DEFAULT_LIST_FILTERS: ListFilters = {
 
 const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
   market: '',
-  stockCode: '',
   range: '90d',
   status: 'all',
+  decisionProfile: '',
 };
 
 const TIMELINE_RANGE_DAYS: Record<TimelineRange, number> = {
@@ -192,19 +220,118 @@ function refreshTimelineSelection(
   return refreshed ? { source: 'timeline', item: refreshed } : null;
 }
 
-function toTimelineParams(filters: TimelineFilters): DecisionSignalListParams {
+function normalizeDecisionSignalMarket(value: unknown): DecisionSignalMarket | undefined {
+  const market = String(value ?? '').trim().toUpperCase();
+  if (!market || market === 'INDEX' || market === 'ETF' || market === 'UNKNOWN') return undefined;
+  if (market === 'CN' || market === 'BSE') return 'cn';
+  if (market === 'HK') return 'hk';
+  if (market === 'US') return 'us';
+  if (market === 'JP') return 'jp';
+  if (market === 'KR') return 'kr';
+  if (market === 'TW') return 'tw';
+  if (MARKET_OPTIONS.includes(market.toLowerCase() as DecisionSignalMarket)) {
+    return market.toLowerCase() as DecisionSignalMarket;
+  }
+  return undefined;
+}
+
+function getCandidateKey(candidate: Pick<StockCandidate, 'code' | 'market'>): string {
+  const code = candidate.code.trim().toUpperCase();
+  return candidate.market ? `${candidate.market}:${code}` : code;
+}
+
+function toHistoryCandidate(item: StockBarItem): StockCandidate | null {
+  const code = String(item.stockCode || '').trim();
+  if (!code || code.toUpperCase() === 'MARKET') return null;
+  return {
+    code,
+    displayCode: code,
+    name: item.stockName || undefined,
+    market: normalizeDecisionSignalMarket(item.marketPhaseSummary?.market),
+    source: 'history',
+  };
+}
+
+function toPopularCandidates(index: StockIndexItem[], limit = STOCK_CANDIDATE_LIMIT): StockCandidate[] {
+  const candidates: StockCandidate[] = [];
+  const seen = new Set<string>();
+  const sorted = [...index]
+    .filter((item) => item.active && item.assetType === 'stock')
+    .sort((left, right) => (right.popularity ?? 0) - (left.popularity ?? 0));
+
+  for (const item of sorted) {
+    const market = normalizeDecisionSignalMarket(item.market);
+    const candidate: StockCandidate = {
+      code: item.canonicalCode,
+      displayCode: item.displayCode,
+      name: item.nameZh,
+      market,
+      source: 'popular',
+    };
+    const key = getCandidateKey(candidate);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(candidate);
+    if (candidates.length >= limit) break;
+  }
+
+  return candidates;
+}
+
+function toTimelineParams(filters: TimelineFilters, stockCode: string): DecisionSignalListParams {
   const days = TIMELINE_RANGE_DAYS[filters.range];
   const createdTo = new Date();
   const createdFrom = new Date(createdTo.getTime() - days * DAY_MS);
   return {
     market: filters.market || undefined,
-    stockCode: filters.stockCode.trim(),
+    stockCode,
     createdFrom: createdFrom.toISOString(),
     createdTo: createdTo.toISOString(),
     status: filters.status === 'active' ? 'active' : undefined,
+    decisionProfile: filters.decisionProfile || undefined,
     page: 1,
     pageSize: TIMELINE_PAGE_SIZE,
   };
+}
+
+function isSameStockContext(
+  previousContext: StockContext | null,
+  nextContext: StockContext,
+): boolean {
+  return previousContext?.code.trim().toUpperCase() === nextContext.code.trim().toUpperCase()
+    && previousContext?.market === nextContext.market;
+}
+
+function buildNextTimelineFilters(
+  currentFilters: TimelineFilters,
+  previousContext: StockContext | null,
+  nextContext: StockContext,
+  marketSource: TimelineMarketSource,
+): TimelineFilterUpdate {
+  if (isSameStockContext(previousContext, nextContext)) {
+    return { filters: currentFilters, marketSource };
+  }
+  if (nextContext.market) {
+    return {
+      filters: { ...currentFilters, market: nextContext.market },
+      marketSource: 'context',
+    };
+  }
+  if (marketSource === 'context') {
+    return {
+      filters: { ...currentFilters, market: '' },
+      marketSource: null,
+    };
+  }
+  return { filters: currentFilters, marketSource };
+}
+
+function draftMatchesStockContext(draft: string, context: StockContext | null): context is StockContext {
+  if (!context) return false;
+  const normalizedDraft = draft.trim().toUpperCase();
+  if (!normalizedDraft) return false;
+  return normalizedDraft === context.code.trim().toUpperCase()
+    || normalizedDraft === String(context.displayCode ?? '').trim().toUpperCase();
 }
 
 function formatStatNumber(value: number | null | undefined): string {
@@ -220,6 +347,7 @@ function formatStatPercent(value: number | null | undefined): string {
 const DecisionSignalsPage: React.FC = () => {
   const { t } = useUiLanguage();
   const actionLabels = useMemo(() => buildDecisionActionLabelMap(t), [t]);
+  const { index: stockIndex } = useStockIndex();
   const [filters, setFilters] = useState<ListFilters>(() => getInitialFilters());
   const [appliedFilters, setAppliedFilters] = useState<ListFilters>(() => getInitialFilters());
   const [page, setPage] = useState(1);
@@ -233,13 +361,16 @@ const DecisionSignalsPage: React.FC = () => {
   const [outcomeStats, setOutcomeStats] = useState<DecisionSignalOutcomeStatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsError, setStatsError] = useState<ParsedApiError | null>(null);
-  const [latestStockCode, setLatestStockCode] = useState('');
+  const [stockDraft, setStockDraft] = useState('');
+  const [activeStockContext, setActiveStockContext] = useState<StockContext | null>(null);
+  const [historyCandidates, setHistoryCandidates] = useState<StockCandidate[]>([]);
+  const [historyCandidatesLoaded, setHistoryCandidatesLoaded] = useState(false);
   const [latestItems, setLatestItems] = useState<DecisionSignalItem[]>([]);
   const [latestSearched, setLatestSearched] = useState(false);
   const [latestLoading, setLatestLoading] = useState(false);
   const [latestError, setLatestError] = useState<ParsedApiError | null>(null);
   const [timelineFilters, setTimelineFilters] = useState<TimelineFilters>(DEFAULT_TIMELINE_FILTERS);
-  const [appliedTimelineFilters, setAppliedTimelineFilters] = useState<TimelineFilters>(DEFAULT_TIMELINE_FILTERS);
+  const [appliedTimelineContext, setAppliedTimelineContext] = useState<AppliedTimelineContext | null>(null);
   const [timelineItems, setTimelineItems] = useState<DecisionSignalItem[]>([]);
   const [timelineSearched, setTimelineSearched] = useState(false);
   const [timelineLoading, setTimelineLoading] = useState(false);
@@ -264,10 +395,51 @@ const DecisionSignalsPage: React.FC = () => {
   const reassessRequestIdRef = useRef(0);
   const selectedSignalIdRef = useRef<number | null>(null);
   const statusUpdateInFlightRef = useRef(false);
+  const timelineMarketSourceRef = useRef<TimelineMarketSource>(null);
+
+  const popularCandidates = useMemo(
+    () => toPopularCandidates(stockIndex, STOCK_CANDIDATE_LIMIT),
+    [stockIndex],
+  );
+  const stockCandidates = historyCandidates.length > 0 ? historyCandidates : popularCandidates;
+  const stockCandidateMode: 'history' | 'popular' | 'empty' = historyCandidates.length > 0
+    ? 'history'
+    : stockCandidates.length > 0
+      ? 'popular'
+      : 'empty';
 
   useEffect(() => {
     document.title = t('decisionSignals.pageTitle');
   }, [t]);
+
+  useEffect(() => {
+    let mounted = true;
+    void historyApi.getStockBarList({ limit: STOCK_CANDIDATE_LIMIT })
+      .then((response) => {
+        if (!mounted) return;
+        const nextCandidates: StockCandidate[] = [];
+        const seen = new Set<string>();
+        for (const item of response.items) {
+          const candidate = toHistoryCandidate(item);
+          if (!candidate) continue;
+          const key = getCandidateKey(candidate);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          nextCandidates.push(candidate);
+          if (nextCandidates.length >= STOCK_CANDIDATE_LIMIT) break;
+        }
+        setHistoryCandidates(nextCandidates);
+      })
+      .catch(() => {
+        if (mounted) setHistoryCandidates([]);
+      })
+      .finally(() => {
+        if (mounted) setHistoryCandidatesLoaded(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const loadSignalsForPage = useCallback(async (nextPage: number) => {
     const requestId = requestIdRef.current + 1;
@@ -449,18 +621,28 @@ const DecisionSignalsPage: React.FC = () => {
     setPage(1);
   };
 
-  const handleLatestSearch = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const stockCode = latestStockCode.trim();
+  const resetLatestView = useCallback(() => {
+    latestRequestIdRef.current += 1;
+    setLatestItems([]);
+    setLatestSearched(false);
+    setLatestLoading(false);
+    setLatestError(null);
+    setSelected((current) => (current?.source === 'latest' ? null : current));
+  }, []);
+
+  const loadLatestForContext = useCallback(async (context: StockContext) => {
+    const stockCode = context.code.trim();
     if (!stockCode) return;
     const requestId = latestRequestIdRef.current + 1;
     latestRequestIdRef.current = requestId;
     setLatestLoading(true);
     setLatestError(null);
     setLatestSearched(true);
+    setLatestItems([]);
+    setSelected((current) => (current?.source === 'latest' ? null : current));
     try {
       const response = await decisionSignalsApi.getLatest(stockCode, {
-        market: appliedFilters.market || undefined,
+        market: context.market,
         limit: 5,
       });
       if (latestRequestIdRef.current !== requestId) return;
@@ -476,7 +658,7 @@ const DecisionSignalsPage: React.FC = () => {
         setLatestLoading(false);
       }
     }
-  };
+  }, []);
 
   const resetTimelineView = useCallback(() => {
     timelineRequestIdRef.current += 1;
@@ -485,26 +667,33 @@ const DecisionSignalsPage: React.FC = () => {
     setTimelineLoading(false);
     setTimelineError(null);
     setTimelineTruncated(false);
+    setAppliedTimelineContext(null);
     setSelected((current) => (current?.source === 'timeline' ? null : current));
   }, []);
 
-  const handleTimelineSearch = async (event: React.FormEvent) => {
-    event.preventDefault();
-    const stockCode = timelineFilters.stockCode.trim();
+  const loadTimelineForContext = useCallback(async (
+    context: StockContext,
+    filtersSnapshot: TimelineFilters,
+  ) => {
+    const stockCode = context.code.trim();
     if (!stockCode) return;
     const requestId = timelineRequestIdRef.current + 1;
     timelineRequestIdRef.current = requestId;
     setTimelineLoading(true);
     setTimelineError(null);
     setTimelineSearched(true);
-    const nextAppliedFilters = {
-      ...timelineFilters,
+    setTimelineItems([]);
+    setTimelineTruncated(false);
+    setAppliedTimelineContext(null);
+    setSelected((current) => (current?.source === 'timeline' ? null : current));
+    const nextAppliedContext: AppliedTimelineContext = {
+      ...filtersSnapshot,
       stockCode,
     };
     try {
-      const response = await decisionSignalsApi.list(toTimelineParams(nextAppliedFilters));
+      const response = await decisionSignalsApi.list(toTimelineParams(filtersSnapshot, stockCode));
       if (timelineRequestIdRef.current !== requestId) return;
-      setAppliedTimelineFilters(nextAppliedFilters);
+      setAppliedTimelineContext(nextAppliedContext);
       setTimelineItems(response.items);
       setTimelineTruncated(response.total > response.items.length);
       setSelected((current) => refreshTimelineSelection(current, response.items));
@@ -519,7 +708,65 @@ const DecisionSignalsPage: React.FC = () => {
         setTimelineLoading(false);
       }
     }
-  };
+  }, []);
+
+  const applyStockContext = useCallback((nextContext: StockContext) => {
+    const nextTimeline = buildNextTimelineFilters(
+      timelineFilters,
+      activeStockContext,
+      nextContext,
+      timelineMarketSourceRef.current,
+    );
+    timelineMarketSourceRef.current = nextTimeline.marketSource;
+    setActiveStockContext(nextContext);
+    setStockDraft(nextContext.displayCode ?? nextContext.code);
+    setTimelineFilters(nextTimeline.filters);
+    void loadLatestForContext(nextContext);
+    void loadTimelineForContext(nextContext, nextTimeline.filters);
+  }, [activeStockContext, loadLatestForContext, loadTimelineForContext, timelineFilters]);
+
+  const handleStockSubmit = useCallback((
+    code: string,
+    name?: string,
+    _source?: 'manual' | 'autocomplete',
+    metadata?: { market?: Market; displayCode?: string },
+  ) => {
+    const trimmedCode = code.trim();
+    if (!trimmedCode) return;
+    applyStockContext({
+      code: trimmedCode,
+      displayCode: metadata?.displayCode,
+      name,
+      market: normalizeDecisionSignalMarket(metadata?.market),
+    });
+  }, [applyStockContext]);
+
+  const handleCandidateSelect = useCallback((candidate: StockCandidate) => {
+    applyStockContext(candidate);
+  }, [applyStockContext]);
+
+  const handleStockFormSubmit = useCallback((code: string) => {
+    if (draftMatchesStockContext(code, activeStockContext)) {
+      applyStockContext(activeStockContext);
+      return;
+    }
+    handleStockSubmit(code);
+  }, [activeStockContext, applyStockContext, handleStockSubmit]);
+
+  const handleClearStockContext = useCallback(() => {
+    setStockDraft('');
+    setActiveStockContext(null);
+    timelineMarketSourceRef.current = null;
+    setTimelineFilters((current) => ({ ...current, market: '' }));
+    resetLatestView();
+    resetTimelineView();
+  }, [resetLatestView, resetTimelineView]);
+
+  const handleTimelineSearch = useCallback((event: React.FormEvent) => {
+    event.preventDefault();
+    if (!activeStockContext) return;
+    void loadTimelineForContext(activeStockContext, timelineFilters);
+  }, [activeStockContext, loadTimelineForContext, timelineFilters]);
 
   const handleStatusUpdate = async () => {
     if (!pendingStatus || statusUpdateInFlightRef.current) return;
@@ -536,7 +783,7 @@ const DecisionSignalsPage: React.FC = () => {
       }));
       setTimelineItems((current) => current.flatMap((item) => {
         if (item.id !== updated.id) return [item];
-        return appliedTimelineFilters.status === 'active' && updated.status !== 'active' ? [] : [updated];
+        return appliedTimelineContext?.status === 'active' && updated.status !== 'active' ? [] : [updated];
       }));
       setSelected((current) => {
         if (!current || current.item.id !== updated.id) return current;
@@ -544,7 +791,7 @@ const DecisionSignalsPage: React.FC = () => {
           return updated.status === 'active' ? { source: 'latest', item: updated } : null;
         }
         if (current.source === 'timeline') {
-          return appliedTimelineFilters.status === 'active' && updated.status !== 'active'
+          return appliedTimelineContext?.status === 'active' && updated.status !== 'active'
             ? null
             : { source: 'timeline', item: updated };
         }
@@ -713,6 +960,13 @@ const DecisionSignalsPage: React.FC = () => {
     );
   };
 
+  const activeStockLabel = activeStockContext
+    ? [
+      activeStockContext.displayCode ?? activeStockContext.code,
+      activeStockContext.name,
+      activeStockContext.market,
+    ].filter(Boolean).join(' / ')
+    : null;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -737,6 +991,76 @@ const DecisionSignalsPage: React.FC = () => {
             </button>
           )}
         />
+
+        <Card title={t('decisionSignals.stockContextTitle')} subtitle={t('decisionSignals.stockContextDescription')} padding="md">
+          <form
+            className="flex flex-col gap-3 md:flex-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleStockFormSubmit(stockDraft);
+            }}
+          >
+            <div className="min-w-0 flex-1">
+              <StockAutocomplete
+                value={stockDraft}
+                onChange={setStockDraft}
+                onSubmit={handleStockSubmit}
+                placeholder={t('decisionSignals.stockContextPlaceholder')}
+                ariaLabel={t('decisionSignals.stockContextInput')}
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn-primary inline-flex h-11 items-center justify-center gap-2"
+              disabled={!stockDraft.trim()}
+            >
+              <Search className="h-4 w-4" />
+              {t('decisionSignals.stockContextApply')}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary inline-flex h-11 items-center justify-center gap-2"
+              onClick={handleClearStockContext}
+              disabled={!activeStockContext && !stockDraft}
+            >
+              {t('decisionSignals.stockContextClear')}
+            </button>
+          </form>
+
+          {activeStockLabel ? (
+            <p className="mt-3 text-sm text-secondary-text">
+              {t('decisionSignals.stockContextCurrent', { stock: activeStockLabel })}
+            </p>
+          ) : (
+            <p className="mt-3 text-sm text-secondary-text">{t('decisionSignals.stockContextEmpty')}</p>
+          )}
+
+          {historyCandidatesLoaded && stockCandidates.length > 0 ? (
+            <div className="mt-4">
+              <p className="text-xs font-medium uppercase text-muted-text">
+                {stockCandidateMode === 'history'
+                  ? t('decisionSignals.stockContextRecent')
+                  : t('decisionSignals.stockContextPopular')}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {stockCandidates.map((candidate) => (
+                  <button
+                    key={`${candidate.source}:${getCandidateKey(candidate)}`}
+                    type="button"
+                    className="rounded-full border border-border/70 bg-elevated/40 px-3 py-1.5 text-sm text-foreground transition-colors hover:border-primary/60 hover:text-primary"
+                    onClick={() => handleCandidateSelect(candidate)}
+                  >
+                    <span className="font-mono">{candidate.displayCode ?? candidate.code}</span>
+                    {candidate.name ? <span className="ml-1 text-secondary-text">{candidate.name}</span> : null}
+                    {candidate.market ? <span className="ml-1 text-muted-text">/ {candidate.market}</span> : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : historyCandidatesLoaded ? (
+            <p className="mt-4 text-sm text-secondary-text">{t('decisionSignals.stockContextNoCandidates')}</p>
+          ) : null}
+        </Card>
 
         <Card padding="md">
           <form className="grid gap-3 md:grid-cols-3 xl:grid-cols-7" onSubmit={handleApplyFilters}>
@@ -825,6 +1149,7 @@ const DecisionSignalsPage: React.FC = () => {
         ) : null}
 
         <Card title={t('decisionSignals.statsTitle')} subtitle={t('decisionSignals.statsDescription')} padding="md">
+          <p className="mb-3 text-sm text-secondary-text">{t('decisionSignals.statsGlobalScope')}</p>
           {statsError ? (
             <ApiErrorAlert
               error={{ ...statsError, title: t('decisionSignals.statsErrorTitle') }}
@@ -833,7 +1158,7 @@ const DecisionSignalsPage: React.FC = () => {
             />
           ) : statsLoading ? (
             <p className="text-sm text-secondary-text">{t('common.loading')}...</p>
-          ) : outcomeStats ? (
+          ) : outcomeStats && outcomeStats.total > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
                 <p className="text-xs text-secondary-text">{t('decisionSignals.statsTotal')}</p>
@@ -859,27 +1184,22 @@ const DecisionSignalsPage: React.FC = () => {
           ) : (
             <EmptyState
               className="border-none bg-transparent py-6 shadow-none"
-              title={t('decisionSignals.noStatsTitle')}
-              description={t('decisionSignals.noStatsDescription')}
+              title={t('decisionSignals.noReviewedStatsTitle')}
+              description={t('decisionSignals.noReviewedStatsDescription')}
               icon={<BarChart3 className="h-6 w-6" />}
             />
           )}
         </Card>
 
         <Card title={t('decisionSignals.latestTitle')} subtitle={t('decisionSignals.latestDescription')} padding="md">
-          <form className="flex flex-col gap-3 md:flex-row" onSubmit={handleLatestSearch}>
-            <input
-              className="input-surface input-focus-glow h-11 flex-1 rounded-xl border bg-transparent px-3 text-sm"
-              value={latestStockCode}
-              onChange={(event) => setLatestStockCode(event.target.value)}
-              placeholder={t('decisionSignals.latestPlaceholder')}
-              aria-label={t('decisionSignals.latestInput')}
+          {!activeStockContext ? (
+            <EmptyState
+              className="border-none bg-transparent py-6 shadow-none"
+              title={t('decisionSignals.stockContextGuideTitle')}
+              description={t('decisionSignals.stockContextGuideDescription')}
+              icon={<Activity className="h-6 w-6" />}
             />
-            <button type="submit" className="btn-secondary inline-flex h-11 items-center justify-center gap-2" disabled={latestLoading || !latestStockCode.trim()}>
-              <Search className="h-4 w-4" />
-              {t('decisionSignals.latestButton')}
-            </button>
-          </form>
+          ) : null}
           {latestError ? <ApiErrorAlert className="mt-3" error={latestError} /> : null}
           {latestSearched && !latestLoading && !latestError && latestItems.length === 0 ? (
             <EmptyState
@@ -889,6 +1209,7 @@ const DecisionSignalsPage: React.FC = () => {
               icon={<Activity className="h-6 w-6" />}
             />
           ) : null}
+          {latestLoading ? <p className="mt-3 text-sm text-secondary-text">{t('common.loading')}...</p> : null}
           {latestItems.length > 0 ? (
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               {latestItems.map((item) => (
@@ -908,7 +1229,11 @@ const DecisionSignalsPage: React.FC = () => {
             <select
               className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
               value={timelineFilters.market}
-              onChange={(event) => setTimelineFilters((current) => ({ ...current, market: event.target.value as TimelineFilters['market'] }))}
+              onChange={(event) => {
+                const market = event.target.value as TimelineFilters['market'];
+                timelineMarketSourceRef.current = market ? 'user' : null;
+                setTimelineFilters((current) => ({ ...current, market }));
+              }}
               aria-label={t('decisionSignals.timelineMarket')}
             >
               <option value="">{t('decisionSignals.allMarkets')}</option>
@@ -916,19 +1241,6 @@ const DecisionSignalsPage: React.FC = () => {
                 <option key={market} value={market}>{getDecisionSignalMarketLabel(market, t)}</option>
               ))}
             </select>
-            <input
-              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm md:col-span-2"
-              value={timelineFilters.stockCode}
-              onChange={(event) => {
-                const stockCode = event.target.value;
-                setTimelineFilters((current) => ({ ...current, stockCode }));
-                if (!stockCode.trim()) {
-                  resetTimelineView();
-                }
-              }}
-              placeholder={t('decisionSignals.timelineStockPlaceholder')}
-              aria-label={t('decisionSignals.timelineStockCode')}
-            />
             <select
               className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
               value={timelineFilters.range}
@@ -948,10 +1260,27 @@ const DecisionSignalsPage: React.FC = () => {
               <option value="all">{t('decisionSignals.timelineStatus.all')}</option>
               <option value="active">{t('decisionSignals.timelineStatus.active')}</option>
             </select>
+            <select
+              className="input-surface input-focus-glow h-11 rounded-xl border bg-transparent px-3 text-sm"
+              value={timelineFilters.decisionProfile}
+              onChange={(event) => setTimelineFilters((current) => ({
+                ...current,
+                decisionProfile: event.target.value as TimelineFilters['decisionProfile'],
+              }))}
+              aria-label={t('decisionSignals.timelineProfile')}
+            >
+              <option value="">{t('decisionSignals.allProfiles')}</option>
+              {REASSESS_PROFILES.map((profile) => (
+                <option key={profile} value={profile}>
+                  {t(`decisionSignals.profile.${profile}` as UiTextKey)}
+                </option>
+              ))}
+              <option value="unknown">{t('decisionSignals.profile.unknown')}</option>
+            </select>
             <button
               type="submit"
-              className="btn-secondary inline-flex h-11 items-center justify-center gap-2 md:col-start-5"
-              disabled={timelineLoading || !timelineFilters.stockCode.trim()}
+              className="btn-secondary inline-flex h-11 items-center justify-center gap-2"
+              disabled={timelineLoading || !activeStockContext?.code}
             >
               <Search className="h-4 w-4" />
               {t('decisionSignals.timelineSearch')}
@@ -961,8 +1290,8 @@ const DecisionSignalsPage: React.FC = () => {
             {!timelineSearched ? (
               <EmptyState
                 className="border-none bg-transparent py-6 shadow-none"
-                title={t('decisionSignals.timelineGuideTitle')}
-                description={t('decisionSignals.timelineGuideDescription')}
+                title={activeStockContext ? t('decisionSignals.timelineGuideTitle') : t('decisionSignals.stockContextGuideTitle')}
+                description={activeStockContext ? t('decisionSignals.timelineGuideDescription') : t('decisionSignals.stockContextGuideDescription')}
                 icon={<Activity className="h-6 w-6" />}
               />
             ) : (

@@ -179,6 +179,51 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertAlmostEqual(account_snapshot["total_market_value"], 11000.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_equity"], 11000.0, places=6)
 
+    def test_snapshot_include_realtime_false_skips_realtime_quote(self) -> None:
+        today = date.today()
+        create_resp = self.client.post(
+            "/api/v1/portfolio/accounts",
+            json={"name": "Fast", "broker": "Demo", "market": "cn", "base_currency": "CNY"},
+        )
+        self.assertEqual(create_resp.status_code, 200)
+        account_id = create_resp.json()["id"]
+
+        trade_resp = self.client.post(
+            "/api/v1/portfolio/trades",
+            json={
+                "account_id": account_id,
+                "symbol": "600519",
+                "trade_date": today.isoformat(),
+                "side": "buy",
+                "quantity": 10,
+                "price": 100,
+                "fee": 0,
+                "tax": 0,
+                "market": "cn",
+                "currency": "CNY",
+            },
+        )
+        self.assertEqual(trade_resp.status_code, 200, trade_resp.text)
+        self._save_close("600519", today, 118.0)
+
+        with patch(
+            "src.services.portfolio_service.PortfolioService._fetch_realtime_position_price",
+            side_effect=AssertionError("include_realtime=false should not fetch realtime quote"),
+        ):
+            snapshot_resp = self.client.get(
+                "/api/v1/portfolio/snapshot",
+                params={
+                    "account_id": account_id,
+                    "as_of": today.isoformat(),
+                    "include_realtime": "false",
+                },
+            )
+
+        self.assertEqual(snapshot_resp.status_code, 200, snapshot_resp.text)
+        position = snapshot_resp.json()["accounts"][0]["positions"][0]
+        self.assertEqual(position["price_source"], "history_close")
+        self.assertAlmostEqual(position["last_price"], 118.0, places=6)
+
     def test_snapshot_exposes_partial_quality_fields_for_mixed_position_markets(self) -> None:
         create_resp = self.client.post(
             "/api/v1/portfolio/accounts",

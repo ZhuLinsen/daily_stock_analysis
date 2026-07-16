@@ -13,6 +13,7 @@ import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
+import type { Market } from '../../types/stockIndex';
 
 const AUTOCOMPLETE_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
@@ -22,12 +23,19 @@ export interface StockAutocompleteProps {
   value: string;
   /** Value change callback */
   onChange: (value: string) => void;
-  /** Submit callback (code, name, source) */
-  onSubmit: (code: string, name?: string, source?: 'manual' | 'autocomplete') => void;
+  /** Submit callback (code, name, source, metadata) */
+  onSubmit: (
+    code: string,
+    name?: string,
+    source?: 'manual' | 'autocomplete',
+    metadata?: { market?: Market; displayCode?: string },
+  ) => void;
   /** Whether disabled */
   disabled?: boolean;
   /** Placeholder text */
   placeholder?: string;
+  /** Accessible label */
+  ariaLabel?: string;
   /** Additional CSS class name */
   className?: string;
 }
@@ -38,6 +46,7 @@ function FallbackInput({
   onSubmit,
   disabled = false,
   placeholder = '输入股票代码或名称',
+  ariaLabel,
   className,
 }: StockAutocompleteProps) {
   return (
@@ -47,10 +56,12 @@ function FallbackInput({
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && !disabled && value) {
+          e.preventDefault();
           onSubmit(value);
         }
       }}
       placeholder={placeholder}
+      aria-label={ariaLabel}
       disabled={disabled}
       className={cn(AUTOCOMPLETE_INPUT_CLASS, className)}
       data-autocomplete-mode="fallback"
@@ -97,6 +108,7 @@ function StockAutocompleteInner({
   onSubmit,
   disabled = false,
   placeholder = '输入股票代码或名称',
+  ariaLabel,
   className,
 }: StockAutocompleteProps) {
   const { index, loading, fallback } = useStockIndex();
@@ -194,7 +206,10 @@ function StockAutocompleteInner({
           const selected = suggestions[highlightedIndex];
           onChange(selected.displayCode);
           closeSuggestions();
-          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete');
+          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
+            market: selected.market,
+            displayCode: selected.displayCode,
+          });
         } else {
           // Submit directly
           onSubmit(value);
@@ -230,6 +245,7 @@ function StockAutocompleteInner({
         onSubmit={onSubmit}
         disabled={disabled}
         placeholder={placeholder}
+        ariaLabel={ariaLabel}
         className={className}
       />
     );
@@ -252,6 +268,7 @@ function StockAutocompleteInner({
         }}
         onBlur={handleBlur}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         disabled={disabled}
         className={cn(
           AUTOCOMPLETE_INPUT_CLASS,
@@ -283,7 +300,10 @@ function StockAutocompleteInner({
             // Close dropdown list
             closeSuggestions();
             // Submit analysis
-            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete');
+            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete', {
+              market: s.market,
+              displayCode: s.displayCode,
+            });
           }}
           onMouseEnter={(index) => setHighlightedIndex(index)}
           style={{ position: 'fixed', ...dropdownStyle }}

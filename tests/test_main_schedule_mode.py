@@ -92,8 +92,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
             "webui_only": False,
             "serve": False,
             "serve_only": False,
-            "host": "0.0.0.0",
-            "port": 8000,
+            "host": None,
+            "port": None,
             "backtest": False,
             "market_review": False,
             "schedule": False,
@@ -114,6 +114,8 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "log_dir": self.temp_dir.name,
             "webui_enabled": False,
+            "webui_host": "127.0.0.1",
+            "webui_port": 8000,
             "dingtalk_stream_enabled": False,
             "feishu_stream_enabled": False,
             "schedule_enabled": False,
@@ -202,6 +204,64 @@ class MainScheduleModeTestCase(unittest.TestCase):
             main._warn_if_public_webui_without_auth("127.0.0.1")
 
         warning_log.assert_not_called()
+
+    def test_web_service_bind_uses_config_when_cli_omits_host_and_port(self) -> None:
+        args = self._make_args(host=None, port=None)
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000)
+
+        host, port = main._resolve_web_service_bind(args, config)
+
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 18000)
+
+    def test_web_service_bind_keeps_explicit_cli_host_and_port(self) -> None:
+        args = self._make_args(host="0.0.0.0", port=8000)
+        config = self._make_config(webui_host="127.0.0.1", webui_port=18000)
+
+        host, port = main._resolve_web_service_bind(args, config)
+
+        self.assertEqual(host, "0.0.0.0")
+        self.assertEqual(port, 8000)
+
+    def test_serve_only_uses_config_bind_when_cli_omits_host_and_port(self) -> None:
+        args = self._make_args(serve_only=True)
+        config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
+        observed_bind = []
+
+        def fake_start_api_server(host, port, config):
+            observed_bind.append((host, port))
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", side_effect=fake_start_api_server), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(observed_bind, [("127.0.0.1", 18000)])
+
+    def test_serve_only_keeps_explicit_cli_bind_over_config(self) -> None:
+        args = self._make_args(serve_only=True, host="0.0.0.0", port=8000)
+        config = self._make_config(webui_enabled=False, webui_host="127.0.0.1", webui_port=18000)
+        observed_bind = []
+
+        def fake_start_api_server(host, port, config):
+            observed_bind.append((host, port))
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
+             patch("main.parse_arguments", return_value=args), \
+             patch("main.get_config", return_value=config), \
+             patch("main.prepare_webui_frontend_assets", return_value=True), \
+             patch("main.start_api_server", side_effect=fake_start_api_server), \
+             patch("main.start_bot_stream_clients"), \
+             patch("main.time.sleep", side_effect=KeyboardInterrupt):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(observed_bind, [("0.0.0.0", 8000)])
 
     def test_start_api_server_fails_before_thread_when_port_is_busy(self) -> None:
         config = self._make_config(log_level="INFO")

@@ -47,6 +47,9 @@ log "Checking python-multipart availability..."
 log "Checking AlphaSift adapter availability..."
 "${PYTHON_BIN}" -c "import alphasift.dsa_adapter"
 
+log "Checking orjson availability..."
+"${PYTHON_BIN}" -c "import orjson"
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
@@ -92,6 +95,7 @@ hidden_imports=(
   "src.services.alphasift_service"
   "alphasift"
   "alphasift.dsa_adapter"
+  "orjson"
   "uvicorn.logging"
   "uvicorn.loops"
   "uvicorn.loops.auto"
@@ -110,7 +114,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "alphasift")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
@@ -136,11 +140,23 @@ if ! "${packaged_entry}" --help >/tmp/alphasift-packaged-help.log 2>&1; then
   exit 1
 fi
 
-if DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE=1 "${packaged_entry}" >/tmp/alphasift-packaged-import.log 2>&1; then
-  cat /tmp/alphasift-packaged-import.log
-else
-  echo "ERROR: packaged backend artifact cannot import alphasift.dsa_adapter."
-  cat /tmp/alphasift-packaged-import.log
+for module in alphasift.dsa_adapter orjson; do
+  if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
+    cat /tmp/dsa-packaged-import.log
+  else
+    echo "ERROR: packaged backend artifact cannot import ${module}."
+    cat /tmp/dsa-packaged-import.log
+    exit 1
+  fi
+done
+
+log "Verifying packaged AkShare calendar data..."
+packaged_akshare_calendar="${packaged_root}/_internal/akshare/file_fold/calendar.json"
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  packaged_akshare_calendar="${packaged_root}/akshare/file_fold/calendar.json"
+fi
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  echo "ERROR: packaged AkShare calendar data not found under ${packaged_root}."
   exit 1
 fi
 

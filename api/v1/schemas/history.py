@@ -138,7 +138,7 @@ class ReportMeta(BaseModel):
     change_pct: Optional[float] = Field(None, description="分析时涨跌幅(%)")
     model_used: Optional[str] = Field(
         None,
-        description="历史报告元数据中的模型快照，仅用于展示，不影响 Provider/Model/Base URL 运行时路由",
+        description="历史报告元数据中的模型快照，仅用于展示；不参与运行时模型调用路径或配置路由",
     )
     market_phase_summary: Optional[MarketPhaseSummary] = Field(
         None,
@@ -261,18 +261,28 @@ class ReportDetails(BaseModel):
     belong_boards: Optional[Any] = Field(None, description="关联板块列表")
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
     concept_rankings: Optional[Any] = Field(None, description="概念板块涨跌榜（结构 {top, bottom}）")
+    market_structure: Optional[Any] = Field(None, description="市场结构上下文（题材层 + 个股位置层）")
 
     @model_validator(mode="after")
-    def populate_concept_rankings_from_context(self) -> "ReportDetails":
-        if self.concept_rankings is not None or self.context_snapshot is None:
-            return self
-        try:
-            from src.utils.data_processing import extract_board_detail_fields
+    def populate_context_derived_details(self) -> "ReportDetails":
+        if self.concept_rankings is None and self.context_snapshot is not None:
+            try:
+                from src.utils.data_processing import extract_board_detail_fields
 
-            extracted = extract_board_detail_fields(self.context_snapshot)
-            self.concept_rankings = extracted.get("concept_rankings")
-        except Exception:
-            self.concept_rankings = None
+                extracted = extract_board_detail_fields(self.context_snapshot)
+                self.concept_rankings = extracted.get("concept_rankings")
+            except Exception:
+                self.concept_rankings = None
+        if self.market_structure is None:
+            try:
+                from src.utils.data_processing import extract_market_structure_detail_field
+
+                self.market_structure = extract_market_structure_detail_field(
+                    self.context_snapshot,
+                    self.raw_result,
+                )
+            except Exception:
+                self.market_structure = None
         return self
 
 
@@ -342,7 +352,7 @@ class StockBarItem(BaseModel):
     last_analysis_time: Optional[str] = Field(None, description="最近一次分析时间")
     model_used: Optional[str] = Field(
         None,
-        description="最新分析使用的模型快照",
+        description="最新分析使用的模型快照，仅用于列表展示；不改动运行时调用与配置路径",
     )
     market_phase_summary: Optional[MarketPhaseSummary] = Field(
         None,

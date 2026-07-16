@@ -11,6 +11,7 @@ import {
 } from '../../../utils/decisionSignalTimeline';
 import {
   DecisionSignalTimeline,
+  TimelineTooltip,
 } from '../DecisionSignalTimeline';
 
 vi.mock('recharts', () => ({
@@ -164,5 +165,49 @@ describe('DecisionSignalTimeline', () => {
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent('timeline failed');
+  });
+
+  it('renders tooltip profile from the first-class field before metadata fallback', () => {
+    render(
+      <UiLanguageProvider>
+        <TimelineTooltip
+          active
+          payload={[{
+            payload: {
+              ...buildTimelineData([
+                makeSignal({
+                  decisionProfile: 'aggressive',
+                  metadata: { decision_profile: 'balanced' },
+                }),
+              ])[0],
+            },
+          }]}
+        />
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getByText('风格: 进取')).toBeInTheDocument();
+  });
+
+  it('renders explicit null profile as unknown instead of falling back to metadata', () => {
+    render(
+      <UiLanguageProvider>
+        <TimelineTooltip
+          active
+          payload={[{
+            payload: {
+              ...buildTimelineData([
+                makeSignal({
+                  decisionProfile: null,
+                  metadata: { decision_profile: 'balanced' },
+                }),
+              ])[0],
+            },
+          }]}
+        />
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.getByText('风格: 未知')).toBeInTheDocument();
   });
 });
