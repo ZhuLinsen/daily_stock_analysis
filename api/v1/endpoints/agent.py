@@ -167,6 +167,9 @@ async def agent_chat(request: ChatRequest):
         ctx = dict(request.context or {})
         if skills is not None:
             ctx["skills"] = skills
+        # Fall back to the configured report language (REPORT_LANGUAGE) so agent
+        # replies match report language when the caller does not specify one.
+        ctx.setdefault("report_language", config.report_language)
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
@@ -401,6 +404,9 @@ async def agent_chat_stream(request: ChatRequest):
     stream_ctx = dict(request.context or {})
     if skills is not None:
         stream_ctx["skills"] = skills
+    # Fall back to the configured report language (REPORT_LANGUAGE) so agent
+    # replies match report language when the caller does not specify one.
+    stream_ctx.setdefault("report_language", config.report_language)
 
     def progress_callback(event: dict):
         # Enrich tool events with display names
