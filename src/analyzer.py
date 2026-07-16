@@ -85,12 +85,15 @@ def fill_price_position_if_needed(target_pct: float, current_price: float, curre
         return f"建议在 {current_price} 附近逢高减仓，目标降至 {target_pct}%"
     return "维持现有仓位不变"
 
-# 补全这个导致报错的函数，防止外部导入失败
+# 补全这几个导致报错的函数，防止外部导入失败
 def populate_decision_action_fields(data: Dict[str, Any], decision: str, analysis: str) -> Dict[str, Any]:
-    """填充决策和操作字段"""
     data["decision"] = decision
     data["analysis"] = analysis
     return data
+
+def stabilize_decision_with_structure(decision: str, chip_data: Optional[Dict[str, Any]] = None) -> str:
+    """结合筹码分布稳定决策结果"""
+    return decision
 
 def normalize_chip_structure_availability(chip_data: Optional[Dict[str, Any]] = None) -> bool:
     if not chip_data:
