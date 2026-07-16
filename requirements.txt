@@ -31,7 +31,7 @@ lark-oapi>=1.0.0             # Feishu API
 # Data processing
 pandas>=2.0.0               # Data analysis
 pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
-openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
+openpyxl>=3.1.5             # Excel (.xlsx) parsing for import
 numpy>=1.24.0               # Numeric computing
 json-repair>=0.61.5         # JSON repair
 orjson>=3.10,<4             # LiteLLM runtime JSON dependency; explicitly bundled in desktop builds
