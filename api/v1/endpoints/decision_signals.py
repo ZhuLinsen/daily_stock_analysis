@@ -22,6 +22,7 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalOutcomeRunResponse,
     DecisionSignalOutcomeStatsResponse,
     DecisionSignalReassessRequest,
+    DecisionSignalReassessErrorResponse,
     DecisionSignalReassessResponse,
     DecisionSignalStatusUpdateRequest,
 )
@@ -33,9 +34,8 @@ from src.services.decision_signal_service import (
 )
 from src.services.decision_signal_outcome_service import DecisionSignalOutcomeService
 from src.services.decision_signal_reassess_service import (
-    UNSUPPORTED_PERSIST_MESSAGE,
+    DecisionSignalReassessGuardrailBlockedError,
     DecisionSignalReassessService,
-    DecisionSignalReassessUnsupportedOperationError,
     DecisionSignalSourceReportNotFoundError,
     DecisionSignalUnsupportedReportSnapshotError,
     DecisionSignalUnsupportedReportTypeError,
@@ -86,6 +86,16 @@ def _internal_error(message: str, exc: Exception) -> HTTPException:
         status_code=500,
         detail={"error": "internal_error", "message": message},
     )
+
+
+def _guardrail_blocked(exc: DecisionSignalReassessGuardrailBlockedError) -> HTTPException:
+    response = DecisionSignalReassessErrorResponse(
+        error="guardrail_blocked",
+        message="Reassessed decision signal was blocked by guardrail.",
+        blocked_reason=exc.blocked_reason,
+        warnings=exc.warnings,
+    )
+    return HTTPException(status_code=400, detail=response.model_dump())
 
 
 @router.post(
@@ -318,26 +328,19 @@ def get_outcome_stats(
     response_model=DecisionSignalReassessResponse,
     responses={
         **AUTH_RESPONSE,
-        400: {"model": ErrorResponse, "description": "重评估请求不支持或历史报告不适用"},
+        400: {"model": DecisionSignalReassessErrorResponse, "description": "历史报告不适用或持久化被风控阻断"},
         404: {"model": ErrorResponse, "description": "来源历史报告不存在"},
         422: {"model": ErrorResponse, "description": "请求体校验失败"},
         500: {"model": ErrorResponse, "description": "重评估失败"},
     },
-    summary="预览决策风格重评估",
+    summary="重评估决策风格并可选保存",
     description=(
-        "基于 source_report_id 对应的持久化历史报告快照生成 decision_profile preview；"
-        "P3a 仅支持 persist=false，不写入 DecisionSignal。"
+        "基于 source_report_id 对应的持久化历史报告快照重新计算 decision_profile 信号；"
+        "persist=false 返回只读 preview，persist=true 将通过 guardrail 的服务端结果写入 DecisionSignal。"
     ),
     operation_id="reassessDecisionSignalPreview",
 )
 def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalReassessResponse:
-    if request.persist:
-        raise _error(
-            400,
-            DecisionSignalReassessUnsupportedOperationError(UNSUPPORTED_PERSIST_MESSAGE),
-            error="unsupported_operation",
-        )
-
     service = DecisionSignalReassessService()
     try:
         return DecisionSignalReassessResponse(
@@ -353,10 +356,10 @@ def reassess_signal(request: DecisionSignalReassessRequest) -> DecisionSignalRea
         raise _error(400, exc, error="unsupported_report_type")
     except DecisionSignalUnsupportedReportSnapshotError as exc:
         raise _error(400, exc, error="unsupported_report_snapshot")
-    except DecisionSignalReassessUnsupportedOperationError as exc:
-        raise _error(400, exc, error="unsupported_operation")
+    except DecisionSignalReassessGuardrailBlockedError as exc:
+        raise _guardrail_blocked(exc)
     except Exception as exc:
-        raise _internal_error("Reassess decision signal preview failed", exc)
+        raise _internal_error("Reassess decision signal failed", exc)
 
 
 @router.get(
