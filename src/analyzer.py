@@ -191,8 +191,11 @@ def localize_chip_structure(chip_data: Optional[Dict[str, Any]] = None, language
     return f"获利盘比例: {winner_ratio * 100:.2f}%"
 
 class GeminiAnalyzer:
-    def __init__(self, provider: str = "gemini"):
+    # 🌟 修复初始化入参：允许接收 config、skills 以及任何其他可能传入的关键字参数
+    def __init__(self, provider: str = "gemini", config: Any = None, skills: Any = None, **kwargs):
         self.provider = provider
+        self.config = config
+        self.skills = skills
 
     def analyze(self, ticker: str, data: dict) -> AnalysisResult:
         sentiment_info = get_stock_sentiment(ticker)
