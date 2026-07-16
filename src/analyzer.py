@@ -43,11 +43,10 @@ CORE_TRADING_SKILL_POLICY_ZH = """
 """
 
 def send_to_feishu(ticker: str, decision: str, confidence: str, analysis: str):
-    """向飞书发送精美的富文本交互卡片消息"""
-    # 🌟 双重兼容：同时尝试读取 FEISHU_WEBHOOK_URL 和 FEISHU_WEBHOOK
+    """向 Lark/飞书 发送精美的富文本交互卡片消息"""
     webhook_url = os.environ.get("FEISHU_WEBHOOK_URL") or os.environ.get("FEISHU_WEBHOOK")
     if not webhook_url:
-        logging.info("未检测到任何飞书 Webhook 环境变量，跳过飞书推送")
+        logging.info("未检测到 Lark Webhook 环境变量，跳过推送")
         return
 
     # 决定卡片颜色和图标
@@ -58,12 +57,13 @@ def send_to_feishu(ticker: str, decision: str, confidence: str, analysis: str):
     }
     color, title_text = color_map.get(decision.upper(), ("grey", "⚪ 维持判断"))
 
-    # 构造飞书卡片 JSON (符合飞书卡片 2.0 规范)
+    # 兼容 Lark 国际版的消息卡片结构
     card_payload = {
         "msg_type": "interactive",
         "card": {
             "config": {
-                "wide_screen_mode": True
+                "wide_screen_mode": True,
+                "enable_forward": True
             },
             "header": {
                 "title": {
@@ -116,13 +116,17 @@ def send_to_feishu(ticker: str, decision: str, confidence: str, analysis: str):
     }
 
     try:
-        response = requests.post(webhook_url, json=card_payload, headers={"Content-Type": "application/json"})
+        # Lark 的 Webhook 请求头
+        headers = {
+            "Content-Type": "application/json; charset=utf-8"
+        }
+        response = requests.post(webhook_url, json=card_payload, headers=headers)
         if response.status_code == 200:
-            logging.info(f"飞书消息发送成功: {ticker}")
+            logging.info(f"Lark 消息发送成功: {ticker}")
         else:
-            logging.error(f"飞书消息发送失败: {response.text}")
+            logging.error(f"Lark 消息发送失败: {response.text}")
     except Exception as e:
-        logging.error(f"飞书推送异常: {str(e)}")
+        logging.error(f"Lark 推送异常: {str(e)}")
 
 def get_stock_sentiment(ticker: str) -> str:
     """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
@@ -204,10 +208,10 @@ class GeminiAnalyzer:
             analysis=analysis_text
         )
 
-        # 触发飞书推送
+        # 触发 Lark 推送
         try:
             send_to_feishu(result.ticker, result.decision, result.confidence, result.analysis)
         except Exception as e:
-            logging.error(f"分析模块内发送飞书出错: {e}")
+            logging.error(f"分析模块内发送 Lark 出错: {e}")
 
         return result
