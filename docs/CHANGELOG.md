@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] Tavily 配额耗尽后在本轮任务内停用对应密钥，公共 SearXNG 故障实例进入冷却熔断，减少重复无效请求和日志噪声。
 - [修复] Docker 健康检查改为真实校验 `/api/health`，服务不可用时容器正确标记为 unhealthy。
 - [安全] 新增 Python 与 JavaScript/TypeScript CodeQL 扫描工作流，并启用仓库 Issues 与 Dependabot Alerts。
+- [安全] API Key 请求失败日志不再输出任何密钥片段，避免敏感凭据进入运行日志。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
 - [改进] 个股报告不再单独展示“题材主线与个股位置”卡片，相关市场结构数据仍保留在分析上下文、模型 Prompt 与决策信号提取链路中。
 - [改进] 通知推送与完整 Markdown/微信报告不再重复附加“AI 决策信号”摘要，DecisionSignal 的存储、告警和 Web AI 建议页保持不变。
