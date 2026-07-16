@@ -611,12 +611,26 @@ python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
+python main.py --portfolio futu       # Use real Futu stock holdings (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
+
+### Use real Futu holdings as the analysis list
+
+Start and sign in to Futu OpenD, then install the SDK in the active Python environment. [Install Futu OpenAPI SDK](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html):
+
+```bash
+pip install "futu-api==10.8.6808"
+python main.py --portfolio futu
+```
+
+`--portfolio futu` always reads `REAL` securities accounts and refreshes positions with `refresh_cache=True` before each analysis run. Without `FUTU_ACC_ID`, it merges all usable normal and read-only `MASTER` securities accounts and deduplicates symbols; when set, only that account is read. Per the [Futu `get_acc_list` account-role contract](https://openapi.futunn.com/futu-api-doc/en/trade/get-acc-list.html), Malaysian `IPO` accounts are not portfolio sources and are skipped. Only non-zero holdings whose Futu static type is `STOCK` are analyzed. Options, ETFs, warrants, futures, and other non-stock security types are excluded.
+
+OpenD defaults to `127.0.0.1:11111`; override it with `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT`, and optionally restrict account discovery with `FUTU_SECURITY_FIRM`. Symbol conversion currently supports US, HK, CN, and JP stocks; holdings from other Futu markets are logged and skipped. If `--stocks` is also present, the Futu portfolio wins. Scheduled mode reloads real positions for every run instead of reusing a startup snapshot. This integration only reads accounts and positions; it does not place, modify, cancel, or unlock trades.
 
 ---
 

@@ -277,6 +277,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --debug            # 调试模式
   python main.py --dry-run          # 仅获取数据，不进行 AI 分析
   python main.py --stocks 600519,000001  # 指定分析特定股票
+  python main.py --portfolio futu   # 使用 Futu 真实正股持仓（覆盖 --stocks）
   python main.py --no-notify        # 不发送推送通知
   python main.py --check-notify     # 检查通知配置，不发送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
@@ -301,6 +302,13 @@ def parse_arguments() -> argparse.Namespace:
         '--stocks',
         type=str,
         help='指定要分析的股票代码，逗号分隔（覆盖配置文件）'
+    )
+
+    parser.add_argument(
+        '--portfolio',
+        type=str.lower,
+        choices=('futu',),
+        help='使用券商真实持仓作为股票列表；当前支持 futu，并覆盖 --stocks/STOCK_LIST'
     )
 
     parser.add_argument(
@@ -524,6 +532,25 @@ def _refresh_stock_index_cache_for_analysis(config: Config) -> None:
         logger.warning("[stock-index] 分析前刷新股票索引失败，继续执行分析: %s", exc)
 
 
+def _resolve_portfolio_stock_codes(args: argparse.Namespace) -> Optional[List[str]]:
+    """Resolve an optional broker portfolio into the analysis stock list."""
+    portfolio = str(getattr(args, "portfolio", "") or "").strip().lower()
+    if not portfolio:
+        return None
+    if portfolio != "futu":  # argparse prevents this for CLI callers; keep API callers safe.
+        raise ValueError(f"不支持的 portfolio: {portfolio}")
+
+    from src.brokers.futu.portfolio import load_futu_stock_codes
+
+    stock_codes = [
+        resolve_index_stock_code_for_analysis(code)
+        for code in load_futu_stock_codes()
+        if (code or "").strip()
+    ]
+    logger.info("portfolio=futu 已覆盖 stocks/STOCK_LIST，使用 %d 只真实正股", len(stock_codes))
+    return stock_codes
+
+
 def _prime_daily_market_context(
     config: Config,
     pipeline: Any,
@@ -680,8 +707,12 @@ def run_full_analysis(
     try:
         _refresh_stock_index_cache_for_analysis(config)
 
+        portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+        if portfolio_stock_codes is not None:
+            stock_codes = portfolio_stock_codes
+
         # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
-        if stock_codes is None:
+        if stock_codes is None and portfolio_stock_codes is None:
             config.refresh_stock_list()
 
         # Issue #373: Trading day filter (per-stock, per-market)
@@ -1299,6 +1330,8 @@ def main() -> int:
             if (c or "").strip()
         ]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
+        if getattr(args, "portfolio", None):
+            logger.info("同时指定了 --portfolio；实际分析时 portfolio 将覆盖 --stocks")
 
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:
@@ -1351,7 +1384,7 @@ def main() -> int:
             )
         else:
             os.environ.pop(RUNTIME_SCHEDULER_RUN_IMMEDIATELY_ENV, None)
-        os.environ[RUNTIME_SCHEDULER_ARGS_ENV] = json.dumps({
+        runtime_scheduler_args = {
             "no_notify": bool(getattr(args, "no_notify", False)),
             "no_market_review": bool(getattr(args, "no_market_review", False)),
             "dry_run": bool(getattr(args, "dry_run", False)),
@@ -1359,7 +1392,10 @@ def main() -> int:
             "single_notify": bool(getattr(args, "single_notify", False)),
             "no_context_snapshot": bool(getattr(args, "no_context_snapshot", False)),
             "workers": getattr(args, "workers", None),
-        })
+        }
+        if getattr(args, "portfolio", None):
+            runtime_scheduler_args["portfolio"] = args.portfolio
+        os.environ[RUNTIME_SCHEDULER_ARGS_ENV] = json.dumps(runtime_scheduler_args)
         if not prepare_webui_frontend_assets():
             logger.warning("前端静态资源未就绪，继续启动 FastAPI 服务（Web 页面可能不可用）")
         try:
