@@ -257,6 +257,31 @@ def test_decision_agent_prompt_includes_disagreement_summary_when_present(monkey
     assert "technical" in message
 
 
+def test_decision_agent_prompt_reserves_final_explanation_for_orchestrator(monkeypatch):
+    _mock_optional_litellm(monkeypatch)
+    from src.agent.agents.decision_agent import DecisionAgent
+
+    ctx = AgentContext(query="test", stock_code="600519")
+    prompt = DecisionAgent(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+    ).system_prompt(ctx)
+
+    assert "agent_disagreement_summary" in prompt
+    assert "internal decision context" in prompt
+    assert "must not\ngenerate `dashboard.agent_disagreement_explanation`" in prompt
+    assert "Orchestrator owns that\nfield" in prompt
+    for forbidden_source in (
+        "raw reasoning",
+        "raw data",
+        "raw errors",
+        "tokens",
+        "secrets",
+        "private payloads",
+    ):
+        assert forbidden_source in prompt
+
+
 def test_decision_agent_build_messages_injects_disagreement_summary_once(monkeypatch):
     _mock_optional_litellm(monkeypatch)
     from src.agent.agents.decision_agent import DecisionAgent

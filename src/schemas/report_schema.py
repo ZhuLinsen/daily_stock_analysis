@@ -14,6 +14,22 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.agent.disagreement import (
+    BaseDisagreementType,
+    DecisionPath,
+    DegradedReason,
+    classify_base_disagreement,
+    derive_decision_path,
+)
+from src.agent.protocols import Signal
+from src.agent.risk_override import (
+    DashboardDecisionSignal,
+    RiskApplicationReason,
+    RiskTrigger,
+    classify_risk_application_reason,
+    validate_risk_application_transition,
+)
+
 
 class PositionAdvice(BaseModel):
     """Position advice for no-position vs has-position."""
@@ -216,6 +232,115 @@ class SignalAttribution(BaseModel):
         return self
 
 
+class AgentOpinionSummary(BaseModel):
+    """Low-sensitivity projection of one pre-decision agent opinion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str = Field(..., min_length=1)
+    signal: Signal
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class BaseDisagreement(BaseModel):
+    """Opinion-only disagreement facts with a deterministically derived type."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: BaseDisagreementType
+    agents: List[AgentOpinionSummary]
+
+    @model_validator(mode="after")
+    def validate_type_matches_agents(self) -> "BaseDisagreement":
+        expected = classify_base_disagreement(agent.signal.value for agent in self.agents)
+        if self.type != expected:
+            raise ValueError(f"base disagreement type must be {expected.value} for the supplied agents")
+        return self
+
+
+class RiskControlOutcome(BaseModel):
+    """Final risk-control result after evaluating the post-decision dashboard signal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_present: bool
+    override_enabled: bool
+    trigger: RiskTrigger
+    applied: bool
+    reason: RiskApplicationReason
+    final_signal: DashboardDecisionSignal
+    from_signal: Optional[DashboardDecisionSignal] = None
+    to_signal: Optional[DashboardDecisionSignal] = None
+
+    @model_validator(mode="after")
+    def validate_application_state(self) -> "RiskControlOutcome":
+        validate_risk_application_transition(
+            applied=self.applied,
+            reason=self.reason,
+            final_signal=self.final_signal,
+            from_signal=self.from_signal,
+            to_signal=self.to_signal,
+        )
+        if self.applied and not self.override_enabled:
+            raise ValueError("applied risk control requires override_enabled=true")
+
+        if not self.evidence_present and self.trigger != RiskTrigger.NONE:
+            raise ValueError("risk trigger requires risk evidence")
+
+        expected_reason = classify_risk_application_reason(
+            evidence_present=self.evidence_present,
+            trigger=self.trigger,
+            override_enabled=self.override_enabled,
+            applied=self.applied,
+        )
+        if self.reason != expected_reason:
+            raise ValueError(f"risk application reason must be {expected_reason.value} for the supplied facts")
+
+        if self.reason == RiskApplicationReason.FINAL_SIGNAL_ALREADY_WITHIN_RISK_LIMIT:
+            if (
+                self.trigger == RiskTrigger.RISK_VETO
+                and self.final_signal == DashboardDecisionSignal.BUY
+            ):
+                raise ValueError("buy is not within an enabled risk veto limit")
+            if (
+                self.trigger == RiskTrigger.RISK_DOWNGRADE
+                and self.final_signal != DashboardDecisionSignal.SELL
+            ):
+                raise ValueError("only sell is unchanged by an enabled risk downgrade")
+        return self
+
+
+class DegradedEvent(BaseModel):
+    """Low-sensitivity runtime degradation fact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str = Field(..., min_length=1)
+    reason: DegradedReason
+
+
+class AgentDisagreementExplanation(BaseModel):
+    """Three orthogonal explanation facts plus their deterministic decision path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_disagreement: BaseDisagreement
+    risk_control: RiskControlOutcome
+    degraded_events: List[DegradedEvent]
+    decision_path: DecisionPath
+
+    @model_validator(mode="after")
+    def validate_decision_path(self) -> "AgentDisagreementExplanation":
+        expected = derive_decision_path(
+            self.base_disagreement.type,
+            self.risk_control.reason,
+            has_degraded_events=bool(self.degraded_events),
+        )
+        if self.decision_path != expected:
+            raise ValueError(f"decision_path must be {expected.value} for the supplied facts")
+        return self
+
+
 class Dashboard(BaseModel):
     """Dashboard block."""
 
@@ -225,6 +350,7 @@ class Dashboard(BaseModel):
     battle_plan: Optional[BattlePlan] = None
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
+    agent_disagreement_explanation: Optional[AgentDisagreementExplanation] = None
 
 
 class AnalysisReportSchema(BaseModel):
