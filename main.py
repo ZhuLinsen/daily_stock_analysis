@@ -252,6 +252,34 @@ def _reload_env_file_values_preserving_overrides() -> None:
 
     _RUNTIME_ENV_FILE_KEYS = managed_keys
 
+def get_stock_sentiment(ticker: str) -> str:
+    """获取 Alpha Vantage 股票网络舆情"""
+    import os
+    import requests
+
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        return ""
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
+    try:
+        response = requests.get(url).json()
+        feed = response.get("feed", [])
+        if not feed:
+            return f"\n### {ticker} 暂无近期网络舆情"
+
+        sentiment_summary = [f"\n### {ticker} 近期舆情分析："]
+        for item in feed[:3]:
+            title = item.get("title")
+            ticker_data = item.get("ticker_sentiment", [])
+            label = "Neutral"
+            for t in ticker_data:
+                if t.get("ticker") == ticker:
+                    label = t.get("ticker_sentiment_label")
+                    break
+            sentiment_summary.append(f"- 【{label}】{title}")
+        return "\n".join(sentiment_summary)
+    except Exception as e:
+        return ""
 
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
