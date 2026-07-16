@@ -612,3 +612,30 @@ jobs:
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
+
+      - name: Telegram 失败告警
+        if: failure()
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram failure alert skipped: credentials are not configured."
+            exit 0
+          fi
+          message="❌ 股票分析任务失败
+          仓库：${GITHUB_REPOSITORY}
+          模式：${RUN_MODE:-unknown}
+          运行：${RUN_URL}"
+          args=(
+            --fail --silent --show-error --retry 2
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"
+            --data-urlencode "text=${message}"
+          )
+          if [ -n "${TELEGRAM_MESSAGE_THREAD_ID:-}" ]; then
+            args+=(--data-urlencode "message_thread_id=${TELEGRAM_MESSAGE_THREAD_ID}")
+          fi
+          curl "${args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"

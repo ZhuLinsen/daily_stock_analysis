@@ -92,6 +92,42 @@ jobs:
             echo "Maintenance issue #$existing is already open."
           fi
 
+      - name: Send Telegram alert when automatic sync is blocked
+        if: >-
+          always() && steps.detect.outputs.update_available == 'true' &&
+          (steps.merge.outputs.status != 'success' ||
+          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          MERGE_STATUS: ${{ steps.merge.outputs.status }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram sync alert skipped: credentials are not configured."
+            exit 0
+          fi
+          message="⚠️ 上游自动同步未完成
+          merge=${MERGE_STATUS:-skipped}
+          conflicts=${CONFLICTS:-none}
+          validate=${VALIDATE_OUTCOME:-skipped}
+          push=${PUSH_OUTCOME:-skipped}
+          ${RUN_URL}"
+          args=(
+            --fail --silent --show-error --retry 2
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"
+            --data-urlencode "text=${message}"
+          )
+          if [ -n "${TELEGRAM_MESSAGE_THREAD_ID:-}" ]; then
+            args+=(--data-urlencode "message_thread_id=${TELEGRAM_MESSAGE_THREAD_ID}")
+          fi
+          curl "${args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
       - name: Fail when update was not published
         if: >-
           always() && steps.detect.outputs.update_available == 'true' &&

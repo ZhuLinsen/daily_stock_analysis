@@ -170,6 +170,7 @@ class BaseSearchProvider(ABC):
         self._key_cycle = cycle(api_keys) if api_keys else None
         self._key_usage: Dict[str, int] = {key: 0 for key in api_keys}
         self._key_errors: Dict[str, int] = {key: 0 for key in api_keys}
+        self._disabled_keys: set[str] = set()
         self._state_lock = threading.RLock()
     
     @property
@@ -179,7 +180,21 @@ class BaseSearchProvider(ABC):
     @property
     def is_available(self) -> bool:
         """检查是否有可用的 API Key"""
-        return bool(self._api_keys)
+        with self._state_lock:
+            return any(key not in self._disabled_keys for key in self._api_keys)
+
+    def _unavailable_error_message(self) -> str:
+        """Return a precise message when no key can be used."""
+        with self._state_lock:
+            if self._api_keys and all(key in self._disabled_keys for key in self._api_keys):
+                return f"{self._name} 本次运行已熔断：所有 API Key 均不可用"
+        return f"{self._name} 未配置 API Key"
+
+    def _disable_key_for_run(self, key: str, *, reason: str) -> None:
+        """Disable a permanently failing key for the lifetime of this provider instance."""
+        with self._state_lock:
+            self._disabled_keys.add(key)
+        logger.warning("[%s] API Key 已在本次运行中熔断: %s", self._name, reason)
     
     def _get_next_key(self) -> Optional[str]:
         """
@@ -194,14 +209,21 @@ class BaseSearchProvider(ABC):
             # 最多尝试所有 key
             for _ in range(len(self._api_keys)):
                 key = next(self._key_cycle)
+                if key in self._disabled_keys:
+                    continue
                 # 跳过错误次数过多的 key（超过 3 次）
                 if self._key_errors.get(key, 0) < 3:
                     return key
+
+            enabled_keys = [key for key in self._api_keys if key not in self._disabled_keys]
+            if not enabled_keys:
+                return None
             
             # 所有 key 都有问题，重置错误计数并返回第一个
             logger.warning(f"[{self._name}] 所有 API Key 都有错误记录，重置错误计数")
-            self._key_errors = {key: 0 for key in self._api_keys}
-            return self._api_keys[0] if self._api_keys else None
+            for key in enabled_keys:
+                self._key_errors[key] = 0
+            return enabled_keys[0]
     
     def _record_success(self, key: str) -> None:
         """记录成功使用"""
@@ -240,7 +262,7 @@ class BaseSearchProvider(ABC):
                 results=[],
                 provider=self._name,
                 success=False,
-                error_message=f"{self._name} 未配置 API Key"
+                error_message=self._unavailable_error_message(),
             )
 
         start_time = time.time()
@@ -298,6 +320,19 @@ class TavilySearchProvider(BaseSearchProvider):
     
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "Tavily")
+
+    @staticmethod
+    def _is_run_exhausting_error(error_message: str) -> bool:
+        normalized = error_message.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "quota",
+                "usage limit",
+                "exceeds your plan",
+                "insufficient credits",
+            )
+        )
     
     def _do_search(
         self,
@@ -363,7 +398,10 @@ class TavilySearchProvider(BaseSearchProvider):
         except Exception as e:
             error_msg = str(e)
             # 检查是否是配额问题
-            if 'rate limit' in error_msg.lower() or 'quota' in error_msg.lower():
+            if self._is_run_exhausting_error(error_msg):
+                self._disable_key_for_run(api_key, reason="quota/plan usage exhausted")
+                error_msg = f"API 配额已用尽: {error_msg}"
+            elif 'rate limit' in error_msg.lower():
                 error_msg = f"API 配额已用尽: {error_msg}"
             
             return SearchResponse(
@@ -392,7 +430,7 @@ class TavilySearchProvider(BaseSearchProvider):
                 results=[],
                 provider=self._name,
                 success=False,
-                error_message=f"{self._name} 未配置 API Key"
+                error_message=self._unavailable_error_message(),
             )
 
         start_time = time.time()
@@ -1712,11 +1750,14 @@ class SearXNGSearchProvider(BaseSearchProvider):
     PUBLIC_INSTANCES_POOL_LIMIT = 20
     PUBLIC_INSTANCES_MAX_ATTEMPTS = 3
     PUBLIC_INSTANCES_TIMEOUT_SECONDS = 5
+    PUBLIC_INSTANCE_PENALTY_SECONDS = 300
     SELF_HOSTED_TIMEOUT_SECONDS = 10
 
     _public_instances_cache: Optional[Tuple[float, List[str]]] = None
     _public_instances_stale_retry_after: float = 0.0
     _public_instances_lock = threading.Lock()
+    _penalized_instances: Dict[str, float] = {}
+    _penalized_instances_lock = threading.Lock()
 
     def __init__(self, base_urls: Optional[List[str]] = None, *, use_public_instances: bool = False):
         normalized_base_urls = [url.rstrip("/") for url in (base_urls or []) if url.strip()]
@@ -1736,6 +1777,23 @@ class SearXNGSearchProvider(BaseSearchProvider):
         with cls._public_instances_lock:
             cls._public_instances_cache = None
             cls._public_instances_stale_retry_after = 0.0
+        with cls._penalized_instances_lock:
+            cls._penalized_instances.clear()
+
+    @classmethod
+    def _eligible_public_instances(cls, urls: List[str]) -> List[str]:
+        """Skip public instances that already failed during the current cooldown window."""
+        now = time.time()
+        with cls._penalized_instances_lock:
+            expired = [url for url, retry_at in cls._penalized_instances.items() if retry_at <= now]
+            for url in expired:
+                cls._penalized_instances.pop(url, None)
+            return [url for url in urls if url not in cls._penalized_instances]
+
+    @classmethod
+    def _penalize_public_instance(cls, url: str) -> None:
+        with cls._penalized_instances_lock:
+            cls._penalized_instances[url] = time.time() + cls.PUBLIC_INSTANCE_PENALTY_SECONDS
 
     @staticmethod
     def _parse_http_error(response) -> str:
@@ -2036,13 +2094,18 @@ class SearXNGSearchProvider(BaseSearchProvider):
             empty_error = "SearXNG 未配置可用实例"
         elif self._use_public_instances:
             public_instances = self._get_public_instances()
+            eligible_instances = self._eligible_public_instances(public_instances)
             candidates = self._rotate_candidates(
-                public_instances,
-                max_attempts=min(len(public_instances), self.PUBLIC_INSTANCES_MAX_ATTEMPTS),
+                eligible_instances,
+                max_attempts=min(len(eligible_instances), self.PUBLIC_INSTANCES_MAX_ATTEMPTS),
             )
             retry_enabled = False
             timeout = self.PUBLIC_INSTANCES_TIMEOUT_SECONDS
-            empty_error = "未获取到可用的公共 SearXNG 实例"
+            empty_error = (
+                "公共 SearXNG 实例运行级熔断中"
+                if public_instances and not eligible_instances
+                else "未获取到可用的公共 SearXNG 实例"
+            )
         else:
             candidates = []
             retry_enabled = False
@@ -2071,6 +2134,9 @@ class SearXNGSearchProvider(BaseSearchProvider):
             )
             response.search_time = time.time() - start_time
             if response.success:
+                if self._use_public_instances:
+                    with self._penalized_instances_lock:
+                        self._penalized_instances.pop(base_url, None)
                 logger.info(
                     "[%s] 搜索 '%s' 成功，实例=%s，返回 %s 条结果，耗时 %.2fs",
                     self.name,
@@ -2081,6 +2147,8 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 )
                 return response
 
+            if self._use_public_instances:
+                self._penalize_public_instance(base_url)
             errors.append(f"{base_url}: {response.error_message or '未知错误'}")
             logger.warning("[%s] 实例 %s 搜索失败: %s", self.name, base_url, response.error_message)
 
