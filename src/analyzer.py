@@ -17,7 +17,12 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
-# 从你本地现有的文件里安全导入
+from src.agent.llm_adapter import (
+    get_thinking_extra_body,
+    resolve_fallback_litellm_wire_models,
+    register_fallback_model_pricing,
+)
+from src.agent.provider_trace import resolved_model_provider_identity
 from src.config import (
     Config,
     extra_litellm_params,
@@ -34,7 +39,7 @@ from src.report_language import (
     normalize_report_language
 )
 
-# 核心交易策略
+# 直接在本地定义策略变量，避免从外部 skills.defaults 导入报错
 CORE_TRADING_SKILL_POLICY_ZH = """
 你是一个资深美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
 1. **防守第一**：任何时候，首要任务是识别潜在风险，防范重大亏损，而不仅仅是寻找上涨机会。
@@ -79,7 +84,6 @@ class AnalysisResult:
     analysis: str     # 具体的分析内容
 
 def fill_price_position_if_needed(target_pct: float, current_price: float, current_position_pct: float) -> str:
-    """根据目标仓位和当前仓位计算操作逻辑，防止报错"""
     if target_pct > current_position_pct:
         return f"建议在 {current_price} 附近逢低买入，目标建仓至 {target_pct}%"
     elif target_pct < current_position_pct:
