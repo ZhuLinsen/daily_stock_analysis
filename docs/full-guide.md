@@ -677,7 +677,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
-python main.py --portfolio futu       # 使用 Futu 真实正股持仓（覆盖 --stocks/STOCK_LIST）
+python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
@@ -695,9 +695,9 @@ pip install "futu-api==10.8.6808"
 python main.py --portfolio futu
 ```
 
-`--portfolio futu` 固定读取 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓。未设置 `FUTU_ACC_ID` 时会合并所有可用的普通及只读 `MASTER` 证券账户并按代码去重；设置后只读取指定账户。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。只有 Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析，暂不支持期权、ETF、窝轮、期货等非正股类型。
+`--portfolio futu` 固定读取 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓。未设置 `FUTU_ACC_ID` 时会合并所有可用的普通及只读 `MASTER` 证券账户并按代码去重；设置后只读取指定账户。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。
 
-OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖；多券商环境可用 `FUTU_SECURITY_FIRM` 限定券商。当前代码转换支持美股、港股、A 股和日股，其他 Futu 市场持仓会记录警告并跳过。若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。
+OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖；多券商环境可用 `FUTU_SECURITY_FIRM` 限定券商。当前代码转换支持美股、港股、A 股和日股，其他 Futu 市场持仓会记录警告并跳过。若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。单次 CLI 运行若因 SDK、OpenD 或账户加载失败而无法导入持仓，会返回非零退出码；已启动服务与定时调度仍按原有方式记录错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。
 
 ---
 

@@ -54,12 +54,16 @@ class _TradeContext:
         if self.positions_by_account is not None:
             return 0, self.positions_by_account.get(kwargs["acc_id"], [])
         return 0, [
-            {"code": "US.AAPL", "qty": 10},
-            {"code": "US.DRAM", "qty": 3},
-            {"code": "US.AAPL261218C200000", "qty": -1},
-            {"code": "HK.00700", "qty": 20},
-            {"code": "SH.600519", "qty": 0},
-            {"code": "JP.7203", "qty": 5},
+            {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+            {"code": "US.DRAM", "qty": 3, "position_side": "LONG"},
+            {
+                "code": "US.AAPL261218C200000",
+                "qty": -1,
+                "position_side": "LONG",
+            },
+            {"code": "HK.00700", "qty": 20, "position_side": "LONG"},
+            {"code": "SH.600519", "qty": 0, "position_side": "LONG"},
+            {"code": "JP.7203", "qty": 5, "position_side": "LONG"},
         ]
 
     def close(self) -> None:
@@ -213,7 +217,9 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         result, trade_contexts = _load_codes_for_accounts(
             [_account(3003, "MASTER")],
             {
-                3003: [{"code": "US.AAPL", "qty": 10}],
+                3003: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"}
+                ],
             },
         )
 
@@ -226,10 +232,12 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         result, trade_contexts = _load_codes_for_accounts(
             [_account(1001, "NORMAL"), _account(3003, "MASTER")],
             {
-                1001: [{"code": "US.AAPL", "qty": 10}],
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"}
+                ],
                 3003: [
-                    {"code": "US.AAPL", "qty": 10},
-                    {"code": "HK.00700", "qty": 20},
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "HK.00700", "qty": 20, "position_side": "LONG"},
                 ],
             },
         )
@@ -242,12 +250,52 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         ]
         self.assertEqual(queried_account_ids, [1001, 3003])
 
+    def test_load_futu_stock_codes_skips_short_positions_before_deduplication(self):
+        result, trade_contexts = _load_codes_for_accounts(
+            [_account(1001, "NORMAL"), _account(3003, "MASTER")],
+            {
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "SHORT"},
+                    {"code": "HK.00700", "qty": 20, "position_side": "SHORT"},
+                ],
+                3003: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"}
+                ],
+            },
+        )
+
+        self.assertEqual(result, ["AAPL"])
+        queried_account_ids = [
+            context.position_queries[0]["acc_id"]
+            for context in trade_contexts
+            if context.position_queries
+        ]
+        self.assertEqual(queried_account_ids, [1001, 3003])
+
+    def test_load_futu_stock_codes_skips_unknown_position_sides(self):
+        result, _ = _load_codes_for_accounts(
+            [_account(1001, "NORMAL")],
+            {
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "N/A"},
+                    {"code": "HK.00700", "qty": 20},
+                    {"code": "JP.7203", "qty": 5, "position_side": "NONE"},
+                ],
+            },
+        )
+
+        self.assertEqual(result, [])
+
     def test_load_futu_stock_codes_skips_malaysian_ipo_accounts(self):
         result, trade_contexts = _load_codes_for_accounts(
             [_account(1001, "NORMAL"), _account(4004, "IPO")],
             {
-                1001: [{"code": "US.AAPL", "qty": 10}],
-                4004: [{"code": "HK.00700", "qty": 20}],
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"}
+                ],
+                4004: [
+                    {"code": "HK.00700", "qty": 20, "position_side": "LONG"}
+                ],
             },
         )
 

@@ -1044,14 +1044,17 @@ def _run_analysis_with_runtime_scheduler_lock(
     config: Config,
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
+    *,
+    propagate_errors: bool = False,
 ) -> None:
+    """Run one analysis under the shared lock, optionally surfacing failures."""
     from src.services.runtime_scheduler import run_with_global_analysis_lock
 
     # Keep startup/triggered analysis in sync with API runtime scheduler and
     # run-now entrypoint. Blocking is expected here because startup paths should
     # wait for an in-flight job before returning a response.
     run_with_global_analysis_lock(
-        task_runner=run_full_analysis,
+        task_runner=run_scheduled_analysis if propagate_errors else run_full_analysis,
         config=config,
         args=args,
         stock_codes=stock_codes,
@@ -1547,7 +1550,16 @@ def main() -> int:
 
         # 模式3: 正常单次运行
         if config.run_immediately:
-            _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
+            portfolio = str(getattr(args, "portfolio", "") or "").strip().lower()
+            if portfolio == "futu" and not start_serve:
+                _run_analysis_with_runtime_scheduler_lock(
+                    config,
+                    args,
+                    stock_codes,
+                    propagate_errors=True,
+                )
+            else:
+                _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

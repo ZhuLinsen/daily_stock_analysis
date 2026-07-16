@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import main
+from src.brokers.futu.portfolio import FutuPortfolioError
 from src.services.runtime_scheduler import RuntimeSchedulerService
 
 
@@ -29,6 +30,39 @@ class MainPortfolioTest(unittest.TestCase):
 
     def test_resolve_portfolio_stock_codes_returns_none_when_disabled(self):
         self.assertIsNone(main._resolve_portfolio_stock_codes(SimpleNamespace()))
+
+    def test_analysis_lock_propagates_requested_portfolio_failures(self):
+        config = SimpleNamespace()
+        args = SimpleNamespace(portfolio="futu")
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with patch.object(
+            main,
+            "run_scheduled_analysis",
+            side_effect=error,
+        ) as runner, self.assertRaisesRegex(FutuPortfolioError, "OpenD unavailable"):
+            main._run_analysis_with_runtime_scheduler_lock(
+                config,
+                args,
+                ["600519"],
+                propagate_errors=True,
+            )
+
+        runner.assert_called_once_with(config, args, ["600519"])
+
+    def test_run_full_analysis_propagates_futu_portfolio_load_failure(self):
+        config = SimpleNamespace()
+        args = SimpleNamespace(portfolio="futu")
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with patch.object(
+            main,
+            "_refresh_stock_index_cache_for_analysis",
+        ), patch(
+            "src.brokers.futu.portfolio.load_futu_stock_codes",
+            side_effect=error,
+        ), self.assertRaisesRegex(FutuPortfolioError, "OpenD unavailable"):
+            main.run_full_analysis(config, args, raise_errors=True)
 
     def test_run_full_analysis_uses_futu_holdings_and_reloads_each_run(self):
         args = SimpleNamespace(

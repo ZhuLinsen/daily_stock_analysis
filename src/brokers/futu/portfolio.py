@@ -241,10 +241,12 @@ def _load_position_codes(
     port: int,
     accounts: Iterable[_FutuAccount],
 ) -> List[str]:
-    """Load deduplicated non-zero position codes from selected accounts."""
+    """Load deduplicated non-zero LONG position codes from selected accounts."""
 
     codes: List[str] = []
     seen_codes = set()
+    skipped_short_count = 0
+    skipped_unknown_side_count = 0
 
     for account in accounts:
         context = None
@@ -268,7 +270,16 @@ def _load_position_codes(
                 except (TypeError, ValueError):
                     quantity = 0
                 code = str(_row_value(row, "code", "") or "").strip().upper()
-                if quantity == 0 or not code or code in seen_codes:
+                if quantity == 0 or not code:
+                    continue
+                position_side = _enum_text(_row_value(row, "position_side"))
+                if position_side == "SHORT":
+                    skipped_short_count += 1
+                    continue
+                if position_side != "LONG":
+                    skipped_unknown_side_count += 1
+                    continue
+                if code in seen_codes:
                     continue
                 seen_codes.add(code)
                 codes.append(code)
@@ -278,6 +289,14 @@ def _load_position_codes(
             raise FutuPortfolioError(f"查询 Futu 真实持仓失败: {exc}") from exc
         finally:
             _safe_close(context)
+
+    if skipped_short_count:
+        logger.info("已跳过 %d 个 Futu SHORT 空头持仓", skipped_short_count)
+    if skipped_unknown_side_count:
+        logger.warning(
+            "已跳过 %d 个持仓方向不是 LONG 的 Futu 持仓",
+            skipped_unknown_side_count,
+        )
     return codes
 
 
@@ -382,10 +401,10 @@ def _filter_stock_codes(
 def load_futu_stock_codes() -> List[str]:
     """Return deduplicated analysis codes from all selected REAL Futu accounts.
 
-    Only Futu ``SecurityType.STOCK`` positions with non-zero quantity are kept.
-    ``FUTU_ACC_ID`` can select one account; otherwise all usable real securities
-    NORMAL and read-only MASTER accounts are merged. The call is read-only and
-    always refreshes position data.
+    Only Futu ``SecurityType.STOCK`` LONG positions with non-zero quantity are
+    kept. ``FUTU_ACC_ID`` can select one account; otherwise all usable real
+    securities NORMAL and read-only MASTER accounts are merged. The call is
+    read-only and always refreshes position data.
     """
     api = _load_futu_api()
     host, port = _connection_settings()
@@ -393,7 +412,7 @@ def load_futu_stock_codes() -> List[str]:
     position_codes = _load_position_codes(api, host, port, accounts)
     stock_codes = _filter_stock_codes(api, host, port, position_codes)
     logger.info(
-        "已从 Futu 真实账户加载 %d 只正股（账户数: %d，原始非零持仓数: %d）",
+        "已从 Futu 真实账户加载 %d 只正股（账户数: %d，原始非零多头持仓数: %d）",
         len(stock_codes),
         len(accounts),
         len(position_codes),
