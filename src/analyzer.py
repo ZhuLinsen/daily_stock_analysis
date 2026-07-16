@@ -1,3 +1,35 @@
+import os
+import requests
+
+
+def get_stock_sentiment(ticker: str) -> str:
+    """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        return ""
+
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={api_key}"
+
+    try:
+        response = requests.get(url).json()
+        feed = response.get("feed", [])
+        if not feed:
+            return f"\n### {ticker} 暂无近期网络舆情"
+
+        sentiment_summary = [f"\n### {ticker} 舆情风向标："]
+        for item in feed[:3]:
+            title = item.get("title")
+            ticker_data = item.get("ticker_sentiment", [])
+            label = "Neutral"
+            for t in ticker_data:
+                if t.get("ticker").upper() == ticker.upper():
+                    label = t.get("ticker_sentiment_label")
+                    break
+            sentiment_summary.append(f"- 【{label}】{title}")
+
+        return "\n".join(sentiment_summary)
+    except Exception:
+        return ""
 # -*- coding: utf-8 -*-
 """
 ===================================
@@ -6,7 +38,6 @@ A股自选股智能分析系统 - AI分析层
 
 职责：
 1. 封装 LLM 调用逻辑（通过 LiteLLM 统一调用 Gemini/Anthropic/OpenAI 等）
-2. 结合技术面和消息面生成分析报告
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
 
