@@ -1,7 +1,6 @@
 name: Daily Stock Analysis
 
 on:
-  on:
   push:
   workflow_dispatch:
   schedule:
