@@ -258,6 +258,9 @@ def get_stock_sentiment(ticker: str) -> str:
     import os
     import requests
 
+    webhook = os.getenv("FEISHU_WEBHOOK") # 或者 FEISHU_WEBHOOK_URL
+    print(f"DEBUG: Webhook URL length is: {len(webhook) if webhook else 0}")
+
     api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
     if not api_key:
         return ""
