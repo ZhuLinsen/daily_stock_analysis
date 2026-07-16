@@ -237,8 +237,7 @@ class BaseSearchProvider(ABC):
         """记录错误"""
         with self._state_lock:
             self._key_errors[key] = self._key_errors.get(key, 0) + 1
-            error_count = self._key_errors[key]
-        logger.warning("[%s] API Key 请求失败，错误计数: %s", self._name, error_count)
+        logger.warning("[%s] API Key 请求失败，已记录错误次数", self._name)
     
     @abstractmethod
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
