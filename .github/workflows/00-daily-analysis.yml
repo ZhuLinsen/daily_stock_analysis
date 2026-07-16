@@ -3,40 +3,87 @@ name: Daily Stock Analysis
 on:
   push:
   schedule:
+    # 国际标准时间 00:00 对应北京时间 08:00，周一至周五自动运行
     - cron: '0 0 * * 1-5'
   workflow_dispatch:
     inputs:
+      mode:
+        description: '运行模式 (default: 仅分析, full: 分析+大盘, market_only: 仅大盘)'
+        required: true
+        default: 'default'
+        type: choice
+        options:
+          - default
+          - full
+          - market_only
+      stocks:
+        description: '临时指定的股票代码(英文逗号分隔，留空使用配置值)'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: '沙盒运行 (不实际发送消息推送)'
+        required: true
+        default: false
+        type: boolean
+      force:
+        description: '强制运行 (忽略交易日检查)'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: 设置 Python 环境
-        uses: actions/setup-python@v6
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
           cache: 'pip'
 
-      - name: 安装依赖
+      - name: Install Dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 执行股票分析
+      - name: Run Daily Stock Analysis
         env:
-          STOCK_LIST: "09992,hood,mu,bac,bott,avgo,06809,sndk"
+          # 以下配置会从 GitHub Repository Secrets 中安全读取
+          STOCK_LIST: ${{ secrets.STOCK_LIST }}
+          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }}
+          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
         run: |
-          if [ "${{ github.event.inputs.force_run }}" == "true" ]; then
-            python main.py --force-run
-          else
-            python main.py
+          # 根据手动触发时传入的参数来组合运行命令
+          ARGS=""
+          if [ "${{ github.event.inputs.mode }}" = "full" ]; then
+            ARGS="$ARGS --market-review"
+          elif [ "${{ github.event.inputs.mode }}" = "market_only" ]; then
+            ARGS="$ARGS --market-review --serve-only"
           fi
-
+          
+          if [ -n "${{ github.event.inputs.stocks }}" ]; then
+            ARGS="$ARGS --stocks ${{ github.event.inputs.stocks }}"
+          fi
+          
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+          
+          python main.py $ARGS
