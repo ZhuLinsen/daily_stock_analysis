@@ -872,11 +872,17 @@ P3 在普通分析和 Agent 初始上下文中接入 `AnalysisContextPack` 低�
 
 P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report metadata，不改变报告 JSON schema，也不把完整 pack 暴露到历史、通知或 Web。Agent 工具级复用 pack 数据和 P5 数据质量评分留给后续阶段。
 
-#### Multi-Agent 决策分歧摘要输入（Issue #1904 P1 plumbing）
+#### Multi-Agent 最终分歧解释（Issue #1904 P1 partial follow-up）
 
-Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
+Multi-agent 在进入 `DecisionAgent` 前仍会构造内部低敏 `agent_disagreement_summary`。它只是决策合成上下文；`DecisionAgent` 可以利用其中事实形成建议，但不得生成最终解释字段。成功返回 final 或 partial dashboard 时，Orchestrator 会在风险后处理完成后确定性构造并注入可选字段 `dashboard.agent_disagreement_explanation`。旧报告不包含该字段时仍可正常解析。
 
-该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+最终解释包含三个正交事实维度：`base_disagreement` 只根据最终有效 Agent opinions 的规范化 signal、agent 名称和 0.0–1.0 confidence 推导基础意见关系；`risk_control` 只记录风险后处理的实际结果；`degraded_events` 只记录运行失败、超时或预算保护跳过。风险控制不会覆盖 `mixed_directional_signals` 等基础分歧，也不会用一个总 conflict type 混合表达三类事实。`decision_path` 根据这三个维度确定性推导，实际 veto/downgrade 优先于 degraded synthesis。
+
+风险控制分为执行前 `RiskOverridePlan` 和执行后 `RiskOverrideApplication`：plan 表达证据、配置、trigger 和预计动作，application 才是最终事实。未执行原因会区分 `no_risk_evidence`、`no_override_trigger`、`override_disabled` 和 `final_signal_already_within_risk_limit`；实际修改则记录 `risk_veto_applied` 或 `risk_downgrade_applied`。公开 `risk_control.final_signal` 始终是风险后处理后的 dashboard signal，只有实际发生转换时才包含 `from_signal` 和 `to_signal`。
+
+每个 degraded event 只有 `stage` 和 `reason`。`stage` 是实际失败、刚完成或被跳过的 Agent 名称；`reason` 仅为 `stage_failure`、`timeout` 或 `budget_skip`。公开结构不包含 reasoning、raw_data、原始 error/message/exception/traceback、token、secret 或 private payload，也不提供完整执行 trace。
+
+运行时只对最终 `agent_disagreement_explanation` 子结构调用 Schema 校验，再以 JSON mode 注入 dashboard；这不等同于完整报告经过顶层 `AnalysisReportSchema` runtime validation。本能力是 Issue #1904 P1 的部分后续，不包含 data-quality limitation 的统一分歧归因，也不包含 Web/Desktop 展示、DecisionSignal 改造、skill 权重调整或完整 trace，并且不改变 `key_points` 和其他既有报告字段。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
