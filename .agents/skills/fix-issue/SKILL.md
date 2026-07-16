@@ -1,3 +1,8 @@
+---
+name: fix-issue
+description: 基于已验证的本仓库 GitHub Issue 实施最小完整修复，并同步测试、文档、风险和回滚说明。用户明确要求修复、解决或实现某个 issue 时使用；仅分析 issue 时改用 analyze-issue。
+---
+
 # Fix Issue
 
 基于 issue 分析结果实现修复，并按仓库规则补齐验证、风险与回滚说明。
@@ -7,18 +12,18 @@
 ## Usage
 
 ```text
-/fix-issue <issue_number>
+$fix-issue <issue_number>
 ```
 
 ## Prerequisites
 
-优先先完成 `/analyze-issue <issue_number>`，确保问题成立且边界清晰。
+优先先完成 `$analyze-issue <issue_number>`，确保问题成立且边界清晰。
 
 ## Instructions
 
 ### Step 1: 确认分析基线
 
-检查 `.claude/reviews/issues/issue-<number>.md` 是否存在；如果不存在，先补做 issue 分析或在本次修复中补齐最小分析结论。
+检查 `.codex/reviews/issues/issue-<number>.md` 是否存在；如果不存在，先补做 issue 分析或在本次修复中补齐最小分析结论。
 
 ### Step 2: 同步最新代码基线并选择安全的工作方式
 
@@ -61,7 +66,7 @@ git pull --ff-only
 
 ### Step 5: 更新 issue 分析文档
 
-在 `.claude/reviews/issues/issue-<number>.md` 中补充：
+在 `.codex/reviews/issues/issue-<number>.md` 中补充：
 
 ```markdown
 ## Fix Implementation

@@ -14,7 +14,7 @@
 | 使用 Bot / IM 接入 | [Bot 命令与接入](bot-command.md) | [Bot 平台配置](bot/) |
 | 排查运行问题 | [FAQ](FAQ.md) | [更新日志](CHANGELOG.md) |
 | 处理数据源失败或降级 | [数据源稳定性与故障处理图示](data-source-stability.md) | [FAQ](FAQ.md) |
-| 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [API 规格](architecture/api_spec.json) |
+| 参与开发或提交 PR | [贡献指南](CONTRIBUTING.md) | [Codex 仓库协作指南](codex-collaboration.md)、[API 规格](architecture/api_spec.json) |
 
 ## 快速开始
 
@@ -63,6 +63,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [Codex 仓库协作指南](codex-collaboration.md) | Codex 规则加载、项目 Skill、兼容入口、调用方式、治理校验与配置边界 |
 | [API 规格](architecture/api_spec.json) | FastAPI OpenAPI 规格产物 |
 | [贡献指南](CONTRIBUTING.md) | Issue、PR、测试、文档同步和协作要求 |
 

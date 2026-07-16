@@ -1,11 +1,12 @@
 ---
-applyTo: "README.md,docs/**,AGENTS.md,CLAUDE.md,.github/**,.claude/skills/**,scripts/**,docker/**"
+applyTo: "README.md,docs/**,AGENTS.md,CLAUDE.md,.github/**,.agents/skills/**,.claude/skills,scripts/**,docker/**"
 ---
 
 # Governance Instructions
 
 - Keep commands, file paths, workflow names, config keys, release paths, and directory references aligned with the executable repository state.
-- `AGENTS.md` is the canonical AI collaboration document; if its meaning changes, sync `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, and repository skills as needed.
+- `AGENTS.md` is the canonical AI collaboration document; if its meaning changes, sync `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`, and `.agents/skills/` as needed.
+- Keep `.agents/skills/` as the only repository Skill source and `.claude/skills` as its compatibility symlink; do not add parallel Skill trees.
 - Root `SKILL.md` and `docs/openclaw-skill-integration.md` describe product or external integration behavior, not repository governance.
 - Explain which pipeline, release path, deployment path, review automation, or governance asset is affected and what the rollback path is.
 - Before creating/updating PRs, PR review, or issue analysis, refresh the latest code baseline with `git fetch --all --prune`; only run `git pull --ff-only` when the worktree is clean and the current branch can fast-forward. If not, keep local state intact and record the fetched remote baseline or branch gap before proceeding.

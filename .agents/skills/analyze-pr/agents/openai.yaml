@@ -1,0 +1,4 @@
+interface:
+  display_name: "审查 PR"
+  short_description: "审查本仓库 PR 的 CI 证据、实现风险、兼容性与合入条件"
+  default_prompt: "Use $analyze-pr to review the referenced pull request and produce an evidence-backed Chinese verdict."

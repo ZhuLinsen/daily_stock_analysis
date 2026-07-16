@@ -16,7 +16,7 @@ This is the entry point for project documentation. The README covers the project
 | Use Bot / IM integrations | [Bot Commands (EN)](bot-command_EN.md) | [Bot Platform Docs](bot/) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) |
 | Troubleshoot runtime issues | [FAQ (EN)](FAQ_EN.md) | [Changelog](CHANGELOG.md) |
 | Troubleshoot data-source failures | [Data-source stability diagrams](data-source-stability.md) <sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> (Chinese-only) | [FAQ (EN)](FAQ_EN.md) |
-| Contribute code or docs | [Contributing Guide (EN)](CONTRIBUTING_EN.md) | [API Spec](architecture/api_spec.json) |
+| Contribute code or docs | [Contributing Guide (EN)](CONTRIBUTING_EN.md) | [Codex Repository Collaboration Guide](codex-collaboration_EN.md), [API Spec](architecture/api_spec.json) |
 
 ## Getting Started
 
@@ -63,6 +63,7 @@ This is the entry point for project documentation. The README covers the project
 
 | Document | Contents |
 | --- | --- |
+| [Codex Repository Collaboration Guide](codex-collaboration_EN.md) | Codex rule loading, repository Skills, compatibility entrypoints, invocation, governance checks, and configuration boundaries |
 | [API Spec](architecture/api_spec.json) | FastAPI OpenAPI artifact |
 | [Contributing Guide (EN)](CONTRIBUTING_EN.md) | Issues, pull requests, tests, documentation sync, and collaboration expectations |
 

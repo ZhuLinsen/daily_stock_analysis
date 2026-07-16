@@ -24,7 +24,7 @@ For English contributors: please fill in English. All fields marked (EN) accept 
 
 > 注意：请按实际 `git diff` 全量列出文件范围（建议注明文件总数），避免遗漏文档/后端/API/前端文件导致描述不一致。
 
-> 若本 PR 修改了 `.github/PULL_REQUEST_TEMPLATE.md`、`.github/copilot-instructions.md`、`AGENTS.md`、`.github/instructions/*` 或 `.claude/skills/**` 等协作与治理文件，请补充“变更原因 + 影响面 + 回滚方式（默认 revert）”到 Summary / Compatibility / Rollback，避免 Scope 与描述不一致。
+> 若本 PR 修改了 `.github/PULL_REQUEST_TEMPLATE.md`、`.github/copilot-instructions.md`、`AGENTS.md`、`.github/instructions/*`、`.agents/skills/**` 或 `.claude/skills` 等协作与治理文件，请补充“变更原因 + 影响面 + 回滚方式（默认 revert）”到 Summary / Compatibility / Rollback，避免 Scope 与描述不一致。
 
 > 建议先执行并粘贴以下命令输出，避免与实际 diff 不一致：
 

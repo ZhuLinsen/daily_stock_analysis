@@ -1,3 +1,8 @@
+---
+name: analyze-issue
+description: 分析本仓库 GitHub Issue 的真实性、版本基线、责任边界、优先级与建议动作。用户要求分析、评估、分类或判断某个 issue 是否成立时使用；不用于直接实现修复。
+---
+
 # Analyze Issue
 
 分析 GitHub Issue，判断其真实性、优先级、仓库责任边界与建议动作。
@@ -7,7 +12,7 @@
 ## Usage
 
 ```text
-/analyze-issue <issue_number>
+$analyze-issue <issue_number>
 ```
 
 ## Instructions
@@ -73,7 +78,7 @@ gh issue view <issue_number> --repo ZhuLinsen/daily_stock_analysis --comments
 
 ### Step 6: 生成分析文档
 
-保存到 `.claude/reviews/issues/issue-<number>.md`
+保存到 `.codex/reviews/issues/issue-<number>.md`
 
 ## Output Document Format
 

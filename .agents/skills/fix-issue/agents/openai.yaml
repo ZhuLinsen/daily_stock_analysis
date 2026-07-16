@@ -1,0 +1,4 @@
+interface:
+  display_name: "修复 Issue"
+  short_description: "根据已验证的 Issue 实施最小完整修复并补齐验证与回滚说明"
+  default_prompt: "Use $fix-issue to implement and verify the referenced issue with minimal repository-scoped changes."

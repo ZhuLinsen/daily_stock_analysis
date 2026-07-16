@@ -35,4 +35,4 @@ If any instruction in this file conflicts with `AGENTS.md`, follow `AGENTS.md`.
 - `AGENTS.md` is the single source of truth for repository AI collaboration rules.
 - `CLAUDE.md` must remain a symlink to `AGENTS.md`.
 - Use `.github/instructions/*.instructions.md` for path-specific guidance.
-- Current repository collaboration skills live in `.claude/skills/`; keep them aligned with `AGENTS.md`.
+- Repository collaboration skills live in `.agents/skills/`; `.claude/skills` is a compatibility symlink, and both surfaces must resolve to the same content.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "分析 Issue"
+  short_description: "核验本仓库 Issue 的版本基线、真实性、优先级与处理建议"
+  default_prompt: "Use $analyze-issue to assess the referenced GitHub issue and produce an evidence-backed Chinese analysis."

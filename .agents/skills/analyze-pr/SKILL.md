@@ -1,3 +1,8 @@
+---
+name: analyze-pr
+description: 审查本仓库 GitHub Pull Request 的必要性、关联性、描述完整性、CI 证据、实现正确性、兼容风险与合入条件。用户要求 review、审查、评估或判断某个 PR 是否可合入时使用；不用于直接修改 PR。
+---
+
 # Analyze PR
 
 分析 GitHub Pull Request，评估必要性、描述完整性、验证证据、主要风险与是否可直接合入。
@@ -7,7 +12,7 @@
 ## Usage
 
 ```text
-/analyze-pr <pr_number>
+$analyze-pr <pr_number>
 ```
 
 ## Instructions
@@ -97,7 +102,7 @@ gh run view <run_id> --log-failed
 
 ### Step 6: 生成评审文档
 
-保存到 `.claude/reviews/prs/pr-<number>.md`
+保存到 `.codex/reviews/prs/pr-<number>.md`
 
 ## Output Document Format
 

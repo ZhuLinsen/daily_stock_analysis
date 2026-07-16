@@ -46,9 +46,10 @@
 - `AGENTS.md` 是仓库内 AI 协作规则的唯一真源。
 - `CLAUDE.md` 必须是指向 `AGENTS.md` 的软链接，用于兼容 Claude 生态。
 - `.github/copilot-instructions.md` 与 `.github/instructions/*.instructions.md` 是 GitHub Copilot / Coding Agent 的镜像或分层补充；若与本文件冲突，以 `AGENTS.md` 为准。
-- 仓库协作 skill 存放在 `.claude/skills/`，分析产物存放在 `.claude/reviews/`；前者可以入库，后者默认视为本地产物。
+- 仓库协作 Skill 的唯一真源是 `.agents/skills/`；Codex 从该目录发现项目级 Skill，`.claude/skills` 必须是指向它的兼容软链接，禁止手工维护两份内容。
+- 本地分析产物存放在 `.codex/reviews/`，默认不入库。
 - 根目录 `SKILL.md` 与 `docs/openclaw-skill-integration.md` 属于产品或外部集成说明，不是仓库协作规则真源。
-- 若未来新增 `.agents/skills/` 或其他 agent 专用目录，必须先明确单一真源，再通过脚本或镜像同步；禁止手工长期维护多份同义内容。
+- 不新增根目录 `skills/` 或 `.codex/skills/` 等平行 Skill 树；新增或修改仓库 Skill 时同步维护 `SKILL.md` 与 `agents/openai.yaml`。
 - 修改 AI 协作治理资产时，执行：
 
 ```bash
@@ -151,7 +152,7 @@ gh run view <run_id> --log-failed
 
 | 检查项 | 来源 | 说明 | 是否阻断 |
 | --- | --- | --- | --- |
-| `ai-governance` | `.github/workflows/ci.yml` | 校验 `AGENTS.md` / `CLAUDE.md` / `.github` 指令 / `.claude/skills` 关系 | 是 |
+| `ai-governance` | `.github/workflows/ci.yml` | 校验 `AGENTS.md` / `CLAUDE.md` / `.github` 指令 / `.agents/skills` 与兼容入口关系 | 是 |
 | `backend-gate` | `.github/workflows/ci.yml` | 执行 `./scripts/ci_gate.sh` | 是 |
 | `docker-build` | `.github/workflows/ci.yml` | Docker 构建与关键模块导入 smoke | 是 |
 | `web-gate` | `.github/workflows/ci.yml` | 前端改动时执行 `npm run lint` + `npm run build` | 是（触发时） |
@@ -184,7 +185,7 @@ gh run view <run_id> --log-failed
   - 若涉及登录、Cookie、会话、轮询状态、字段增删或枚举变化，必须明确写出兼容性影响。
 
 - 文档与治理文件改动：
-  - 适用范围：`README.md`、`docs/**`、`AGENTS.md`、`.github/copilot-instructions.md`、`.github/instructions/**`、`.claude/skills/**`
+  - 适用范围：`README.md`、`docs/**`、`AGENTS.md`、`.github/copilot-instructions.md`、`.github/instructions/**`、`.agents/skills/**`、`.claude/skills`
   - 不强制代码测试。
   - 需确认命令、配置项、文件名、工作流名称与实际仓库一致。
   - 改动 AI 协作治理资产时，执行 `python scripts/check_ai_assets.py`。
@@ -226,10 +227,10 @@ gh run view <run_id> --log-failed
 ## 8. Issue / PR / Skill 工作流
 
 - 仓库内已有以下 skill，可优先复用：
-  - `.claude/skills/analyze-issue/SKILL.md`
-  - `.claude/skills/analyze-pr/SKILL.md`
-  - `.claude/skills/fix-issue/SKILL.md`
-- 如果任务明确是 issue 分析、PR 审查、issue 修复，优先按对应 skill 执行，并将产物保存到 `.claude/reviews/`。
+  - `.agents/skills/analyze-issue/SKILL.md`
+  - `.agents/skills/analyze-pr/SKILL.md`
+  - `.agents/skills/fix-issue/SKILL.md`
+- 如果任务明确是 issue 分析、PR 审查、issue 修复，优先按对应 Skill 执行，并将产物保存到 `.codex/reviews/`。
 - skill 中的命令、模板、验证顺序和交付结构必须与 `AGENTS.md` 保持一致。
 - 每次进行 PR 创建 / 更新、PR 审查或 issue 分析前，必须先同步最新代码基线：先检查工作区状态并执行 `git fetch --all --prune`；若工作区干净且当前分支可 fast-forward，则执行 `git pull --ff-only`。如存在本地改动、冲突状态、未跟踪风险文件或无法 fast-forward，不得强行切分支、stash、reset 或覆盖本地状态；PR 审查 / issue 分析可改用已 fetch 的远端 refs/PR head 做分析，并在分析文档中明确记录未更新本地工作树的原因、当前本地 HEAD 与使用的远端基线；PR 创建 / 更新应先说明当前分支与目标基线差异，必要时请求用户确认 rebase、merge 或继续基于当前分支推进。
 - skill 默认优先读取 CI / 工作流证据，再决定是否补本地验证。

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +11,8 @@ AGENTS = ROOT / "AGENTS.md"
 CLAUDE = ROOT / "CLAUDE.md"
 COPILOT = ROOT / ".github" / "copilot-instructions.md"
 INSTRUCTIONS_DIR = ROOT / ".github" / "instructions"
-CLAUDE_SKILLS_DIR = ROOT / ".claude" / "skills"
+REPO_SKILLS_DIR = ROOT / ".agents" / "skills"
+CLAUDE_SKILLS = ROOT / ".claude" / "skills"
 
 REQUIRED_INSTRUCTION_FILES = {
     "backend.instructions.md",
@@ -20,17 +20,15 @@ REQUIRED_INSTRUCTION_FILES = {
     "governance.instructions.md",
 }
 
-REQUIRED_SKILL_FILES = {
-    "README.md",
-    "analyze-issue/SKILL.md",
-    "analyze-pr/SKILL.md",
-    "fix-issue/SKILL.md",
+REQUIRED_SKILLS = {
+    "analyze-issue",
+    "analyze-pr",
+    "fix-issue",
 }
 
 REQUIRED_GITIGNORE_SNIPPETS = (
     ".claude/*",
-    "!.claude/skills/",
-    "!.claude/skills/**",
+    "!.claude/skills",
 )
 
 
@@ -44,16 +42,31 @@ def ensure_file_exists(path: Path, description: str) -> None:
         fail(f"{description} is missing: {path.relative_to(ROOT)}")
 
 
-def ensure_symlink() -> None:
-    ensure_file_exists(AGENTS, "canonical AGENTS.md")
-    if not CLAUDE.exists():
-        fail("CLAUDE.md is missing")
-    if not CLAUDE.is_symlink():
-        fail("CLAUDE.md must be a symlink to AGENTS.md")
+def ensure_symlink(path: Path, target: Path, description: str) -> None:
+    if not path.is_symlink():
+        fail(f"{description} must be a symlink: {path.relative_to(ROOT)}")
 
-    target = Path(CLAUDE.readlink())
-    if target != Path("AGENTS.md"):
-        fail(f"CLAUDE.md must point to AGENTS.md, found: {target}")
+    actual = path.readlink()
+    if actual != target:
+        fail(
+            f"{path.relative_to(ROOT)} must point to {target}, "
+            f"found: {actual}"
+        )
+
+
+def ensure_instruction_entrypoints() -> None:
+    ensure_file_exists(AGENTS, "canonical AGENTS.md")
+    agents_content = AGENTS.read_text(encoding="utf-8")
+    for fragment in (".agents/skills/", ".claude/skills", ".codex/reviews/"):
+        if fragment not in agents_content:
+            fail(f"AGENTS.md is missing required AI asset text: {fragment!r}")
+
+    ensure_symlink(CLAUDE, Path("AGENTS.md"), "Claude compatibility entry")
+    ensure_symlink(
+        CLAUDE_SKILLS,
+        Path("../.agents/skills"),
+        "Claude Skill compatibility entry",
+    )
 
 
 def ensure_copilot_entry() -> None:
@@ -63,11 +76,15 @@ def ensure_copilot_entry() -> None:
         "Canonical source:",
         "AGENTS.md",
         "CLAUDE.md",
-        ".claude/skills/",
+        ".agents/skills/",
+        ".claude/skills",
     )
     for fragment in required_fragments:
         if fragment not in content:
-            fail(f".github/copilot-instructions.md is missing required text: {fragment!r}")
+            fail(
+                ".github/copilot-instructions.md is missing required text: "
+                f"{fragment!r}"
+            )
 
 
 def ensure_instruction_files() -> None:
@@ -77,17 +94,71 @@ def ensure_instruction_files() -> None:
     if missing:
         fail(f"missing instruction files: {', '.join(sorted(missing))}")
 
+    governance = (INSTRUCTIONS_DIR / "governance.instructions.md").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (".agents/skills/**", ".claude/skills"):
+        if fragment not in governance:
+            fail(
+                "governance.instructions.md is missing required Skill text: "
+                f"{fragment!r}"
+            )
+
 
 def ensure_skill_files() -> None:
-    ensure_file_exists(CLAUDE_SKILLS_DIR, "Claude skills directory")
-    for relative_path in REQUIRED_SKILL_FILES:
-        path = CLAUDE_SKILLS_DIR / relative_path
-        if not path.exists():
-            fail(f"missing repository skill asset: {path.relative_to(ROOT)}")
-        if path.is_file():
-            content = path.read_text(encoding="utf-8")
-            if relative_path != "README.md" and "AGENTS.md" not in content:
-                fail(f"{path.relative_to(ROOT)} must reference AGENTS.md as the rule source")
+    ensure_file_exists(REPO_SKILLS_DIR, "repository Skills directory")
+    if REPO_SKILLS_DIR.is_symlink():
+        fail(".agents/skills must be the real repository Skill source")
+
+    for skill_name in sorted(REQUIRED_SKILLS):
+        skill_dir = REPO_SKILLS_DIR / skill_name
+        skill_file = skill_dir / "SKILL.md"
+        metadata_file = skill_dir / "agents" / "openai.yaml"
+        ensure_file_exists(skill_file, f"{skill_name} instructions")
+        ensure_file_exists(metadata_file, f"{skill_name} UI metadata")
+
+        content = skill_file.read_text(encoding="utf-8")
+        if not content.startswith("---\n"):
+            fail(f"{skill_file.relative_to(ROOT)} is missing YAML frontmatter")
+        if f"name: {skill_name}\n" not in content:
+            fail(
+                f"{skill_file.relative_to(ROOT)} must declare "
+                f"name: {skill_name}"
+            )
+        if "description:" not in content:
+            fail(f"{skill_file.relative_to(ROOT)} is missing a description")
+        if "AGENTS.md" not in content:
+            fail(
+                f"{skill_file.relative_to(ROOT)} must reference "
+                "AGENTS.md as the rule source"
+            )
+
+        metadata = metadata_file.read_text(encoding="utf-8")
+        for field in ("display_name:", "short_description:", "default_prompt:"):
+            if field not in metadata:
+                fail(
+                    f"{metadata_file.relative_to(ROOT)} is missing "
+                    f"{field.removesuffix(':')}"
+                )
+        prompt_token = "$" + skill_name
+        if prompt_token not in metadata:
+            fail(
+                f"{metadata_file.relative_to(ROOT)} must provide a "
+                f"default prompt containing {prompt_token}"
+            )
+
+
+def ensure_no_parallel_skill_roots() -> None:
+    parallel_roots = (
+        ROOT / "skills",
+        ROOT / ".codex" / "skills",
+    )
+    for path in parallel_roots:
+        if path.exists():
+            fail(
+                "parallel repository Skill tree is not allowed: "
+                f"{path.relative_to(ROOT)}"
+            )
 
 
 def ensure_gitignore_rules() -> None:
@@ -97,29 +168,13 @@ def ensure_gitignore_rules() -> None:
             fail(f".gitignore is missing required AI asset rule: {snippet}")
 
 
-def ensure_no_tracked_claude_artifacts() -> None:
-    result = subprocess.run(
-        ["git", "ls-files", "--", ".claude"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    allowed_prefixes = (".claude/skills/",)
-    for path in tracked:
-        if path.startswith(allowed_prefixes):
-            continue
-        fail(f"tracked .claude artifact outside skills/: {path}")
-
-
 def main() -> None:
-    ensure_symlink()
+    ensure_instruction_entrypoints()
     ensure_copilot_entry()
     ensure_instruction_files()
     ensure_skill_files()
+    ensure_no_parallel_skill_roots()
     ensure_gitignore_rules()
-    ensure_no_tracked_claude_artifacts()
     print("[ai-assets] OK")
 
 
