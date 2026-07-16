@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-A股自选股智能分析系统 - AI分析层
+A股自选股智能分析 system - AI分析层
 ===================================
 """
 import os
@@ -17,6 +17,19 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
+from src.agent.llm_adapter import (
+    get_thinking_extra_body,
+    resolve_fallback_litellm_wire_models,
+    register_fallback_model_pricing,
+)
+from src.agent.provider_trace import resolved_model_provider_identity
+from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
+from src.config import (
+    Config,
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+)
 from src.report_language import (
     get_unknown_text,
     get_chip_unavailable_text,
@@ -26,29 +39,6 @@ from src.report_language import (
     localize_confidence_level,
     normalize_report_language
 )
-
-# 核心交易策略
-CORE_TRADING_SKILL_POLICY_ZH = """
-你是一个资深美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
-1. **防守第一**：任何时候，首要任务是识别潜在风险，防范重大亏损，而不仅仅是寻找上涨机会。
-2. **趋势为主**：顺应市场的大趋势和个股的中期趋势，绝不盲目逆势操作。
-3. **分批建仓，分批止盈**：在买入时必须分批建仓，严格执行止损线；在实现盈利时分批止盈，锁定利润，绝不贪婪。
-"""
-
-@dataclass
-class AnalysisResult:
-    ticker: str
-    decision: str     # BUY, SELL, HOLD
-    confidence: str   # HIGH, MEDIUM, LOW
-    analysis: str     # 具体的分析内容
-
-def fill_price_position_if_needed(target_pct: float, current_price: float, current_position_pct: float) -> str:
-    """根据目标仓位和当前仓位计算操作逻辑，防止报错"""
-    if target_pct > current_position_pct:
-        return f"建议在 {current_price} 附近逢低买入，目标建仓至 {target_pct}%"
-    elif target_pct < current_position_pct:
-        return f"建议在 {current_price} 附近逢高减仓，目标降至 {target_pct}%"
-    return "维持现有仓位不变"
 
 def get_stock_sentiment(ticker: str) -> str:
     """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
@@ -79,6 +69,31 @@ def get_stock_sentiment(ticker: str) -> str:
     except Exception:
         return ""
 
+@dataclass
+class AnalysisResult:
+    ticker: str
+    decision: str     # BUY, SELL, HOLD
+    confidence: str   # HIGH, MEDIUM, LOW
+    analysis: str     # 具体的分析内容
+
+def fill_price_position_if_needed(target_pct: float, current_price: float, current_position_pct: float) -> str:
+    if target_pct > current_position_pct:
+        return f"建议在 {current_price} 附近逢低买入，目标建仓至 {target_pct}%"
+    elif target_pct < current_position_pct:
+        return f"建议在 {current_price} 附近逢高减仓，目标降至 {target_pct}%"
+    return "维持现有仓位不变"
+
+def normalize_chip_structure_availability(chip_data: Optional[Dict[str, Any]] = None) -> bool:
+    if not chip_data:
+        return False
+    return not is_chip_placeholder_value(chip_data.get("winner_ratio"))
+
+def localize_chip_structure(chip_data: Optional[Dict[str, Any]] = None, language: str = "zh") -> str:
+    if not normalize_chip_structure_availability(chip_data):
+        return get_chip_unavailable_text(language)
+    winner_ratio = chip_data.get("winner_ratio", 0)
+    return f"获利盘比例: {winner_ratio * 100:.2f}%"
+
 class GeminiAnalyzer:
     def __init__(self, provider: str = "gemini"):
         self.provider = provider
@@ -88,6 +103,7 @@ class GeminiAnalyzer:
         analysis_text = f"针对 {ticker} 的数据进行分析..."
         if sentiment_info:
             analysis_text += f"\n{sentiment_info}"
+        
         return AnalysisResult(
             ticker=ticker,
             decision="HOLD",
