@@ -2,23 +2,10 @@ name: Daily Stock Analysis
 
 on:
   push:
-  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1-6'
+    - cron: '0 0 * * 1-5'
+  workflow_dispatch:
     inputs:
-      mode:
-        description: '模式'
-        required: false
-        default: 'full'
-      force_run:
-        description: '强制运行 (跳过交易日检查)'
-        required: false
-        default: 'false'
-        type: boolean
-
-concurrency:
-  group: stock-analysis
-  cancel-in-progress: false
 
 jobs:
   analyze:
