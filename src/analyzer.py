@@ -36,11 +36,93 @@ from src.report_language import (
 
 # 直接在本地定义策略变量，防止导入缺失报错
 CORE_TRADING_SKILL_POLICY_ZH = """
-你是一个资深美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
+你是一个资深 A 股/美股交易专家。在分析个股时，必须严格执行以下三条底线原则：
 1. **防守第一**：任何时候，首要任务是识别潜在风险，防范重大亏损，而不仅仅是寻找上涨机会。
 2. **趋势为主**：顺应市场的大趋势和个股的中期趋势，绝不盲目逆势操作。
 3. **分批建仓，分批止盈**：在买入时必须分批建仓，严格执行止损线；在实现盈利时分批止盈，锁定利润，绝不贪婪。
 """
+
+def send_to_feishu(ticker: str, decision: str, confidence: str, analysis: str):
+    """向飞书发送精美的富文本交互卡片消息"""
+    # 🌟 双重兼容：同时尝试读取 FEISHU_WEBHOOK_URL 和 FEISHU_WEBHOOK
+    webhook_url = os.environ.get("FEISHU_WEBHOOK_URL") or os.environ.get("FEISHU_WEBHOOK")
+    if not webhook_url:
+        logging.info("未检测到任何飞书 Webhook 环境变量，跳过飞书推送")
+        return
+
+    # 决定卡片颜色和图标
+    color_map = {
+        "BUY": ("red", "🔴 建议买入"),
+        "SELL": ("green", "🟢 建议卖出"),
+        "HOLD": ("blue", "🔵 建议持股")
+    }
+    color, title_text = color_map.get(decision.upper(), ("grey", "⚪ 维持判断"))
+
+    # 构造飞书卡片 JSON (符合飞书卡片 2.0 规范)
+    card_payload = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {
+                "wide_screen_mode": True
+            },
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"{ticker} - 智能分析报告"
+                },
+                "template": color
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**操作建议：**\n{title_text}"
+                            }
+                        },
+                        {
+                            "is_short": True,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**置信度：**\n⭐ {confidence}"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**🤖 详细分析内容：**\n{analysis}"
+                    }
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {
+                            "tag": "plain_text",
+                            "content": f"分析生成时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} | 投资有风险，决策需谨慎。"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    try:
+        response = requests.post(webhook_url, json=card_payload, headers={"Content-Type": "application/json"})
+        if response.status_code == 200:
+            logging.info(f"飞书消息发送成功: {ticker}")
+        else:
+            logging.error(f"飞书消息发送失败: {response.text}")
+    except Exception as e:
+        logging.error(f"飞书推送异常: {str(e)}")
 
 def get_stock_sentiment(ticker: str) -> str:
     """从 Alpha Vantage 获取个股最新的网络舆情与情绪得分"""
@@ -85,14 +167,12 @@ def fill_price_position_if_needed(target_pct: float, current_price: float, curre
         return f"建议在 {current_price} 附近逢高减仓，目标降至 {target_pct}%"
     return "维持现有仓位不变"
 
-# 补全这几个导致报错的函数，防止外部导入失败
 def populate_decision_action_fields(data: Dict[str, Any], decision: str, analysis: str) -> Dict[str, Any]:
     data["decision"] = decision
     data["analysis"] = analysis
     return data
 
 def stabilize_decision_with_structure(decision: str, chip_data: Optional[Dict[str, Any]] = None) -> str:
-    """结合筹码分布稳定决策结果"""
     return decision
 
 def normalize_chip_structure_availability(chip_data: Optional[Dict[str, Any]] = None) -> bool:
@@ -116,9 +196,18 @@ class GeminiAnalyzer:
         if sentiment_info:
             analysis_text += f"\n{sentiment_info}"
         
-        return AnalysisResult(
+        # 封装结果
+        result = AnalysisResult(
             ticker=ticker,
             decision="HOLD",
             confidence="MEDIUM",
             analysis=analysis_text
         )
+
+        # 触发飞书推送
+        try:
+            send_to_feishu(result.ticker, result.decision, result.confidence, result.analysis)
+        except Exception as e:
+            logging.error(f"分析模块内发送飞书出错: {e}")
+
+        return result
