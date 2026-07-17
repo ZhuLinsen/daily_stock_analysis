@@ -653,7 +653,7 @@ class StockAnalysisPipeline:
 
             # Step 7.6: chip_structure fallback (Issue #589) and unavailable collapse
             if result:
-                normalize_chip_structure_availability(result, chip_data)
+                normalize_chip_structure_availability(result)
 
             # Step 7.7: price_position fallback
             if result:
@@ -1205,7 +1205,7 @@ class StockAnalysisPipeline:
                     )
             # chip_structure fallback (Issue #589), before save_analysis_history
             if result and chip_data is not None:
-                normalize_chip_structure_availability(result, chip_data)
+                normalize_chip_structure_availability(result)
 
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
