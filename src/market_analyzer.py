@@ -555,7 +555,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 model=getattr(self.config, "litellm_model", None),
                 call_type="market_review",
             )
-            review = self.analyzer.generate_content(prompt, max_tokens=8192, temperature=0.7)
+            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
         except Exception as exc:
             record_llm_run(
                 success=False,
