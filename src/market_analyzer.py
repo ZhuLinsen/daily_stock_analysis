@@ -536,7 +536,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             大盘复盘报告文本
         """
-        if not self.analyzer：
+        if not self.analyzer:
             logger.warning(
                 "[大盘] %s action=generate_review status=fallback_template reason=no_analyzer",
                 self._log_context(),
