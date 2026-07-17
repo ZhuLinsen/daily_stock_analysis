@@ -197,6 +197,9 @@ class GeminiAnalyzer:
         self.config = config
         self.skills = skills
 
+    def is_available(self) -> bool:
+        return True
+
     def analyze(self, ticker: str, data: dict) -> AnalysisResult:
         sentiment_info = get_stock_sentiment(ticker)
         analysis_text = f"针对 {ticker} 的数据进行分析..."
