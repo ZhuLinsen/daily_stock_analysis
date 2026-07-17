@@ -38,14 +38,13 @@ class MainPortfolioTest(unittest.TestCase):
 
         with patch.object(
             main,
-            "run_scheduled_analysis",
+            "run_full_analysis",
             side_effect=error,
         ) as runner, self.assertRaisesRegex(FutuPortfolioError, "OpenD unavailable"):
             main._run_analysis_with_runtime_scheduler_lock(
                 config,
                 args,
                 ["600519"],
-                propagate_errors=True,
             )
 
         runner.assert_called_once_with(config, args, ["600519"])
@@ -62,7 +61,26 @@ class MainPortfolioTest(unittest.TestCase):
             "src.brokers.futu.portfolio.load_futu_stock_codes",
             side_effect=error,
         ), self.assertRaisesRegex(FutuPortfolioError, "OpenD unavailable"):
-            main.run_full_analysis(config, args, raise_errors=True)
+            main.run_full_analysis(config, args)
+
+    def test_run_full_analysis_keeps_downstream_failures_non_propagating(self):
+        config = SimpleNamespace()
+        args = SimpleNamespace(portfolio="futu")
+
+        with patch.object(
+            main,
+            "_refresh_stock_index_cache_for_analysis",
+        ), patch(
+            "src.brokers.futu.portfolio.load_futu_stock_codes",
+            return_value=["AAPL"],
+        ), patch.object(
+            main,
+            "_compute_trading_day_filter",
+            side_effect=RuntimeError("calendar unavailable"),
+        ):
+            result = main.run_full_analysis(config, args)
+
+        self.assertFalse(result)
 
     def test_run_full_analysis_uses_futu_holdings_and_reloads_each_run(self):
         args = SimpleNamespace(
@@ -132,6 +150,28 @@ class MainPortfolioTest(unittest.TestCase):
         )
 
         self.assertEqual(scheduler._make_schedule_args().portfolio, "futu")
+
+    def test_runtime_scheduler_records_futu_load_failure_and_keeps_running(self):
+        config = SimpleNamespace(
+            schedule_enabled=True,
+            schedule_time="18:00",
+            schedule_times=["18:00"],
+        )
+        error = FutuPortfolioError("OpenD unavailable")
+
+        def runner(config_arg, args, stock_codes):
+            raise error
+
+        scheduler = RuntimeSchedulerService(
+            config_provider=lambda: config,
+            task_runner=runner,
+        )
+        scheduler._reload_config = lambda: config
+
+        self.assertTrue(scheduler._run_analysis_once())
+        status = scheduler.status()
+        self.assertIsNone(status["last_success_at"])
+        self.assertEqual(status["last_error"], "OpenD unavailable")
 
 
 if __name__ == "__main__":

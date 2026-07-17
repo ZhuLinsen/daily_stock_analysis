@@ -72,6 +72,7 @@ from datetime import date, datetime, timezone, timedelta
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.brokers.futu.portfolio import FutuPortfolioError
 from src.services.stock_list_parser import split_stock_list
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
@@ -697,17 +698,21 @@ def run_full_analysis(
     """
     执行完整的分析流程（个股 + 大盘复盘）
 
-    这是定时任务调用的主函数
+    这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
+    ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
     # Import pipeline modules outside the broad try/except so that import-time
     # failures propagate to the caller instead of being silently swallowed.
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
 
+    # Portfolio resolution is its own CLI contract boundary. A broker import
+    # failure must reach the one-shot caller, while all later work keeps the
+    # existing run_full_analysis return-value semantics.
+    portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+
     try:
         _refresh_stock_index_cache_for_analysis(config)
-
-        portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
         if portfolio_stock_codes is not None:
             stock_codes = portfolio_stock_codes
 
@@ -1044,17 +1049,14 @@ def _run_analysis_with_runtime_scheduler_lock(
     config: Config,
     args: argparse.Namespace,
     stock_codes: Optional[List[str]] = None,
-    *,
-    propagate_errors: bool = False,
 ) -> None:
-    """Run one analysis under the shared lock, optionally surfacing failures."""
     from src.services.runtime_scheduler import run_with_global_analysis_lock
 
     # Keep startup/triggered analysis in sync with API runtime scheduler and
     # run-now entrypoint. Blocking is expected here because startup paths should
     # wait for an in-flight job before returning a response.
     run_with_global_analysis_lock(
-        task_runner=run_scheduled_analysis if propagate_errors else run_full_analysis,
+        task_runner=run_full_analysis,
         config=config,
         args=args,
         stock_codes=stock_codes,
@@ -1550,16 +1552,15 @@ def main() -> int:
 
         # 模式3: 正常单次运行
         if config.run_immediately:
-            portfolio = str(getattr(args, "portfolio", "") or "").strip().lower()
-            if portfolio == "futu" and not start_serve:
-                _run_analysis_with_runtime_scheduler_lock(
-                    config,
-                    args,
-                    stock_codes,
-                    propagate_errors=True,
-                )
-            else:
+            try:
                 _run_analysis_with_runtime_scheduler_lock(config, args, stock_codes)
+            except FutuPortfolioError as exc:
+                if not start_serve:
+                    raise
+                logger.exception(
+                    "Futu 持仓导入失败，Web/API 服务继续运行: %s",
+                    exc,
+                )
         else:
             logger.info("配置为不立即运行分析 (RUN_IMMEDIATELY=false)")
 

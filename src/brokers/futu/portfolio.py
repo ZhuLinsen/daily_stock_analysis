@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional
@@ -34,21 +35,10 @@ class _FutuApi:
     RET_OK: Any
     SecurityFirm: Any
     SecurityType: Any
-    SysConfig: Any
     TrdEnv: Any
     TrdMarket: Any
 
 
-_SECURITY_FIRM_NAMES = (
-    "NONE",
-    "FUTUSECURITIES",
-    "FUTUINC",
-    "FUTUSG",
-    "FUTUAU",
-    "FUTUCA",
-    "FUTUJP",
-    "FUTUMY",
-)
 _SUPPORTED_ACCOUNT_ROLES = frozenset({"NORMAL", "MASTER"})
 _SUPPORTED_ANALYSIS_MARKETS = frozenset({"US", "HK", "SH", "SZ", "JP"})
 _STATIC_INFO_BATCH_SIZE = 100
@@ -65,7 +55,6 @@ def _load_futu_api() -> _FutuApi:
             RET_OK,
             SecurityFirm,
             SecurityType,
-            SysConfig,
             TrdEnv,
             TrdMarket,
         )
@@ -74,6 +63,8 @@ def _load_futu_api() -> _FutuApi:
             "未安装 Futu OpenAPI SDK；请先执行 "
             "`pip install \"futu-api==10.8.6808\"`。"
         ) from exc
+    except Exception as exc:  # noqa: BLE001 - SDK import initializes its file logger
+        raise FutuPortfolioError(f"加载 Futu OpenAPI SDK 失败: {exc}") from exc
 
     return _FutuApi(
         OpenQuoteContext=OpenQuoteContext,
@@ -82,7 +73,6 @@ def _load_futu_api() -> _FutuApi:
         RET_OK=RET_OK,
         SecurityFirm=SecurityFirm,
         SecurityType=SecurityType,
-        SysConfig=SysConfig,
         TrdEnv=TrdEnv,
         TrdMarket=TrdMarket,
     )
@@ -97,31 +87,13 @@ def _enum_text(value: Any) -> str:
     return str(name if name is not None else value).strip().upper()
 
 
-def _row_value(row: Any, key: str, default: Any = None) -> Any:
-    """Read one field from mapping-like SDK or pandas rows."""
+def _iter_rows(data: Any, operation: str) -> Iterable[Any]:
+    """Iterate the pandas-style table returned by the pinned Futu SDK."""
 
-    if isinstance(row, dict):
-        return row.get(key, default)
-    getter = getattr(row, "get", None)
-    if callable(getter):
-        return getter(key, default)
-    try:
-        return row[key]
-    except (KeyError, TypeError, IndexError):
-        return default
-
-
-def _iter_rows(data: Any) -> Iterable[Any]:
-    """Iterate over mapping, pandas, or generic iterable SDK payloads."""
-
-    if data is None:
-        return ()
     iterrows = getattr(data, "iterrows", None)
-    if callable(iterrows):
-        return (row for _, row in iterrows())
-    if isinstance(data, dict):
-        return (data,)
-    return iter(data)
+    if not callable(iterrows):
+        raise FutuPortfolioError(f"{operation}返回了非表格数据")
+    return (row for _, row in iterrows())
 
 
 def _safe_close(context: Any) -> None:
@@ -149,22 +121,6 @@ def _connection_settings() -> tuple[str, int]:
     return host, port
 
 
-def _configure_sdk_console_logging(api: _FutuApi) -> None:
-    """Apply the process-wide Futu SDK console logging preference."""
-
-    raw_value = (os.getenv("FUTU_SDK_CONSOLE_LOG_ENABLED") or "true").strip().lower()
-    if raw_value in {"1", "true", "yes", "on"}:
-        enabled = True
-    elif raw_value in {"0", "false", "no", "off"}:
-        enabled = False
-    else:
-        raise FutuPortfolioError(
-            "FUTU_SDK_CONSOLE_LOG_ENABLED 必须是布尔值 "
-            "（true/false、1/0、yes/no 或 on/off）"
-        )
-    api.SysConfig.enable_console_log(enabled)
-
-
 def _configured_account_id() -> Optional[int]:
     """Return the optional configured real account ID."""
 
@@ -177,70 +133,62 @@ def _configured_account_id() -> Optional[int]:
         raise FutuPortfolioError("FUTU_ACC_ID 必须是整数账户 ID") from exc
 
 
-def _candidate_security_firms(api: _FutuApi) -> List[Any]:
-    """Resolve configured or discoverable Futu security firms."""
+def _configured_security_firm(api: _FutuApi) -> Any:
+    """Resolve one firm, defaulting to the SDK's official auto-detection mode."""
 
-    configured = (os.getenv("FUTU_SECURITY_FIRM") or "").strip().upper()
-    names = (configured,) if configured else _SECURITY_FIRM_NAMES
-    firms: List[Any] = []
-    for name in names:
-        firm = getattr(api.SecurityFirm, name, None)
-        if firm is None:
-            if configured:
-                raise FutuPortfolioError(f"不支持的 FUTU_SECURITY_FIRM: {configured}")
-            continue
-        if firm not in firms:
-            firms.append(firm)
-    return firms
+    name = (os.getenv("FUTU_SECURITY_FIRM") or "NONE").strip().upper()
+    firm = getattr(api.SecurityFirm, name, None)
+    if firm is None:
+        raise FutuPortfolioError(f"不支持的 FUTU_SECURITY_FIRM: {name}")
+    return firm
 
 
 def _discover_real_accounts(api: _FutuApi, host: str, port: int) -> List[_FutuAccount]:
-    """Discover enabled NORMAL or MASTER REAL accounts across candidate firms."""
+    """Discover explicitly ACTIVE NORMAL or MASTER REAL accounts."""
 
     accounts: List[_FutuAccount] = []
     seen_ids = set()
-    errors: List[str] = []
-
-    for candidate_firm in _candidate_security_firms(api):
-        context = None
-        try:
-            context = api.OpenSecTradeContext(
-                host=host,
-                port=port,
-                filter_trdmarket=api.TrdMarket.NONE,
-                security_firm=candidate_firm,
-            )
-            ret, data = context.get_acc_list()
-            if ret != api.RET_OK:
-                errors.append(str(data))
-                continue
-            for row in _iter_rows(data):
-                if _enum_text(_row_value(row, "trd_env")) != "REAL":
-                    continue
-                if _enum_text(_row_value(row, "acc_status")) == "DISABLED":
-                    continue
-                if _enum_text(_row_value(row, "acc_role")) not in _SUPPORTED_ACCOUNT_ROLES:
-                    continue
-                try:
-                    acc_id = int(_row_value(row, "acc_id"))
-                except (TypeError, ValueError):
-                    continue
-                if acc_id in seen_ids:
-                    continue
-                returned_firm_name = _enum_text(_row_value(row, "security_firm"))
-                returned_firm = getattr(
-                    api.SecurityFirm,
-                    returned_firm_name,
-                    candidate_firm,
-                )
-                seen_ids.add(acc_id)
-                accounts.append(_FutuAccount(acc_id=acc_id, security_firm=returned_firm))
-        except Exception as exc:  # noqa: BLE001 - continue probing other supported firms
-            errors.append(str(exc))
-        finally:
-            _safe_close(context)
-
     requested_acc_id = _configured_account_id()
+    security_firm = _configured_security_firm(api)
+    context = None
+    try:
+        context = api.OpenSecTradeContext(
+            host=host,
+            port=port,
+            filter_trdmarket=api.TrdMarket.NONE,
+            security_firm=security_firm,
+        )
+        ret, data = context.get_acc_list()
+        if ret != api.RET_OK:
+            raise FutuPortfolioError(f"查询 Futu 真实账户失败: {data}")
+        for row in _iter_rows(data, "Futu 账户查询"):
+            if _enum_text(row.get("trd_env")) != "REAL":
+                continue
+            if _enum_text(row.get("acc_status")) != "ACTIVE":
+                continue
+            if _enum_text(row.get("acc_role")) not in _SUPPORTED_ACCOUNT_ROLES:
+                continue
+            try:
+                acc_id = int(row.get("acc_id"))
+            except (TypeError, ValueError):
+                continue
+            if acc_id in seen_ids:
+                continue
+            returned_firm_name = _enum_text(row.get("security_firm"))
+            returned_firm = getattr(
+                api.SecurityFirm,
+                returned_firm_name,
+                security_firm,
+            )
+            seen_ids.add(acc_id)
+            accounts.append(_FutuAccount(acc_id=acc_id, security_firm=returned_firm))
+    except FutuPortfolioError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - translate SDK/network failures
+        raise FutuPortfolioError(f"查询 Futu 真实账户失败: {exc}") from exc
+    finally:
+        _safe_close(context)
+
     if requested_acc_id is not None:
         accounts = [account for account in accounts if account.acc_id == requested_acc_id]
         if not accounts:
@@ -249,8 +197,9 @@ def _discover_real_accounts(api: _FutuApi, host: str, port: int) -> List[_FutuAc
             )
 
     if not accounts:
-        detail = next((item for item in errors if item), "未返回账户数据")
-        raise FutuPortfolioError(f"未找到可用的 Futu 真实证券账户: {detail}")
+        raise FutuPortfolioError(
+            "未找到状态为 ACTIVE 的 Futu REAL 普通或 MASTER 证券账户"
+        )
     return accounts
 
 
@@ -283,15 +232,15 @@ def _load_position_codes(
             )
             if ret != api.RET_OK:
                 raise FutuPortfolioError(f"查询 Futu 真实持仓失败: {data}")
-            for row in _iter_rows(data):
+            for row in _iter_rows(data, "Futu 持仓查询"):
                 try:
-                    quantity = float(_row_value(row, "qty", 0) or 0)
+                    quantity = float(row.get("qty", 0) or 0)
                 except (TypeError, ValueError):
                     quantity = 0
-                code = str(_row_value(row, "code", "") or "").strip().upper()
-                if quantity == 0 or not code:
+                code = str(row.get("code", "") or "").strip().upper()
+                if not math.isfinite(quantity) or quantity == 0 or not code:
                     continue
-                position_side = _enum_text(_row_value(row, "position_side"))
+                position_side = _enum_text(row.get("position_side"))
                 if position_side == "SHORT":
                     skipped_short_count += 1
                     continue
@@ -364,6 +313,10 @@ def _filter_stock_codes(
             continue
         grouped.setdefault(prefix, []).append(code)
 
+    if not grouped:
+        logger.warning("已跳过 %d 个当前分析流程不支持的 Futu 市场持仓", unsupported_count)
+        return []
+
     stock_codes = set()
     classified_codes = set()
     context = None
@@ -385,12 +338,12 @@ def _filter_stock_codes(
                     raise FutuPortfolioError(
                         f"查询 Futu 持仓证券类型失败（{prefix}）: {data}"
                     )
-                for row in _iter_rows(data):
-                    code = str(_row_value(row, "code", "") or "").strip().upper()
+                for row in _iter_rows(data, "Futu 证券类型查询"):
+                    code = str(row.get("code", "") or "").strip().upper()
                     if not code:
                         continue
                     classified_codes.add(code)
-                    if _enum_text(_row_value(row, "stock_type")) == "STOCK":
+                    if _enum_text(row.get("stock_type")) == "STOCK":
                         stock_codes.add(code)
     except FutuPortfolioError:
         raise
@@ -420,13 +373,14 @@ def _filter_stock_codes(
 def load_futu_stock_codes() -> List[str]:
     """Return deduplicated analysis codes from all selected REAL Futu accounts.
 
-    Only Futu ``SecurityType.STOCK`` LONG positions with non-zero quantity are
-    kept. ``FUTU_ACC_ID`` can select one account; otherwise all usable real
-    securities NORMAL and read-only MASTER accounts are merged. The call is
-    read-only and always refreshes position data.
+    Only explicitly ACTIVE REAL accounts and Futu ``SecurityType.STOCK`` LONG
+    positions with non-zero quantity are kept. ``FUTU_ACC_ID`` can select one
+    account; otherwise NORMAL and read-only MASTER accounts are merged. Firm
+    discovery uses the SDK's ``SecurityFirm.NONE`` auto-detection unless
+    ``FUTU_SECURITY_FIRM`` is explicitly set. The call is read-only and always
+    refreshes position data.
     """
     api = _load_futu_api()
-    _configure_sdk_console_logging(api)
     host, port = _connection_settings()
     accounts = _discover_real_accounts(api, host, port)
     position_codes = _load_position_codes(api, host, port, accounts)
