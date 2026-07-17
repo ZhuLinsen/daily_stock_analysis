@@ -146,11 +146,16 @@ def test_runtime_facts_only_project_independent_low_sensitivity_opinions():
         assert forbidden not in serialized
 
 
-def test_legacy_executor_content_uses_sanitized_dashboard():
+def test_legacy_executor_content_canonicalizes_escaped_reserved_field():
     payload = _dashboard()
     payload["agent_disagreement_explanation"] = {"token": "top-secret"}
     payload["dashboard"]["agent_disagreement_explanation"] = {"reasoning": "private"}
-    loop_result = RunLoopResult(success=True, content=json.dumps(payload, ensure_ascii=False))
+    raw_content = json.dumps(payload, ensure_ascii=False).replace(
+        "agent_disagreement_explanation",
+        "\\u0061gent_disagreement_explanation",
+    )
+    assert "agent_disagreement_explanation" not in raw_content
+    loop_result = RunLoopResult(success=True, content=raw_content)
     executor = AgentExecutor(MagicMock(), MagicMock())
 
     with patch("src.agent.executor.run_agent_loop", return_value=loop_result):
@@ -160,7 +165,10 @@ def test_legacy_executor_content_uses_sanitized_dashboard():
     assert result.dashboard is not None
     assert "agent_disagreement_explanation" not in result.dashboard
     assert "agent_disagreement_explanation" not in result.dashboard["dashboard"]
-    assert "agent_disagreement_explanation" not in result.content
+    serialized_content = json.loads(result.content)
+    assert serialized_content == result.dashboard
+    assert "agent_disagreement_explanation" not in serialized_content
+    assert "agent_disagreement_explanation" not in serialized_content["dashboard"]
     assert "top-secret" not in result.content
     assert "private" not in result.content
 

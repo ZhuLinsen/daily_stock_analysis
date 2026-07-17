@@ -22,7 +22,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.config import get_config
 from src.agent.chat_context import build_agent_chat_context_bundle
-from src.agent.dashboard_payload import RESERVED_EXPLANATION_FIELD
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.provider_trace import extract_provider_trace_turns
 from src.agent.runner import run_agent_loop, parse_dashboard_json
@@ -773,9 +772,8 @@ class AgentExecutor:
     ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
-        This preserves the exact same observable behaviour as the original
-        inline implementation while sharing the single authoritative loop
-        in :mod:`src.agent.runner`.
+        Dashboard mode exposes only the parsed canonical payload through both
+        ``dashboard`` and ``content``; free-form mode preserves the raw text.
         """
         loop_result = run_agent_loop(
             messages=messages,
@@ -796,7 +794,6 @@ class AgentExecutor:
                 content=(
                     json.dumps(dashboard, ensure_ascii=False, indent=2)
                     if dashboard is not None
-                    and RESERVED_EXPLANATION_FIELD in loop_result.content
                     else loop_result.content
                 ),
                 dashboard=dashboard,
