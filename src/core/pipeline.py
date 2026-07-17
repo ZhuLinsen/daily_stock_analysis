@@ -613,7 +613,6 @@ class StockAnalysisPipeline:
                 )
                 result = self.analyzer.analyze(
                     enhanced_context,
-                    news_context=news_context,
                     progress_callback=self._emit_progress,
                     stream_progress_callback=_on_llm_stream,
                     analysis_context_pack_summary=analysis_context_pack_summary,
