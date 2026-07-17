@@ -612,7 +612,7 @@ class StockAnalysisPipeline:
                     call_type="analysis",
                 )
                 result = self.analyzer.analyze(
-                    stock_code, 
+                    stock_name, 
                     enhanced_context,
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
