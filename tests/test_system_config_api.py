@@ -20,6 +20,7 @@ from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.endpoints import system_config
 from api.v1.schemas.system_config import (
+    AgentBackendStatusPreviewRequest,
     DiscoverLLMChannelModelsRequest,
     GenerationBackendStatusPreviewRequest,
     ImportSystemConfigRequest,
@@ -165,6 +166,11 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertNotIn("codex_cli", {option["value"] for option in agent_schema["options"]})
         self.assertNotIn("claude_code_cli", {option["value"] for option in agent_schema["options"]})
         self.assertNotIn("opencode_cli", {option["value"] for option in agent_schema["options"]})
+        backend_schema = item_map["AGENT_BACKEND"]["schema"]
+        self.assertEqual(
+            backend_schema["validation"]["enum"],
+            ["auto", "litellm", "codex_app_server"],
+        )
         generation_schema = item_map["GENERATION_BACKEND"]["schema"]
         self.assertIn("claude_code_cli", generation_schema["validation"]["enum"])
         self.assertIn("opencode_cli", generation_schema["validation"]["enum"])
@@ -279,6 +285,76 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail["error"], "validation_failed")
         self.assertEqual(ctx.exception.detail["issues"][0]["key"], "GENERATION_BACKEND_TIMEOUT_SECONDS")
+
+    def test_preview_agent_backend_status_uses_draft_without_persisting(self) -> None:
+        before = self.env_path.read_text(encoding="utf-8")
+        before_version = self.manager.get_config_version()
+
+        def fake_run(command, **kwargs):
+            if command[-1] == "--version":
+                return SimpleNamespace(returncode=0, stdout="codex-cli test\n")
+            if "generate-json-schema" in command:
+                schema_dir = Path(command[command.index("--out") + 1])
+                (schema_dir / "v2").mkdir(parents=True, exist_ok=True)
+                (schema_dir / "v2" / "ThreadStartParams.json").write_text(
+                    '{"properties":{"dynamicTools":{},"runtimeWorkspaceRoots":{}}}',
+                    encoding="utf-8",
+                )
+                (schema_dir / "v2" / "ThreadStartResponse.json").write_text(
+                    '{"properties":{"activePermissionProfile":{},"runtimeWorkspaceRoots":{}}}',
+                    encoding="utf-8",
+                )
+                (schema_dir / "ClientRequest.json").write_text(
+                    '["thread/inject_items","turn/start","turn/interrupt","config/read","mcpServerStatus/list"]',
+                    encoding="utf-8",
+                )
+                (schema_dir / "ServerRequest.json").write_text(
+                    '{"const":"item/tool/call"}',
+                    encoding="utf-8",
+                )
+                (schema_dir / "ServerNotification.json").write_text(
+                    '["item/completed","turn/completed"]',
+                    encoding="utf-8",
+                )
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with (
+            patch(
+                "src.services.agent_backend_status_service.resolve_command",
+                return_value=["/test/codex"],
+            ),
+            patch("src.services.agent_backend_status_service._run_codex_probe", side_effect=fake_run),
+        ):
+            payload = system_config.preview_agent_backend_status(
+                request=AgentBackendStatusPreviewRequest(
+                    items=[
+                        {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                        {"key": "AGENT_ARCH", "value": "single"},
+                    ]
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertEqual(payload["backend"], "codex_app_server")
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["version"], "codex-cli test")
+        self.assertEqual(self.env_path.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.manager.get_config_version(), before_version)
+
+    def test_preview_agent_backend_status_returns_flat_unavailable_for_codex_multi_draft(self) -> None:
+        payload = system_config.preview_agent_backend_status(
+            request=AgentBackendStatusPreviewRequest(
+                items=[
+                    {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                    {"key": "AGENT_ARCH", "value": "multi"},
+                ]
+            ),
+            service=self.service,
+        ).model_dump()
+
+        self.assertEqual(payload["backend"], "codex_app_server")
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["error_code"], "unsupported_agent_arch")
 
     def test_put_config_updates_secret_and_plain_field(self) -> None:
         current = system_config.get_system_config(include_schema=False, service=self.service).model_dump()

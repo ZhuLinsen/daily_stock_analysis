@@ -185,6 +185,7 @@ const fieldTitleMap: Record<string, string> = {
   WEBUI_AUTO_BUILD: '启动前自动构建前端',
   WEBUI_PORT: 'WebUI 端口',
   AGENT_MODE: '启用 Agent 策略问股',
+  AGENT_BACKEND: '问股生成方式',
   AGENT_GENERATION_BACKEND: '问股生成方式',
   AGENT_MAX_STEPS: 'Agent 最大步数',
   AGENT_SKILLS: 'Agent 激活策略',
@@ -248,7 +249,7 @@ const fieldDescriptionMap: Record<string, string> = {
   GENERATION_BACKEND_MAX_CONCURRENCY: '同时允许多少个模型生成任务运行，默认 1；使用默认模型配置时不改变分析任务线程数。',
   LOCAL_CLI_BACKEND_MAX_CONCURRENCY: '同时允许启动多少个本地命令行生成进程，默认 1；最终不会超过“模型生成最大并发”。',
   LITELLM_MODEL: '主模型，格式 provider/model（如 gemini/gemini-2.5-flash）。配置渠道后自动推断。',
-  AGENT_LITELLM_MODEL: 'Agent 专用主模型。留空时继承主模型；无 provider 前缀时会按 openai/<model> 解析。',
+  AGENT_LITELLM_MODEL: '默认模型配置用于问股的模型。留空时继承主模型；无 provider 前缀时按 openai/<model> 解析。选择 Codex 本地 Agent 时，此项保留但不参与 Codex 问股运行。',
   LITELLM_FALLBACK_MODELS: '备选模型，逗号分隔，主模型失败时按序尝试。',
   LITELLM_CONFIG: '高级模型路由 YAML 配置文件路径（高级用法）。仅在 YAML 可解析且产出 model_list 时优先于渠道与旧配置，否则会回退。',
   LLM_CHANNELS: '渠道名称列表（逗号分隔）。推荐使用上方渠道编辑器管理。',
@@ -351,8 +352,9 @@ const fieldDescriptionMap: Record<string, string> = {
   WEBUI_AUTO_BUILD: '后端启动 WebUI 前是否自动检查并构建前端静态产物；关闭前需确认产物已预构建，保存后需重启生效。',
   WEBUI_PORT: 'Web 页面服务监听端口。',
   AGENT_MODE: '是否启用 ReAct Agent 策略问股。对外文案仍叫“策略”，内部配置字段统一使用 skill。',
+  AGENT_BACKEND: '选择问股 Chat 使用当前默认模型配置，还是调用运行 DSA 设备上的 Codex。自动（推荐）始终保持默认模型配置，不会自动启用实验能力。',
   AGENT_GENERATION_BACKEND: '用于问股助手生成回复并调用行情、新闻和历史数据工具。通常保持“自动”，系统会选择当前可用的方式。',
-  AGENT_MAX_STEPS: 'Agent 最大推理步数上限。保持默认 10 时，各子 Agent 按自身预设步数运行；调高到高于默认值时，所有子 Agent 统一采用该值；调低到低于某子 Agent 默认值时，该 Agent 会被封顶。',
+  AGENT_MAX_STEPS: '默认模型配置的 Agent 最大推理步数；选择 Codex 时，用作单次问股的最大工具调用次数。',
   AGENT_SKILLS: '逗号分隔的交易策略列表。留空时使用 metadata 里声明的主默认策略 skill（内置默认是 bull_trend）；也可填写 all 启用全部策略。',
   AGENT_SKILL_DIR: '存放 Agent 策略定义文件的目录路径，支持 YAML 与 SKILL.md bundle。',
   AGENT_ARCH: "选择 Agent 执行架构。single 为经典单 Agent；multi 为多 Agent 编排（实验性）。",
@@ -424,6 +426,11 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
   AGENT_GENERATION_BACKEND: {
     auto: '自动',
     litellm: '默认模型配置',
+  },
+  AGENT_BACKEND: {
+    auto: '自动（推荐）',
+    litellm: '默认模型配置',
+    codex_app_server: 'Codex 本地 Agent（实验）',
   },
   LOG_LEVEL: {
     debug: '调试',
@@ -502,6 +509,11 @@ const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
   AGENT_GENERATION_BACKEND: {
     auto: 'Auto',
     litellm: 'Default model settings',
+  },
+  AGENT_BACKEND: {
+    auto: 'Auto (recommended)',
+    litellm: 'Default model settings',
+    codex_app_server: 'Codex local Agent (experimental)',
   },
   LOG_LEVEL: {
     debug: 'Debug',

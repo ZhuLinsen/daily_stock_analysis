@@ -1709,6 +1709,36 @@ class TestOrchestratorExecution(unittest.TestCase):
         add_message.assert_any_call("session-1", "user", "hello")
         add_message.assert_any_call("session-1", "assistant", "assistant reply")
 
+    def test_chat_transaction_persists_user_before_multi_agent_execution(self):
+        """SSE acceptance can occur after persistence but before the pipeline starts."""
+        from src.agent.orchestrator import OrchestratorResult
+
+        orch = self._make_orchestrator()
+        fake_result = OrchestratorResult(success=True, content="assistant reply")
+
+        with patch.object(orch, "_execute_pipeline", return_value=fake_result) as execute_pipeline:
+            with patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]):
+                with patch("src.agent.conversation.conversation_manager.get_or_create"):
+                    with patch("src.agent.conversation.conversation_manager.add_message") as add_message:
+                        turn = orch.prepare_turn(message="hello", session_id="session-accepted")
+
+                        add_message.assert_called_once_with("session-accepted", "user", "hello")
+                        execute_pipeline.assert_not_called()
+
+                        result = orch.execute_turn(turn)
+
+        self.assertTrue(result.success)
+        execute_pipeline.assert_called_once_with(
+            turn.context,
+            parse_dashboard=False,
+            progress_callback=None,
+        )
+        self.assertEqual(add_message.call_args_list[-1].args, (
+            "session-accepted",
+            "assistant",
+            "assistant reply",
+        ))
+
     def test_chat_persists_failure_message(self):
         from src.agent.orchestrator import OrchestratorResult
 

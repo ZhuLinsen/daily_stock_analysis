@@ -23,6 +23,7 @@ from src.llm import local_cli_backend as local_cli_backend_module  # noqa: E402
 from src.llm.generation_backend import GenerationError, GenerationErrorCode  # noqa: E402
 from src.llm.local_cli_backend import (  # noqa: E402
     CLAUDE_CODE_CLI_PRESET,
+    CODEX_CLI_PRESET,
     LocalCliGenerationBackend,
     LocalCliExecutionResult,
     LocalCliExtractionError,
@@ -126,6 +127,16 @@ print({final_payload!r})
     assert "OpenAI Codex" in result.diagnostics["stdout_preview"]
     assert "final-message omitted" in result.diagnostics["stdout_preview"]
     assert "last_message" not in result.diagnostics["stdout_preview"]
+
+
+def test_codex_preset_pins_noninteractive_approval_policy_before_exec() -> None:
+    assert CODEX_CLI_PRESET.argv[:3] == (
+        "--ask-for-approval",
+        "never",
+        "exec",
+    )
+    assert CODEX_CLI_PRESET.argv[4:6] == ("--sandbox", "read-only")
+    assert CODEX_CLI_PRESET.contract_args[:3] == CODEX_CLI_PRESET.argv[:3]
 
 
 def test_claude_preset_runtime_argv_contains_contract_args(tmp_path: Path) -> None:

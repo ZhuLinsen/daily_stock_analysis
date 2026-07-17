@@ -14,12 +14,15 @@ Final assistant text is intentionally excluded because it is already stored in
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from src.llm.generation_params import resolve_litellm_wire_model
 
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_TRACE_RETENTION_LIMIT = 3
 TRACE_PROVIDER_KEY = "_trace_provider"
@@ -273,3 +276,85 @@ def _strip_trace_metadata_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_trace_metadata_value(item) for item in value]
     return value
+
+
+def persist_provider_trace_turns(
+    *,
+    session_id: str,
+    run_id: str,
+    messages: Sequence[Dict[str, Any]],
+    baseline_len: int,
+    user_message_id: int,
+    assistant_message_id: int,
+    db_factory=None,
+    log=None,
+) -> None:
+    """Persist the existing LiteLLM provider trace contract for one chat turn."""
+    active_logger = log or logger
+    try:
+        turns, diagnostics = extract_provider_trace_turns(
+            messages,
+            baseline_len=baseline_len,
+            run_id=run_id,
+            anchor_user_message_id=user_message_id,
+            anchor_assistant_message_id=assistant_message_id,
+        )
+    except Exception:
+        active_logger.warning(
+            "Provider trace extraction failed for session %s run %s",
+            session_id,
+            run_id,
+            exc_info=True,
+        )
+        return
+
+    if diagnostics.trace_dropped_reason:
+        active_logger.debug(
+            "Provider trace skipped for session %s run %s: %s",
+            session_id,
+            run_id,
+            diagnostics.trace_dropped_reason,
+        )
+    if not turns:
+        return
+
+    try:
+        if db_factory is None:
+            from src.storage import get_db
+
+            db_factory = get_db
+        db = db_factory()
+    except Exception:
+        active_logger.warning(
+            "Provider trace storage unavailable for session %s run %s",
+            session_id,
+            run_id,
+            exc_info=True,
+        )
+        return
+
+    for turn in turns:
+        try:
+            db.save_agent_provider_turn(
+                session_id=session_id,
+                run_id=run_id,
+                provider=turn.provider,
+                model=turn.model,
+                anchor_user_message_id=user_message_id,
+                anchor_assistant_message_id=assistant_message_id,
+                messages=turn.messages,
+                contains_reasoning=turn.contains_reasoning,
+                contains_tool_calls=turn.contains_tool_calls,
+                contains_thinking_blocks=turn.contains_thinking_blocks,
+                must_roundtrip=turn.must_roundtrip,
+                estimated_tokens=turn.estimated_tokens,
+            )
+        except Exception:
+            active_logger.warning(
+                "Provider trace persistence failed for session %s run %s provider=%s model=%s",
+                session_id,
+                run_id,
+                turn.provider,
+                turn.model,
+                exc_info=True,
+            )

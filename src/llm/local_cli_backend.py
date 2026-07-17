@@ -219,6 +219,8 @@ CODEX_CLI_PRESET = LocalCliPreset(
     preset_id=CODEX_CLI_BACKEND_ID,
     executable="codex",
     argv=(
+        "--ask-for-approval",
+        "never",
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
@@ -231,6 +233,8 @@ CODEX_CLI_PRESET = LocalCliPreset(
     display_name="Codex CLI",
     output_last_message_arg="--output-last-message",
     contract_args=(
+        "--ask-for-approval",
+        "never",
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
