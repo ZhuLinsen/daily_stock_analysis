@@ -77,7 +77,7 @@ def build_market_review_runtime(
     analyzer = None
     if has_configured_llm_runtime(config):
         analyzer = GeminiAnalyzer(config=config)
-        if not analyzer.is_available():
+        if hasattr(analyzer, "is_available") and not analyzer.is_available():
             logger.warning("AI 分析器初始化后不可用，请检查 LLM 配置")
             analyzer = None
     else:
