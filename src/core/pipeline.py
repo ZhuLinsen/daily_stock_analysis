@@ -613,7 +613,6 @@ class StockAnalysisPipeline:
                 )
                 result = self.analyzer.analyze(
                     enhanced_context,
-                    analysis_context_pack_summary=analysis_context_pack_summary,
                 )
                 llm_duration_ms = int((time.monotonic() - llm_started_at) * 1000)
                 record_llm_run(
