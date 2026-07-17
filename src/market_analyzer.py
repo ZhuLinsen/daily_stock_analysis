@@ -555,7 +555,21 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 model=getattr(self.config, "litellm_model", None),
                 call_type="market_review",
             )
-            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+        # 优先尝试获取底层的 genai 客户端生成
+        try:
+            if hasattr(self.analyzer, "client") and self.analyzer.client:
+                # 尝试使用最新的 Google GenAI SDK 语法
+                response = self.analyzer.client.models.generate_content(
+                    model=getattr(self.config, "litellm_model", "gemini-2.5-flash")
+                    contents=prompt
+                )
+                review = response.text
+            else:
+                # 如果没有 client 属性，尝试直接调用底层的生成方法（将 prompt 传给底层分析器）
+                review = self.analyzer.analyze(prompt)
+        except Exception as inner_exc:
+            logger.warning("[大盘] 尝试直接调用大盘生成失败，启动文本拼装回退: %s", inner_exc)
+            review = self._generate_template_review(overview, news)
         except Exception as exc:
             record_llm_run(
                 success=False,
