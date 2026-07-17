@@ -10,7 +10,7 @@ on:
       mode:
         description: '运行模式 (default: 仅分析, full: 分析+大盘, market_only: 仅大盘)'
         required: true
-        default: 'default'
+        default: 'full'
         type: choice
         options:
           - default
