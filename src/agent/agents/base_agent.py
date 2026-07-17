@@ -136,14 +136,13 @@ class BaseAgent(ABC):
             result.meta["raw_text"] = loop_result.content
             result.meta["models_used"] = loop_result.models_used
             result.meta["tool_calls_log"] = loop_result.tool_calls_log
-            result.failure_reason = loop_result.failure_reason
+            failure_reason = getattr(loop_result, "failure_reason", None)
+            result.failure_reason = failure_reason
 
             if not loop_result.success:
                 result.status = StageStatus.FAILED
                 result.error = loop_result.error or "Agent loop did not produce a final answer"
-                result.failure_reason = (
-                    loop_result.failure_reason or StageFailureReason.STAGE_FAILURE
-                )
+                result.failure_reason = failure_reason or StageFailureReason.STAGE_FAILURE
                 return result
 
             # Post-process into structured opinion
