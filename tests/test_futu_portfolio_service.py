@@ -504,6 +504,36 @@ class FutuPortfolioServiceTest(unittest.TestCase):
             with self.subTest(futu_code=futu_code):
                 self.assertEqual(service._to_analysis_code(futu_code), expected)
 
+    def test_connection_settings_accepts_ipv4_and_hostnames(self):
+        cases = {
+            "default": (None, "127.0.0.1"),
+            "explicit_ipv4": ("127.0.0.1", "127.0.0.1"),
+            "remote_ipv4": ("192.168.1.10", "192.168.1.10"),
+            "hostname": ("localhost", "localhost"),
+            "remote_hostname": ("opend.internal", "opend.internal"),
+            "padded": (" 127.0.0.1 ", "127.0.0.1"),
+        }
+        for label, (configured, expected_host) in cases.items():
+            with self.subTest(host=label):
+                env = {} if configured is None else {"FUTU_OPEND_HOST": configured}
+                with patch.dict("os.environ", env, clear=True):
+                    host, port = service._connection_settings()
+                self.assertEqual(host, expected_host)
+                self.assertEqual(port, 11111)
+
+    def test_connection_settings_rejects_ipv6_literal(self):
+        for host in ("::1", "[::1]", "2001:db8::1"):
+            with self.subTest(host=host):
+                with patch.dict(
+                    "os.environ",
+                    {"FUTU_OPEND_HOST": host},
+                    clear=True,
+                ), self.assertRaisesRegex(
+                    service.FutuPortfolioError,
+                    "网络层仅支持 IPv4",
+                ):
+                    service._connection_settings()
+
 
 if __name__ == "__main__":
     unittest.main()

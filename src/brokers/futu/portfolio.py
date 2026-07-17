@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Read real stock holdings from a local Futu OpenD instance."""
+"""Read real stock holdings from a Futu OpenD instance."""
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 import os
@@ -108,7 +109,7 @@ def _safe_close(context: Any) -> None:
 
 
 def _connection_settings() -> tuple[str, int]:
-    """Return the validated OpenD host and port from environment settings."""
+    """Return the validated IPv4 OpenD host and port from environment settings."""
 
     host = (os.getenv("FUTU_OPEND_HOST") or "127.0.0.1").strip()
     raw_port = (os.getenv("FUTU_OPEND_PORT") or "11111").strip()
@@ -118,6 +119,17 @@ def _connection_settings() -> tuple[str, int]:
         raise FutuPortfolioError(f"FUTU_OPEND_PORT 不是有效端口: {raw_port!r}") from exc
     if not host or not 1 <= port <= 65535:
         raise FutuPortfolioError(f"Futu OpenD 地址无效: {host!r}:{port}")
+
+    address_text = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        address = ipaddress.ip_address(address_text)
+    except ValueError:
+        address = None
+    if address is not None and address.version != 4:
+        raise FutuPortfolioError(
+            "futu-api==10.8.6808 的网络层仅支持 IPv4；"
+            f"FUTU_OPEND_HOST 当前为 {host!r}，请改用 IPv4 地址或可解析到 IPv4 的主机名。"
+        )
     return host, port
 
 
