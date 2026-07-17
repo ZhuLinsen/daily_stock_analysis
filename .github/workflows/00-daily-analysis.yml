@@ -74,7 +74,7 @@ jobs:
           if [ "${{ github.event.inputs.mode }}" = "full" ]; then
             ARGS="$ARGS --market-review"
           elif [ "${{ github.event.inputs.mode }}" = "market_only" ]; then
-            ARGS="$ARGS --market-review --serve-only"
+              ARGS="$ARGS --market-review --serve-only"
           fi
 
           if [ -n "${{ github.event.inputs.stocks }}" ]; then
