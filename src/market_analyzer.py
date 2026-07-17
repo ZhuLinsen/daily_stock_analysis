@@ -549,8 +549,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         logger.info("[大盘] %s action=generate_review status=start", self._log_context())
         # Use the public generate_text() entry point - never access private analyzer attributes.
         llm_started_at = time.perf_counter()
-        try:
-            record_llm_run_started(
+        record_llm_run_started(
                 provider="litellm",
                 model=getattr(self.config, "litellm_model", None),
                 call_type="market_review",
@@ -560,7 +559,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             if hasattr(self.analyzer, "client") and self.analyzer.client:
                 # 尝试使用最新的 Google GenAI SDK 语法
                 response = self.analyzer.client.models.generate_content(
-                    model=getattr(self.config, "litellm_model", "gemini-2.5-flash")
+                    model=getattr(self.config, "litellm_model", "gemini-2.5-flash"),
                     contents=prompt
                 )
                 review = response.text
