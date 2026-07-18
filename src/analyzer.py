@@ -4364,6 +4364,10 @@ class GeminiAnalyzer:
         """Extract the single allowed JSON object from an LLM response."""
 
         text = response_text or ""
+        # 推理模型（如 MiniMax-M3、DeepSeek-R1 同类）会把 <think>...</think> 推理块内联在
+        # content 里，属于元数据而非答案；先剥离成对的推理块，再做唯一 JSON 判定，
+        # 避免推理文本（及其中的草稿围栏）被误判为围栏外内容或多余 JSON 候选。
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         stripped = text.strip()
         if not stripped:
             raise ValueError("empty_response")
@@ -4377,11 +4381,14 @@ class GeminiAnalyzer:
             raise ValueError("ambiguous_json")
         if len(fenced_matches) == 1:
             match = fenced_matches[0]
-            outside = (text[:match.start()] + text[match.end():]).strip()
-            if outside:
-                raise ValueError("ambiguous_json")
             fence_lang = (match.group("lang") or "").strip().lower()
             if fence_lang not in {"", "json"}:
+                raise ValueError("ambiguous_json")
+            outside = (text[:match.start()] + text[match.end():]).strip()
+            # 显式 ```json 围栏是模型明确标注的唯一答案，允许围栏外存在说明性文字
+            # （推理模型常在围栏前后附带 markdown 报告）；未标注语言的围栏保持严格，
+            # 外部有文本仍视为歧义。
+            if outside and fence_lang != "json":
                 raise ValueError("ambiguous_json")
             json_str = match.group("body").strip()
             data = self._load_analysis_json_candidate(json_str)

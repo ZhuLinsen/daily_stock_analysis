@@ -289,6 +289,114 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
 }
 ```""")
 
+    def test_parse_response_strips_reasoning_think_block_before_fence(self) -> None:
+        """推理模型（如 MiniMax-M3）在正文前输出 <think> 块，应剥离后再提取 JSON。"""
+        analyzer = GeminiAnalyzer()
+        response = """<think>Let me analyze this step by step.
+The trend is bearish. Let me construct the complete JSON now.</think>
+
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 22,
+  "trend_prediction": "强烈看空",
+  "operation_advice": "卖出",
+  "analysis_summary": "空头排列"
+}
+```"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.name, "凯盛新能")
+        self.assertEqual(result.sentiment_score, 22)
+
+    def test_parse_response_ignores_draft_fence_inside_think_block(self) -> None:
+        """<think> 块内的草稿围栏不应被计入围栏数量。"""
+        analyzer = GeminiAnalyzer()
+        response = """<think>Draft:
+```json
+{"sentiment_score": 10}
+```
+Now finalize.</think>
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 25,
+  "trend_prediction": "看空",
+  "operation_advice": "卖出",
+  "analysis_summary": "空头排列"
+}
+```"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 25)
+
+    def test_parse_response_accepts_prose_around_explicit_json_fence(self) -> None:
+        """单个显式 ```json 围栏外的说明文字（markdown 报告）不应判为歧义。"""
+        analyzer = GeminiAnalyzer()
+        response = """## 凯盛新能（600876.SH）决策仪表盘
+
+### ⚠️ 数据情况说明
+- 当前为非交易日，基于上一完整交易日数据
+
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 28,
+  "trend_prediction": "看空",
+  "operation_advice": "观望",
+  "analysis_summary": "空头排列，观望"
+}
+```
+
+## 📋 决策要点速览
+
+| 检查项 | 状态 |
+|--------|------|
+| 多头排列 | ❌ |"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 28)
+
+    def test_parse_response_repairs_unescaped_inner_quotes_after_think_strip(self) -> None:
+        """think 块剥离后，字符串内未转义引号应走 repair 路径修复。"""
+        analyzer = GeminiAnalyzer()
+        response = """<think>reasoning...</think>
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 22,
+  "trend_prediction": "看空",
+  "operation_advice": "卖出",
+  "analysis_summary": "置信度判定为"中"，未给高"
+}
+```"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 22)
+
+    def test_validate_json_response_accepts_think_block_with_json_fence(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        analyzer._validate_json_response("""<think>step by step reasoning</think>
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 22,
+  "trend_prediction": "看空",
+  "operation_advice": "卖出",
+  "analysis_summary": "空头排列"
+}
+```""")
+
     def test_validate_json_response_rejects_ambiguous_json_before_repair(self) -> None:
         analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
         analyzer._config_override = SimpleNamespace(generation_backend="litellm")

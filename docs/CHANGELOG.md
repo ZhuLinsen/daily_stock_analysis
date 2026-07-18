@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] Web AI 建议页支持确认保存基于历史报告快照重算的决策风格信号，以 created/existing/refreshed 区分新建、原样复用和既有记录续期或维度补齐，复用 profile-aware 去重与失效语义，将历史信号的创建时间、有效期和相反信号失效顺序锚定来源报告时间，并提供可审计 guardrail 提示与阻断。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [修复] 修复个股分析使用推理模型（如 MiniMax-M3/M2.7）时因内联 `<think>` 推理块与围栏外说明文字被 JSON 提取器判为 `ambiguous_json`，导致所有模型重试失败、报告无法持久化（"LLM response is not valid JSON"）的问题：提取前剥离成对 `<think>` 块，单个显式 ```json 围栏允许外部说明文字；多围栏、非 json 语言围栏、无语言围栏+外部文本等歧义防护保持不变。
 
 ## [3.26.0] - 2026-07-12
 
