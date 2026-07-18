@@ -36,7 +36,7 @@ class TestAgentOrchestratorSniperFallback(unittest.TestCase):
             },
         }
 
-        normalized = orch._normalize_dashboard_payload(payload, ctx)
+        normalized = orch._finalize_dashboard_payload(payload, ctx)
 
         self.assertIsNotNone(normalized)
         sniper = normalized["dashboard"]["battle_plan"]["sniper_points"]
@@ -67,7 +67,7 @@ class TestAgentOrchestratorSniperFallback(unittest.TestCase):
             },
         }
 
-        normalized = orch._normalize_dashboard_payload(payload, ctx)
+        normalized = orch._finalize_dashboard_payload(payload, ctx)
 
         self.assertIsNotNone(normalized)
         sniper = normalized["dashboard"]["battle_plan"]["sniper_points"]

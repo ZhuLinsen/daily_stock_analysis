@@ -9,6 +9,7 @@ errors, tokens, or a user-facing final explanation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 from src.agent.protocols import (
@@ -35,12 +36,20 @@ class BaseAgentOpinionFact:
     confidence: float
 
 
+class DegradationBoundary(str, Enum):
+    """Whether an incomplete stage failed or never started."""
+
+    DURING_STAGE = "during_stage"
+    BEFORE_STAGE = "before_stage"
+
+
 @dataclass(frozen=True)
 class DegradedEvent:
-    """Structured reason that an Agent stage could not complete normally."""
+    """Low-sensitivity fact for a stage that did not complete normally."""
 
     stage: str
     reason: StageFailureReason
+    boundary: DegradationBoundary
 
     def __post_init__(self) -> None:
         normalized_stage = str(self.stage or "").strip()
@@ -48,6 +57,23 @@ class DegradedEvent:
             raise ValueError("degraded event requires a stage")
         object.__setattr__(self, "stage", normalized_stage)
         object.__setattr__(self, "reason", normalize_stage_failure_reason(self.reason))
+        object.__setattr__(self, "boundary", DegradationBoundary(self.boundary))
+
+
+@dataclass(frozen=True)
+class PipelineTerminationFact:
+    """Pipeline deadline fact with the latest completed stage, when any."""
+
+    reason: StageFailureReason
+    last_completed_stage: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        normalized_reason = normalize_stage_failure_reason(self.reason)
+        if normalized_reason != StageFailureReason.TIMEOUT:
+            raise ValueError("pipeline termination currently supports timeout only")
+        normalized_stage = str(self.last_completed_stage or "").strip() or None
+        object.__setattr__(self, "reason", normalized_reason)
+        object.__setattr__(self, "last_completed_stage", normalized_stage)
 
 
 @dataclass(frozen=True)
@@ -61,6 +87,7 @@ class AgentRuntimeFacts:
 
     base_agent_opinions: Tuple[BaseAgentOpinionFact, ...] = ()
     degraded_events: Tuple[DegradedEvent, ...] = ()
+    pipeline_termination: Optional[PipelineTerminationFact] = None
     risk_override_application: Optional[RiskOverrideApplication] = None
 
 
@@ -69,6 +96,7 @@ def build_agent_runtime_facts(ctx: AgentContext) -> AgentRuntimeFacts:
     return AgentRuntimeFacts(
         base_agent_opinions=tuple(_iter_base_agent_opinions(ctx)),
         degraded_events=tuple(_iter_degraded_events(ctx)),
+        pipeline_termination=_pipeline_termination(ctx),
         risk_override_application=_risk_override_application(ctx),
     )
 
@@ -105,16 +133,32 @@ def _iter_degraded_events(ctx: AgentContext):
                 event = DegradedEvent(
                     stage=item.get("stage", ""),
                     reason=item.get("reason", StageFailureReason.STAGE_FAILURE),
+                    boundary=item.get("boundary", ""),
                 )
             except (TypeError, ValueError):
                 continue
         else:
             continue
-        key = (event.stage, event.reason)
+        key = (event.stage, event.reason, event.boundary)
         if key in seen:
             continue
         seen.add(key)
         yield event
+
+
+def _pipeline_termination(ctx: AgentContext) -> Optional[PipelineTerminationFact]:
+    source = ctx.meta.get("pipeline_termination")
+    if isinstance(source, PipelineTerminationFact):
+        return source
+    if not isinstance(source, dict):
+        return None
+    try:
+        return PipelineTerminationFact(
+            reason=source.get("reason", ""),
+            last_completed_stage=source.get("last_completed_stage", ""),
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _risk_override_application(ctx: AgentContext) -> Optional[RiskOverrideApplication]:
@@ -156,6 +200,8 @@ def _safe_confidence(confidence: Any) -> float:
 __all__ = [
     "AgentRuntimeFacts",
     "BaseAgentOpinionFact",
+    "DegradationBoundary",
     "DegradedEvent",
+    "PipelineTerminationFact",
     "build_agent_runtime_facts",
 ]

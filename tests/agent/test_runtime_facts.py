@@ -27,7 +27,9 @@ from src.agent.runner import (
 )
 from src.agent.runtime_facts import (
     BaseAgentOpinionFact,
+    DegradationBoundary,
     DegradedEvent,
+    PipelineTerminationFact,
     build_agent_runtime_facts,
 )
 
@@ -54,7 +56,13 @@ def _dashboard(signal="buy"):
             "core_conclusion": {
                 "one_sentence": "test conclusion",
                 "position_advice": {"no_position": "watch", "has_position": "hold"},
-            }
+            },
+            "battle_plan": {
+                "position_strategy": {
+                    "suggested_position": "light trial position",
+                    "entry_plan": "buy on pullback",
+                },
+            },
         },
     }
 
@@ -183,46 +191,78 @@ def test_orchestrator_returns_internal_facts_without_public_dashboard_fields():
         _Stage("decision", "buy"),
     ]
     call_order = []
-    normalized_dashboards = []
-    normalize_dashboard = orchestrator._normalize_dashboard_payload
+    prepared_dashboards = []
+    prepare_dashboard = orchestrator._prepare_dashboard_payload
+    finalize_dashboard = orchestrator._finalize_dashboard_payload
     apply_risk_override = orchestrator._apply_risk_override
 
-    def _normalize_once(payload, runtime_ctx):
-        normalized = normalize_dashboard(payload, runtime_ctx)
-        normalized_dashboards.append(normalized)
-        call_order.append("normalize")
-        return normalized
+    def _prepare_once(payload, runtime_ctx):
+        prepared = prepare_dashboard(payload, runtime_ctx)
+        prepared_dashboards.append(prepared)
+        call_order.append("prepare")
+        return prepared
 
-    def _apply_after_normalize(runtime_ctx):
-        assert normalized_dashboards
-        assert runtime_ctx.get_data("final_dashboard") is normalized_dashboards[-1]
+    def _apply_after_prepare(runtime_ctx):
+        assert prepared_dashboards
+        assert runtime_ctx.get_data("final_dashboard") is prepared_dashboards[-1]
+        assert prepared_dashboards[-1]["decision_type"] == "buy"
         call_order.append("risk")
         return apply_risk_override(runtime_ctx)
+
+    def _finalize_after_risk(payload, runtime_ctx):
+        assert payload is runtime_ctx.get_data("final_dashboard")
+        assert payload["decision_type"] == "hold"
+        call_order.append("finalize")
+        return finalize_dashboard(payload, runtime_ctx)
 
     with (
         patch.object(orchestrator, "_build_agent_chain", return_value=stages),
         patch.object(
             orchestrator,
-            "_normalize_dashboard_payload",
-            side_effect=_normalize_once,
-        ) as normalize_spy,
+            "_prepare_dashboard_payload",
+            side_effect=_prepare_once,
+        ) as prepare_spy,
+        patch.object(
+            orchestrator,
+            "_finalize_dashboard_payload",
+            side_effect=_finalize_after_risk,
+        ) as finalize_spy,
         patch.object(
             orchestrator,
             "_apply_risk_override",
-            side_effect=_apply_after_normalize,
+            side_effect=_apply_after_prepare,
         ) as risk_spy,
     ):
         result = orchestrator._execute_pipeline(ctx, parse_dashboard=True)
 
     assert result.success is True
     assert result.dashboard["decision_type"] == "hold"
-    normalize_spy.assert_called_once()
+    prepare_spy.assert_called_once()
+    finalize_spy.assert_called_once()
     risk_spy.assert_called_once_with(ctx)
-    assert call_order == ["normalize", "risk"]
+    assert call_order == ["prepare", "risk", "finalize"]
+    assert "观望" in result.dashboard["operation_advice"]
+    core = result.dashboard["dashboard"]["core_conclusion"]
+    assert core["signal_type"] == "🟡持有观望"
+    assert "风险未解除" in core["position_advice"]["no_position"]
+    strategy = result.dashboard["dashboard"]["battle_plan"]["position_strategy"]
+    assert strategy["suggested_position"] == "控制仓位"
+    assert strategy["entry_plan"] == core["position_advice"]["no_position"]
+    assert "buy on pullback" not in json.dumps(result.dashboard, ensure_ascii=False)
+    decision_opinion = next(
+        opinion for opinion in reversed(ctx.opinions) if opinion.agent_name == "decision"
+    )
+    assert decision_opinion.signal == "hold"
+    assert decision_opinion.raw_data is result.dashboard
     assert result.runtime_facts is not None
     assert result.runtime_facts.degraded_events == (
-        DegradedEvent(stage="intel", reason=StageFailureReason.TIMEOUT),
+        DegradedEvent(
+            stage="intel",
+            reason=StageFailureReason.TIMEOUT,
+            boundary=DegradationBoundary.DURING_STAGE,
+        ),
     )
+    assert result.runtime_facts.pipeline_termination is None
     assert [fact.agent for fact in result.runtime_facts.base_agent_opinions] == [
         "technical",
         "risk",
@@ -233,6 +273,15 @@ def test_orchestrator_returns_internal_facts_without_public_dashboard_fields():
     assert application.post_risk_signal.value == "hold"
     assert application.from_signal.value == "buy"
     assert application.to_signal.value == "hold"
+    assert [
+        (stage.stage_name, stage.status, stage.failure_reason)
+        for stage in result.stats.stage_results
+    ] == [
+        ("technical", StageStatus.COMPLETED, None),
+        ("intel", StageStatus.FAILED, StageFailureReason.TIMEOUT),
+        ("risk", StageStatus.COMPLETED, None),
+        ("decision", StageStatus.COMPLETED, None),
+    ]
     assert "agent_disagreement_explanation" not in json.dumps(result.dashboard)
     assert "runtime_facts" not in result.content
 
@@ -252,7 +301,11 @@ def test_unknown_custom_failure_reason_falls_back_without_breaking_pipeline():
     assert result.success is True
     assert result.runtime_facts is not None
     assert result.runtime_facts.degraded_events == (
-        DegradedEvent(stage="intel", reason=StageFailureReason.STAGE_FAILURE),
+        DegradedEvent(
+            stage="intel",
+            reason=StageFailureReason.STAGE_FAILURE,
+            boundary=DegradationBoundary.DURING_STAGE,
+        ),
     )
 
 
@@ -303,19 +356,25 @@ def test_pipeline_budget_guard_records_skipped_real_stage():
 
     with patch.object(orchestrator, "_build_agent_chain", return_value=stages):
         with patch(
-            "src.agent.orchestrator.time.time",
-            side_effect=_clock([0.0, 0.1, 0.2, 0.3, 14.6], 14.7),
+            "src.agent.orchestrator.time",
+            SimpleNamespace(
+                time=_clock([0.0, 0.1, 0.2, 14.6], 14.7),
+            ),
         ):
             result = orchestrator._execute_pipeline(ctx, parse_dashboard=True)
 
     assert result.runtime_facts is not None
     assert result.runtime_facts.degraded_events == (
-        DegradedEvent(stage="decision", reason=StageFailureReason.BUDGET_SKIP),
+        DegradedEvent(
+            stage="decision",
+            reason=StageFailureReason.BUDGET_SKIP,
+            boundary=DegradationBoundary.BEFORE_STAGE,
+        ),
     )
     assert "insufficient budget" in result.error.lower()
 
 
-def test_pipeline_timeout_records_next_real_stage():
+def test_pipeline_timeout_before_stage_records_that_unstarted_stage():
     orchestrator = AgentOrchestrator(
         tool_registry=MagicMock(),
         llm_adapter=MagicMock(),
@@ -329,15 +388,113 @@ def test_pipeline_timeout_records_next_real_stage():
 
     with patch.object(orchestrator, "_build_agent_chain", return_value=stages):
         with patch(
-            "src.agent.orchestrator.time.time",
-            side_effect=_clock([0.0, 0.1, 0.2, 0.3, 1.2], 1.3),
+            "src.agent.orchestrator.time",
+            SimpleNamespace(
+                time=_clock([0.0, 0.1, 0.2, 1.2], 1.3),
+            ),
         ):
             result = orchestrator._execute_pipeline(ctx, parse_dashboard=True)
 
     assert result.runtime_facts is not None
     assert result.runtime_facts.degraded_events == (
-        DegradedEvent(stage="intel", reason=StageFailureReason.TIMEOUT),
+        DegradedEvent(
+            stage="intel",
+            reason=StageFailureReason.TIMEOUT,
+            boundary=DegradationBoundary.BEFORE_STAGE,
+        ),
     )
+    assert result.runtime_facts.pipeline_termination is None
+    assert [stage.stage_name for stage in result.stats.stage_results] == ["technical"]
+    assert "timed out" in result.error.lower()
+
+
+def test_pipeline_timeout_after_completed_stage_does_not_degrade_that_stage():
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(
+            agent_orchestrator_timeout_s=20,
+            agent_risk_override=True,
+        ),
+    )
+    ctx = AgentContext(query="test", stock_code="600519")
+    stages = [_Stage("technical", "buy"), _Stage("intel", "hold")]
+
+    with patch.object(orchestrator, "_build_agent_chain", return_value=stages):
+        with patch(
+            "src.agent.orchestrator.time",
+            SimpleNamespace(
+                # intel starts with 19s remaining (above the 15s budget
+                # guard), completes, and only then crosses the pipeline
+                # deadline.
+                time=_clock([0.0, 0.1, 0.2, 1.0, 20.2], 20.3),
+            ),
+        ):
+            result = orchestrator._execute_pipeline(ctx, parse_dashboard=True)
+
+    assert result.runtime_facts is not None
+    assert result.runtime_facts.degraded_events == ()
+    assert result.runtime_facts.pipeline_termination == PipelineTerminationFact(
+        reason=StageFailureReason.TIMEOUT,
+        last_completed_stage="intel",
+    )
+    assert [
+        (stage.stage_name, stage.status)
+        for stage in result.stats.stage_results
+    ] == [
+        ("technical", StageStatus.COMPLETED),
+        ("intel", StageStatus.COMPLETED),
+    ]
+    assert "timed out" in result.error.lower()
+
+
+def test_pipeline_timeout_after_failed_stage_keeps_previous_completed_attribution():
+    orchestrator = AgentOrchestrator(
+        tool_registry=MagicMock(),
+        llm_adapter=MagicMock(),
+        config=SimpleNamespace(
+            agent_orchestrator_timeout_s=20,
+            agent_risk_override=True,
+        ),
+    )
+    ctx = AgentContext(query="test", stock_code="600519")
+    stages = [
+        _Stage("technical", "buy"),
+        _Stage(
+            "intel",
+            status=StageStatus.FAILED,
+            failure_reason=StageFailureReason.TIMEOUT,
+        ),
+    ]
+
+    with patch.object(orchestrator, "_build_agent_chain", return_value=stages):
+        with patch(
+            "src.agent.orchestrator.time",
+            SimpleNamespace(
+                time=_clock([0.0, 0.1, 0.2, 1.0, 20.2], 20.3),
+            ),
+        ):
+            result = orchestrator._execute_pipeline(ctx, parse_dashboard=True)
+
+    assert result.runtime_facts is not None
+    assert result.runtime_facts.degraded_events == (
+        DegradedEvent(
+            stage="intel",
+            reason=StageFailureReason.TIMEOUT,
+            boundary=DegradationBoundary.DURING_STAGE,
+        ),
+    )
+    assert result.runtime_facts.pipeline_termination == PipelineTerminationFact(
+        reason=StageFailureReason.TIMEOUT,
+        last_completed_stage="technical",
+    )
+    assert [
+        (stage.stage_name, stage.status)
+        for stage in result.stats.stage_results
+    ] == [
+        ("technical", StageStatus.COMPLETED),
+        ("intel", StageStatus.FAILED),
+    ]
     assert "timed out" in result.error.lower()
 
 
