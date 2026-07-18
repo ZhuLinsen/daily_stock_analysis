@@ -3,26 +3,40 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, Check, SlidersHorizontal, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
-import { analysisApi } from '../api/analysis';
+import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { historyApi } from '../api/history';
 import { agentApi, type SkillInfo } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
-import { StockHistoryTrendDrawer, StockBar } from '../components/history';
+import { StockHistoryTrendDrawer } from '../components/history';
 import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer';
 import { MarketReviewReportView } from '../components/report/MarketReviewReportView';
 import { ReportSummary } from '../components/report/ReportSummary';
 import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
+import {
+  HomeStockWorkspace,
+  type HomeWatchlistRow,
+  type HomeWorkspaceTab,
+  type WatchlistAnalyzeMode,
+} from '../components/watchlist/HomeStockWorkspace';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { normalizeReportLanguage } from '../utils/reportLanguage';
-import type { MarketReviewPayload, StockBarItem, TaskInfo } from '../types/analysis';
+import type {
+  AnalyzeAsyncResponse,
+  HistoryItem,
+  MarketReviewPayload,
+  StockBarItem,
+  TaskInfo,
+} from '../types/analysis';
 import type { RunFlowSnapshotSource } from '../types/runFlow';
+import { getTodayInShanghai } from '../utils/format';
+import { normalizeStockCode } from '../utils/stockCode';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -42,6 +56,124 @@ type StockAnalysisNavigationState = {
 };
 
 const DUPLICATE_BANNER_AUTO_DISMISS_MS = 5000;
+const BATCH_ANALYSIS_CHUNK_SIZE = 50;
+const TODAY_ANALYSIS_PAGE_SIZE = 100;
+const SERVER_LOCAL_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+type BatchAnalyzeStatus = {
+  variant: 'success' | 'warning' | 'danger';
+  message: string;
+} | null;
+
+type WatchlistHistoryLookupState = {
+  signature: string;
+  settledKeys: Set<string>;
+  failedKeys: Set<string>;
+};
+
+function getShanghaiDateKey(value?: string | null): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  const normalized = SERVER_LOCAL_DATE_TIME_PATTERN.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}+08:00`
+    : trimmed;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date);
+}
+
+function getShanghaiTimeValue(value?: string | null): number {
+  if (!value) return 0;
+  const trimmed = value.trim();
+  const normalized = SERVER_LOCAL_DATE_TIME_PATTERN.test(trimmed)
+    ? `${trimmed.replace(' ', 'T')}+08:00`
+    : trimmed;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function shiftDateKey(dateKey: string, days: number): string {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function getStockCodeKey(code?: string | null): string {
+  const trimmed = (code ?? '').trim();
+  return trimmed ? normalizeStockCode(trimmed).toUpperCase() : '';
+}
+
+function chunkStockCodes(codes: string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < codes.length; index += BATCH_ANALYSIS_CHUNK_SIZE) {
+    chunks.push(codes.slice(index, index + BATCH_ANALYSIS_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
+function countBatchAccepted(result: AnalyzeAsyncResponse): { accepted: number; duplicates: number } {
+  if ('accepted' in result) {
+    return {
+      accepted: result.accepted.length,
+      duplicates: result.duplicates.length,
+    };
+  }
+  return { accepted: 1, duplicates: 0 };
+}
+
+function toStockBarItemFromHistoryItem(item: HistoryItem): StockBarItem {
+  return {
+    id: item.id,
+    stockCode: item.stockCode,
+    stockName: item.stockName,
+    reportType: item.reportType,
+    sentimentScore: item.sentimentScore,
+    operationAdvice: item.operationAdvice,
+    action: item.action ?? null,
+    actionLabel: item.actionLabel ?? null,
+    analysisCount: 0,
+    lastAnalysisTime: item.createdAt,
+    modelUsed: item.modelUsed,
+    marketPhaseSummary: item.marketPhaseSummary ?? null,
+  };
+}
+
+async function getTodayAnalysisItems(dateKey: string): Promise<StockBarItem[]> {
+  const items: StockBarItem[] = [];
+  let loadedRecordCount = 0;
+  let page = 1;
+
+  while (true) {
+    const response = await historyApi.getList({
+      // History dates are filtered in the server's local timezone. Query the
+      // adjacent dates too, then apply the exact Shanghai-day filter below.
+      startDate: shiftDateKey(dateKey, -1),
+      endDate: shiftDateKey(dateKey, 1),
+      page,
+      limit: TODAY_ANALYSIS_PAGE_SIZE,
+    });
+
+    loadedRecordCount += response.items.length;
+    for (const item of response.items) {
+      if (item.stockCode === 'MARKET' || item.reportType === 'market_review') {
+        continue;
+      }
+      items.push(toStockBarItemFromHistoryItem(item));
+    }
+
+    if (
+      response.items.length === 0
+      || response.items.length < TODAY_ANALYSIS_PAGE_SIZE
+      || loadedRecordCount >= response.total
+    ) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return items;
+}
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -58,8 +190,23 @@ const HomePage: React.FC = () => {
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
   const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const [duplicateBannerVisible, setDuplicateBannerVisible] = useState(false);
+  const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('history');
+  const [isBatchAnalyzingWatchlist, setIsBatchAnalyzingWatchlist] = useState(false);
+  const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState<BatchAnalyzeStatus>(null);
+  const [watchlistHistoryItemsByCode, setWatchlistHistoryItemsByCode] = useState<Map<string, StockBarItem>>(new Map());
+  const [watchlistHistoryLookupState, setWatchlistHistoryLookupState] = useState<WatchlistHistoryLookupState>({
+    signature: '',
+    settledKeys: new Set(),
+    failedKeys: new Set(),
+  });
+  const [todayHistoryItems, setTodayHistoryItems] = useState<StockBarItem[]>([]);
+  const [isLoadingTodayAnalysisItems, setIsLoadingTodayAnalysisItems] = useState(false);
+  const [todayAnalysisLoadFailed, setTodayAnalysisLoadFailed] = useState(false);
+  const [todayAnalysisRefreshVersion, setTodayAnalysisRefreshVersion] = useState(0);
+  const [isStockBarInitialLoadSettled, setIsStockBarInitialLoadSettled] = useState(false);
   const duplicateBannerTimer = useRef<number | null>(null);
   const marketReviewPollTimer = useRef<number | null>(null);
+  const stockBarLoadStartedRef = useRef(false);
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
   const strategyMenuRef = useRef<HTMLDivElement | null>(null);
   const strategyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -133,6 +280,7 @@ const HomePage: React.FC = () => {
     loadMoreStockHistory,
     stockBarItems,
     isLoadingStockBar,
+    stockBarRefreshFailed,
     loadStockBar,
     refreshStockBar,
   } = useHomeDashboardState();
@@ -357,6 +505,16 @@ const HomePage: React.FC = () => {
     return requiredNeedsAction.slice(0, 3).join(uiLanguage === 'en' ? ', ' : '、');
   }, [setupStatus, uiLanguage]);
 
+  const handleCompletedTaskDataRefreshed = useCallback((task: TaskInfo) => {
+    if (task.reportType !== 'market_review') {
+      setTodayAnalysisRefreshVersion((version) => version + 1);
+    }
+  }, []);
+
+  const handleDashboardDataRefresh = useCallback(() => {
+    setTodayAnalysisRefreshVersion((version) => version + 1);
+  }, []);
+
   useDashboardLifecycle({
     loadInitialHistory,
     refreshHistory,
@@ -370,9 +528,136 @@ const HomePage: React.FC = () => {
     syncTaskFailed,
     refreshActiveTasks,
     removeTask,
+    onDashboardDataRefresh: handleDashboardDataRefresh,
+    onCompletedTaskDataRefreshed: handleCompletedTaskDataRefreshed,
   });
 
+  useEffect(() => {
+    if (isLoadingStockBar) {
+      stockBarLoadStartedRef.current = true;
+      return;
+    }
+    if (stockBarLoadStartedRef.current || stockBarItems.length > 0) {
+      setIsStockBarInitialLoadSettled(true);
+    }
+  }, [isLoadingStockBar, stockBarItems.length]);
+
   const watchlistState = useWatchlist();
+  const watchlistCodesByNormalized = useMemo(() => {
+    const codesByNormalized = new Map<string, string>();
+    for (const code of watchlistState.watchlistCodes) {
+      const key = getStockCodeKey(code);
+      if (!key || key === 'MARKET' || codesByNormalized.has(key)) {
+        continue;
+      }
+      codesByNormalized.set(key, code);
+    }
+    return Array.from(codesByNormalized.entries());
+  }, [watchlistState.watchlistCodes]);
+
+  const stockBarItemByCode = useMemo(() => {
+    const itemsByCode = new Map<string, StockBarItem>();
+    for (const item of stockBarItems) {
+      if (item.stockCode === 'MARKET') {
+        continue;
+      }
+      const key = getStockCodeKey(item.stockCode);
+      if (key) {
+        itemsByCode.set(key, item);
+      }
+    }
+    return itemsByCode;
+  }, [stockBarItems]);
+
+  const canLookupWatchlistHistory = !isLoadingStockBar && isStockBarInitialLoadSettled;
+
+  const watchlistMissingHistoryEntries = useMemo(
+    () => (
+      canLookupWatchlistHistory
+        ? watchlistCodesByNormalized.filter(([key]) => !stockBarItemByCode.has(key))
+        : []
+    ),
+    [canLookupWatchlistHistory, stockBarItemByCode, watchlistCodesByNormalized],
+  );
+
+  const watchlistMissingHistorySignature = useMemo(
+    () => watchlistMissingHistoryEntries.map(([key]) => key).join('\n'),
+    [watchlistMissingHistoryEntries],
+  );
+
+  useEffect(() => {
+    if (!canLookupWatchlistHistory) {
+      setWatchlistHistoryItemsByCode(new Map());
+      setWatchlistHistoryLookupState({ signature: '', settledKeys: new Set(), failedKeys: new Set() });
+      return undefined;
+    }
+
+    const missingCodes = watchlistMissingHistoryEntries.map(([, code]) => code);
+    const missingKeys = watchlistMissingHistoryEntries.map(([key]) => key);
+    const currentSignature = watchlistMissingHistorySignature;
+
+    if (missingCodes.length === 0) {
+      setWatchlistHistoryItemsByCode(new Map());
+      setWatchlistHistoryLookupState({ signature: '', settledKeys: new Set(), failedKeys: new Set() });
+      return;
+    }
+
+    let isCanceled = false;
+    setWatchlistHistoryLookupState({ signature: currentSignature, settledKeys: new Set(), failedKeys: new Set() });
+    void (async () => {
+      try {
+        const results = await Promise.all(
+          missingCodes.map(async (code) => {
+            try {
+              const response = await historyApi.getList({ stockCode: code, limit: 1 });
+              return { code, item: response.items[0] ?? null, failed: false };
+            } catch {
+              return { code, item: null, failed: true };
+            }
+          }),
+        );
+
+        if (isCanceled) {
+          return;
+        }
+
+        const next = new Map<string, StockBarItem>();
+        const failedKeys = new Set<string>();
+        for (const entry of results) {
+          const key = getStockCodeKey(entry.code);
+          if (!key) {
+            continue;
+          }
+          if (entry.failed) {
+            failedKeys.add(key);
+            continue;
+          }
+          if (entry.item) {
+            next.set(key, toStockBarItemFromHistoryItem(entry.item));
+          }
+        }
+        setWatchlistHistoryItemsByCode(next);
+        setWatchlistHistoryLookupState({
+          signature: currentSignature,
+          settledKeys: new Set(missingKeys),
+          failedKeys,
+        });
+      } catch {
+        if (!isCanceled) {
+          setWatchlistHistoryItemsByCode(new Map());
+          setWatchlistHistoryLookupState({
+            signature: currentSignature,
+            settledKeys: new Set(missingKeys),
+            failedKeys: new Set(missingKeys),
+          });
+        }
+      }
+    })();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [canLookupWatchlistHistory, watchlistMissingHistoryEntries, watchlistMissingHistorySignature]);
 
   const clearMarketReviewState = useCallback(() => {
     stopMarketReviewPolling();
@@ -632,6 +917,266 @@ const HomePage: React.FC = () => {
     }
   }, [notify, pollMarketReviewStatus, scrollMarketReviewFeedbackIntoView, t]);
 
+  const todayDateKey = getTodayInShanghai();
+  useEffect(() => {
+    if (sidebarWorkspaceTab !== 'today') {
+      return undefined;
+    }
+
+    let active = true;
+    setIsLoadingTodayAnalysisItems(true);
+    setTodayAnalysisLoadFailed(false);
+    void getTodayAnalysisItems(todayDateKey)
+      .then((items) => {
+        if (active) {
+          setTodayHistoryItems(items);
+          setTodayAnalysisLoadFailed(false);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setTodayHistoryItems([]);
+          setTodayAnalysisLoadFailed(true);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setIsLoadingTodayAnalysisItems(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [sidebarWorkspaceTab, todayAnalysisRefreshVersion, todayDateKey]);
+
+  const activeTaskByCode = useMemo(() => {
+    const tasksByCode = new Map<string, TaskInfo>();
+    for (const task of activeTasks) {
+      if (!['pending', 'processing', 'cancel_requested'].includes(task.status)) {
+        continue;
+      }
+      if (task.reportType === 'market_review') {
+        continue;
+      }
+      const key = getStockCodeKey(task.stockCode);
+      if (key) {
+        tasksByCode.set(key, task);
+      }
+    }
+    return tasksByCode;
+  }, [activeTasks]);
+
+  const watchlistRows = useMemo<HomeWatchlistRow[]>(() => (
+    watchlistState.watchlistCodes.map((code) => {
+      const key = getStockCodeKey(code);
+      const latestItem = key
+        ? stockBarItemByCode.get(key) ?? watchlistHistoryItemsByCode.get(key)
+        : undefined;
+      const isMissingFromStockBar = Boolean(key && !stockBarItemByCode.has(key));
+      const isTodayStatusUnknown = Boolean(
+        stockBarRefreshFailed
+        || (
+          isMissingFromStockBar
+          && canLookupWatchlistHistory
+          && watchlistHistoryLookupState.signature === watchlistMissingHistorySignature
+          && watchlistHistoryLookupState.failedKeys.has(key)
+        ),
+      );
+      const isTodayStatusLoading = Boolean(
+        isMissingFromStockBar
+        && !isTodayStatusUnknown
+        && (
+          !canLookupWatchlistHistory
+          ||
+          watchlistHistoryLookupState.signature !== watchlistMissingHistorySignature
+          || !watchlistHistoryLookupState.settledKeys.has(key)
+        ),
+      );
+      return {
+        code,
+        latestItem,
+        analyzedToday: !isTodayStatusLoading && !isTodayStatusUnknown && getShanghaiDateKey(latestItem?.lastAnalysisTime) === todayDateKey,
+        isTodayStatusLoading,
+        isTodayStatusUnknown,
+        activeTask: key ? activeTaskByCode.get(key) : undefined,
+      };
+    })
+  ), [
+    activeTaskByCode,
+    canLookupWatchlistHistory,
+    stockBarRefreshFailed,
+    stockBarItemByCode,
+    todayDateKey,
+    watchlistHistoryItemsByCode,
+    watchlistHistoryLookupState,
+    watchlistMissingHistorySignature,
+    watchlistState.watchlistCodes,
+  ]);
+
+  const watchlistAnalyzedTodayCount = useMemo(
+    () => watchlistRows.filter((row) => row.analyzedToday).length,
+    [watchlistRows],
+  );
+
+  const pendingWatchlistCodes = useMemo(
+    () => watchlistRows
+      .filter((row) => !row.analyzedToday && !row.isTodayStatusLoading && !row.isTodayStatusUnknown)
+      .map((row) => row.code),
+    [watchlistRows],
+  );
+
+  const watchlistTodayStatusBlocked = useMemo(
+    () => watchlistRows.some((row) => row.isTodayStatusLoading || row.isTodayStatusUnknown),
+    [watchlistRows],
+  );
+
+  const todayAnalysisItems = useMemo(() => {
+    const itemsById = new Map<number, StockBarItem>();
+    const addItem = (item: StockBarItem) => {
+      if (item.stockCode === 'MARKET' || item.reportType === 'market_review') {
+        return;
+      }
+      if (getShanghaiDateKey(item.lastAnalysisTime) !== todayDateKey) {
+        return;
+      }
+      itemsById.set(item.id, item);
+    };
+
+    for (const item of todayHistoryItems) {
+      addItem(item);
+    }
+
+    return Array.from(itemsById.values())
+      .sort((left, right) => {
+        const leftScore = typeof left.sentimentScore === 'number' ? left.sentimentScore : -1;
+        const rightScore = typeof right.sentimentScore === 'number' ? right.sentimentScore : -1;
+        if (rightScore !== leftScore) {
+          return rightScore - leftScore;
+        }
+        const leftTime = getShanghaiTimeValue(left.lastAnalysisTime);
+        const rightTime = getShanghaiTimeValue(right.lastAnalysisTime);
+        return rightTime - leftTime;
+      });
+  }, [todayDateKey, todayHistoryItems]);
+
+  const handleAnalyzeWatchlist = useCallback(async (mode: WatchlistAnalyzeMode) => {
+    if (mode === 'pending' && watchlistTodayStatusBlocked) {
+      setBatchAnalyzeStatus({
+        variant: 'warning',
+        message: t('watchlist.pendingStatusUnavailable'),
+      });
+      return;
+    }
+
+    const sourceCodes = mode === 'pending' ? pendingWatchlistCodes : watchlistState.watchlistCodes;
+    const seen = new Set<string>();
+    const targetCodes = sourceCodes.filter((code) => {
+      const key = getStockCodeKey(code);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+
+    if (targetCodes.length === 0) {
+      setBatchAnalyzeStatus({
+        variant: 'warning',
+        message: mode === 'pending' ? t('watchlist.noPendingAnalyze') : t('watchlist.noStocksAnalyze'),
+      });
+      return;
+    }
+
+    setIsBatchAnalyzingWatchlist(true);
+    setBatchAnalyzeStatus(null);
+    let acceptedCount = 0;
+    let duplicateCount = 0;
+    let confirmedCodeCount = 0;
+    let submissionError: ParsedApiError | null = null;
+    try {
+      for (const chunk of chunkStockCodes(targetCodes)) {
+        try {
+          const result = await analysisApi.analyzeAsync({
+            stockCodes: chunk,
+            reportType: 'detailed',
+            notify,
+            skills: selectedAnalysisSkills,
+          });
+          const counts = countBatchAccepted(result);
+          acceptedCount += counts.accepted;
+          duplicateCount += counts.duplicates;
+          const confirmedInChunk = counts.accepted + counts.duplicates;
+          confirmedCodeCount += Math.min(confirmedInChunk, chunk.length);
+          if (confirmedInChunk !== chunk.length) {
+            submissionError = getParsedApiError(new Error(t('watchlist.batchIncompleteResponse', {
+              confirmed: confirmedInChunk,
+              requested: chunk.length,
+            })));
+            break;
+          }
+        } catch (error: unknown) {
+          if (error instanceof DuplicateTaskError && chunk.length === 1) {
+            duplicateCount += 1;
+            confirmedCodeCount += 1;
+            continue;
+          }
+          submissionError = getParsedApiError(error);
+          break;
+        }
+      }
+
+      // Reconcile even after a failed request: a timeout or disconnect may occur
+      // after the server has accepted tasks, and earlier chunks may be running.
+      await refreshActiveTasks();
+      setSidebarWorkspaceTab('watchlist');
+
+      if (submissionError) {
+        if (acceptedCount > 0 || duplicateCount > 0) {
+          setBatchAnalyzeStatus({
+            variant: 'warning',
+            message: t('watchlist.batchPartiallySubmitted', {
+              accepted: acceptedCount,
+              duplicates: duplicateCount,
+              unconfirmed: targetCodes.length - confirmedCodeCount,
+              error: submissionError.message || t('watchlist.batchFailed'),
+            }),
+          });
+        } else {
+          setBatchAnalyzeStatus({
+            variant: 'danger',
+            message: submissionError.message || t('watchlist.batchFailed'),
+          });
+        }
+        return;
+      }
+
+      setBatchAnalyzeStatus({
+        variant: acceptedCount > 0 ? 'success' : 'warning',
+        message: t('watchlist.batchSubmitted', {
+          accepted: acceptedCount,
+          duplicates: duplicateCount,
+        }),
+      });
+    } catch (error: unknown) {
+      const parsed = getParsedApiError(error);
+      setBatchAnalyzeStatus({
+        variant: 'danger',
+        message: parsed.message || t('watchlist.batchFailed'),
+      });
+    } finally {
+      setIsBatchAnalyzingWatchlist(false);
+    }
+  }, [
+    notify,
+    pendingWatchlistCodes,
+    refreshActiveTasks,
+    selectedAnalysisSkills,
+    t,
+    watchlistTodayStatusBlocked,
+    watchlistState.watchlistCodes,
+  ]);
+
   const mergedStockBarItems = useMemo<StockBarItem[]>(() => {
     const latestMarketReview = marketReviewHistoryItems[0];
     const stockItems = stockBarItems.filter((item) => item.stockCode !== 'MARKET');
@@ -663,12 +1208,28 @@ const HomePage: React.FC = () => {
     () => (
       <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
         <TaskPanel tasks={activeTasks} onOpenRunFlow={openTaskRunFlow} />
-        <StockBar
-          items={mergedStockBarItems}
-          isLoading={isLoadingStockBar}
+        <HomeStockWorkspace
+          activeTab={sidebarWorkspaceTab}
+          onTabChange={setSidebarWorkspaceTab}
+          watchlistRows={watchlistRows}
+          watchlistLoading={watchlistState.isLoading}
+          watchlistActioning={watchlistState.isActioning}
+          watchlistMessage={watchlistState.actionMessage}
+          onAddToWatchlist={watchlistState.addToWatchlist}
+          onRemoveFromWatchlist={watchlistState.removeFromWatchlist}
+          onRefreshWatchlist={watchlistState.refresh}
+          onAnalyzeWatchlist={handleAnalyzeWatchlist}
+          isBatchAnalyzing={isBatchAnalyzingWatchlist}
+          batchStatus={batchAnalyzeStatus}
+          todayItems={todayAnalysisItems}
+          isLoadingTodayItems={isLoadingTodayAnalysisItems}
+          todayLoadError={todayAnalysisLoadFailed}
+          watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
+          historyItems={mergedStockBarItems}
+          isLoadingHistory={isLoadingStockBar}
           selectedStockCode={selectedReport?.meta.stockCode}
           selectedRecordId={selectedReport?.meta.id}
-          onItemClick={handleHistoryItemClick}
+          onHistoryItemClick={handleHistoryItemClick}
           onDeleteStock={handleDeleteStock}
           isDeleting={isDeletingStock}
           className="flex-1 overflow-hidden"
@@ -677,14 +1238,29 @@ const HomePage: React.FC = () => {
     ),
     [
       activeTasks,
-      mergedStockBarItems,
-      isLoadingStockBar,
-      handleHistoryItemClick,
+      batchAnalyzeStatus,
+      handleAnalyzeWatchlist,
       handleDeleteStock,
+      handleHistoryItemClick,
+      isBatchAnalyzingWatchlist,
       isDeletingStock,
+      isLoadingStockBar,
+      isLoadingTodayAnalysisItems,
+      todayAnalysisLoadFailed,
+      mergedStockBarItems,
       openTaskRunFlow,
-      selectedReport?.meta.stockCode,
       selectedReport?.meta.id,
+      selectedReport?.meta.stockCode,
+      sidebarWorkspaceTab,
+      todayAnalysisItems,
+      watchlistAnalyzedTodayCount,
+      watchlistRows,
+      watchlistState.actionMessage,
+      watchlistState.addToWatchlist,
+      watchlistState.isActioning,
+      watchlistState.isLoading,
+      watchlistState.refresh,
+      watchlistState.removeFromWatchlist,
     ],
   );
 

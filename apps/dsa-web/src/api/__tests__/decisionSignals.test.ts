@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { decisionSignalsApi } from '../decisionSignals';
+import {
+  decisionSignalsApi,
+  getDecisionSignalReassessBlockedError,
+} from '../decisionSignals';
 
 const { get, post, patch, put } = vi.hoisted(() => ({
   get: vi.fn(),
@@ -37,6 +40,7 @@ describe('decisionSignalsApi', () => {
           source_agent: null,
           source_report_id: 3001,
           trace_id: 'trace-3001',
+          decision_profile: 'aggressive',
           market_phase: 'intraday',
           trigger_source: 'api',
           action: 'watch',
@@ -73,6 +77,7 @@ describe('decisionSignalsApi', () => {
       sourceType: 'analysis',
       sourceReportId: 3001,
       traceId: 'trace-3001',
+      decisionProfile: 'aggressive',
       marketPhase: 'intraday',
       triggerSource: 'api',
       action: 'watch',
@@ -105,6 +110,7 @@ describe('decisionSignalsApi', () => {
       source_type: 'analysis',
       source_report_id: 3001,
       trace_id: 'trace-3001',
+      decision_profile: 'aggressive',
       market_phase: 'intraday',
       trigger_source: 'api',
       action: 'watch',
@@ -132,10 +138,48 @@ describe('decisionSignalsApi', () => {
     expect(response.created).toBe(false);
     expect(response.item.id).toBe(11);
     expect(response.item.sourceReportId).toBe(3001);
+    expect(response.item.decisionProfile).toBe('aggressive');
     expect(response.item.entryLow).toBe(1680);
     expect(response.item.evidence).toEqual({ source_url: 'https://example.com/news' });
     expect(response.item.dataQualitySummary).toEqual({ raw_score: 80, level: 'usable' });
     expect(response.item.metadata).toEqual({ task_id: 'task-1' });
+  });
+
+  it('preserves explicit null metadata when creating a signal', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        item: {
+          id: 12,
+          stock_code: 'AAPL',
+          market: 'us',
+          source_type: 'manual',
+          trigger_source: 'web',
+          action: 'watch',
+          plan_quality: 'unknown',
+          status: 'active',
+          metadata: null,
+        },
+        created: true,
+      },
+    });
+
+    await decisionSignalsApi.create({
+      stockCode: 'AAPL',
+      market: 'us',
+      sourceType: 'manual',
+      triggerSource: 'web',
+      action: 'watch',
+      metadata: null,
+    });
+
+    expect(post).toHaveBeenCalledWith('/api/v1/decision-signals', {
+      stock_code: 'AAPL',
+      market: 'us',
+      source_type: 'manual',
+      trigger_source: 'web',
+      action: 'watch',
+      metadata: null,
+    });
   });
 
   it('lists signals with snake_case query params', async () => {
@@ -164,6 +208,7 @@ describe('decisionSignalsApi', () => {
       stockCode: '00700',
       action: 'hold',
       marketPhase: 'postmarket',
+      decisionProfile: 'unknown',
       sourceType: 'manual',
       sourceReportId: 99,
       traceId: 'trace-99',
@@ -185,6 +230,7 @@ describe('decisionSignalsApi', () => {
         stock_code: '00700',
         action: 'hold',
         market_phase: 'postmarket',
+        decision_profile: 'unknown',
         source_type: 'manual',
         source_report_id: 99,
         trace_id: 'trace-99',
@@ -230,6 +276,7 @@ describe('decisionSignalsApi', () => {
         },
         item: null,
         created: false,
+        persist_status: null,
         warnings: [
           {
             code: 'action_blocked_by_guardrail',
@@ -250,8 +297,8 @@ describe('decisionSignalsApi', () => {
       decision_profile: 'aggressive',
       persist: false,
     });
-    expect(response.preview.entryLow).toBe(1680);
-    expect(response.preview.metadata).toEqual({
+    expect(response.preview!.entryLow).toBe(1680);
+    expect(response.preview!.metadata).toEqual({
       decision_profile: 'aggressive',
       data_quality_level: 'medium',
       scoring_breakdown: { raw_action: 'buy' },
@@ -265,6 +312,89 @@ describe('decisionSignalsApi', () => {
       },
     });
     expect(response.blockedReason).toBe('actionable_signal_blocked_by_guardrail');
+    expect(response.persistStatus).toBeNull();
+  });
+
+  it('persists reassess and parses the authoritative server item', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        preview: null,
+        item: {
+          id: 88,
+          stock_code: '600519',
+          stock_name: '贵州茅台',
+          market: 'cn',
+          source_type: 'analysis',
+          source_report_id: 3001,
+          source_agent: 'decision_profile_reassess',
+          decision_profile: 'aggressive',
+          trigger_source: 'web:decision_profile_reassess',
+          action: 'watch',
+          plan_quality: 'partial',
+          status: 'active',
+          metadata: {
+            decision_profile: 'aggressive',
+            guardrail_result: { raw_action: 'buy', final_action: 'watch', passed: true },
+          },
+        },
+        created: true,
+        persist_status: 'created',
+        warnings: [{ code: 'action_adjusted_by_guardrail', message: '已调整。' }],
+        blocked_reason: null,
+      },
+    });
+
+    const response = await decisionSignalsApi.reassess({
+      sourceReportId: 3001,
+      decisionProfile: 'aggressive',
+      persist: true,
+    });
+
+    expect(post).toHaveBeenCalledWith('/api/v1/decision-signals/reassess', {
+      source_report_id: 3001,
+      decision_profile: 'aggressive',
+      persist: true,
+    });
+    expect(response.preview).toBeNull();
+    expect(response.item?.sourceReportId).toBe(3001);
+    expect(response.item?.sourceAgent).toBe('decision_profile_reassess');
+    expect(response.item?.metadata).toEqual({
+      decision_profile: 'aggressive',
+      guardrail_result: { raw_action: 'buy', final_action: 'watch', passed: true },
+    });
+    expect(response.created).toBe(true);
+    expect(response.persistStatus).toBe('created');
+  });
+
+  it('extracts structured guardrail blocked errors', () => {
+    const error = {
+      response: {
+        data: {
+          error: 'guardrail_blocked',
+          message: 'blocked',
+          blocked_reason: 'invalid_price_relationships',
+          warnings: [
+            {
+              code: 'action_blocked_by_guardrail',
+              message: '价格关系矛盾，未保存。',
+              params: { violations: ['stop_loss_not_below_target_price'] },
+            },
+          ],
+        },
+      },
+    };
+
+    expect(getDecisionSignalReassessBlockedError(error)).toEqual({
+      blockedReason: 'invalid_price_relationships',
+      warnings: [
+        {
+          code: 'action_blocked_by_guardrail',
+          message: '价格关系矛盾，未保存。',
+          params: { violations: ['stop_loss_not_below_target_price'] },
+        },
+      ],
+    });
+    expect(getDecisionSignalReassessBlockedError({ response: { data: { error: 'other' } } })).toBeNull();
   });
 
   it('rejects malformed list responses instead of treating missing items as empty', async () => {

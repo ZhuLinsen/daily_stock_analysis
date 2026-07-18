@@ -1,6 +1,7 @@
 export * from './ReportSummary';
 export * from './ReportDiagnostics';
 export * from './AnalysisContextSummary';
+export * from './MarketStructureCard';
 export * from './ReportOverview';
 export * from './ReportStrategy';
 export * from './ReportNews';

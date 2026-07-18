@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { historyApi } from '../../api/history';
-import type { AnalysisReport, HistoryListResponse, TaskInfo, TaskListResponse } from '../../types/analysis';
+import type {
+  AnalysisReport,
+  HistoryListResponse,
+  StockBarResponse,
+  TaskInfo,
+  TaskListResponse,
+} from '../../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../../utils/format';
 import { useStockPoolStore } from '../stockPoolStore';
 
@@ -33,6 +39,16 @@ const historyItem = {
   sentimentScore: 82,
   operationAdvice: '买入',
   createdAt: '2026-03-18T08:00:00Z',
+};
+
+const stockBarItem = {
+  id: 1,
+  stockCode: '600519',
+  stockName: '贵州茅台',
+  sentimentScore: 82,
+  operationAdvice: '买入',
+  analysisCount: 1,
+  lastAnalysisTime: '2026-03-18T08:00:00Z',
 };
 
 const historyReport = {
@@ -1189,5 +1205,101 @@ describe('stockPoolStore', () => {
       stockCode: '600519',
       forceRefresh: true,
     }));
+  });
+
+  it('clears stock-bar loading when a refresh supersedes the initial load', async () => {
+    const initialStockBarRequest = createDeferred<StockBarResponse>();
+    const refreshStockBarRequest = createDeferred<StockBarResponse>();
+
+    vi.mocked(historyApi.getStockBarList)
+      .mockReturnValueOnce(initialStockBarRequest.promise)
+      .mockReturnValueOnce(refreshStockBarRequest.promise);
+
+    const initialPromise = useStockPoolStore.getState().loadStockBar();
+    expect(useStockPoolStore.getState().isLoadingStockBar).toBe(true);
+
+    const refreshPromise = useStockPoolStore.getState().refreshStockBar();
+    refreshStockBarRequest.resolve({
+      total: 1,
+      items: [stockBarItem],
+    });
+    await refreshPromise;
+
+    expect(useStockPoolStore.getState().isLoadingStockBar).toBe(false);
+
+    initialStockBarRequest.resolve({
+      total: 0,
+      items: [],
+    });
+    await initialPromise;
+
+    expect(useStockPoolStore.getState().stockBarItems).toEqual([stockBarItem]);
+    expect(useStockPoolStore.getState().isLoadingStockBar).toBe(false);
+  });
+
+  it('keeps stock-bar failure state when a stale older request succeeds after a newer failure', async () => {
+    const staleStockBarRequest = createDeferred<StockBarResponse>();
+    const latestStockBarRequest = createDeferred<StockBarResponse>();
+
+    vi.mocked(historyApi.getStockBarList)
+      .mockReturnValueOnce(staleStockBarRequest.promise)
+      .mockReturnValueOnce(latestStockBarRequest.promise);
+
+    const stalePromise = useStockPoolStore.getState().refreshStockBar();
+    const latestPromise = useStockPoolStore.getState().refreshStockBar();
+
+    latestStockBarRequest.reject(new Error('latest failed'));
+    staleStockBarRequest.resolve({
+      total: 1,
+      items: [stockBarItem],
+    });
+
+    await Promise.all([stalePromise, latestPromise]);
+
+    const stateAfterLatest = useStockPoolStore.getState();
+    expect(stateAfterLatest.stockBarRefreshFailed).toBe(true);
+
+    expect(stateAfterLatest.stockBarItems).toEqual([]);
+  });
+
+  it('keeps newer stock-bar results when a stale earlier request fails after newer success', async () => {
+    const staleStockBarRequest = createDeferred<StockBarResponse>();
+    const latestStockBarRequest = createDeferred<StockBarResponse>();
+
+    const latestItems = [
+      {
+        ...stockBarItem,
+        id: 8,
+      },
+    ];
+    const staleItems = [
+      {
+        ...stockBarItem,
+        id: 9,
+      },
+    ];
+
+    vi.mocked(historyApi.getStockBarList)
+      .mockReturnValueOnce(staleStockBarRequest.promise)
+      .mockReturnValueOnce(latestStockBarRequest.promise);
+
+    const stalePromise = useStockPoolStore.getState().refreshStockBar();
+    const latestPromise = useStockPoolStore.getState().refreshStockBar();
+
+    latestStockBarRequest.resolve({
+      total: latestItems.length,
+      items: latestItems,
+    });
+    await latestPromise;
+
+    staleStockBarRequest.resolve({
+      total: staleItems.length,
+      items: staleItems,
+    });
+    await stalePromise;
+
+    const finalState = useStockPoolStore.getState();
+    expect(finalState.stockBarItems).toEqual(latestItems);
+    expect(finalState.stockBarRefreshFailed).toBe(false);
   });
 });

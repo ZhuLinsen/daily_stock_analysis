@@ -34,6 +34,7 @@ pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
 openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
 numpy>=1.24.0               # Numeric computing
 json-repair>=0.55.1         # JSON repair
+orjson>=3.10,<4             # LiteLLM runtime JSON dependency; explicitly bundled in desktop builds
 
 # AI analysis
 # Keep the historical minimum version while excluding quarantined builds and avoiding future major breaks.

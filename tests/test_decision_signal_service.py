@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -127,6 +128,95 @@ def test_service_normalizes_fields_and_partial_plan_quality(isolated_db) -> None
     assert item["entry_low"] == 1680.5
     assert item["stop_loss"] == 1600.0
     assert item["plan_quality"] == "partial"
+    assert item["decision_profile"] == "balanced"
+    assert item["metadata"]["decision_profile"] == "balanced"
+
+
+def test_service_canonicalizes_decision_profile_and_rejects_non_object_metadata(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    caller_metadata = {"decision_profile": "balanced", "task_id": "conflict"}
+    top_level = service.create_signal(
+        _payload(
+            source_report_id=1111,
+            trace_id="trace-profile-top-level",
+            decision_profile="aggressive",
+            metadata=caller_metadata,
+        )
+    )["item"]
+    assert top_level["decision_profile"] == "aggressive"
+    assert top_level["metadata"]["decision_profile"] == "aggressive"
+    assert top_level["metadata"]["task_id"] == "conflict"
+    assert caller_metadata == {
+        "decision_profile": "balanced",
+        "task_id": "conflict",
+    }
+
+    legacy_metadata = service.create_signal(
+        _payload(
+            source_report_id=1112,
+            trace_id="trace-profile-metadata",
+            metadata={"decision_profile": "conservative"},
+        )
+    )["item"]
+    assert legacy_metadata["decision_profile"] == "conservative"
+    assert legacy_metadata["metadata"]["decision_profile"] == "conservative"
+
+    invalid_metadata_profile = service.create_signal(
+        _payload(
+            source_report_id=1113,
+            trace_id="trace-profile-invalid-metadata",
+            metadata={"decision_profile": "balanced-v2"},
+        )
+    )["item"]
+    assert invalid_metadata_profile["decision_profile"] == "balanced"
+    assert invalid_metadata_profile["metadata"]["decision_profile"] == "balanced"
+
+    with pytest.raises(ValueError, match="decision_profile"):
+        service.create_signal(
+            _payload(
+                source_report_id=1116,
+                trace_id="trace-profile-null-top-level",
+                decision_profile=None,
+            )
+        )
+
+    with pytest.raises(ValueError, match="decision_profile"):
+        service.create_signal(
+            _payload(
+                source_report_id=1117,
+                trace_id="trace-profile-empty-top-level",
+                decision_profile="",
+            )
+        )
+
+    with pytest.raises(ValueError, match="decision_profile"):
+        service.create_signal(
+            _payload(
+                source_report_id=1114,
+                trace_id="trace-profile-invalid-top-level",
+                decision_profile="balanced-v2",
+            )
+        )
+
+    with pytest.raises(ValueError, match="metadata must be an object"):
+        service.create_signal(
+            _payload(
+                source_report_id=1115,
+                trace_id="trace-profile-non-object-metadata",
+                metadata=["legacy"],
+            )
+        )
+
+    null_metadata = service.create_signal(
+        _payload(
+            source_report_id=1118,
+            trace_id="trace-profile-null-metadata",
+            metadata=None,
+        )
+    )["item"]
+    assert null_metadata["decision_profile"] == "balanced"
+    assert null_metadata["metadata"] == {"decision_profile": "balanced"}
 
 
 def test_service_defaults_lifecycle_and_preserves_explicit_values(isolated_db) -> None:
@@ -282,6 +372,87 @@ def test_list_signals_lazily_backfills_analysis_history_signal(isolated_db) -> N
         assert session.query(DecisionSignalRecord).count() == 1
 
 
+def test_list_signals_profile_filter_controls_lazy_backfill(isolated_db) -> None:
+    record_id = isolated_db.save_analysis_history(
+        result=_history_result(),
+        query_id="query-lazy-signal-profile-filter",
+        report_type="simple",
+        news_content="新闻摘要",
+        context_snapshot={"market_phase_summary": {"phase": "postmarket"}},
+        save_snapshot=True,
+    )
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    unknown = service.list_signals(
+        source_type="analysis",
+        source_report_id=record_id,
+        decision_profile="unknown",
+    )
+    conservative = service.list_signals(
+        source_type="analysis",
+        source_report_id=record_id,
+        decision_profile="conservative",
+    )
+    with isolated_db.get_session() as session:
+        assert session.query(DecisionSignalRecord).count() == 0
+
+    balanced = service.list_signals(
+        source_type="analysis",
+        source_report_id=record_id,
+        decision_profile="balanced",
+    )
+
+    assert unknown == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert conservative == {"items": [], "total": 0, "page": 1, "page_size": 20}
+    assert balanced["total"] == 1
+    assert balanced["items"][0]["decision_profile"] == "balanced"
+    with isolated_db.get_session() as session:
+        assert session.query(DecisionSignalRecord).count() == 1
+def test_list_signals_backfill_uses_raw_result_market_structure_without_snapshot(isolated_db) -> None:
+    market_structure = {
+        "schema_version": "market-structure-v1",
+        "status": "partial",
+        "market": "cn",
+        "market_theme_context": {
+            "schema_version": "market-theme-v1",
+            "status": "partial",
+            "market": "cn",
+        },
+        "stock_market_position": {
+            "schema_version": "stock-market-position-v1",
+            "status": "partial",
+            "stock_code": "300024",
+            "market": "cn",
+            "primary_theme": {"name": "机器人概念"},
+            "theme_phase": "accelerating",
+            "stock_role": "follower",
+            "risk_tags": [{"code": "theme_data_partial"}],
+        },
+    }
+    record_id = isolated_db.save_analysis_history(
+        result=_history_result(code="300024", name="机器人", market_structure_context=market_structure),
+        query_id="query-lazy-signal-market-structure",
+        report_type="simple",
+        news_content="新闻摘要",
+        context_snapshot={"market_structure_context": {"ignored": True}},
+        save_snapshot=False,
+    )
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    listed = service.list_signals(source_type="analysis", source_report_id=record_id)
+
+    assert listed["total"] == 1
+    metadata = listed["items"][0]["metadata"]
+    assert metadata["market_structure_version"] == "market-structure-v1"
+    assert metadata["market_theme_version"] == "market-theme-v1"
+    assert metadata["stock_market_position_version"] == "stock-market-position-v1"
+    assert metadata["market_structure_status"] == "partial"
+    assert metadata["primary_theme"] == "机器人概念"
+    assert metadata["theme_phase"] == "accelerating"
+    assert metadata["stock_role"] == "follower"
+    assert metadata["market_structure_risk_tags"] == ["theme_data_partial"]
+
+
 @pytest.mark.parametrize(
     ("market_phase_summary", "created_offset", "expected_ttl"),
     (
@@ -388,7 +559,7 @@ def test_list_signals_invalidates_stale_backfill_when_newer_opposing_signal_exis
         context_snapshot={"market_phase_summary": {"phase": "postmarket"}},
         save_snapshot=True,
     )
-    report_created_at = utc_naive_now() - timedelta(days=1)
+    report_created_at = utc_naive_now() - timedelta(hours=1)
     with isolated_db.get_session() as session:
         row = session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).one()
         row.created_at = report_created_at
@@ -410,12 +581,53 @@ def test_list_signals_invalidates_stale_backfill_when_newer_opposing_signal_exis
     assert backfilled["source_report_id"] == record_id
     assert backfilled["action"] == "buy"
     assert backfilled["status"] == "invalidated"
+    assert backfilled["metadata"]["decision_profile"] == "balanced"
     assert backfilled["metadata"]["invalidated_by_signal_id"] == newer_sell["id"]
     assert backfilled["metadata"]["invalidated_reason"] == "opposite_active_signal:buy->sell"
     assert service.get_signal(newer_sell["id"])["status"] == "active"
 
     latest = service.get_latest_active(stock_code="600519", limit=5)
     assert [item["id"] for item in latest["items"]] == [newer_sell["id"]]
+
+
+def test_list_signals_stale_backfill_invalidation_does_not_cross_profile(isolated_db) -> None:
+    record_id = isolated_db.save_analysis_history(
+        result=_history_result(
+            operation_advice="买入",
+            decision_type="buy",
+            action="buy",
+            action_label="买入",
+            analysis_summary="旧报告建议买入。",
+        ),
+        query_id="query-stale-backfill-profile-buy",
+        report_type="simple",
+        news_content="新闻摘要",
+        context_snapshot={"market_phase_summary": {"phase": "postmarket"}},
+        save_snapshot=True,
+    )
+    report_created_at = utc_naive_now() - timedelta(days=1)
+    with isolated_db.get_session() as session:
+        row = session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).one()
+        row.created_at = report_created_at
+        session.commit()
+
+    service = DecisionSignalService(db_manager=isolated_db)
+    newer_sell = service.create_signal(
+        _payload(
+            source_report_id=record_id + 1000,
+            trace_id="trace-newer-opposing-sell-aggressive",
+            action="sell",
+            decision_profile="aggressive",
+        )
+    )["item"]
+
+    listed = service.list_signals(source_type="analysis", source_report_id=record_id)
+
+    assert listed["total"] == 1
+    backfilled = listed["items"][0]
+    assert backfilled["decision_profile"] == "balanced"
+    assert backfilled["status"] == "active"
+    assert service.get_signal(newer_sell["id"])["status"] == "active"
 
 
 def test_list_signals_does_not_backfill_market_review_history(isolated_db) -> None:
@@ -982,6 +1194,54 @@ def test_service_rejects_terminal_status_reactivation(isolated_db, terminal_stat
         service.update_status(signal_id, status="active")
 
 
+def test_service_status_metadata_preserves_null_contract_and_profile_identity(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    signal = service.create_signal(
+        _payload(
+            source_report_id=365,
+            trace_id="trace-status-profile",
+            decision_profile="aggressive",
+        )
+    )["item"]
+
+    preserved = service.update_status(signal["id"], status="active")
+    assert preserved["metadata"] == signal["metadata"]
+
+    updated = service.update_status(
+        signal["id"],
+        status="closed",
+        metadata={"decision_profile": "balanced", "closed_by": "tester"},
+        replace_metadata=True,
+    )
+    assert updated["decision_profile"] == "aggressive"
+    assert updated["metadata"] == {
+        "decision_profile": "aggressive",
+        "closed_by": "tester",
+    }
+
+    cleared = service.update_status(
+        signal["id"],
+        status="archived",
+        metadata=None,
+        replace_metadata=True,
+    )
+    assert cleared["metadata"] is None
+
+    legacy_fields, _ = service._normalize_payload(
+        _payload(source_report_id=366, trace_id="trace-status-legacy-profile")
+    )
+    legacy_fields["decision_profile"] = None
+    legacy = service.repo.create(legacy_fields)
+    legacy_updated = service.update_status(
+        legacy.id,
+        status="closed",
+        metadata={"decision_profile": "balanced", "closed_by": "tester"},
+        replace_metadata=True,
+    )
+    assert legacy_updated["decision_profile"] is None
+    assert legacy_updated["metadata"] == {"closed_by": "tester"}
+
+
 def test_service_invalidates_opposing_active_signals(isolated_db) -> None:
     service = DecisionSignalService(db_manager=isolated_db)
     old_buy = service.create_signal(
@@ -992,6 +1252,14 @@ def test_service_invalidates_opposing_active_signals(isolated_db) -> None:
             metadata={"task_id": "old-buy"},
         )
     )["item"]
+
+    with isolated_db.get_session() as session:
+        row = session.get(DecisionSignalRecord, old_buy["id"])
+        row.metadata_json = json.dumps({
+            "decision_profile": "aggressive",
+            "task_id": "old-buy",
+        })
+        session.commit()
 
     new_sell = service.create_signal(
         _payload(
@@ -1005,12 +1273,99 @@ def test_service_invalidates_opposing_active_signals(isolated_db) -> None:
     assert new_sell["status"] == "active"
     assert old_after["status"] == "invalidated"
     assert old_after["metadata"]["task_id"] == "old-buy"
+    assert old_after["metadata"]["decision_profile"] == "balanced"
     assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
     assert old_after["metadata"]["invalidated_reason"] == "opposite_active_signal:buy->sell"
     assert old_after["metadata"]["previous_status"] == "active"
 
     latest = service.get_latest_active(stock_code="600519", limit=5)
     assert [item["id"] for item in latest["items"]] == [new_sell["id"]]
+
+
+def test_service_opposing_signal_invalidation_is_same_profile_and_null_safe(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_balanced_buy = service.create_signal(
+        _payload(
+            source_report_id=3721,
+            trace_id="trace-opposing-balanced-buy",
+            action="buy",
+            decision_profile="balanced",
+        )
+    )["item"]
+    aggressive_sell = service.create_signal(
+        _payload(
+            source_report_id=3722,
+            trace_id="trace-opposing-aggressive-sell",
+            action="sell",
+            decision_profile="aggressive",
+        )
+    )["item"]
+
+    assert service.get_signal(old_balanced_buy["id"])["status"] == "active"
+    assert aggressive_sell["status"] == "active"
+
+    balanced_sell = service.create_signal(
+        _payload(
+            source_report_id=3723,
+            trace_id="trace-opposing-balanced-sell",
+            action="sell",
+            decision_profile="balanced",
+        )
+    )["item"]
+    assert service.get_signal(old_balanced_buy["id"])["status"] == "invalidated"
+    assert service.get_signal(aggressive_sell["id"])["status"] == "active"
+    assert balanced_sell["status"] == "active"
+
+    legacy_buy_fields, _ = service._normalize_payload(
+        _payload(
+            source_report_id=3724,
+            trace_id="trace-opposing-null-buy",
+            action="buy",
+        )
+    )
+    legacy_buy_fields["decision_profile"] = None
+    legacy_buy = service.repo.create(legacy_buy_fields)
+
+    legacy_no_profile_fields, _ = service._normalize_payload(
+        _payload(
+            source_report_id=3727,
+            trace_id="trace-opposing-null-buy-no-profile",
+            action="buy",
+        )
+    )
+    legacy_no_profile_fields["decision_profile"] = None
+    legacy_no_profile_fields["metadata_json"] = json.dumps({"legacy_marker": "keep"})
+    legacy_no_profile = service.repo.create(legacy_no_profile_fields)
+
+    balanced_sell_2 = service.create_signal(
+        _payload(
+            source_report_id=3725,
+            trace_id="trace-opposing-balanced-sell-2",
+            action="sell",
+            decision_profile="balanced",
+        )
+    )["item"]
+    assert service.get_signal(legacy_buy.id)["status"] == "active"
+
+    legacy_sell_fields, _ = service._normalize_payload(
+        _payload(
+            source_report_id=3726,
+            trace_id="trace-opposing-null-sell",
+            action="sell",
+        )
+    )
+    legacy_sell_fields["decision_profile"] = None
+    legacy_sell = service.repo.create(legacy_sell_fields)
+    service._invalidate_opposing_active_signals(legacy_sell, reference_at=legacy_sell.created_at)
+
+    legacy_buy_after = service.get_signal(legacy_buy.id)
+    assert legacy_buy_after["status"] == "invalidated"
+    assert legacy_buy_after["metadata"]["decision_profile"] == "balanced"
+    legacy_no_profile_after = service.get_signal(legacy_no_profile.id)
+    assert legacy_no_profile_after["status"] == "invalidated"
+    assert legacy_no_profile_after["metadata"]["legacy_marker"] == "keep"
+    assert "decision_profile" not in legacy_no_profile_after["metadata"]
+    assert service.get_signal(balanced_sell_2["id"])["status"] == "active"
 
 
 def test_service_expired_refresh_invalidates_later_opposing_active_signal(isolated_db) -> None:
@@ -1034,6 +1389,8 @@ def test_service_expired_refresh_invalidates_later_opposing_active_signal(isolat
     assert refreshed["created"] is False
     assert refreshed["item"]["id"] == old_buy["id"]
     assert refreshed["item"]["status"] == "active"
+    assert refreshed["item"]["decision_profile"] == "balanced"
+    assert refreshed["item"]["metadata"]["decision_profile"] == "balanced"
     sell_after = service.get_signal(active_sell["id"])
     assert sell_after["status"] == "invalidated"
     assert sell_after["metadata"]["invalidated_by_signal_id"] == old_buy["id"]
@@ -1061,7 +1418,19 @@ def test_service_does_not_invalidate_neutral_or_terminal_signals(isolated_db) ->
     assert service.get_signal(old_buy["id"])["status"] == "closed"
 
 
-def test_service_replaces_corrupt_metadata_during_invalidation(isolated_db) -> None:
+@pytest.mark.parametrize(
+    "invalid_metadata",
+    [
+        "{not valid json",
+        b"\xff",
+        "[" * 10_000 + "]" * 10_000,
+    ],
+    ids=["malformed-text", "invalid-blob", "too-deep"],
+)
+def test_service_replaces_corrupt_metadata_during_invalidation(
+    isolated_db,
+    invalid_metadata,
+) -> None:
     service = DecisionSignalService(db_manager=isolated_db)
     old_buy = service.create_signal(
         _payload(source_report_id=391, trace_id="trace-corrupt-metadata-buy", action="buy")
@@ -1069,7 +1438,7 @@ def test_service_replaces_corrupt_metadata_during_invalidation(isolated_db) -> N
 
     with isolated_db.get_session() as session:
         row = session.query(DecisionSignalRecord).filter_by(id=old_buy["id"]).one()
-        row.metadata_json = "{not valid json"
+        row.metadata_json = invalid_metadata
         session.commit()
 
     new_sell = service.create_signal(
@@ -1079,6 +1448,7 @@ def test_service_replaces_corrupt_metadata_during_invalidation(isolated_db) -> N
     old_after = service.get_signal(old_buy["id"])
     assert old_after["status"] == "invalidated"
     assert old_after["metadata"]["metadata_replaced_due_to_invalid_json"] is True
+    assert old_after["metadata"]["decision_profile"] == "balanced"
     assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
 
 
@@ -1100,6 +1470,7 @@ def test_service_replaces_non_object_metadata_during_invalidation(isolated_db) -
     old_after = service.get_signal(old_buy["id"])
     assert old_after["status"] == "invalidated"
     assert old_after["metadata"]["metadata_replaced_due_to_non_object"] is True
+    assert old_after["metadata"]["decision_profile"] == "balanced"
     assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
 
 
@@ -1187,6 +1558,7 @@ def test_service_propagates_unexpected_invalidation_failures(isolated_db) -> Non
                 action=fields["action"],
                 market=fields["market"],
                 stock_code=fields["stock_code"],
+                decision_profile=fields["decision_profile"],
             )
             return DecisionSignalCreateResult(
                 row=row,
