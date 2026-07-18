@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] `TencentFetcher` 兜底优先级从 0（与 EfinanceFetcher 并列）下调为 5，避免 A 股日线在 EfinanceFetcher 单次失败/熔断时越过 AkshareFetcher/TushareFetcher/PytdxFetcher/BaostockFetcher/YfinanceFetcher 直接降级到仅有 OHLCV、无基本面字段的 Tencent 直连源；新增 `TENCENT_PRIORITY` 配置项支持自定义。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
 - [改进] 个股报告不再单独展示“题材主线与个股位置”卡片，相关市场结构数据仍保留在分析上下文、模型 Prompt 与决策信号提取链路中。
 - [改进] 通知推送与完整 Markdown/微信报告不再重复附加“AI 决策信号”摘要，DecisionSignal 的存储、告警和 Web AI 建议页保持不变。
