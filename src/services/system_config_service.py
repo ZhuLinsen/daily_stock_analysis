@@ -4315,41 +4315,59 @@ class SystemConfigService:
 
     @staticmethod
     def _extract_llm_completion_content(response: Any) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+        def _field(obj: Any, key: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        def _text_from_blocks(blocks: Any) -> str:
+            if not isinstance(blocks, list):
+                return ""
+            text_parts: List[str] = []
+            for block in blocks:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                    continue
+                block_type = str(_field(block, "type") or "").strip().lower()
+                if block_type and block_type not in {"text", "output_text"}:
+                    continue
+                text = _field(block, "text")
+                if text is None:
+                    text = _field(block, "content")
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
+            return "".join(text_parts).strip()
+
         if response is None:
             return "", "empty_response", "Completion returned no response object", "null_response"
 
-        choices = getattr(response, "choices", None)
+        choices = _field(response, "choices")
         if not choices:
             return "", "format_error", "Completion response did not include choices", "malformed_choices"
 
         choice = choices[0]
-        content_blocks = getattr(choice, "content_blocks", None)
+        content_blocks = _field(choice, "content_blocks")
+        message = _field(choice, "message")
         if content_blocks is None:
-            message = getattr(choice, "message", None)
             if message is not None:
-                content_blocks = getattr(message, "content_blocks", None)
-        message = getattr(choice, "message", None)
+                content_blocks = _field(message, "content_blocks")
         if content_blocks is not None:
-            text_parts: List[str] = []
-            for block in content_blocks:
-                if getattr(block, "type", None) == "text":
-                    text = getattr(block, "text", "") or ""
-                    if text:
-                        text_parts.append(str(text))
-                elif hasattr(block, "content") and block.content:
-                    text_parts.append(str(block.content))
-            content = "".join(text_parts).strip()
+            content = _text_from_blocks(content_blocks)
             if content:
                 return content, None, None, None
 
         if message is None:
             return "", "format_error", "Completion response did not include a message object", "malformed_choices"
-        if not hasattr(message, "content"):
+        if isinstance(message, dict):
+            has_content = "content" in message
+        else:
+            has_content = hasattr(message, "content")
+        if not has_content:
             return "", "format_error", "Completion message did not include a content field", "malformed_choices"
-        raw_content = message.content
+        raw_content = _field(message, "content")
         if raw_content is None:
             return "", "empty_response", "Completion returned null message content", "null_content"
-        content = str(raw_content).strip()
+        content = _text_from_blocks(raw_content) if isinstance(raw_content, list) else str(raw_content).strip()
         if not content:
             return "", "empty_response", "Completion returned an empty message content", "empty_content"
         return content, None, None, None

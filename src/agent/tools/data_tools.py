@@ -531,7 +531,7 @@ get_stock_info_tool = ToolDefinition(
         ToolParameter(
             name="stock_code",
             type="string",
-            description="A-share stock code, e.g., '600519'",
+            description="Stock code: A-share '600519', US 'AAPL', HK '00700'",
         ),
     ],
     handler=_handle_get_stock_info,
