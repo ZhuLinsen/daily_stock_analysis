@@ -237,10 +237,11 @@ daily_stock_analysis/
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
+| `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
-| `AGENT_LITELLM_MODEL` | Agent 主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 问股可见对话上下文压缩开关；默认关闭，开启后仅压缩 `session_id` 下 user/assistant 文本历史 | `false` | 否 |
+| `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
@@ -276,6 +277,8 @@ daily_stock_analysis/
 > *注：`ANSPIRE_API_KEYS`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 或 `OLLAMA_API_BASE` 至少配置一个。`ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
 
 > 问股 single-agent 路径会在后台为 DeepSeek V4 thinking + tool-call 保存最近 3 条 provider trace，并按原时序回放 `reasoning_content` / tool 结果；该能力不新增配置项，不进入 Web 历史 API，Claude extended thinking 仅覆盖离线 plumbing，multi-agent trace 注入留作后续增强。
+
+> `AGENT_BACKEND=codex_app_server` 是仅作用于现有问股 Chat 的实验入口：需在运行 DSA 的设备安装并登录 Codex，Web 路径为「设置 → Agent 设置 → 问股生成方式」，选择后保持 `AGENT_ARCH=single`，并设置大于 0 的整体时限。设置页只检查配置、Codex 命令和所需协议是否允许尝试，不登录、不调用模型或读取股票数据；保存后可直接提问，第一次问题就是第一次真实执行。Codex 当前只能读取已保存的分析上下文和回测汇总；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具请改用「默认模型」。点击停止后，页面会显示“正在停止”；只有 Codex 与本轮工具任务均已退出，才显示最终“已停止”。它当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；Phase 2 `codex_cli` 生成能力不受影响。它不支持 Codex Multi Agent / Codex Deep Research，也不改变现有 LiteLLM Multi Agent、Deep Research、普通报告或定时任务。Codex 不是离线模型，股票问题和脱敏工具结果可能由 Codex 配置的服务处理；DSA 不读取或保存 Codex 凭据。Docker、远程服务器和 Desktop 必须分别保证其后端进程 PATH 可见 Codex。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#codex-本地-agentphase-6-实验原型)。
 
 ### 通知渠道配置
 
@@ -877,6 +880,10 @@ P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report met
 Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
 
 该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+
+`AgentResult.runtime_facts` 是内部可选字段，用于保存本次 Orchestrator 运行中已收集的基础 Agent 意见、degradation event、Pipeline termination 和实际 risk application。degradation event 使用 `DURING_STAGE` 区分 stage 自身失败，使用 `BEFORE_STAGE` 表示该 stage 因 Pipeline deadline 或 budget guard 未启动。stage 已完成后触发 deadline check 时不把该 stage 记录为 timeout degradation；`pipeline_termination.last_completed_stage` 从 `AgentRunStats.stage_results` 中最后一个真实 `COMPLETED` 结果取得，也可能为空。
+
+结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 

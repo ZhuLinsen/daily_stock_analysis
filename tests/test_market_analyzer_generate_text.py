@@ -84,6 +84,26 @@ _OPENAI_COMPATIBILITY_PAYLOAD_FIXTURES = [
         },
         "list response",
     ),
+    # Repro case 3 (Issue #2013): MiniMax reasoning and final text share
+    # content_blocks.  Only the final text may reach the strict JSON parser.
+    (
+        "openai/MiniMax-M3",
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "content_blocks": [
+                            {"type": "reasoning", "text": "I should analyze the stock first."},
+                            {"type": "text", "text": '{"sentiment_score": 72}'},
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        },
+        '{"sentiment_score": 72}',
+    ),
 ]
 
 
@@ -1414,7 +1434,11 @@ class TestAnalyzerGenerateText:
     @pytest.mark.parametrize(
         "provider_model,response_payload,expected_text",
         _OPENAI_COMPATIBILITY_PAYLOAD_FIXTURES,
-        ids=["issue1279-message-content-null", "issue1279-message-content-list"],
+        ids=[
+            "issue1279-message-content-null",
+            "issue1279-message-content-list",
+            "issue2013-minimax-reasoning-block",
+        ],
     )
     def test_call_litellm_extracts_external_provider_text_shapes(self, provider_model, response_payload, expected_text):
         analyzer = self._make_analyzer()
@@ -1432,6 +1456,166 @@ class TestAnalyzerGenerateText:
         assert text == expected_text
         assert model_used == provider_model
         _assert_usage_contains(usage, response_payload["usage"])
+
+    def test_call_litellm_minimax_reasoning_only_blocks_fall_back_to_message_content(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/MiniMax-M3",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    content_blocks=[
+                        SimpleNamespace(type="thinking", text="Internal reasoning"),
+                    ],
+                    message=SimpleNamespace(content='{"sentiment_score": 72}'),
+                )
+            ],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            text, model_used, _usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+            )
+
+        assert text == '{"sentiment_score": 72}'
+        assert model_used == "openai/MiniMax-M3"
+
+    def test_call_litellm_minimax_strips_leading_think_wrapper(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/MiniMax-M3",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    content_blocks=None,
+                    message=SimpleNamespace(
+                        content='<think>Internal reasoning</think>\n{"sentiment_score": 72}'
+                    ),
+                )
+            ],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            text, model_used, _usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+                response_validator=analyzer._validate_json_response,
+            )
+
+        assert text == '{"sentiment_score": 72}'
+        assert model_used == "openai/MiniMax-M3"
+
+    def test_call_litellm_preserves_think_markup_inside_json_string(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/MiniMax-M3",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+        expected = '{"analysis_summary":"literal <think>text</think>"}'
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    content_blocks=None,
+                    message=SimpleNamespace(content=expected),
+                )
+            ],
+            usage=None,
+        )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+            text, model_used, _usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+                response_validator=analyzer._validate_json_response,
+            )
+
+        assert text == expected
+        assert model_used == "openai/MiniMax-M3"
+
+    def test_call_litellm_minimax_stream_ignores_reasoning_blocks(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/MiniMax-M3",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+
+        def stream_response():
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=[
+                                {"type": "reasoning", "text": "Internal reasoning"},
+                                {"type": "text", "text": '{"sentiment_score": '},
+                            ]
+                        )
+                    )
+                ],
+                usage=None,
+            )
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=[{"type": "text", "text": "72}"}]
+                        )
+                    )
+                ],
+                usage=None,
+            )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=stream_response()):
+            text, model_used, _usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+                stream=True,
+                response_validator=analyzer._validate_json_response,
+            )
+
+        assert text == '{"sentiment_score": 72}'
+        assert model_used == "openai/MiniMax-M3"
+
+    def test_call_litellm_minimax_stream_strips_split_think_wrapper(self):
+        analyzer = self._make_analyzer()
+        analyzer._config_override = SimpleNamespace(
+            litellm_model="openai/MiniMax-M3",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+        )
+
+        def stream_response():
+            for content in (
+                "<thi",
+                "nk>Internal reasoning</think>",
+                '{"sentiment_score": ',
+                "72}",
+            ):
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+                    usage=None,
+                )
+
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=stream_response()):
+            text, model_used, _usage = analyzer._call_litellm(
+                "prompt",
+                {"max_tokens": 128, "temperature": 0.2},
+                stream=True,
+                response_validator=analyzer._validate_json_response,
+            )
+
+        assert text == '{"sentiment_score": 72}'
+        assert model_used == "openai/MiniMax-M3"
 
     def test_call_litellm_falls_back_to_message_content_when_blocks_empty(self):
         analyzer = self._make_analyzer()

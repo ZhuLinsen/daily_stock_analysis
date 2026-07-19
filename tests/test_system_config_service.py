@@ -71,6 +71,99 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
 
+    def _assert_agent_backend_status_matches_runtime(
+        self,
+        *,
+        saved_backend: str,
+        runtime_backend: str,
+    ) -> None:
+        from src.agent.agent_backend import resolve_agent_backend_id
+        from src.services.agent_backend_status_service import AgentBackendStatusService
+
+        self._rewrite_env(
+            "GEMINI_API_KEY=secret-key-value",
+            f"AGENT_BACKEND={saved_backend}",
+            "AGENT_ARCH=single",
+        )
+        codex_status = {
+            "backend": "codex_app_server",
+            "available": True,
+            "experimental": True,
+            "version": "codex-cli test",
+            "error_code": None,
+            "message": None,
+        }
+        with (
+            patch.dict(os.environ, {"AGENT_BACKEND": runtime_backend}),
+            patch.object(
+                AgentBackendStatusService,
+                "_codex_cheap_status",
+                return_value=codex_status,
+            ),
+        ):
+            Config.reset_instance()
+            runtime_config = Config.get_instance()
+            with patch.dict(os.environ, {"AGENT_BACKEND": saved_backend}):
+                settings_status = self.service.get_agent_backend_status()
+                chat_status = AgentBackendStatusService(config=runtime_config).get_status()
+                selected_backend = resolve_agent_backend_id(runtime_config)
+                preview_baseline = self.service.preview_agent_backend_status(items=[])
+                preview_draft = self.service.preview_agent_backend_status(
+                    items=[{"key": "AGENT_BACKEND", "value": saved_backend}],
+                )
+
+        self.assertEqual(settings_status["backend"], runtime_backend)
+        self.assertEqual(chat_status["backend"], runtime_backend)
+        self.assertEqual(selected_backend, runtime_backend)
+        self.assertEqual(preview_baseline["backend"], runtime_backend)
+        self.assertEqual(preview_draft["backend"], saved_backend)
+        self.assertIs(Config.get_instance(), runtime_config)
+
+    def test_agent_backend_status_prefers_runtime_litellm_over_saved_codex(self) -> None:
+        self._assert_agent_backend_status_matches_runtime(
+            saved_backend="codex_app_server",
+            runtime_backend="litellm",
+        )
+
+    def test_agent_backend_status_prefers_runtime_codex_over_saved_litellm(self) -> None:
+        self._assert_agent_backend_status_matches_runtime(
+            saved_backend="litellm",
+            runtime_backend="codex_app_server",
+        )
+
+    def test_agent_backend_empty_preview_uses_runtime_generation_route(self) -> None:
+        from src.services.agent_backend_status_service import AgentBackendStatusService
+
+        self._rewrite_env(
+            "AGENT_BACKEND=litellm",
+            "LITELLM_MODEL=",
+            "OPENAI_API_KEY=",
+        )
+        runtime_env = {
+            "ENV_FILE": str(self.env_path),
+            "AGENT_BACKEND": "litellm",
+            "LITELLM_MODEL": "openai/gpt-4o",
+            "OPENAI_API_KEY": "runtime-key",
+        }
+        with patch.dict(os.environ, runtime_env, clear=True):
+            Config.reset_instance()
+            runtime_config = Config.get_instance()
+            settings_status = self.service.get_agent_backend_status()
+            chat_status = AgentBackendStatusService(config=runtime_config).get_status()
+            preview_baseline = self.service.preview_agent_backend_status(items=[])
+            preview_draft = self.service.preview_agent_backend_status(
+                items=[
+                    {"key": "LITELLM_MODEL", "value": ""},
+                    {"key": "OPENAI_API_KEY", "value": ""},
+                ],
+            )
+
+        self.assertEqual(settings_status, chat_status)
+        self.assertEqual(preview_baseline, chat_status)
+        self.assertTrue(chat_status["available"])
+        self.assertFalse(preview_draft["available"])
+        self.assertEqual(preview_draft["message"], "no_agent_primary")
+
     def test_get_config_masks_alphasift_install_spec(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519,000001",
@@ -2296,6 +2389,43 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_enum" for issue in validation["issues"]))
 
+    def test_validate_rejects_codex_backend_with_multi_agent_architecture(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                {"key": "AGENT_ARCH", "value": "multi"},
+            ]
+        )
+
+        self.assertFalse(validation["valid"])
+        issue = next(
+            issue
+            for issue in validation["issues"]
+            if issue["code"] == "unsupported_agent_arch"
+        )
+        self.assertEqual(issue["key"], "AGENT_ARCH")
+        self.assertEqual(issue["expected"], "single")
+
+    def test_validate_rejects_disabled_timeout_for_codex_only(self) -> None:
+        codex = self.service.validate(
+            items=[
+                {"key": "AGENT_BACKEND", "value": "codex_app_server"},
+                {"key": "AGENT_ORCHESTRATOR_TIMEOUT_S", "value": "0"},
+            ]
+        )
+        litellm = self.service.validate(
+            items=[
+                {"key": "AGENT_BACKEND", "value": "litellm"},
+                {"key": "AGENT_ORCHESTRATOR_TIMEOUT_S", "value": "0"},
+            ]
+        )
+
+        self.assertFalse(codex["valid"])
+        self.assertTrue(
+            any(issue["code"] == "codex_timeout_required" for issue in codex["issues"])
+        )
+        self.assertTrue(litellm["valid"])
+
     def test_validate_reports_generation_backend_numeric_maximum(self) -> None:
         validation = self.service.validate(
             items=[
@@ -3429,6 +3559,56 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(mock_completion.call_count, 3)
         self.assertEqual(mock_completion.call_args_list[1].kwargs["response_format"], {"type": "json_object"})
         self.assertEqual(mock_completion.call_args_list[2].kwargs["tool_choice"]["function"]["name"], "dsa_probe_echo")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_json_capability_ignores_minimax_reasoning_blocks(self, mock_completion) -> None:
+        mock_completion.side_effect = [
+            self._mock_completion_response("OK"),
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "content_blocks": [
+                                {"type": "reasoning", "content": "Internal reasoning"},
+                                {"type": "text", "text": '{"status":"ok"}'},
+                            ],
+                        }
+                    }
+                ]
+            },
+        ]
+
+        payload = self.service.test_llm_channel(
+            name="minimax",
+            protocol="openai",
+            base_url="https://api.minimax.io/v1",
+            api_key="sk-test-value",
+            models=["MiniMax-M3"],
+            capability_checks=["json"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
+
+    @patch("litellm.completion")
+    def test_test_llm_channel_json_capability_strips_minimax_think_wrapper(self, mock_completion) -> None:
+        mock_completion.side_effect = [
+            self._mock_completion_response("OK"),
+            self._mock_completion_response('<think>Internal reasoning</think>{"status":"ok"}'),
+        ]
+
+        payload = self.service.test_llm_channel(
+            name="minimax",
+            protocol="openai",
+            base_url="https://api.minimax.io/v1",
+            api_key="sk-test-value",
+            models=["MiniMax-M3"],
+            capability_checks=["json"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
 
     @patch("litellm.completion")
     def test_test_llm_channel_reports_json_capability_failures(self, mock_completion) -> None:

@@ -382,6 +382,88 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("**筹码**: 筹码分布未启用或数据源暂不可用，未纳入筹码判断。", out)
         self.assertEqual(out.count("数据缺失，无法判断"), 0)
 
+    def test_render_markdown_renders_strategy_synthesis_with_localized_labels(self) -> None:
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "strategy_synthesis": {
+                    "final_signal": "buy",
+                    "confidence": 0.8,
+                    "conflict_count": 1,
+                    "conflict_severity": "medium",
+                    "consensus_level": "medium",
+                    "summary_key": "strategy_synthesis.with_conflicts",
+                    "summary_params": {
+                        "opinion_count": 2,
+                        "final_signal": "buy",
+                        "consensus_level": "medium",
+                        "conflict_severity": "medium",
+                        "conflict_count": 1,
+                    },
+                    "supporting_skills": [{"skill_id": "bull_trend", "signal": "buy", "confidence": 0.8}],
+                    "opposing_skills": [{"skill_id": "hot_theme", "signal": "sell", "confidence": 0.75}],
+                    "conflicts": [
+                        {
+                            "conflict_type": "directional_opposition",
+                            "severity": "medium",
+                            "description_key": "strategy_conflict.directional_opposition",
+                            "participants": ["bull_trend", "hot_theme"],
+                        }
+                    ],
+                },
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("多策略综合", out)
+        self.assertIn("综合信号: 买入", out)
+        self.assertIn("默认多头趋势/买入/80%", out)
+        self.assertIn("热点题材/卖出/75%", out)
+        self.assertNotIn("bull_trend/买入", out)
+
+    def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
+        for platform in ("markdown", "wechat"):
+            for malformed in ("bad-shape", ["bad-shape"], 42, True):
+                result = _make_result(
+                    dashboard={
+                        "core_conclusion": {"one_sentence": "持有观望"},
+                        "intelligence": {},
+                        "battle_plan": {},
+                        "strategy_synthesis": malformed,
+                    }
+                )
+
+                out = render(platform, [result], summary_only=False)
+
+                self.assertIsNotNone(out)
+                self.assertNotIn("多策略综合", out)
+
+            result = _make_result(
+                dashboard={
+                    "core_conclusion": {"one_sentence": "持有观望"},
+                    "intelligence": {},
+                    "battle_plan": {},
+                    "strategy_synthesis": {
+                        "final_signal": "hold",
+                        "consensus_level": "insufficient",
+                        "conflict_severity": "none",
+                        "conflict_count": 0,
+                        "supporting_skills": "bad-shape",
+                        "opposing_skills": ["bad-shape"],
+                        "conflicts": "bad-shape",
+                        "summary_params": {"invalid_opinion_count": "3"},
+                    },
+                }
+            )
+
+            out = render(platform, [result], summary_only=False)
+
+            self.assertIsNotNone(out)
+            self.assertIn("多策略综合", out)
+            self.assertIn("另有 3 个策略解析失败", out)
+
     def test_render_unknown_platform_returns_none(self) -> None:
         """Unknown platform returns None (caller fallback)."""
         r = _make_result()
