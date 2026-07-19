@@ -171,6 +171,18 @@ def _load_codes_for_accounts(accounts, positions_by_account):
 
 
 class FutuPortfolioServiceTest(unittest.TestCase):
+    def test_missing_sdk_uses_actionable_install_error(self):
+        with patch(
+            "builtins.__import__",
+            side_effect=ImportError("No module named 'futu'"),
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "未安装 Futu OpenAPI SDK",
+        ) as raised:
+            service._load_futu_api()
+
+        self.assertIn('pip install "futu-api==10.8.6808"', str(raised.exception))
+
     def test_sdk_initialization_failure_uses_portfolio_error_boundary(self):
         with patch(
             "builtins.__import__",
@@ -362,7 +374,7 @@ class FutuPortfolioServiceTest(unittest.TestCase):
                 self.assertFalse(any(ctx.position_queries for ctx in trade_contexts))
                 self.assertEqual(quote_contexts, [])
 
-    def test_load_futu_stock_codes_keeps_read_only_master_account(self):
+    def test_load_futu_stock_codes_keeps_active_master_account(self):
         result, trade_contexts = _load_codes_for_accounts(
             [_account(3003, "MASTER")],
             {

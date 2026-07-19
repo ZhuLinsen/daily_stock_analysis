@@ -387,10 +387,11 @@ def load_futu_stock_codes() -> List[str]:
 
     Only explicitly ACTIVE REAL accounts and Futu ``SecurityType.STOCK`` LONG
     positions with non-zero quantity are kept. ``FUTU_ACC_ID`` can select one
-    account; otherwise NORMAL and read-only MASTER accounts are merged. Firm
-    discovery uses the SDK's ``SecurityFirm.NONE`` auto-detection unless
-    ``FUTU_SECURITY_FIRM`` is explicitly set. The call is read-only and always
-    refreshes position data.
+    account; otherwise NORMAL and MASTER accounts are merged. ``MASTER`` is an
+    account role, while read-only describes this integration's query-only API
+    calls. Firm discovery uses the SDK's ``SecurityFirm.NONE`` auto-detection
+    unless ``FUTU_SECURITY_FIRM`` is explicitly set. Position data is always
+    refreshed.
     """
     api = _load_futu_api()
     host, port = _connection_settings()

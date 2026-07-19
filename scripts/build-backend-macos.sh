@@ -47,6 +47,9 @@ log "Checking python-multipart availability..."
 log "Checking AlphaSift adapter availability..."
 "${PYTHON_BIN}" -c "import alphasift.dsa_adapter"
 
+log "Checking Futu SDK availability..."
+"${PYTHON_BIN}" -c "import futu"
+
 log "Checking orjson availability..."
 "${PYTHON_BIN}" -c "import orjson"
 
@@ -116,6 +119,7 @@ done
 pushd "${ROOT_DIR}" >/dev/null
 cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "alphasift")
+cmd+=("--collect-all" "futu")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"
@@ -124,7 +128,7 @@ popd >/dev/null
 
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
 
-log "Verifying packaged AlphaSift importability..."
+log "Verifying packaged runtime imports..."
 packaged_root="${ROOT_DIR}/dist/backend/stock_analysis"
 
 packaged_entry="${packaged_root}/stock_analysis"
@@ -133,14 +137,14 @@ if [[ ! -x "${packaged_entry}" ]]; then
   exit 1
 fi
 
-# 先校验可执行文件可启动（不进入业务流程的参数），再检查冻结产物中是否携带 alphasift.
-if ! "${packaged_entry}" --help >/tmp/alphasift-packaged-help.log 2>&1; then
+# 先校验可执行文件可启动（不进入业务流程的参数），再检查冻结产物中的关键依赖。
+if ! "${packaged_entry}" --help >/tmp/dsa-packaged-help.log 2>&1; then
   echo "ERROR: packaged backend help startup check failed."
-  cat /tmp/alphasift-packaged-help.log
+  cat /tmp/dsa-packaged-help.log
   exit 1
 fi
 
-for module in alphasift.dsa_adapter orjson; do
+for module in alphasift.dsa_adapter futu orjson; do
   if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
     cat /tmp/dsa-packaged-import.log
   else
