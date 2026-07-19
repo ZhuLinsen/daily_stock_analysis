@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] Multi-Agent 报告在全部 Pipeline guardrail 完成后生成低敏分歧解释，区分 Agent 风控与结构、市场阶段和大盘环境的最终调整，并保持历史报告与 DecisionSignal 最终动作一致。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 

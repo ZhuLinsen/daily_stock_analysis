@@ -885,6 +885,10 @@ Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreeme
 
 结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
 
+Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与资金流、市场阶段、daily-market context 和最终 action 刷新。只有这些可能改变决策的步骤全部结束后，系统才基于 `AgentResult.runtime_facts` 确定性生成唯一的可选 `dashboard.agent_disagreement_explanation`。该字段包含基础 Agent 方向关系、实际 risk application、stage degradation、Pipeline termination、低敏数据质量限制、按执行顺序记录的 Pipeline signal adjustments，以及与最终 `AnalysisResult.decision_type` 一致的 `final_signal`。`risk_control.post_risk_signal` 只描述 Agent 风控后的阶段结果；后续调整记录在 `final_adjustments`，不会被错误归因为 risk override。
+
+模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。字段在历史报告 JSON 中随 dashboard 一起持久化，并在 DecisionSignal 提取前完成，因此报告、历史记录和 DecisionSignal 使用同一个最终 action。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
+
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 
 P4 新增 `report.details.analysis_context_pack_overview`，历史详情和 completed `/api/v1/analysis/status/{task_id}` 会从已持久化的 `context_snapshot` 返回同一份低敏 overview；同步分析响应也会读取本次已落库的 `analysis_history.context_snapshot` 提取 overview，因此 `SAVE_CONTEXT_SNAPSHOT=false` 时新记录不保证返回该字段。Web 端报告页在“策略点位”和“资讯”之后展示默认折叠的数据块摘要，折叠头部展示可用数、缺失数、非零的其他状态计数和触发来源，展开后展示数据块状态、来源、warning、missing reason、状态计数和新闻结果数。API 返回的 `details.context_snapshot` 会剥离顶层 `analysis_context_pack_overview`，避免透明度面板重复展示 raw snapshot。
