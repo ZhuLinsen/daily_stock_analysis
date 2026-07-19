@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createParsedApiError } from '../../api/error';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
 import { historyApi } from '../../api/history';
 import type { Message, ProgressStep } from '../../stores/agentChatStore';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import ChatPage from '../ChatPage';
 import { extractStockCodeFromMessage, extractStockCodesFromMessage } from '../../utils/chatStockCode';
 
@@ -19,6 +22,7 @@ function createDeferred<T>() {
 
 const {
   mockGetSkills,
+  mockGetStatus,
   mockDeleteChatSession,
   mockSendChat,
   mockGetSystemConfig,
@@ -28,8 +32,10 @@ const {
   mockRemoveFromWatchlist,
   mockDownloadSession,
   mockFormatSessionAsMarkdown,
+  mockStockIndex,
 } = vi.hoisted(() => ({
   mockGetSkills: vi.fn(),
+  mockGetStatus: vi.fn(),
   mockDeleteChatSession: vi.fn(),
   mockSendChat: vi.fn(),
   mockGetSystemConfig: vi.fn(),
@@ -39,12 +45,19 @@ const {
   mockRemoveFromWatchlist: vi.fn(),
   mockDownloadSession: vi.fn(),
   mockFormatSessionAsMarkdown: vi.fn(),
+  mockStockIndex: [
+    { canonicalCode: '600519.SH', displayCode: '600519', nameZh: '贵州茅台', aliases: ['茅台'], market: 'CN', assetType: 'stock', active: true },
+    { canonicalCode: '300750.SZ', displayCode: '300750', nameZh: '宁德时代', aliases: [], market: 'CN', assetType: 'stock', active: true },
+    { canonicalCode: 'BABA', displayCode: 'BABA', nameZh: '阿里巴巴', aliases: [], market: 'US', assetType: 'stock', active: true },
+    { canonicalCode: '09988.HK', displayCode: '09988', nameZh: '阿里巴巴', aliases: [], market: 'HK', assetType: 'stock', active: true },
+  ],
 }));
 
 const mockLoadSessions = vi.fn();
 const mockLoadInitialSession = vi.fn();
 const mockSwitchSession = vi.fn();
 const mockStartStream = vi.fn();
+const mockStopStream = vi.fn();
 const mockClearCompletionBadge = vi.fn();
 const mockStartNewChat = vi.fn();
 
@@ -64,9 +77,13 @@ const mockStoreState = {
   ],
   sessionsLoading: false,
   chatError: null,
+  stopping: false,
+  terminalStatus: null as 'cancelled' | 'timeout' | null,
+  stopError: false,
   loadSessions: mockLoadSessions,
   loadInitialSession: mockLoadInitialSession,
   switchSession: mockSwitchSession,
+  stopStream: mockStopStream,
   startStream: mockStartStream,
   clearCompletionBadge: mockClearCompletionBadge,
 };
@@ -74,6 +91,7 @@ const mockStoreState = {
 vi.mock('../../api/agent', () => ({
   agentApi: {
     getSkills: mockGetSkills,
+    getStatus: mockGetStatus,
     deleteChatSession: mockDeleteChatSession,
     sendChat: mockSendChat,
   },
@@ -98,6 +116,16 @@ vi.mock('../../api/history', () => ({
   historyApi: {
     getDetail: vi.fn().mockResolvedValue({}),
   },
+}));
+
+vi.mock('../../hooks/useStockIndex', () => ({
+  useStockIndex: () => ({
+    index: mockStockIndex,
+    loading: false,
+    error: null,
+    fallback: false,
+    loaded: true,
+  }),
 }));
 
 vi.mock('../../stores/agentChatStore', () => {
@@ -145,10 +173,15 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.removeItem(UI_LANGUAGE_STORAGE_KEY);
+  mockGetStatus.mockReset();
   mockStoreState.messages = [];
   mockStoreState.loading = false;
   mockStoreState.progressSteps = [];
   mockStoreState.chatError = null;
+  mockStoreState.stopping = false;
+  mockStoreState.terminalStatus = null;
+  mockStoreState.stopError = false;
   mockStoreState.sessionsLoading = false;
   mockStoreState.sessionId = 'session-1';
   mockStoreState.sessions = [
@@ -165,6 +198,21 @@ beforeEach(() => {
       { id: 'bull_trend', name: '趋势分析', description: '测试技能' },
     ],
     default_skill_id: 'bull_trend',
+  });
+  mockGetStatus.mockResolvedValue({
+    backend: 'litellm',
+    available: true,
+    experimental: false,
+    errorCode: null,
+    message: null,
+  });
+  mockStartStream.mockImplementation(async (_payload, meta) => {
+    meta?.onAccepted?.({
+      type: 'accepted',
+      backend: 'litellm',
+      request_id: 'request-test',
+      session_id: 'session-1',
+    });
   });
   mockDeleteChatSession.mockResolvedValue(undefined);
   mockSendChat.mockResolvedValue({ success: true });
@@ -195,6 +243,293 @@ beforeEach(() => {
 });
 
 describe('ChatPage', () => {
+  it('lets the user stop an active Codex analysis from the existing Chat composer', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockStoreState.loading = true;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '停止分析' }));
+
+    expect(mockStopStream).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the existing waiting state for LiteLLM without offering a false stop', async () => {
+    mockStoreState.loading = true;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('button', { name: '处理中...' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '停止分析' })).not.toBeInTheDocument();
+    expect(mockStopStream).not.toHaveBeenCalled();
+  });
+
+  it('labels the stop action in English when the UI language is English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockStoreState.loading = true;
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Stop analysis' })).toBeInTheDocument();
+  });
+
+  it('shows a disabled stopping state until Codex confirms cleanup', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockStoreState.loading = true;
+    mockStoreState.stopping = true;
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const button = await screen.findByRole('button', { name: '正在停止…' });
+    expect(button).toBeDisabled();
+  });
+
+  it('shows a plain-language terminal status after cancellation', async () => {
+    mockStoreState.terminalStatus = 'cancelled';
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('status')).toHaveTextContent('本次分析已停止，后台任务也已结束。');
+  });
+
+  it('shows the current backend in the existing Chat header', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Codex Agent · 实验')).toBeInTheDocument();
+    expect(screen.getByText('Codex 当前可用范围')).toBeInTheDocument();
+    expect(screen.getByText(/实时行情、新闻、市场热点/)).toBeInTheDocument();
+    expect(screen.getByText('使用已保存的分析上下文和回测汇总，向 Codex 询问个股。')).toBeInTheDocument();
+    expect(screen.getByText(/Codex 将基于已保存的分析上下文和回测汇总回答/)).toBeInTheDocument();
+    expect(screen.queryByText(/AI 将调用实时数据工具/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '切换问股方式' })).toBeInTheDocument();
+    expect(mockGetStatus).toHaveBeenCalledTimes(1);
+    expect(screen.getByPlaceholderText(/分析 600519/)).toBeEnabled();
+  });
+
+  it('finishes the compatibility check when React Strict Mode remounts effects', async () => {
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByPlaceholderText(/分析 600519/)).toBeEnabled();
+    expect(screen.queryByText('正在确认问股运行环境')).not.toBeInTheDocument();
+  });
+
+  it('preserves the draft and disables sending while the compatibility check is pending', async () => {
+    const status = createDeferred<{
+      backend: string;
+      available: boolean;
+      experimental: boolean;
+      errorCode: null;
+      message: null;
+    }>();
+    mockGetStatus.mockReturnValueOnce(status.promise);
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('正在确认问股运行环境')).toBeInTheDocument();
+    const input = screen.getByPlaceholderText(/分析 600519/);
+    expect(input).toBeDisabled();
+    expect(screen.getByRole('button', { name: '分析比亚迪趋势' })).toBeDisabled();
+    expect(screen.getByText(/不会调用模型或读取股票数据/)).toBeInTheDocument();
+    status.resolve({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+
+    await waitFor(() => expect(input).toBeEnabled());
+    expect(screen.getByRole('button', { name: '分析比亚迪趋势' })).toBeEnabled();
+    expect(mockGetStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks sending only when backend status confirms unavailability and links to Agent settings', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: false,
+      experimental: true,
+      errorCode: 'command_not_found',
+      message: 'Codex was not found',
+    });
+    const router = createMemoryRouter(
+      [
+        { path: '/chat', element: <ChatPage /> },
+        { path: '/settings', element: <div>Agent settings destination</div> },
+      ],
+      { initialEntries: ['/chat'] },
+    );
+    render(<RouterProvider router={router} />);
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    expect(input).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '前往 Agent 设置' }));
+    expect(await screen.findByText('Agent settings destination')).toBeInTheDocument();
+    expect(router.state.location.search).toBe('?category=agent');
+  });
+
+  it('keeps sending disabled when backend status cannot be established', async () => {
+    mockGetStatus.mockRejectedValueOnce(new Error('temporary status failure'));
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('暂时无法读取问股运行状态')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/分析 600519/)).toBeDisabled();
+    expect(mockGetStatus).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新检查' }));
+    await waitFor(() => expect(screen.getByPlaceholderText(/分析 600519/)).toBeEnabled());
+    expect(mockGetStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the draft until the server accepts the turn', async () => {
+    const stream = createDeferred<void>();
+    let onAccepted: ((event: {
+      type: 'accepted';
+      backend: 'litellm' | 'codex_app_server';
+      request_id: string;
+      session_id: string;
+    }) => void) | undefined;
+    mockStartStream.mockImplementationOnce(async (_payload, meta) => {
+      onAccepted = meta?.onAccepted;
+      await stream.promise;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(/分析 600519/);
+    fireEvent.change(input, { target: { value: '分析 AAPL' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+
+    expect(input).toHaveValue('分析 AAPL');
+    expect(onAccepted).toBeTypeOf('function');
+    act(() => {
+      onAccepted?.({
+        type: 'accepted',
+        backend: 'codex_app_server',
+        request_id: 'request-accepted',
+        session_id: 'session-1',
+      });
+    });
+    expect(input).toHaveValue('');
+
+    stream.resolve();
+    await act(async () => {
+      await stream.promise;
+    });
+  });
+
+  it('renders the new Codex status copy in English when the UI language is English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: false,
+      experimental: true,
+      errorCode: 'command_not_found',
+      message: 'Codex was not found',
+    });
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByText('Codex Agent · Experimental')).toBeInTheDocument();
+    expect(screen.getByText('This device does not currently meet the basic Codex ask-stock requirements. Open Agent settings to check installation and Single Agent mode.')).toBeInTheDocument();
+    expect(screen.queryByText(/当前不可用|前往 Agent 设置检查/)).not.toBeInTheDocument();
+  });
+
+  it('renders status-read failure copy in English', async () => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    mockGetStatus.mockRejectedValueOnce(new Error('temporary status failure'));
+
+    render(
+      <UiLanguageProvider>
+        <MemoryRouter initialEntries={['/chat']}>
+          <ChatPage />
+        </MemoryRouter>
+      </UiLanguageProvider>,
+    );
+
+    expect(await screen.findByText('Ask-stock status is temporarily unavailable')).toBeInTheDocument();
+    expect(screen.getByText('The ask-stock runtime cannot be confirmed, so sending is paused. You can check again manually; your question will be preserved.')).toBeInTheDocument();
+    expect(screen.queryByText('暂时无法读取问股运行状态')).not.toBeInTheDocument();
+  });
+
   it('renders a fixed workspace shell with independent session and message viewports', async () => {
     render(
       <MemoryRouter initialEntries={['/chat']}>
@@ -513,6 +848,36 @@ describe('ChatPage', () => {
     });
   });
 
+  it('adds the quick-question stock context only for Codex', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockGetSkills.mockResolvedValue({
+      skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],
+      default_skill_id: 'chan_theory',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByRole('button', { name: '用缠论分析茅台' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: { stock_code: '600519', stock_name: '贵州茅台' },
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+
   it('collapses the mobile skill picker by default and keeps selected skills when sending', async () => {
     mockGetSkills.mockResolvedValue({
       skills: [
@@ -646,6 +1011,127 @@ describe('ChatPage', () => {
         }),
       );
     });
+    expect(mockStartStream.mock.calls.at(-1)?.[0]?.context).toBeUndefined();
+  });
+
+  it('keeps a quick question in the input until the server accepts it', async () => {
+    mockGetSkills.mockResolvedValue({
+      skills: [{ id: 'chan_theory', name: '缠论', description: '结构分析' }],
+      default_skill_id: 'chan_theory',
+    });
+    mockStartStream.mockResolvedValueOnce(undefined);
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    const quickQuestion = await screen.findByRole('button', { name: '用缠论分析茅台' });
+    await waitFor(() => expect(quickQuestion).toBeEnabled());
+    fireEvent.click(quickQuestion);
+
+    await waitFor(() => expect(mockStartStream).toHaveBeenCalledTimes(1));
+    expect(screen.getByPlaceholderText(/分析 600519/)).toHaveValue('用缠论分析茅台');
+  });
+
+  it('submits the A-share SMIC quick question with an unambiguous stock context', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    mockGetSkills.mockResolvedValue({
+      skills: [{ id: 'box_oscillation', name: '箱体震荡', description: '震荡区间' }],
+      default_skill_id: 'box_oscillation',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Codex Agent · 实验');
+    fireEvent.click(await screen.findByRole('button', { name: '用箱体震荡分析 A 股中芯国际 688981' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '用箱体震荡分析 A 股中芯国际 688981',
+          skills: ['box_oscillation'],
+          context: {
+            stock_code: '688981',
+            stock_name: '中芯国际',
+          },
+        }),
+        expect.objectContaining({
+          skillNames: ['箱体震荡'],
+          skillName: '箱体震荡',
+        }),
+      );
+    });
+  });
+
+  it('reuses the stock index for one unambiguous stock name', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(await screen.findByPlaceholderText(/分析 600519/), {
+      target: { value: '茅台现在适合买入吗？' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          context: {
+            stock_code: '600519',
+            stock_name: '贵州茅台',
+          },
+        }),
+        expect.any(Object),
+      );
+    });
+  });
+
+  it('does not guess when one stock name maps to multiple markets', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    render(
+      <MemoryRouter initialEntries={['/chat']}>
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(await screen.findByPlaceholderText(/分析 600519/), {
+      target: { value: '分析阿里巴巴' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({ context: undefined }),
+        expect.any(Object),
+      );
+    });
   });
 
   it('keeps assistant message actions directly activatable in the DOM', async () => {
@@ -671,6 +1157,13 @@ describe('ChatPage', () => {
       { id: 'user-1', role: 'user', content: '请分析 600519' },
       { id: 'assistant-1', role: 'assistant', content: '趋势偏强', skillName: '趋势分析' },
     ];
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: false,
+      experimental: true,
+      errorCode: 'command_not_found',
+      message: 'Codex was not found',
+    });
     mockFormatSessionAsMarkdown.mockReturnValue('# exported markdown');
 
     render(
@@ -973,6 +1466,43 @@ describe('ChatPage', () => {
           context: {
             stock_code: 'AAPL',
             stock_name: null,
+          },
+        }),
+        expect.objectContaining({
+          skillName: '趋势分析',
+        }),
+      );
+    });
+  });
+
+  it('switches Codex stock context when an explicit switch names one stock', async () => {
+    mockGetStatus.mockResolvedValueOnce({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      errorCode: null,
+      message: null,
+    });
+    render(
+      <MemoryRouter initialEntries={['/chat?stock=600519&name=%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0']}>
+        <ChatPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByDisplayValue('请深入分析 贵州茅台(600519)')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/分析 600519/), {
+      target: { value: '分析宁德时代' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: '分析宁德时代',
+          context: {
+            stock_code: '300750',
+            stock_name: '宁德时代',
           },
         }),
         expect.objectContaining({

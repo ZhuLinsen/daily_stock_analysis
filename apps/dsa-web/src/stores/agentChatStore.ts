@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { agentApi } from '../api/agent';
+import { agentApi, isAbortError } from '../api/agent';
 import type { ChatSessionItem, ChatStreamRequest } from '../api/agent';
 import {
   createParsedApiError,
@@ -29,6 +29,10 @@ export interface ProgressStep {
   message?: string;
   content?: string;
   meta?: Record<string, unknown>;
+  backend?: string;
+  error_code?: string;
+  request_id?: string;
+  session_id?: string;
 }
 
 export interface Message {
@@ -40,12 +44,23 @@ export interface Message {
   skillNames?: string[];
   skillName?: string;
   thinkingSteps?: ProgressStep[];
+  backend?: string;
 }
 
 export interface StreamMeta {
   skillNames?: string[];
   skillName?: string;
+  onAccepted?: (event: StreamAcceptedEvent) => void;
 }
+
+export interface StreamAcceptedEvent {
+  type: 'accepted';
+  backend: 'litellm' | 'codex_app_server';
+  request_id: string;
+  session_id: string;
+}
+
+type StreamTerminalStatus = 'cancelled' | 'timeout' | null;
 
 type StreamFailureEvent = {
   type: string;
@@ -53,7 +68,15 @@ type StreamFailureEvent = {
   content?: string;
   error?: unknown;
   message?: unknown;
+  backend?: string;
+  error_code?: string;
 };
+
+function streamFailureFallback(event: StreamFailureEvent, defaultMessage: string): string {
+  return event.backend === 'codex_app_server'
+    ? 'Codex Agent 暂时无法完成本次问股，请查看 Agent 设置中的运行状态。'
+    : defaultMessage;
+}
 
 function getFirstMeaningfulStreamError(...candidates: Array<unknown>): unknown {
   for (const candidate of candidates) {
@@ -98,6 +121,11 @@ interface AgentChatState {
   completionBadge: boolean;
   hasInitialLoad: boolean;
   abortController: AbortController | null;
+  activeRequestId: string | null;
+  serverCancellation: boolean;
+  stopping: boolean;
+  terminalStatus: StreamTerminalStatus;
+  stopError: boolean;
 }
 
 interface AgentChatActions {
@@ -107,6 +135,7 @@ interface AgentChatActions {
   loadInitialSession: () => Promise<void>;
   switchSession: (targetSessionId: string) => Promise<void>;
   startNewChat: () => void;
+  stopStream: () => Promise<void>;
   startStream: (payload: ChatStreamRequest, meta?: StreamMeta) => Promise<void>;
 }
 
@@ -115,7 +144,19 @@ const getInitialSessionId = (): string =>
     ? localStorage.getItem(STORAGE_KEY_SESSION) || generateUUID()
     : generateUUID();
 
-export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set, get) => ({
+export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set, get) => {
+  const deliverServerCancellation = async (requestId: string): Promise<void> => {
+    try {
+      await agentApi.cancelChatStream(requestId);
+    } catch {
+      const current = get();
+      if (current.activeRequestId === requestId && current.loading) {
+        set({ stopping: false, stopError: true });
+      }
+    }
+  };
+
+  return {
   messages: [],
   loading: false,
   progressSteps: [],
@@ -127,6 +168,11 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
   completionBadge: false,
   hasInitialLoad: false,
   abortController: null,
+  activeRequestId: null,
+  serverCancellation: false,
+  stopping: false,
+  terminalStatus: null,
+  stopError: false,
 
   setCurrentRoute: (path) => set({ currentRoute: path }),
 
@@ -194,6 +240,11 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       progressSteps: [],
       chatError: null,
       abortController: null,
+      activeRequestId: null,
+      serverCancellation: false,
+      stopping: false,
+      terminalStatus: null,
+      stopError: false,
     });
     localStorage.setItem(STORAGE_KEY_SESSION, targetSessionId);
 
@@ -225,8 +276,25 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       progressSteps: [],
       chatError: null,
       abortController: null,
+      activeRequestId: null,
+      serverCancellation: false,
+      stopping: false,
+      terminalStatus: null,
+      stopError: false,
     });
     localStorage.setItem(STORAGE_KEY_SESSION, newId);
+  },
+
+  stopStream: async () => {
+    const state = get();
+    if (!state.loading || state.stopping) return;
+    if (!state.serverCancellation || !state.activeRequestId) {
+      state.abortController?.abort();
+      return;
+    }
+
+    set({ stopping: true, stopError: false });
+    await deliverServerCancellation(state.activeRequestId);
   },
 
   startStream: async (payload, meta) => {
@@ -235,9 +303,23 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
     prevAc?.abort();
 
     const ac = new AbortController();
-    set({ abortController: ac });
+    const requestId = payload.request_id || generateUUID();
+    set({
+      abortController: ac,
+      activeRequestId: requestId,
+      serverCancellation: false,
+      stopping: false,
+      terminalStatus: null,
+      stopError: false,
+    });
 
     const streamSessionId = payload.session_id || storeSessionId;
+    const ownsStream = () => {
+      const state = get();
+      return state.abortController === ac
+        && state.activeRequestId === requestId
+        && state.sessionId === streamSessionId;
+    };
     const skillNames = meta?.skillNames?.length
       ? meta.skillNames
       : [meta?.skillName ?? '通用'];
@@ -253,49 +335,99 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       skillName,
     };
 
-    set((s) => ({
-      messages: [...s.messages, userMessage],
+    set({
       loading: true,
       progressSteps: [],
       chatError: null,
-      sessions: s.sessions.some((x) => x.session_id === streamSessionId)
-        ? s.sessions
-        : [
-            {
-              session_id: streamSessionId,
-              title: payload.message.slice(0, 60),
-              message_count: 1,
-              created_at: new Date().toISOString(),
-              last_active: new Date().toISOString(),
-            },
-            ...s.sessions,
-          ],
-    }));
+    });
 
     try {
-      const response = await agentApi.chatStream(payload, { signal: ac.signal });
+      const response = await agentApi.chatStream(
+        { ...payload, session_id: streamSessionId, request_id: requestId },
+        { signal: ac.signal },
+      );
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let finalContent: string | null = null;
+      let finalBackend: string | undefined;
       let receivedDoneEvent = false;
+      let acceptedEvent: StreamAcceptedEvent | null = null;
       const currentProgressSteps: ProgressStep[] = [];
+      const protocolError = (message: string) => createParsedApiError({
+        title: '请求未被接受',
+        message: 'Agent 没有确认接收本次问题，请保留当前内容后重试。',
+        rawMessage: message,
+        category: 'upstream_network',
+      });
       const processLine = (line: string) => {
-        if (!line.startsWith('data: ')) return;
+        if (!line.startsWith('data: ') || !ownsStream() || ac.signal.aborted) return;
 
         const event = JSON.parse(line.slice(6)) as ProgressStep;
+        if (event.type === 'accepted') {
+          if (acceptedEvent) {
+            throw protocolError('Agent stream emitted accepted more than once.');
+          }
+          if (
+            (event.backend !== 'litellm' && event.backend !== 'codex_app_server')
+            || event.request_id !== requestId
+            || event.session_id !== streamSessionId
+          ) {
+            throw protocolError('Agent stream emitted an invalid accepted event.');
+          }
+          acceptedEvent = event as StreamAcceptedEvent;
+          finalBackend = acceptedEvent.backend;
+          set((s) => ({
+            messages: [...s.messages, { ...userMessage, backend: acceptedEvent!.backend }],
+            serverCancellation: acceptedEvent!.backend === 'codex_app_server',
+            sessions: s.sessions.some((x) => x.session_id === streamSessionId)
+              ? s.sessions
+              : [
+                  {
+                    session_id: streamSessionId,
+                    title: payload.message.slice(0, 60),
+                    message_count: 1,
+                    created_at: new Date().toISOString(),
+                    last_active: new Date().toISOString(),
+                  },
+                  ...s.sessions,
+                ],
+          }));
+          meta?.onAccepted?.(acceptedEvent);
+          return;
+        }
+        if (!acceptedEvent) {
+          throw protocolError(`Agent stream emitted ${event.type || 'an unknown event'} before accepted.`);
+        }
         if (event.type === 'done') {
+          set({ stopError: false });
           receivedDoneEvent = true;
           const doneEvent = event as unknown as StreamFailureEvent;
+          if (doneEvent.error_code === 'cancelled') {
+            set({ terminalStatus: 'cancelled' });
+            return;
+          }
+          if (doneEvent.error_code === 'timeout') {
+            set({ terminalStatus: 'timeout' });
+            return;
+          }
           if (doneEvent.success === false) {
-            throw getStreamFailureError(doneEvent, '大模型调用出错，请检查 API Key 配置');
+            throw getStreamFailureError(
+              doneEvent,
+              streamFailureFallback(doneEvent, '大模型调用出错，请检查 API Key 配置'),
+            );
           }
           finalContent = doneEvent.content ?? '';
           return;
         }
 
         if (event.type === 'error') {
-          throw getStreamFailureError(event as unknown as StreamFailureEvent, '分析出错');
+          set({ stopError: false });
+          const failureEvent = event as unknown as StreamFailureEvent;
+          throw getStreamFailureError(
+            failureEvent,
+            streamFailureFallback(failureEvent, '分析出错'),
+          );
         }
 
         currentProgressSteps.push(event);
@@ -330,6 +462,10 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         }
       }
 
+      if (!acceptedEvent && !ac.signal.aborted) {
+        throw protocolError('Agent stream ended before accepted.');
+      }
+
       if (!receivedDoneEvent && !ac.signal.aborted) {
         throw createParsedApiError({
           title: '回复未完整返回',
@@ -339,9 +475,8 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         });
       }
 
-      const { sessionId: currentSessionId, currentRoute } = get();
-      const shouldAppend =
-        currentSessionId === streamSessionId && !ac.signal.aborted;
+      const { currentRoute } = get();
+      const shouldAppend = ownsStream() && !ac.signal.aborted && finalContent !== null;
 
       if (shouldAppend) {
         set((s) => ({
@@ -356,17 +491,18 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
               skillNames,
               skillName,
               thinkingSteps: [...currentProgressSteps],
+              backend: finalBackend,
             },
           ],
         }));
       }
 
-      if (currentRoute !== '/chat') {
+      if (ownsStream() && !ac.signal.aborted && currentRoute !== '/chat') {
         set({ completionBadge: true });
       }
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        // User-initiated abort: silent, no badge
+      if (isAbortError(error) || !ownsStream() || ac.signal.aborted) {
+        // Aborted or superseded requests must not affect the active chat.
       } else {
         set({ chatError: getParsedApiError(error) });
         const { currentRoute } = get();
@@ -375,15 +511,18 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
         }
       }
     } finally {
-      const { abortController: currentAc } = get();
-      if (currentAc === ac) {
+      if (ownsStream()) {
         set({
           loading: false,
           progressSteps: [],
           abortController: null,
+          activeRequestId: null,
+          serverCancellation: false,
+          stopping: false,
         });
+        await get().loadSessions();
       }
-      await get().loadSessions();
     }
   },
-}));
+  };
+});

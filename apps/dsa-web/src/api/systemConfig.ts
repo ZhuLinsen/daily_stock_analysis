@@ -2,6 +2,8 @@ import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
 import type {
+  AgentBackendStatusPreviewRequest,
+  AgentBackendStatusResponse,
   DiscoverLLMChannelModelsRequest,
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
@@ -165,6 +167,15 @@ function toSnakeGenerationBackendSmokePayload(payload: TestGenerationBackendRequ
   return request;
 }
 
+function toSnakeAgentBackendPayload(
+  payload: AgentBackendStatusPreviewRequest = {},
+): Record<string, unknown> {
+  return {
+    items: (payload.items || []).map((item) => ({ key: item.key, value: item.value })),
+    mask_token: payload.maskToken ?? '******',
+  };
+}
+
 export const systemConfigApi = {
   async getConfig(includeSchema = true): Promise<SystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config', {
@@ -215,6 +226,23 @@ export const systemConfigApi = {
       toSnakeGenerationBackendSmokePayload(payload),
     );
     return toCamelCase<TestGenerationBackendResponse>(response.data);
+  },
+
+  async getAgentBackendStatus(): Promise<AgentBackendStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/system/config/agent-backends/status',
+    );
+    return toCamelCase<AgentBackendStatusResponse>(response.data);
+  },
+
+  async previewAgentBackendStatus(
+    payload: AgentBackendStatusPreviewRequest = {},
+  ): Promise<AgentBackendStatusResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/agent-backends/status/preview',
+      toSnakeAgentBackendPayload(payload),
+    );
+    return toCamelCase<AgentBackendStatusResponse>(response.data);
   },
 
   async getSchedulerStatus(): Promise<SchedulerStatusResponse> {

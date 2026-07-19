@@ -386,3 +386,23 @@ def test_litellm_channel_route_is_used_for_status_and_smoke_config() -> None:
     assert config.llm_model_list[0]["model_name"] == "openai/gpt-4o-mini"
     assert config.llm_model_list[0]["litellm_params"]["api_key"] == "sk-remote"
     assert config.llm_model_list[0]["litellm_params"]["api_base"] == "https://api.example.com/v1"
+
+
+def test_public_effective_config_builder_preserves_smoke_overrides() -> None:
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "GENERATION_BACKEND_TIMEOUT_SECONDS": "30",
+            "LITELLM_MODEL": "openai/gpt-4o-mini",
+            "OPENAI_API_KEY": "sk-test",
+        }
+    )
+
+    config = service.build_effective_config(
+        backend_id="codex_cli",
+        timeout_seconds=17,
+    )
+
+    assert config.generation_backend == "codex_cli"
+    assert config.generation_backend_timeout_seconds == 17
+    assert config.litellm_model == "openai/gpt-4o-mini"

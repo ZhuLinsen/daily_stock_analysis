@@ -8,9 +8,11 @@ without importing the full ReAct loop.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
@@ -64,8 +66,46 @@ class ToolAccessContext:
     backend: Optional[str] = None
     session_id: Optional[str] = None
     timeout_seconds: Optional[float] = None
+    deadline: Optional[float] = None
+    cancel_event: Optional[threading.Event] = None
     max_result_bytes: Optional[int] = None
+    redact_result: bool = False
     audit_context: Dict[str, Any] = field(default_factory=dict)
+
+
+class ToolExecutionCancelled(Exception):
+    """Raised at a cooperative checkpoint after the caller cancels a tool."""
+
+
+class ToolExecutionDeadlineExceeded(Exception):
+    """Raised at a cooperative checkpoint after the tool deadline expires."""
+
+
+_ACTIVE_TOOL_CONTEXT: contextvars.ContextVar[Optional[ToolAccessContext]] = contextvars.ContextVar(
+    "active_tool_access_context",
+    default=None,
+)
+
+
+def bind_tool_execution_context(context: ToolAccessContext) -> contextvars.Token:
+    """Bind one Tool Surface execution context for runtime-neutral handlers."""
+    return _ACTIVE_TOOL_CONTEXT.set(context)
+
+
+def reset_tool_execution_context(token: contextvars.Token) -> None:
+    """Restore the previous Tool Surface execution context."""
+    _ACTIVE_TOOL_CONTEXT.reset(token)
+
+
+def check_tool_execution() -> None:
+    """Stop at a safe handler boundary when cancellation or deadline is reached."""
+    context = _ACTIVE_TOOL_CONTEXT.get()
+    if context is None:
+        return
+    if context.cancel_event is not None and context.cancel_event.is_set():
+        raise ToolExecutionCancelled("Tool execution was cancelled")
+    if context.deadline is not None and time.monotonic() >= context.deadline:
+        raise ToolExecutionDeadlineExceeded("Tool execution deadline was exceeded")
 
 
 def serialize_tool_result(result: Any) -> str:
@@ -243,6 +283,20 @@ def _redact_json_string_if_possible(text: str) -> str:
         return json.dumps(_redact_structured_secrets(parsed), ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         return text
+
+
+def redact_external_tool_result(result: Any) -> str:
+    """Serialize and redact a ToolSurface result before external roundtrip."""
+    if isinstance(result, (dict, list, tuple)):
+        try:
+            text = json.dumps(_redact_structured_secrets(result), ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = serialize_tool_result(result)
+    elif isinstance(result, str):
+        text = _redact_json_string_if_possible(result)
+    else:
+        text = serialize_tool_result(result)
+    return redact_diagnostic_value(text, limit=max(len(text), 1))
 
 
 def execute_runner_tool_call(
