@@ -1761,6 +1761,59 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIn("**🟡 Avoid** | Bullish", markdown)
         self.assertNotIn("Strong Buy", markdown)
 
+    def test_history_markdown_handles_legacy_strategy_synthesis_shapes(self) -> None:
+        service = HistoryService(self.db)
+        record = MagicMock(created_at=None)
+
+        for malformed in ("bad-shape", ["bad-shape"], 42, True):
+            result = AnalysisResult(
+                code="600519",
+                name="贵州茅台",
+                sentiment_score=50,
+                trend_prediction="震荡",
+                operation_advice="观望",
+                report_language="zh",
+                dashboard={
+                    "core_conclusion": {"one_sentence": "测试"},
+                    "intelligence": {},
+                    "battle_plan": {},
+                    "strategy_synthesis": malformed,
+                },
+            )
+
+            markdown = service._generate_single_stock_markdown(result, record)
+
+            self.assertNotIn("多策略综合", markdown)
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "测试"},
+                "intelligence": {},
+                "battle_plan": {},
+                "strategy_synthesis": {
+                    "final_signal": "hold",
+                    "consensus_level": "insufficient",
+                    "conflict_severity": "none",
+                    "conflict_count": 0,
+                    "supporting_skills": "bad-shape",
+                    "opposing_skills": ["bad-shape"],
+                    "conflicts": "bad-shape",
+                    "summary_params": {"invalid_opinion_count": "3"},
+                },
+            },
+        )
+
+        markdown = service._generate_single_stock_markdown(result, record)
+
+        self.assertIn("多策略综合", markdown)
+        self.assertIn("另有 3 个策略解析失败", markdown)
+
     def test_history_markdown_returns_persisted_market_review_report(self) -> None:
         """Market review history should return the saved Markdown without rebuilding a stock report."""
         result = AnalysisResult(
