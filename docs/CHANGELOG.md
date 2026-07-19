@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] `main.py` 新增 `--portfolio futu`，通过 Futu SDK 官方 `SecurityFirm.NONE` 单次自动识别券商，仅合并状态明确为 `ACTIVE` 的 REAL `NORMAL`（普通）及 `MASTER`（主）证券账户，跳过马来西亚 `IPO` 账户，将非零 `LONG` 正股持仓去重后覆盖 `--stocks` / `STOCK_LIST`，并自动排除 `SHORT`、方向未知、期权及其他非正股类型；只读表示本集成仅调用查询接口，单次 CLI 仅在持仓解析边界失败时返回非零退出码。
+- [修复] `--portfolio futu` 在建立 OpenD 连接前拒绝锁定版 `futu-api` 网络层不支持的 IPv6 地址，并在配置示例与双语指南中明确跨主机 IPv4 连接的安全边界。
+- [改进] `futu-api==10.8.6808` 默认随源码依赖、Docker 镜像及 Windows/macOS Desktop backend 发行；Docker smoke、每日 Actions 和 Desktop PyInstaller 冻结产物增加显式 SDK 导入验证。
 - [修复] 多策略综合器语义收敛：修复 Signal 枚举输入被误判为 invalid、缺失 signal 被静默伪装为有效 hold、opinion_count 错误包含 invalid opinions、deterministic synthesis 可被 LLM dashboard 覆盖等问题；新增并收敛 12 个 Phase 1 语义回归测试。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
 - [改进] 个股报告不再单独展示“题材主线与个股位置”卡片，相关市场结构数据仍保留在分析上下文、模型 Prompt 与决策信号提取链路中。

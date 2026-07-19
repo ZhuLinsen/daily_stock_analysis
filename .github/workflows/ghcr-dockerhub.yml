@@ -96,6 +96,7 @@ jobs:
           from src.notification import NotificationService; print('ok-notification')
           from data_provider import DataFetcherManager; print('ok-data-provider')
           from src.analyzer import GeminiAnalyzer; print('ok-analyzer')
+          import futu; print('ok-futu')
           print('manual-smoke-ok')
           "
 

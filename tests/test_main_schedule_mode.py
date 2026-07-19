@@ -18,6 +18,7 @@ ensure_litellm_stub()
 
 _ENV_BEFORE_MAIN_IMPORT = dict(os.environ)
 import main
+from src.brokers.futu.portfolio import FutuPortfolioError
 from src.config import Config
 
 _MAIN_IMPORT_ENV_ADDITIONS = frozenset(set(os.environ) - set(_ENV_BEFORE_MAIN_IMPORT))
@@ -88,6 +89,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         defaults = {
             "debug": False,
             "stocks": None,
+            "portfolio": None,
             "webui": False,
             "webui_only": False,
             "serve": False,
@@ -424,6 +426,72 @@ class MainScheduleModeTestCase(unittest.TestCase):
         _, _, stock_codes = run_full_analysis.call_args.args
         self.assertEqual(stock_codes, ["005930.KS"])
 
+    def test_standalone_futu_portfolio_failure_returns_nonzero(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                side_effect=error,
+            ) as loader,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 1)
+        loader.assert_called_once_with()
+
+    def test_standalone_futu_portfolio_success_returns_zero(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                return_value=["AAPL"],
+            ) as loader,
+            patch(
+                "main._compute_trading_day_filter",
+                return_value=([], "", True),
+            ),
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        loader.assert_called_once_with()
+
+    def test_standalone_futu_downstream_failure_keeps_existing_exit_semantics(self) -> None:
+        args = self._make_args(portfolio="futu")
+        config = self._make_config(run_immediately=True)
+
+        with (
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.setup_logging"),
+            patch("main._refresh_stock_index_cache_for_analysis"),
+            patch(
+                "src.brokers.futu.portfolio.load_futu_stock_codes",
+                return_value=["AAPL"],
+            ) as loader,
+            patch(
+                "main._compute_trading_day_filter",
+                side_effect=RuntimeError("calendar unavailable"),
+            ),
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        loader.assert_called_once_with()
+
     def test_schedule_mode_reload_uses_latest_runtime_config(self) -> None:
         args = self._make_args(schedule=True)
         startup_config = self._make_config(schedule_enabled=True, schedule_time="18:00")
@@ -731,18 +799,26 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_schedule.assert_not_called()
 
     def test_serve_mode_uses_shared_analysis_lock_for_immediate_run_full_analysis(self) -> None:
-        args = self._make_args(serve=True, schedule=False, host="127.0.0.1", port=8000)
+        args = self._make_args(
+            serve=True,
+            schedule=False,
+            portfolio="futu",
+            host="127.0.0.1",
+            port=8000,
+        )
         config = self._make_config(webui_enabled=False, run_immediately=True)
 
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False), \
-             patch("main.parse_arguments", return_value=args), \
-             patch("main.get_config", return_value=config), \
-             patch("main.prepare_webui_frontend_assets", return_value=True), \
-             patch("main.start_api_server"), \
-             patch("main.start_bot_stream_clients") as start_bots, \
-             patch("main.time.sleep", side_effect=KeyboardInterrupt), \
-             patch("main.run_full_analysis") as run_full_analysis, \
-             patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock:
+        with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main.start_api_server"),
+            patch("main.start_bot_stream_clients") as start_bots,
+            patch("main.time.sleep", side_effect=KeyboardInterrupt),
+            patch("main.run_full_analysis") as run_full_analysis,
+            patch("main._run_analysis_with_runtime_scheduler_lock") as run_with_lock,
+        ):
             exit_code = main.main()
 
         self.assertEqual(exit_code, 0)
@@ -750,6 +826,41 @@ class MainScheduleModeTestCase(unittest.TestCase):
         run_with_lock.assert_called_once_with(config, args, None)
         run_full_analysis.assert_not_called()
         start_bots.assert_called_once_with(config)
+
+    def test_serve_mode_keeps_running_after_futu_portfolio_load_failure(self) -> None:
+        args = self._make_args(
+            serve=True,
+            schedule=False,
+            portfolio="futu",
+            host="127.0.0.1",
+            port=8000,
+        )
+        config = self._make_config(webui_enabled=False, run_immediately=True)
+        error = FutuPortfolioError("OpenD unavailable")
+
+        with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}, clear=False),
+            patch("main.parse_arguments", return_value=args),
+            patch("main.get_config", return_value=config),
+            patch("main.prepare_webui_frontend_assets", return_value=True),
+            patch("main.start_api_server"),
+            patch("main.start_bot_stream_clients") as start_bots,
+            patch("main.time.sleep", side_effect=KeyboardInterrupt),
+            patch(
+                "main._run_analysis_with_runtime_scheduler_lock",
+                side_effect=error,
+            ) as run_with_lock,
+            patch("main.logger.exception") as exception_log,
+        ):
+            exit_code = main.main()
+
+        self.assertEqual(exit_code, 0)
+        run_with_lock.assert_called_once_with(config, args, None)
+        start_bots.assert_called_once_with(config)
+        exception_log.assert_any_call(
+            "Futu 持仓导入失败，Web/API 服务继续运行: %s",
+            error,
+        )
 
     def test_serve_schedule_flag_enables_api_runtime_scheduler(self) -> None:
         from src.services.runtime_scheduler import (

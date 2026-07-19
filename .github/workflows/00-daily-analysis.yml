@@ -54,6 +54,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          python -c "import futu; print('✅ futu SDK import OK')"
       
       - name: 创建必要目录
         run: |
