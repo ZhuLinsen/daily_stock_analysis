@@ -76,6 +76,14 @@ class OrchestratorResult:
     stats: Optional[AgentRunStats] = None
 
 
+@dataclass(frozen=True)
+class PreparedOrchestratorChatTurn:
+    """A persisted multi-agent Chat turn ready for pipeline execution."""
+
+    session_id: str
+    context: AgentContext
+
+
 class AgentOrchestrator:
     """Multi-agent pipeline coordinator.
 
@@ -346,7 +354,24 @@ class AgentOrchestrator:
         ``conversation_manager``); the orchestrator focuses on multi-agent
         coordination.
         """
-        from src.agent.executor import AgentResult
+        turn = self.prepare_turn(
+            message=message,
+            session_id=session_id,
+            context=context,
+        )
+        return self.execute_turn(
+            turn,
+            progress_callback=progress_callback,
+        )
+
+    def prepare_turn(
+        self,
+        *,
+        message: str,
+        session_id: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> PreparedOrchestratorChatTurn:
+        """Prepare context and persist the user turn before SSE acceptance."""
         from src.agent.conversation import conversation_manager
 
         scope_resolution = resolve_stock_scope(message, context)
@@ -365,18 +390,33 @@ class AgentOrchestrator:
         # Persist user turn
         conversation_manager.add_message(session_id, "user", message)
 
+        return PreparedOrchestratorChatTurn(
+            session_id=session_id,
+            context=ctx,
+        )
+
+    def execute_turn(
+        self,
+        turn: PreparedOrchestratorChatTurn,
+        *,
+        progress_callback: Optional[Callable] = None,
+    ) -> "AgentResult":
+        """Execute an accepted multi-agent Chat turn and persist its result."""
+        from src.agent.executor import AgentResult
+        from src.agent.conversation import conversation_manager
+
         orch_result = self._execute_pipeline(
-            ctx,
+            turn.context,
             parse_dashboard=False,
             progress_callback=progress_callback,
         )
 
         # Persist assistant response
         if orch_result.success:
-            conversation_manager.add_message(session_id, "assistant", orch_result.content)
+            conversation_manager.add_message(turn.session_id, "assistant", orch_result.content)
         else:
             conversation_manager.add_message(
-                session_id, "assistant",
+                turn.session_id, "assistant",
                 f"[分析失败] {orch_result.error or '未知错误'}",
             )
 
