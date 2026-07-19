@@ -59,7 +59,7 @@ dingtalk-stream >= 0.24.3    # DingTalk Stream SDK
 
 # Discord bot
 discord.py>=2.0.0              # Discord bot development library
-PyNaCl>=1.5.0                  # Discord Interaction/Webhook Ed25519 signature verification
+PyNaCl>=1.6.2                  # Discord Interaction/Webhook Ed25519 signature verification
 
 # Web Content Extraction
 newspaper3k>=0.2.8          # Article extraction
