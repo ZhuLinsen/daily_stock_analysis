@@ -108,7 +108,7 @@ Return **only** a JSON object:
 
         return AgentOpinion(
             agent_name=self.agent_name,
-            signal=parsed.get("signal", "hold"),
+            signal=parsed.get("signal"),  # None if missing — no silent default
             confidence=float(parsed.get("confidence", 0.5)),
             reasoning=parsed.get("reasoning", ""),
             raw_data=parsed,

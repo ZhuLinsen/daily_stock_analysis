@@ -67,6 +67,7 @@ from src.llm.backend_registry import (
 )
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.local_cli_backend import resolve_local_cli_preset
+from src.llm.response_content import strip_leading_think_wrapper
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
     FEISHU_WEBHOOK_ENV_GROUP,
@@ -4336,7 +4337,7 @@ class SystemConfigService:
                     text = _field(block, "content")
                 if isinstance(text, str) and text:
                     text_parts.append(text)
-            return "".join(text_parts).strip()
+            return strip_leading_think_wrapper("".join(text_parts))
 
         if response is None:
             return "", "empty_response", "Completion returned no response object", "null_response"
@@ -4367,7 +4368,11 @@ class SystemConfigService:
         raw_content = _field(message, "content")
         if raw_content is None:
             return "", "empty_response", "Completion returned null message content", "null_content"
-        content = _text_from_blocks(raw_content) if isinstance(raw_content, list) else str(raw_content).strip()
+        content = (
+            _text_from_blocks(raw_content)
+            if isinstance(raw_content, list)
+            else strip_leading_think_wrapper(str(raw_content))
+        )
         if not content:
             return "", "empty_response", "Completion returned an empty message content", "empty_content"
         return content, None, None, None

@@ -76,6 +76,7 @@ from src.llm.provider_cache import (
     build_provider_cache_route_context,
     filter_prompt_cache_telemetry,
 )
+from src.llm.response_content import strip_leading_think_wrapper
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.report_language import (
@@ -2863,7 +2864,7 @@ class GeminiAnalyzer:
             content_blocks = self._get_response_field(message, "content_blocks")
         block_text = self._extract_text_blocks(content_blocks)
         if block_text:
-            return block_text
+            return strip_leading_think_wrapper(block_text)
 
         content = None
         if message is not None:
@@ -2872,9 +2873,9 @@ class GeminiAnalyzer:
             content = self._get_response_field(choice, "content")
 
         if isinstance(content, list):
-            return self._extract_text_blocks(content)
+            return strip_leading_think_wrapper(self._extract_text_blocks(content))
         if isinstance(content, str):
-            return content.strip()
+            return strip_leading_think_wrapper(content)
         return str(content).strip() if content is not None else ""
 
     def _extract_stream_text(self, chunk: Any) -> str:
@@ -2947,7 +2948,7 @@ class GeminiAnalyzer:
                 partial_received=chars_received > 0,
             ) from exc
 
-        response_text = "".join(chunks).strip()
+        response_text = strip_leading_think_wrapper("".join(chunks))
         if not response_text:
             raise _LiteLLMStreamError(
                 f"{model} stream returned empty response",

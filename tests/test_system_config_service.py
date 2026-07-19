@@ -3592,6 +3592,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
 
     @patch("litellm.completion")
+    def test_test_llm_channel_json_capability_strips_minimax_think_wrapper(self, mock_completion) -> None:
+        mock_completion.side_effect = [
+            self._mock_completion_response("OK"),
+            self._mock_completion_response('<think>Internal reasoning</think>{"status":"ok"}'),
+        ]
+
+        payload = self.service.test_llm_channel(
+            name="minimax",
+            protocol="openai",
+            base_url="https://api.minimax.io/v1",
+            api_key="sk-test-value",
+            models=["MiniMax-M3"],
+            capability_checks=["json"],
+        )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["capability_results"]["json"]["status"], "passed")
+
+    @patch("litellm.completion")
     def test_test_llm_channel_reports_json_capability_failures(self, mock_completion) -> None:
         mock_completion.side_effect = [
             self._mock_completion_response("OK"),
