@@ -891,7 +891,7 @@ class TestDecisionAgentPostProcess(unittest.TestCase):
         }
         ctx.set_data("skill_consensus", {"strategy_synthesis": synthesis})
 
-        normalized = orch._normalize_dashboard_payload({"dashboard": {}}, ctx)
+        normalized = orch._finalize_dashboard_payload({"dashboard": {}}, ctx)
 
         self.assertIsNotNone(normalized)
         self.assertEqual(normalized["dashboard"]["strategy_synthesis"], synthesis)
@@ -3159,7 +3159,7 @@ class TestP1SemanticConvergence(unittest.TestCase):
             llm_adapter=MagicMock(),
             mode="full",
         )
-        normalized = orchestrator._normalize_dashboard_payload(dashboard_with_llm_synthesis, ctx)
+        normalized = orchestrator._finalize_dashboard_payload(dashboard_with_llm_synthesis, ctx)
 
         self.assertIsNotNone(normalized)
         self.assertIn("strategy_synthesis", normalized["dashboard"])
@@ -3573,7 +3573,7 @@ class TestStrategyEngineE2E(unittest.TestCase):
         }
 
         orchestrator = self._make_orchestrator()
-        normalized = orchestrator._normalize_dashboard_payload(llm_payload, ctx)
+        normalized = orchestrator._finalize_dashboard_payload(llm_payload, ctx)
 
         self.assertIsNotNone(normalized)
         synth = normalized["dashboard"].get("strategy_synthesis")
