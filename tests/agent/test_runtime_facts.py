@@ -54,7 +54,7 @@ def _dashboard(signal="buy"):
         "analysis_summary": "test summary",
         "dashboard": {
             "core_conclusion": {
-                "one_sentence": "test conclusion",
+                "one_sentence": "趋势向上，建议立即买入",
                 "position_advice": {"no_position": "watch", "has_position": "hold"},
             },
             "battle_plan": {
@@ -243,6 +243,8 @@ def test_orchestrator_returns_internal_facts_without_public_dashboard_fields():
     assert call_order == ["prepare", "risk", "finalize"]
     assert "观望" in result.dashboard["operation_advice"]
     core = result.dashboard["dashboard"]["core_conclusion"]
+    assert core["one_sentence"].startswith("[风控下调: buy -> hold]")
+    assert "趋势向上，建议立即买入" in core["one_sentence"]
     assert core["signal_type"] == "🟡持有观望"
     assert "风险未解除" in core["position_advice"]["no_position"]
     strategy = result.dashboard["dashboard"]["battle_plan"]["position_strategy"]
@@ -254,6 +256,10 @@ def test_orchestrator_returns_internal_facts_without_public_dashboard_fields():
     )
     assert decision_opinion.signal == "hold"
     assert decision_opinion.raw_data is result.dashboard
+    assert (
+        decision_opinion.raw_data["dashboard"]["core_conclusion"]["one_sentence"]
+        == core["one_sentence"]
+    )
     assert result.runtime_facts is not None
     assert result.runtime_facts.degraded_events == (
         DegradedEvent(

@@ -1216,8 +1216,13 @@ class AgentOrchestrator:
         if latest_news and not intelligence.get("latest_news"):
             intelligence["latest_news"] = latest_news
 
-        if not core.get("one_sentence"):
-            core["one_sentence"] = _truncate_text(analysis_summary, 60)
+        one_sentence = _first_non_empty_text(
+            core.get("one_sentence"),
+            analysis_summary,
+        )
+        if risk_applied and not one_sentence.startswith(transition_prefix):
+            one_sentence = f"{transition_prefix} {one_sentence}"
+        core["one_sentence"] = _truncate_text(one_sentence, 60)
         if not core.get("time_sensitivity"):
             core["time_sensitivity"] = "本周内"
         if risk_applied or not core.get("signal_type"):
