@@ -14,7 +14,7 @@ efinance>=0.5.8             # Priority 0: East Money data source https://github.
 akshare>=1.12.0             # Priority 1: East Money crawler data source
 tushare>=1.4.29              # Priority 2: Tushare Pro API
 pytdx>=1.72                 # Priority 2: Tongdaxin quote servers
-baostock>=0.8.0             # Priority 3: Baostock data
+baostock>=0.9.3             # Priority 3: Baostock data
 yfinance>=1.5.1             # Priority 4: Yahoo Finance (Fallback)
 # Longbridge 4.x Linux wheels currently require manylinux_2_39; Docker uses bookworm/glibc 2.36.
 # Priority 5: Docker/Linux fallback SDK.
