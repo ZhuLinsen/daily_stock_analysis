@@ -202,19 +202,48 @@ class GeminiAnalyzer:
 
     def analyze(self, ticker: str, data: dict) -> AnalysisResult:
         sentiment_info = get_stock_sentiment(ticker)
-        analysis_text = f"针对 {ticker} 的数据进行分析..."
-        if sentiment_info:
-            analysis_text += f"\n{sentiment_info}"
         
-        # 封装结果
+        # 1. 拼接完整提示词 (Prompt)
+        prompt = f"""
+{CORE_TRADING_SKILL_POLICY_ZH}
+
+请对股票 {ticker} 进行深度技术与基本面分析。
+【个股数据】：
+{json.dumps(data, ensure_ascii=False, indent=2)}
+
+【网络舆情】：
+{sentiment_info if sentiment_info else "无"}
+
+请给出操作建议（BUY/SELL/HOLD）、置信度（HIGH/MEDIUM/LOW）以及具体的分析逻辑。
+"""
+
+        # 2. 调用 LiteLLM / Gemini 接口生成分析内容
+        try:
+            response = litellm.completion(
+                model=getattr(self.config, "model", "gemini/gemini-1.5-flash") if self.config else "gemini/gemini-1.5-flash",
+                messages=[{"role": "user", "content": prompt}],
+                **extra_litellm_params(self.config) if self.config else {}
+            )
+            analysis_text = response.choices[0].message.content
+            
+            # 推导买卖建议与置信度
+            decision = infer_decision_type_from_advice(analysis_text) or "HOLD"
+            confidence = "MEDIUM"
+        except Exception as e:
+            logging.error(f"调用 AI 分析失败: {e}")
+            analysis_text = f"分析生成失败，错误信息: {str(e)}"
+            decision = "HOLD"
+            confidence = "LOW"
+
+        # 3. 封装结果
         result = AnalysisResult(
             ticker=ticker,
-            decision="HOLD",
-            confidence="MEDIUM",
+            decision=decision,
+            confidence=confidence,
             analysis=analysis_text
         )
 
-        # 触发 Lark 推送
+        # 4. 触发 Lark/飞书 推送
         try:
             send_to_feishu(result.ticker, result.decision, result.confidence, result.analysis)
         except Exception as e:
