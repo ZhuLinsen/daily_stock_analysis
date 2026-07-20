@@ -202,7 +202,7 @@ class GeminiAnalyzer:
 
     def analyze(self, ticker: str, data: dict) -> AnalysisResult:
         sentiment_info = get_stock_sentiment(ticker)
-        
+
         # 1. 拼接完整提示词 (Prompt)
         prompt = f"""
 {CORE_TRADING_SKILL_POLICY_ZH}
@@ -225,7 +225,7 @@ class GeminiAnalyzer:
                 **extra_litellm_params(self.config) if self.config else {}
             )
             analysis_text = response.choices[0].message.content
-            
+
             # 推导买卖建议与置信度
             decision = infer_decision_type_from_advice(analysis_text) or "HOLD"
             confidence = "MEDIUM"
