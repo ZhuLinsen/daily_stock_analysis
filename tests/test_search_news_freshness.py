@@ -7,6 +7,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Dict, List
 from unittest.mock import MagicMock, patch
 
 # Mock newspaper before search_service import (optional dependency)
@@ -2176,6 +2177,193 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         expected_local_date = dt_utc.astimezone().date()
         parsed = SearchService._normalize_news_publish_date(rfc_text)
         self.assertEqual(parsed, expected_local_date)
+
+    # ------------------------------------------------------------------
+    # Regression tests for issue #2026:
+    # US/HK tickers that STOCK_NAME_MAP maps to a Chinese display name
+    # must still match English news articles. The search layer swaps in
+    # an English alias (from _FOREIGN_TICKER_ENGLISH_ALIASES) for both
+    # the search query and the identity-term set used by relevance
+    # scoring, so English articles are no longer downgraded to
+    # ``macro_market_news``.
+    # ------------------------------------------------------------------
+
+    def test_market_english_aliases_returns_alias_for_chinese_foreign_name(self) -> None:
+        """_market_english_aliases returns the configured English alias."""
+        # US ticker with Chinese name -> alias returned
+        aliases = SearchService._market_english_aliases("AAPL", "苹果")
+        self.assertEqual(aliases, ["Apple Inc."])
+
+        # HK ticker with Chinese name -> alias returned
+        aliases_hk = SearchService._market_english_aliases("00700", "腾讯控股")
+        self.assertEqual(aliases_hk, ["Tencent Holdings"])
+
+        # US ticker already in English -> no alias needed
+        aliases_en = SearchService._market_english_aliases("AAPL", "Apple")
+        self.assertEqual(aliases_en, [])
+
+        # A-share code -> never returns an alias (not a foreign ticker)
+        aliases_a = SearchService._market_english_aliases("600519", "贵州茅台")
+        self.assertEqual(aliases_a, [])
+
+        # Foreign ticker with Chinese name but no configured alias -> []
+        aliases_unknown = SearchService._market_english_aliases("UNKNOWN", "未知外股")
+        self.assertEqual(aliases_unknown, [])
+
+    def test_aapl_with_chinese_name_scores_english_article_as_direct(self) -> None:
+        """AAPL + Chinese name "苹果" must classify an English Apple Inc.
+        article as ``direct_company_news`` rather than ``macro_market_news``.
+
+        This is the core regression for issue #2026: previously the Chinese
+        company name "苹果" never matched an English-only article, so the
+        article fell back to the ambiguous-company / macro path. With the
+        English alias injected into the identity-term set, the article now
+        hits the unambiguous "Apple Inc." term in the title.
+        """
+        fresh = datetime.now().date().isoformat()
+        scored = SearchService._score_news_relevance(
+            _result(
+                "Apple Inc. unveils new product line",
+                fresh,
+                snippet="Apple Inc. reports strong quarterly earnings.",
+            ),
+            stock_code="AAPL",
+            stock_name="苹果",
+        )
+        self.assertEqual(scored.relevance_category, "direct_company_news")
+        reasons = "；".join(scored.relevance_reasons or [])
+        self.assertIn("公司名 Apple Inc.", reasons)
+
+    def test_aapl_with_chinese_name_search_stock_news_uses_english_query(self) -> None:
+        """search_stock_news must build an English query when the foreign
+        ticker's pipeline-supplied name is Chinese. Otherwise English
+        providers would receive a Chinese name and return nothing matches.
+        """
+        fresh = datetime.now().date().isoformat()
+        captured_query: Dict[str, str] = {}
+
+        def fake_search(query, max_results, days=None, **kwargs):
+            captured_query["query"] = query
+            return _response(
+                [
+                    _result(
+                        "Apple Inc. unveils new product line",
+                        fresh,
+                        snippet="Apple Inc. reports strong quarterly earnings.",
+                    )
+                ]
+            )
+
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=7,
+            news_strategy_profile="short",
+        )
+        provider = SimpleNamespace(
+            is_available=True,
+            name="USProvider",
+            search=MagicMock(side_effect=fake_search),
+        )
+        service._providers = [provider]
+
+        resp = service.search_stock_news("AAPL", "苹果", max_results=1)
+        self.assertTrue(resp.success)
+        self.assertEqual(len(resp.results), 1)
+        self.assertEqual(
+            resp.results[0].relevance_category, "direct_company_news"
+        )
+        # The query must use the English alias, not the Chinese name
+        self.assertIn("Apple Inc.", captured_query["query"])
+        self.assertNotIn("苹果", captured_query["query"])
+
+    def test_hk_00700_with_chinese_name_scores_english_article_as_direct(self) -> None:
+        """HK ticker 00700 + Chinese name "腾讯控股" must classify an English
+        Tencent Holdings article as ``direct_company_news``."""
+        fresh = datetime.now().date().isoformat()
+        scored = SearchService._score_news_relevance(
+            _result(
+                "Tencent Holdings reports profit rise",
+                fresh,
+                snippet="Tencent Holdings revenue grew year-on-year.",
+            ),
+            stock_code="00700",
+            stock_name="腾讯控股",
+        )
+        self.assertEqual(scored.relevance_category, "direct_company_news")
+        reasons = "；".join(scored.relevance_reasons or [])
+        self.assertIn("公司名 Tencent Holdings", reasons)
+
+    def test_a_share_chinese_name_path_unchanged(self) -> None:
+        """A-share with Chinese name + Chinese article still classifies as
+        ``direct_company_news`` (the fix must not regress the A-share path)."""
+        fresh = datetime.now().date().isoformat()
+        scored = SearchService._score_news_relevance(
+            _result(
+                "贵州茅台今天公布季报",
+                fresh,
+                snippet="公司收入稳增长。",
+            ),
+            stock_code="600519",
+            stock_name="贵州茅台",
+        )
+        self.assertEqual(scored.relevance_category, "direct_company_news")
+        reasons = "；".join(scored.relevance_reasons or [])
+        self.assertIn("公司名 贵州茅台", reasons)
+
+    def test_a_share_chinese_name_does_not_match_english_article(self) -> None:
+        """A-share with a Chinese name must NOT match an English article:
+        the alias map is restricted to foreign tickers, so A-share identity
+        stays Chinese-only and English articles about the same company
+        remain non-direct (no regression to the A-share path)."""
+        fresh = datetime.now().date().isoformat()
+        scored = SearchService._score_news_relevance(
+            _result(
+                "Kweichow Moutai reports strong earnings",
+                fresh,
+                snippet="Revenue up driven by baijiu sales.",
+            ),
+            stock_code="600519",
+            stock_name="贵州茅台",
+        )
+        self.assertNotEqual(scored.relevance_category, "direct_company_news")
+
+    def test_search_comprehensive_intel_uses_english_alias_for_foreign_ticker(self) -> None:
+        """search_comprehensive_intel must build its foreign-ticker intel
+        queries with the English alias (not the Chinese name)."""
+        captured_queries: List[str] = []
+
+        def fake_search(query, max_results, days=None, **kwargs):
+            captured_queries.append(query)
+            return _response(
+                [
+                    _result(
+                        "Apple Inc. unveils new product line",
+                        datetime.now().date().isoformat(),
+                        snippet="Apple Inc. reports strong quarterly earnings.",
+                    )
+                ]
+            )
+
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=7,
+            news_strategy_profile="short",
+        )
+        provider = SimpleNamespace(
+            is_available=True,
+            name="USProvider",
+            search=MagicMock(side_effect=fake_search),
+        )
+        service._providers = [provider]
+
+        service.search_comprehensive_intel("AAPL", "苹果", max_searches=1)
+        # Every captured query must use the English alias, not the Chinese name
+        self.assertTrue(captured_queries, "Expected at least one intel query")
+        for q in captured_queries:
+            self.assertNotIn("苹果", q)
+            self.assertIn("Apple", q)
 
 
 if __name__ == "__main__":

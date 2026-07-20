@@ -51,6 +51,77 @@ _SEARCH_TRANSIENT_EXCEPTIONS = (
 )
 
 
+# Foreign ticker English aliases for search-layer identity terms.
+#
+# When the pipeline passes a Chinese display name (e.g., "苹果") for a US/HK
+# ticker that STOCK_NAME_MAP maps to Chinese, English-language news articles
+# about that company will not match the Chinese identity terms and will be
+# downgraded to "macro_market_news". To fix that, SearchService uses these
+# English aliases inside its query strings and identity-term set.
+#
+# This is intentionally a different semantic from STOCK_NAME_MAP (ticker ->
+# Chinese display name); it lives here, in the search layer, as a private
+# constant and is not used outside SearchService. Keeping it small (only the
+# tickers STOCK_NAME_MAP currently maps to Chinese names) avoids drift: any
+# new ticker added to STOCK_NAME_MAP that needs English identity will require
+# an explicit entry here, surfacing the change in code review.
+_FOREIGN_TICKER_ENGLISH_ALIASES: Dict[str, str] = {
+    # US tickers that STOCK_NAME_MAP currently maps to Chinese display names.
+    "AAPL": "Apple Inc.",
+    "AMZN": "Amazon.com, Inc.",
+    "BABA": "Alibaba Group Holding Ltd",
+    "BIDU": "Baidu, Inc.",
+    "GOOG": "Alphabet Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "INTC": "Intel Corporation",
+    "JD": "JD.com, Inc.",
+    "LI": "Li Auto Inc.",
+    "MSFT": "Microsoft Corporation",
+    "NIO": "NIO Inc.",
+    "NVDA": "NVIDIA Corporation",
+    "PDD": "PDD Holdings Inc.",
+    "TSLA": "Tesla, Inc.",
+    "XPEV": "Xpeng, Inc.",
+    # HK tickers that STOCK_NAME_MAP currently maps to Chinese display names.
+    "00700": "Tencent Holdings",
+    "09988": "Alibaba Group Holding",
+    "09618": "JD.com",
+    "03690": "Meituan",
+    "01024": "Kuaishou Technology",
+    "01810": "Xiaomi Corporation",
+    "02318": "Ping An Insurance",
+    "00388": "Hong Kong Exchanges and Clearing",
+    "00941": "China Mobile",
+}
+
+
+def _normalize_stock_code_for_alias_lookup(stock_code: str) -> str:
+    """Normalize a stock code to the form used as keys in
+    _FOREIGN_TICKER_ENGLISH_ALIASES.
+
+    Examples:
+        "AAPL"      -> "AAPL"
+        "AAPL.US"   -> "AAPL"
+        "00700"     -> "00700"   (now has alias)
+        "HK00700"   -> "00700"
+        "600519.SH" -> "600519.SH"  (A股; returns empty later)
+    """
+    code = (stock_code or "").strip().upper()
+    if not code:
+        return ""
+    # Strip US exchange suffix like ".US" / ".N" if present
+    for suffix in (".US", ".N", ".O", ".A"):
+        if code.endswith(suffix):
+            return code[: -len(suffix)]
+    # HK prefix
+    if code.startswith("HK") and len(code) == 7 and code[2:].isdigit():
+        return code[2:]
+    # HK suffix like "00700.HK"
+    if code.endswith(".HK") and code[: -len(".HK")].isdigit():
+        return code[: -len(".HK")]
+    return code
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -2415,6 +2486,42 @@ class SearchService:
         return cls._contains_chinese_text(" ".join(filter(None, [item.title, item.snippet, item.source])))
 
     @classmethod
+    def _market_english_aliases(
+        cls, stock_code: str, stock_name: str
+    ) -> List[str]:
+        """Return English display-name aliases for a foreign stock whose
+        pipeline-supplied ``stock_name`` is Chinese.
+
+        Background: ``STOCK_NAME_MAP`` (defined in the stock-data layer) maps a
+        small set of US/HK tickers (AAPL, NVDA, TSLA, BABA, JD, ...) to Chinese
+        display names (for example the Chinese rendering of "Apple", "NVIDIA",
+        "Tesla", "Alibaba", "JD.com", ...). When news search receives such a
+        Chinese name, English articles about that company will not match the
+        Chinese identity terms and will be downgraded to
+        ``macro_market_news``. To fix that, the search layer can swap in an
+        English alias from ``_FOREIGN_TICKER_ENGLISH_ALIASES`` for both the
+        search query and the identity-term set used by relevance scoring.
+
+        Returns an empty list when:
+          * the stock code is not a foreign ticker, or
+          * the supplied ``stock_name`` is already English (no CJK chars), or
+          * there is no explicit English alias configured for this ticker.
+
+        Keeping the alias map small (only the tickers STOCK_NAME_MAP currently
+        maps to Chinese) avoids drift: any new ticker added to STOCK_NAME_MAP
+        that needs English identity will require an explicit entry here,
+        surfacing the change in code review.
+        """
+        if not cls._is_foreign_stock(stock_code):
+            return []
+        if not cls._contains_chinese_text(stock_name):
+            # Already English (or non-Chinese); no alias needed.
+            return []
+        key = _normalize_stock_code_for_alias_lookup(stock_code)
+        alias = _FOREIGN_TICKER_ENGLISH_ALIASES.get(key)
+        return [alias] if alias else []
+
+    @classmethod
     def _prioritize_news_language(
         cls,
         response: SearchResponse,
@@ -2999,7 +3106,17 @@ class SearchService:
                         add_reason(f"链接命中股票代码 {term}")
                         break
 
-        for term in cls._company_identity_terms(stock_name):
+        # Build the company-name identity set. For US/HK tickers that
+        # STOCK_NAME_MAP maps to a Chinese display name, also include the
+        # English alias from _FOREIGN_TICKER_ENGLISH_ALIASES so that
+        # English-language articles about the company match the identity
+        # terms instead of being downgraded to "macro_market_news".
+        company_identity_terms = list(cls._company_identity_terms(stock_name))
+        for alias in cls._market_english_aliases(stock_code, stock_name):
+            if alias not in company_identity_terms:
+                company_identity_terms.append(alias)
+
+        for term in company_identity_terms:
             ambiguous_en = (
                 not cls._contains_chinese_text(term)
                 and term.lower() in cls._AMBIGUOUS_EN_COMPANY_NAMES
@@ -3605,14 +3722,23 @@ class SearchService:
 
         # 构建搜索查询（优化搜索效果）
         is_foreign = self._is_foreign_stock(stock_code)
+        english_aliases = self._market_english_aliases(stock_code, stock_name)
+        # For foreign tickers whose pipeline-supplied name is Chinese, swap
+        # the Chinese name out for the English alias when building the
+        # English news query. Otherwise English articles about the
+        # company won't match the query terms.
+        if is_foreign and english_aliases:
+            effective_name = english_aliases[0]
+        else:
+            effective_name = stock_name
         if focus_keywords:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
-        elif prefer_chinese:
-            query = f"{stock_name} {stock_code} 股票 最新消息"
         elif is_foreign:
             # 港股/美股使用英文搜索关键词
-            query = f"{stock_name} {stock_code} stock latest news"
+            query = f"{effective_name} {stock_code} stock latest news"
+        elif prefer_chinese:
+            query = f"{stock_name} {stock_code} 股票 最新消息"
         else:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
@@ -3948,18 +4074,29 @@ class SearchService:
         is_foreign = self._is_foreign_stock(stock_code)
         is_index_etf = self.is_index_or_etf(stock_code, stock_name)
 
+        # For foreign tickers whose pipeline-supplied name is Chinese, swap
+        # the Chinese name out for the English alias when building English
+        # intel queries. Otherwise English articles about the company won't
+        # match the query terms and the intel dimensions will return
+        # macro_market_news instead of direct_company_news.
+        if is_foreign:
+            english_aliases = self._market_english_aliases(stock_code, stock_name)
+            intel_name = english_aliases[0] if english_aliases else stock_name
+        else:
+            intel_name = stock_name
+
         if is_foreign:
             search_dimensions = [
                 {
                     'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} latest news events",
+                    'query': f"{intel_name} {stock_code} latest news events",
                     'desc': '最新消息',
                     'tavily_topic': 'news',
                     'strict_freshness': True,
                 },
                 {
                     'name': 'market_analysis',
-                    'query': f"{stock_name} analyst rating target price report",
+                    'query': f"{intel_name} analyst rating target price report",
                     'desc': '机构分析',
                     'tavily_topic': None,
                     'strict_freshness': False,
@@ -3967,8 +4104,8 @@ class SearchService:
                 {
                     'name': 'risk_check',
                     'query': (
-                        f"{stock_name} {stock_code} index performance outlook tracking error"
-                        if is_index_etf else f"{stock_name} risk insider selling lawsuit litigation"
+                        f"{intel_name} {stock_code} index performance outlook tracking error"
+                        if is_index_etf else f"{intel_name} risk insider selling lawsuit litigation"
                     ),
                     'desc': '风险排查',
                     'tavily_topic': None if is_index_etf else 'news',
@@ -3977,8 +4114,8 @@ class SearchService:
                 {
                     'name': 'earnings',
                     'query': (
-                        f"{stock_name} {stock_code} index performance composition outlook"
-                        if is_index_etf else f"{stock_name} earnings revenue profit growth forecast"
+                        f"{intel_name} {stock_code} index performance composition outlook"
+                        if is_index_etf else f"{intel_name} earnings revenue profit growth forecast"
                     ),
                     'desc': '业绩预期',
                     'tavily_topic': None,
@@ -3987,8 +4124,8 @@ class SearchService:
                 {
                     'name': 'industry',
                     'query': (
-                        f"{stock_name} {stock_code} index sector allocation holdings"
-                        if is_index_etf else f"{stock_name} industry competitors market share outlook"
+                        f"{intel_name} {stock_code} index sector allocation holdings"
+                        if is_index_etf else f"{intel_name} industry competitors market share outlook"
                     ),
                     'desc': '行业分析',
                     'tavily_topic': None,
