@@ -335,6 +335,7 @@ class AnalysisHistory(Base):
     take_profit = Column(Float)
 
     created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
     __table_args__ = (
         Index('ix_analysis_code_time', 'code', 'created_at'),
@@ -1214,6 +1215,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_decision_signal_profile_schema()
             self._ensure_intelligence_item_scope_values()
+            self._ensure_us_macro_report_schema()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
 
@@ -1259,6 +1261,22 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_us_macro_report_schema(self) -> None:
+        """Make same-day US macro reports atomically unique on existing SQLite DBs."""
+        if not self._is_sqlite_engine or not inspect(self._engine).has_table(AnalysisHistory.__tablename__):
+            return
+        columns = {column["name"] for column in inspect(self._engine).get_columns(AnalysisHistory.__tablename__)}
+        if "updated_at" not in columns:
+            with self._engine.begin() as connection:
+                connection.exec_driver_sql("ALTER TABLE analysis_history ADD COLUMN updated_at DATETIME")
+                connection.exec_driver_sql("UPDATE analysis_history SET updated_at = created_at WHERE updated_at IS NULL")
+        with self._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uix_us_macro_report_business_key "
+                "ON analysis_history (query_id, code, report_type) "
+                "WHERE report_type = 'global_macro'"
+            )
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""
@@ -2154,6 +2172,57 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         except Exception as e:
             logger.error(f"保存分析历史失败: {e}")
             return 0
+
+    def upsert_us_macro_report_history(
+        self,
+        *,
+        result: Any,
+        query_id: str,
+        context_snapshot: Dict[str, Any],
+    ) -> int:
+        """Atomically create or refresh one US macro report per business day."""
+        values = {
+            "query_id": query_id,
+            "code": result.code,
+            "name": result.name,
+            "report_type": "global_macro",
+            "sentiment_score": result.sentiment_score,
+            "operation_advice": result.operation_advice,
+            "trend_prediction": result.trend_prediction,
+            "analysis_summary": result.analysis_summary,
+            "raw_result": self._safe_json_dumps(self._build_raw_result(result)),
+            "context_snapshot": self._safe_json_dumps(context_snapshot),
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        }
+        def _write(session: Session) -> int:
+            if self._is_sqlite_engine:
+                stmt = sqlite_insert(AnalysisHistory).values(**values).on_conflict_do_update(
+                    index_elements=["query_id", "code", "report_type"],
+                    index_where=text("report_type = 'global_macro'"),
+                    set_={key: value for key, value in values.items() if key not in {"created_at", "query_id", "code", "report_type"}},
+                )
+                session.execute(stmt)
+                return int(session.execute(select(AnalysisHistory.id).where(
+                    AnalysisHistory.query_id == query_id,
+                    AnalysisHistory.code == result.code,
+                    AnalysisHistory.report_type == "global_macro",
+                )).scalar_one())
+            existing = session.execute(select(AnalysisHistory).where(
+                AnalysisHistory.query_id == query_id,
+                AnalysisHistory.code == result.code,
+                AnalysisHistory.report_type == "global_macro",
+            )).scalar_one_or_none()
+            if existing is None:
+                existing = AnalysisHistory(**values)
+                session.add(existing)
+                session.flush()
+            else:
+                for key, value in values.items():
+                    if key != "created_at":
+                        setattr(existing, key, value)
+            return int(existing.id)
+        return self._run_write_transaction(f"upsert_us_macro_report[{query_id}]", _write)
 
     def update_analysis_history_diagnostics(
         self,

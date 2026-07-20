@@ -1,0 +1,118 @@
+name: 美国宏观与精选股票手动验证
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_ai:
+        description: 使用现有 DeepSeek/LiteLLM 分析与宏观受限解释
+        required: true
+        default: true
+        type: boolean
+      send_notification:
+        description: 发送飞书通知（首次云端验证应保持关闭）
+        required: true
+        default: false
+        type: boolean
+      force_run:
+        description: 跳过交易日检查
+        required: true
+        default: true
+        type: boolean
+      stocks:
+        description: 仅分析这些股票代码，逗号分隔
+        required: true
+        default: 600584,300255,000560
+        type: string
+
+concurrency:
+  group: us-macro-manual-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_PATH: data/stock_analysis.db
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+      FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+      FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+      FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Validate non-secret configuration
+        run: |
+          test -n "$LITELLM_MODEL" || { echo "LITELLM_MODEL repository variable is required"; exit 1; }
+          mkdir -p data logs reports artifacts
+          echo "Configured inputs: use_ai=${{ inputs.use_ai }}, send_notification=${{ inputs.send_notification }}, force_run=${{ inputs.force_run }}"
+          echo "Secrets are present only as masked environment variables."
+
+      - name: Run selected stocks and US macro report
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.use_ai }}" != "true" ] && [ "${{ inputs.send_notification }}" = "true" ]; then
+            echo "use_ai=false uses the stock CLI dry-run mode, which cannot send notifications."
+            exit 2
+          fi
+          stock_args=(--stocks "${{ inputs.stocks }}" --no-market-review)
+          macro_args=(--us-macro)
+
+          if [ "${{ inputs.force_run }}" = "true" ]; then
+            stock_args+=(--force-run)
+          fi
+          if [ "${{ inputs.use_ai }}" = "true" ]; then
+            macro_args+=(--us-macro-ai)
+          else
+            stock_args+=(--dry-run)
+          fi
+          if [ "${{ inputs.send_notification }}" != "true" ]; then
+            stock_args+=(--no-notify)
+            macro_args+=(--no-notify)
+          fi
+
+          python main.py "${stock_args[@]}" 2>&1 | tee logs/selected-stocks.log
+          python main.py "${macro_args[@]}" 2>&1 | tee logs/us-macro.log
+
+      - name: Prepare artifacts
+        if: always()
+        run: |
+          if [ -f "$DATABASE_PATH" ]; then cp "$DATABASE_PATH" artifacts/stock_analysis.db; fi
+          printf '%s\n' \
+            "use_ai=${{ inputs.use_ai }}" \
+            "send_notification=${{ inputs.send_notification }}" \
+            "force_run=${{ inputs.force_run }}" \
+            "stocks=${{ inputs.stocks }}" > artifacts/run-summary.txt
+
+      - name: Upload reports, logs, and SQLite copy
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: us-macro-manual-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            reports/**/*.md
+            logs/selected-stocks.log
+            logs/us-macro.log
+            artifacts/run-summary.txt
+            artifacts/stock_analysis.db

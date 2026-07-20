@@ -119,6 +119,11 @@ class YfinanceFetcher(BaseFetcher):
         """
         code = stock_code.strip().upper()
 
+        # Yahoo 指数、期货与指数货币符号包含 ``^``、``=`` 或 ``.NYB``，
+        # 不能按 A 股代码追加交易所后缀。
+        if code.startswith('^') or '=' in code or code.endswith('.NYB'):
+            return code
+
         # 美股指数：映射到 Yahoo Finance 符号（如 SPX -> ^GSPC）
         yf_symbol, _ = get_us_index_yf_symbol(code)
         if yf_symbol:

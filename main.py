@@ -282,6 +282,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --us-macro         # 生成美国宏观基础报告
         '''
     )
 
@@ -345,6 +346,14 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='仅运行大盘复盘分析'
     )
+
+    parser.add_argument(
+        '--us-macro',
+        action='store_true',
+        help='仅运行美国宏观基础报告（FRED 利率与市场快照）'
+    )
+    parser.add_argument('--us-macro-ai', action='store_true', help='为美国宏观报告生成受限 AI 解释')
+    parser.add_argument('--us-macro-preview-notification', action='store_true', help='预览美国宏观飞书消息分段，不发送')
 
     parser.add_argument(
         '--no-market-review',
@@ -1403,6 +1412,21 @@ def main() -> int:
             logger.info(
                 f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+            )
+            return 0
+
+        # 模式 0.5: 美国宏观基础报告。显式 CLI 调用不受默认关闭配置影响。
+        if getattr(args, 'us_macro', False):
+            from src.core.us_macro import run_us_macro_report
+
+            logger.info("模式: 美国宏观基础报告")
+            run_us_macro_report(
+                config=config,
+                send_notification=not args.no_notify and not args.dry_run,
+                save_report_file=True,
+                trigger_source="cli",
+                use_ai=getattr(args, 'us_macro_ai', False),
+                preview_notification=getattr(args, 'us_macro_preview_notification', False),
             )
             return 0
 

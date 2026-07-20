@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增默认关闭的美国宏观基础报告 CLI（`python3 main.py --us-macro`），独立采集 FRED 利率/国债与 Yahoo Finance 市场快照，规则结论和完整来源数据保存至既有 SQLite 报告历史；未配置 FRED Key 或单数据源失败时降级输出并标记缺口。
+- [改进] 美国宏观与个股飞书预览新增只读展示适配层：中文化标题、字段、单位与数据限制，合并政策利率区间并展示 2Y–10Y 利差；不改变采集、分析、评分、数据库或既有通知类型。
+- [改进] 飞书展示层移除直接交易指令，异常成交量仅以统一数据质量限制呈现；新增仅手动触发的美国宏观与精选股票验证工作流及运行 Artifact。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
 - [改进] 个股报告不再单独展示“题材主线与个股位置”卡片，相关市场结构数据仍保留在分析上下文、模型 Prompt 与决策信号提取链路中。
 - [改进] 通知推送与完整 Markdown/微信报告不再重复附加“AI 决策信号”摘要，DecisionSignal 的存储、告警和 Web AI 建议页保持不变。
