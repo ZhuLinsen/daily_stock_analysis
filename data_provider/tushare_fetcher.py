@@ -193,7 +193,7 @@ class TushareFetcher(BaseFetcher):
             logger.error(f"Tushare API 初始化失败: {e}")
             self._api = None
 
-    def _build_api_client(self, token: str) -> "_TushareHttpClient":
+    def _build_api_client(self, token: str) -> _TushareHttpClient:
         """
         Build a lightweight Tushare Pro client over direct HTTP requests.
 
