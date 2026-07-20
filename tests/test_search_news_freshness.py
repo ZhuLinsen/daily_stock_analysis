@@ -3,6 +3,7 @@
 Unit tests for strict news freshness filtering and strategy window logic (Issue #697).
 """
 
+import re
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ if "newspaper" not in sys.modules:
     sys.modules["newspaper"] = mock_np
 
 from src.search_service import SearchResponse, SearchResult, SearchService
+from src.search_service import _normalize_stock_code_for_alias_lookup
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -2364,6 +2366,137 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         for q in captured_queries:
             self.assertNotIn("苹果", q)
             self.assertIn("Apple", q)
+
+    # ------------------------------------------------------------------
+    # 补充回归测试：覆盖维护者 reviewer 指出的两类遗漏
+    #   1. 英文常见短名标题形态（如 "Apple reports earnings beat"）
+    #      之前 alias 仅按原样字符串加入 identity term，没有走
+    #      _company_identity_terms() 的英文清洗逻辑，导致短名标题
+    #      仍被降级成 sector_related_news / background news。
+    #   2. _FOREIGN_TICKER_ENGLISH_ALIASES 与 STOCK_NAME_MAP 漂移：
+    #      此前 alias 表只覆盖 24 项，遗漏 STOCK_NAME_MAP 中带中文
+    #      名称的另外 7 个 HK 代码。补充覆盖检查，杜绝两张表再次
+    #      漂移。
+    # ------------------------------------------------------------------
+
+    def test_market_english_aliases_cover_all_chinese_named_foreign_tickers(self) -> None:
+        """_FOREIGN_TICKER_ENGLISH_ALIASES 必须覆盖 STOCK_NAME_MAP 中
+        所有被映射成中文显示名的外股代码，避免 alias 表与映射表漂移。
+
+        维护者 reviewer OR-COR-17de7e57 指出此前遗漏 00005 / 00883 /
+        00981 / 01299 / 02015 / 09868 / 09888 七个 HK 代码。本测试对
+        STOCK_NAME_MAP 做静态比对，确保未来 STOCK_NAME_MAP 新增中文名
+        外股时 alias 表同步补齐（被同条 PR 评审发现的漂移会被立刻
+        暴露）。
+        """
+        from src.data.stock_mapping import STOCK_NAME_MAP
+        from src.search_service import _FOREIGN_TICKER_ENGLISH_ALIASES
+        # 仅校验“中文显示名”的外股代码（A 股代码必然走不到 alias，
+        # 跳过；US/HK 顶层非中文显示名也跳过）。
+        missing: List[str] = []
+        for code, name in STOCK_NAME_MAP.items():
+            # 外股判据：US ticker 全大写字母+数字、HK 5 位数字打头
+            is_us = bool(re.match(r"^[A-Z]+$", code)) and not code.isdigit()
+            is_hk = code.isdigit() and len(code) == 5
+            if not (is_us or is_hk):
+                continue
+            if not SearchService._contains_chinese_text(name):
+                continue
+            key = _normalize_stock_code_for_alias_lookup(code)
+            if key not in _FOREIGN_TICKER_ENGLISH_ALIASES:
+                missing.append(f"{code} -> {name}")
+        self.assertEqual(
+            missing,
+            [],
+            f"_FOREIGN_TICKER_ENGLISH_ALIASES 缺少 STOCK_NAME_MAP 中带中文显示名的外股条目: {missing}",
+        )
+
+    def test_market_english_aliases_returns_nonempty_for_known_chinese_named_foreign_tickers(self) -> None:
+        """对维护者明确点名的 7 个此前遗漏 HK 代码，逐一断言现在能
+        返回 alias（直接锁死漂移回归）。"""
+        expected = {
+            "00005": "汇丰控股",
+            "00883": "中国海洋石油",
+            "00981": "中芯国际",
+            "01299": "友邦保险",
+            "02015": "理想汽车",
+            "09868": "小鹏汽车",
+            "09888": "百度集团",
+        }
+        for code, name in expected.items():
+            aliases = SearchService._market_english_aliases(code, name)
+            self.assertTrue(
+                aliases,
+                f"_market_english_aliases({code!r}, {name!r}) 应返回非空 alias，实际返回 {aliases!r}",
+            )
+
+    def test_foreign_short_name_titles_classify_as_direct_company_news(self) -> None:
+        """英文媒体常见写法（不带法定后缀）的标题必须归类为
+        ``direct_company_news``，而不是被降级为 ``sector_related_news``。
+
+        维护者 reviewer OR-COR-9d861a5a 指出此前 alias 仅 append 原样
+        字符串，没有走 _company_identity_terms() 的英文清洗逻辑，导致
+        "Apple Inc." 没扩展出 "Apple"、"Tencent Holdings" 没扩展出
+        "Tencent"。"Apple reports earnings beat" 这种标题因此走 alias
+        路径但仍匹配不到身份词而降级。本测试覆盖此前两个具体复现样例
+        与若干代表性短名标题形态。
+
+        说明：仅断言 _company_identity_terms() 清洗能产出的天然短形
+        （如 "Apple Inc." -> "Apple"）。对于 "Alibaba Group Holding
+        Ltd" / "PDD Holdings Inc." 这类多词主体，现有清洗只会剥一层
+        suffix，不会进一步拆出 "Alibaba" 这种首词短形；此限制属于
+        _company_identity_terms 的算法边界、与本次 reviewer blocker
+        无关，因此本测试不覆盖那些用例，避免把算法能力上限作为契约。
+        """
+        fresh = datetime.now().date().isoformat()
+        # (title, code, chinese_name)：每条都是不带法定公司后缀的常见
+        # 英文媒体标题写法。
+        cases = [
+            ("Apple reports earnings beat", "AAPL", "苹果"),
+            ("Tencent reports profit rise", "00700", "腾讯控股"),
+            ("Baidu unveils new AI model", "BIDU", "百度"),
+            ("Baidu unveils new AI model", "09888", "百度集团"),
+            ("Tesla unveiled its latest vehicle model", "TSLA", "特斯拉"),
+            ("Intel unveils newest chip generation", "INTC", "英特尔"),
+            ("Microsoft announces cloud growth", "MSFT", "微软"),
+            ("NVIDIA reports record datacenter revenue", "NVDA", "英伟达"),
+            ("NIO unveils new EV model", "NIO", "蔚来"),
+            ("Li Auto unveils new SUV", "LI", "理想汽车"),
+            ("Li Auto unveils new SUV", "02015", "理想汽车"),
+            ("XPeng unveils new electric SUV", "XPEV", "小鹏汽车"),
+            ("XPeng unveils new electric SUV", "09868", "小鹏汽车"),
+            ("SMIC reports record quarterly revenue", "00981", "中芯国际"),
+            ("CNOOC reports record quarterly profit", "00883", "中国海洋石油"),
+            ("HSBC launches new wealth product", "00005", "汇丰控股"),
+            ("AIA Group reports strong insurance sales", "01299", "友邦保险"),
+            ("China Mobile misses earnings forecast", "00941", "中国移动"),
+            ("Meituan expands instant retail business", "03690", "美团"),
+            ("Xiaomi launches new electric vehicle", "01810", "小米集团"),
+        ]
+        for title, code, name in cases:
+            with self.subTest(title=title, code=code):
+                scored = SearchService._score_news_relevance(
+                    _result(title, fresh, snippet=title),
+                    stock_code=code,
+                    stock_name=name,
+                )
+                self.assertEqual(
+                    scored.relevance_category,
+                    "direct_company_news",
+                    f"短名标题 {title!r}（{code}/{name}）应判为 direct_company_news，"
+                    f"实际得到 {scored.relevance_category!r}（原因: {scored.relevance_reasons!r}）",
+                )
+
+    def test_a_share_chinese_name_does_not_benefit_from_foreign_alias(self) -> None:
+        """A 股对照：A 股代码即使 STOCK_NAME_MAP 有中文名，也不应该
+        因为本次 fix 触发任何外股 alias，确保 A 股路径不回归。
+
+        选取 600519 / 000001 / 600690 三个 A 股对照样本，验证 alias
+        表扩展没有越界污染到 A 股路径。
+        """
+        for code, name in [("600519", "贵州茅台"), ("000001", "平安银行"), ("600690", "海尔智家")]:
+            aliases = SearchService._market_english_aliases(code, name)
+            self.assertEqual(aliases, [], f"A 股 {code}/{name} 不应返回 English alias")
 
 
 if __name__ == "__main__":

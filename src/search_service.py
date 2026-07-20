@@ -89,9 +89,14 @@ _FOREIGN_TICKER_ENGLISH_ALIASES: Dict[str, str] = {
     "03690": "Meituan",
     "01024": "Kuaishou Technology",
     "01810": "Xiaomi Corporation",
-    "02318": "Ping An Insurance",
-    "00388": "Hong Kong Exchanges and Clearing",
     "00941": "China Mobile",
+    "09888": "Baidu Inc.",
+    "00981": "SMIC",
+    "02015": "Li Auto Inc.",
+    "09868": "XPeng Inc.",
+    "00005": "HSBC Holdings",
+    "01299": "AIA Group",
+    "00883": "CNOOC",
 }
 
 
@@ -2777,12 +2782,24 @@ class SearchService:
             if len(cleaned) >= 4:
                 cls._append_unique(terms, cleaned)
         else:
+            # Normalize "Name, Inc." -> "Name Inc." before stripping the
+            # legal suffix so common forms like "Baidu, Inc." or "Apple, Inc."
+            # produce the short identity term ("Baidu" / "Apple") and not
+            # the leftovers ("Baidu," / "Apple,"). Without this, English
+            # headlines that use the no-suffix short form fail to match the
+            # alias-derived identity term and get downgraded to background
+            # news (see reviewer OR-COR-9d861a5a).
+            normalized_for_strip = without_market_suffix.replace(",", " ")
             cleaned = re.sub(
                 r"\b(incorporated|inc|corporation|corp|company|co|plc|ltd|limited|holdings?)\.?$",
                 "",
-                without_market_suffix,
+                normalized_for_strip,
                 flags=re.IGNORECASE,
             ).strip()
+            # Drop any trailing punctuation left behind (".", ",", " - ")
+            # so that "Apple, Inc." ultimately yields "Apple" and not
+            # "Apple." or "Apple,".
+            cleaned = re.sub(r"[.,;:\-\s]+$", "", cleaned).strip()
             if len(cleaned) >= 3:
                 cls._append_unique(terms, cleaned)
 
@@ -3113,6 +3130,16 @@ class SearchService:
         # terms instead of being downgraded to "macro_market_news".
         company_identity_terms = list(cls._company_identity_terms(stock_name))
         for alias in cls._market_english_aliases(stock_code, stock_name):
+            # Reuse _company_identity_terms() so the alias is normalized
+            # the same way as a pipeline-supplied English name. This
+            # produces the legally-named form ("Apple Inc.") *and* the
+            # common short form ("Apple") so that titles like
+            # "Apple reports earnings beat" or "Tencent reports profit
+            # rise" still classify as direct_company_news rather than
+            # being downgraded to background news.
+            for term in cls._company_identity_terms(alias):
+                if term not in company_identity_terms:
+                    company_identity_terms.append(term)
             if alias not in company_identity_terms:
                 company_identity_terms.append(alias)
 

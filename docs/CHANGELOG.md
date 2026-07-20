@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
-
+- [修复] 修复 US/HK 外股代码经 STOCK_NAME_MAP 映射成中文显示名后，英文媒体文章被错误降级为 macro_market_news 的问题（issue #2026）：新增 _FOREIGN_TICKER_ENGLISH_ALIASES 别名表覆盖 STOCK_NAME_MAP 中所有中文显示名外股代码，外股资讯查询与身份词识别均改用英文别名，并在 alias 进入身份词时复用 _company_identity_terms() 的英文清洗逻辑产出短形（如 "Apple Inc." -> "Apple"），一并解决英文短名标题形态被降级的遗留问题；A 股路径不受影响。
+- [测试] 为 issue #2026 补齐回归测试：覆盖 alias 表与 STOCK_NAME_MAP 漂移静态比对、英文短名标题形态判定 direct_company_news、A 股不触发外股 alias 的对照断言。
 ## [3.27.0] - 2026-07-19
 
 ### 发布亮点
