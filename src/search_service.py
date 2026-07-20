@@ -2383,10 +2383,9 @@ class SearchService:
         # 美股：1-5个大写字母，可能包含点（如 BRK.B）
         if SearchService._US_STOCK_RE.match(code):
             return True
-        # 港股：带 hk 前缀（canonical 已剥，但兼容 raw input）或 5位纯数字
-        lower = code.lower()
-        if lower.startswith('hk'):
-            return True
+        # 港股：5位纯数字。canonicalize_foreign_stock_code 已把 HK00700 前缀
+        # 与 00700.HK 后缀全部归一为 00700 形式，原 lower.startswith('hk')
+        # 分支在 canonical 之后为不可达死代码，已删除。
         if code.isdigit() and len(code) == 5:
             return True
         return False
@@ -3069,9 +3068,23 @@ class SearchService:
         # identity-term scoring path.
         english_aliases = foreign_stock_english_aliases(stock_code, stock_name)
         if english_aliases:
+            # Issue #2026 / PR #2049 review: dedupe identity terms across all
+            # aliases BEFORE scoring. STOCK_ENGLISH_NAME_MAP legal alias
+            # (``Apple Inc.``) is intentionally designed to also expose its
+            # short alias (``Apple``) so the search-query construction path
+            # always has a concise term to put into English queries. But when
+            # the SAME short form appears both as an explicit alias tuple
+            # member AND as the cleaned output of _company_identity_terms on
+            # the legal alias, naive per-alias accumulation would double-count
+            # a single snippet hit on ``Apple`` (16+16=32) and push ambiguous
+            # snippet-only headlines over the direct_company_news threshold.
+            # Collect terms into a set first; score each unique term once.
+            seen_identity_terms: set = set()
             for alias in english_aliases:
-                extended_terms = cls._company_identity_terms(alias)
-                for term in extended_terms:
+                for term in cls._company_identity_terms(alias):
+                    if term in seen_identity_terms:
+                        continue
+                    seen_identity_terms.add(term)
                     ambiguous_en = (
                         not cls._contains_chinese_text(term)
                         and term.lower() in cls._AMBIGUOUS_EN_COMPANY_NAMES
