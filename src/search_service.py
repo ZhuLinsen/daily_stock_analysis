@@ -38,6 +38,10 @@ from src.config import (
     normalize_news_strategy_profile,
     resolve_news_window_days,
 )
+from src.data.stock_mapping import (
+    canonicalize_foreign_stock_code,
+    foreign_stock_english_aliases,
+)
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
 
 logger = logging.getLogger(__name__)
@@ -2363,18 +2367,47 @@ class SearchService:
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
-        """判断是否为港股或美股"""
-        code = stock_code.strip()
+        """判断是否为港股或美股。
+
+        Honours all canonical input forms — bare ticker (``AAPL`` / ``00700``),
+        suffixed ticker (``AAPL.US`` / ``00700.HK``), and prefixed HK ticker
+        (``HK00700``) — by canonicalizing to the key form used in
+        STOCK_ENGLISH_NAME_MAP before applying the existing structural checks.
+        This is the canonical-boundary unification that massif-01 asked for on
+        PR #2047 (so alias resolution and foreign-ness detection no longer
+        disagree on the same input).
+        """
+        code = canonicalize_foreign_stock_code(stock_code).strip()
+        if not code:
+            return False
         # 美股：1-5个大写字母，可能包含点（如 BRK.B）
         if SearchService._US_STOCK_RE.match(code):
             return True
-        # 港股：带 hk 前缀或 5位纯数字
-        lower = code.lower()
-        if lower.startswith('hk'):
-            return True
+        # 港股：5位纯数字。canonicalize_foreign_stock_code 已把 HK00700 前缀
+        # 与 00700.HK 后缀全部归一为 00700 形式，原 lower.startswith('hk')
+        # 分支在 canonical 之后为不可达死代码，已删除。
         if code.isdigit() and len(code) == 5:
             return True
         return False
+
+    @staticmethod
+    def _foreign_english_query_terms(stock_code: str, stock_name: str) -> Tuple[str, ...]:
+        """Return English company name(s) to embed in foreign-stock search
+        queries. issue #2026: When STOCK_NAME_MAP maps a foreign ticker to a
+        Chinese display name, the search layer must not pass that Chinese name
+        to English news providers, otherwise the provider misses English
+        headlines entirely.
+
+        Returns the canonical alias tuple from ``STOCK_ENGLISH_NAME_MAP`` if the
+        supplied ``stock_name`` is Chinese and the canonical ticker has English
+        aliases. Otherwise returns an empty tuple (callers fall back to
+        ``stock_name`` itself).
+
+        Kept deliberately small and read-only: this helper never mutates the
+        alias set and never invents aliases outside the single source of truth
+        in ``src/data/stock_mapping.py``.
+        """
+        return foreign_stock_english_aliases(stock_code, stock_name)
 
     @classmethod
     def _contains_chinese_text(cls, value: Optional[str]) -> bool:
@@ -3025,6 +3058,58 @@ class SearchService:
                 add_reason(f"摘要命中公司名 {term}")
                 break
 
+        # Issue #2026: when STOCK_NAME_MAP maps a foreign ticker to a Chinese
+        # display name (e.g. AAPL -> 苹果), the loop above cannot match English
+        # news headlines ("Apple reports earnings beat"). Resolve English
+        # identity aliases from the single source of truth (STOCK_ENGLISH_NAME_MAP
+        # in src/data/stock_mapping.py — sibling of STOCK_NAME_MAP, asserted to
+        # be a subset of its foreign-ticker keys) and feed both the alias
+        # strings and their legal-suffix-stripped variants into the same
+        # identity-term scoring path.
+        english_aliases = foreign_stock_english_aliases(stock_code, stock_name)
+        if english_aliases:
+            # Issue #2026 / PR #2049 review: dedupe identity terms across all
+            # aliases BEFORE scoring. STOCK_ENGLISH_NAME_MAP legal alias
+            # (``Apple Inc.``) is intentionally designed to also expose its
+            # short alias (``Apple``) so the search-query construction path
+            # always has a concise term to put into English queries. But when
+            # the SAME short form appears both as an explicit alias tuple
+            # member AND as the cleaned output of _company_identity_terms on
+            # the legal alias, naive per-alias accumulation would double-count
+            # a single snippet hit on ``Apple`` (16+16=32) and push ambiguous
+            # snippet-only headlines over the direct_company_news threshold.
+            # Collect terms into a set first; score each unique term once.
+            seen_identity_terms: set = set()
+            for alias in english_aliases:
+                for term in cls._company_identity_terms(alias):
+                    if term in seen_identity_terms:
+                        continue
+                    seen_identity_terms.add(term)
+                    ambiguous_en = (
+                        not cls._contains_chinese_text(term)
+                        and term.lower() in cls._AMBIGUOUS_EN_COMPANY_NAMES
+                    )
+                    title_score = 26 if ambiguous_en else 45
+                    snippet_score = 16 if ambiguous_en else 28
+                    if cls._contains_identity_term(title, term):
+                        score += title_score
+                        direct_signal += title_score
+                        if ambiguous_en:
+                            has_ambiguous_company_signal = True
+                        else:
+                            has_unambiguous_company_signal = True
+                        add_reason(f"标题命中公司英文别名 {term}")
+                        break
+                    if cls._contains_identity_term(snippet, term):
+                        score += snippet_score
+                        direct_signal += snippet_score
+                        if ambiguous_en:
+                            has_ambiguous_company_signal = True
+                        else:
+                            has_unambiguous_company_signal = True
+                        add_reason(f"摘要命中公司英文别名 {term}")
+                        break
+
         has_company_event = cls._contains_any_news_term(full_text, cls._COMPANY_EVENT_TERMS)
         if has_company_event and direct_signal > 0:
             score += 12
@@ -3605,14 +3690,32 @@ class SearchService:
 
         # 构建搜索查询（优化搜索效果）
         is_foreign = self._is_foreign_stock(stock_code)
+        # Issue #2026: When STOCK_NAME_MAP maps a foreign ticker to a Chinese
+        # display name (e.g. AAPL -> 苹果), the English news search query would
+        # otherwise contain the Chinese name and miss English headlines.
+        # Resolve the canonical English alias (single source of truth:
+        # STOCK_ENGLISH_NAME_MAP in src/data/stock_mapping.py) so the foreign
+        # query path uses a real English company name.
+        english_aliases = self._foreign_english_query_terms(stock_code, stock_name)
+        effective_name = english_aliases[0] if english_aliases else stock_name
+        short_name = english_aliases[-1] if english_aliases else None
+        # Issue #2026: Foreign tickers must bypass prefer_chinese even when the
+        # display name is Chinese (e.g. AAPL -> 苹果), otherwise the foreign
+        # branch below is unreachable and English headlines are missed.
+        prefer_chinese = prefer_chinese and not (is_foreign and english_aliases)
         if focus_keywords:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
         elif prefer_chinese:
             query = f"{stock_name} {stock_code} 股票 最新消息"
         elif is_foreign:
-            # 港股/美股使用英文搜索关键词
-            query = f"{stock_name} {stock_code} stock latest news"
+            # 港股/美股使用英文搜索关键词；优先使用英文公司名（issue #2026）
+            if english_aliases and short_name and short_name != effective_name:
+                query = (
+                    f"{effective_name} {short_name} {stock_code} stock latest news"
+                )
+            else:
+                query = f"{effective_name} {stock_code} stock latest news"
         else:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
@@ -3895,10 +3998,16 @@ class SearchService:
                 event_types = ["earnings report", "insider selling", "quarterly results"]
             else:
                 event_types = ["年报预告", "减持公告", "业绩快报"]
-        
+
+        # Issue #2026: foreign-ticker Chinese display name needs canonical
+        # English alias for English event query (single source of truth in
+        # src/data/stock_mapping.py).
+        english_aliases = self._foreign_english_query_terms(stock_code, stock_name)
+        effective_name = english_aliases[0] if english_aliases else stock_name
+
         # 构建针对性查询
         event_query = " OR ".join(event_types)
-        query = f"{stock_name} ({event_query})"
+        query = f"{effective_name} ({event_query})"
         
         logger.info(f"搜索股票事件: {stock_name}({stock_code}) - {event_types}")
         
@@ -3949,17 +4058,25 @@ class SearchService:
         is_index_etf = self.is_index_or_etf(stock_code, stock_name)
 
         if is_foreign:
+            # Issue #2026: Foreign-ticker English alias resolution from the
+            # single source of truth (STOCK_ENGLISH_NAME_MAP in
+            # src/data/stock_mapping.py). When STOCK_NAME_MAP maps the ticker
+            # to a Chinese display name, the English news query path must use
+            # the canonical English company name; otherwise English news
+            # providers receive the Chinese name and miss English headlines.
+            english_aliases = self._foreign_english_query_terms(stock_code, stock_name)
+            effective_name = english_aliases[0] if english_aliases else stock_name
             search_dimensions = [
                 {
                     'name': 'latest_news',
-                    'query': f"{stock_name} {stock_code} latest news events",
+                    'query': f"{effective_name} {stock_code} latest news events",
                     'desc': '最新消息',
                     'tavily_topic': 'news',
                     'strict_freshness': True,
                 },
                 {
                     'name': 'market_analysis',
-                    'query': f"{stock_name} analyst rating target price report",
+                    'query': f"{effective_name} analyst rating target price report",
                     'desc': '机构分析',
                     'tavily_topic': None,
                     'strict_freshness': False,
@@ -3967,8 +4084,8 @@ class SearchService:
                 {
                     'name': 'risk_check',
                     'query': (
-                        f"{stock_name} {stock_code} index performance outlook tracking error"
-                        if is_index_etf else f"{stock_name} risk insider selling lawsuit litigation"
+                        f"{effective_name} {stock_code} index performance outlook tracking error"
+                        if is_index_etf else f"{effective_name} risk insider selling lawsuit litigation"
                     ),
                     'desc': '风险排查',
                     'tavily_topic': None if is_index_etf else 'news',
@@ -3977,8 +4094,8 @@ class SearchService:
                 {
                     'name': 'earnings',
                     'query': (
-                        f"{stock_name} {stock_code} index performance composition outlook"
-                        if is_index_etf else f"{stock_name} earnings revenue profit growth forecast"
+                        f"{effective_name} {stock_code} index performance composition outlook"
+                        if is_index_etf else f"{effective_name} earnings revenue profit growth forecast"
                     ),
                     'desc': '业绩预期',
                     'tavily_topic': None,
@@ -3987,8 +4104,8 @@ class SearchService:
                 {
                     'name': 'industry',
                     'query': (
-                        f"{stock_name} {stock_code} index sector allocation holdings"
-                        if is_index_etf else f"{stock_name} industry competitors market share outlook"
+                        f"{effective_name} {stock_code} index sector allocation holdings"
+                        if is_index_etf else f"{effective_name} industry competitors market share outlook"
                     ),
                     'desc': '行业分析',
                     'tavily_topic': None,
