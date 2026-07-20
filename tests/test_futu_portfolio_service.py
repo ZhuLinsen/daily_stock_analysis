@@ -67,7 +67,7 @@ class _TradeContext:
             },
             {"code": "HK.00700", "qty": 20, "position_side": "LONG"},
             {"code": "SH.600519", "qty": 0, "position_side": "LONG"},
-            {"code": "JP.7203", "qty": 5, "position_side": "LONG"},
+            {"code": "SZ.000001", "qty": 8, "position_side": "LONG"},
         ])
 
     def close(self) -> None:
@@ -75,21 +75,24 @@ class _TradeContext:
 
 
 class _QuoteContext:
-    def __init__(self, *, host, port) -> None:
+    def __init__(self, *, host, port, stock_types=None) -> None:
         self.closed = False
         self.open_arguments = {"host": host, "port": port}
-
-    def get_stock_basicinfo(self, market, *, stock_type, code_list):
-        stock_types = {
+        self.stock_types = {
             "US.AAPL": "STOCK",
             "US.DRAM": "ETF",
             "US.AAPL261218C200000": "DRVT",
             "HK.00700": "STOCK",
+            "SZ.000001": "STOCK",
             "JP.7203": "STOCK",
-        }
+            "JP.130A": "STOCK",
+        } if stock_types is None else stock_types
+
+    def get_stock_basicinfo(self, market, *, stock_type, code_list):
         return 0, pd.DataFrame([
-            {"code": code, "stock_type": stock_types[code]}
+            {"code": code, "stock_type": self.stock_types[code]}
             for code in code_list
+            if code in self.stock_types
         ])
 
     def close(self) -> None:
@@ -102,6 +105,7 @@ def _fake_api(
     *,
     accounts=None,
     positions_by_account=None,
+    stock_types=None,
 ):
     def open_trade_context(*, filter_trdmarket, host, port, security_firm):
         context = _TradeContext(
@@ -116,7 +120,7 @@ def _fake_api(
         return context
 
     def open_quote_context(*, host, port):
-        context = _QuoteContext(host=host, port=port)
+        context = _QuoteContext(host=host, port=port, stock_types=stock_types)
         quote_contexts.append(context)
         return context
 
@@ -193,7 +197,7 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         ):
             service._load_futu_api()
 
-    def test_load_futu_stock_codes_uses_real_accounts_and_keeps_only_stocks(self):
+    def test_load_futu_stock_codes_keeps_only_supported_a_hk_us_stocks(self):
         trade_contexts = []
         quote_contexts = []
         api = _fake_api(trade_contexts, quote_contexts)
@@ -205,7 +209,7 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         ), patch.object(service, "_load_futu_api", return_value=api):
             result = service.load_futu_stock_codes()
 
-        self.assertEqual(result, ["AAPL", "HK00700", "7203.T"])
+        self.assertEqual(result, ["AAPL", "HK00700", "000001"])
         position_contexts = [ctx for ctx in trade_contexts if ctx.position_queries]
         self.assertEqual(len(position_contexts), 1)
         self.assertEqual(
@@ -214,6 +218,389 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         )
         self.assertTrue(all(ctx.closed for ctx in trade_contexts))
         self.assertTrue(quote_contexts and all(ctx.closed for ctx in quote_contexts))
+
+    def test_load_futu_stock_codes_reports_unsupported_jp_holdings(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "JP.7203", "qty": 5, "position_side": "LONG"},
+                    {"code": "JP.130A", "qty": 3, "position_side": "LONG"},
+                ]
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertLogs(service.logger, level="WARNING") as captured:
+            result = service.load_futu_stock_codes()
+
+        self.assertEqual(result, [])
+        warning_text = "\n".join(captured.output)
+        self.assertIn("JP.7203", warning_text)
+        self.assertIn("JP.130A", warning_text)
+
+    def test_load_futu_stock_codes_keeps_supported_holdings_when_jp_is_present(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "JP.7203", "qty": 5, "position_side": "LONG"},
+                ]
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertLogs(service.logger, level="WARNING") as captured:
+            result = service.load_futu_stock_codes()
+
+        self.assertEqual(result, ["AAPL"])
+        self.assertIn("JP.7203", "\n".join(captured.output))
+
+    def test_load_futu_stock_codes_rejects_stock_code_outside_analysis_contract(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "HK.BAD", "qty": 3, "position_side": "LONG"},
+                ]
+            },
+            stock_types={"HK.BAD": "STOCK"},
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "无法转换.*HK.BAD",
+        ):
+            service.load_futu_stock_codes()
+
+    def test_load_futu_stock_codes_reports_unsupported_b_shares(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "SH.900901", "qty": 5, "position_side": "LONG"},
+                    {"code": "SZ.200012", "qty": 8, "position_side": "LONG"},
+                ]
+            },
+            stock_types={
+                "US.AAPL": "STOCK",
+                "SH.900901": "STOCK",
+                "SZ.200012": "STOCK",
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertLogs(
+            service.logger,
+            level="WARNING",
+        ) as captured:
+            result = service.load_futu_stock_codes()
+
+        self.assertEqual(result, ["AAPL"])
+        warning_text = "\n".join(captured.output)
+        self.assertIn("SH.900901", warning_text)
+        self.assertIn("SZ.200012", warning_text)
+
+    def test_load_futu_stock_codes_rejects_partial_static_info_response(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "US.MSFT", "qty": 4, "position_side": "LONG"},
+                ]
+            },
+            stock_types={"US.AAPL": "STOCK"},
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "无法确认证券类型.*US.MSFT",
+        ):
+            service.load_futu_stock_codes()
+
+    def test_load_futu_stock_codes_rejects_unknown_static_security_type(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "US.MSFT", "qty": 4, "position_side": "LONG"},
+                ]
+            },
+            stock_types={"US.AAPL": "STOCK", "US.MSFT": "N/A"},
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "无法确认证券类型.*US.MSFT",
+        ):
+            service.load_futu_stock_codes()
+
+    def test_load_futu_stock_codes_rejects_invalid_eligible_account_id(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[
+                _account("invalid", "NORMAL"),
+                _account(1001, "NORMAL"),
+            ],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                ]
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "账户查询返回了无效账户 ID",
+        ):
+            service.load_futu_stock_codes()
+
+        self.assertFalse(any(ctx.position_queries for ctx in trade_contexts))
+        self.assertEqual(quote_contexts, [])
+
+    def test_load_futu_stock_codes_rejects_nonpositive_or_fractional_account_id(self):
+        for invalid_acc_id in (0, -1, 1001.5, True):
+            with self.subTest(acc_id=invalid_acc_id):
+                trade_contexts = []
+                quote_contexts = []
+                api = _fake_api(
+                    trade_contexts,
+                    quote_contexts,
+                    accounts=[
+                        _account(invalid_acc_id, "NORMAL"),
+                        _account(1001, "NORMAL"),
+                    ],
+                    positions_by_account={
+                        1001: [
+                            {
+                                "code": "US.AAPL",
+                                "qty": 10,
+                                "position_side": "LONG",
+                            }
+                        ]
+                    },
+                )
+
+                with patch.dict(
+                    "os.environ",
+                    {},
+                    clear=True,
+                ), patch.object(
+                    service,
+                    "_load_futu_api",
+                    return_value=api,
+                ), self.assertRaisesRegex(
+                    service.FutuPortfolioError,
+                    "账户查询返回了无效账户 ID",
+                ):
+                    service.load_futu_stock_codes()
+
+                self.assertFalse(any(ctx.position_queries for ctx in trade_contexts))
+                self.assertEqual(quote_contexts, [])
+
+    def test_load_futu_stock_codes_rejects_invalid_position_quantity(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "US.MSFT", "qty": "bad", "position_side": "LONG"},
+                ]
+            },
+            stock_types={
+                "US.AAPL": "STOCK",
+                "US.MSFT": "STOCK",
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "持仓数量无效.*US.MSFT",
+        ):
+            service.load_futu_stock_codes()
+
+        self.assertEqual(quote_contexts, [])
+
+    def test_load_futu_stock_codes_rejects_blank_nonzero_position_code(self):
+        trade_contexts = []
+        quote_contexts = []
+        api = _fake_api(
+            trade_contexts,
+            quote_contexts,
+            accounts=[_account(1001, "NORMAL")],
+            positions_by_account={
+                1001: [
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                    {"code": "", "qty": 5, "position_side": "LONG"},
+                ]
+            },
+        )
+
+        with patch.dict(
+            "os.environ",
+            {},
+            clear=True,
+        ), patch.object(
+            service,
+            "_load_futu_api",
+            return_value=api,
+        ), self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "非零持仓返回了空证券代码",
+        ):
+            service.load_futu_stock_codes()
+
+        self.assertEqual(quote_contexts, [])
+
+    def test_load_futu_stock_codes_rejects_missing_nonzero_long_code(self):
+        with self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "非零持仓返回了无效证券代码",
+        ):
+            _load_codes_for_accounts(
+                [_account(1001, "NORMAL")],
+                {
+                    1001: [
+                        {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                        {"qty": 5, "position_side": "LONG"},
+                    ]
+                },
+            )
+
+    def test_load_futu_stock_codes_rejects_unqualified_nonzero_long_code(self):
+        with self.assertRaisesRegex(
+            service.FutuPortfolioError,
+            "非零持仓返回了无效证券代码",
+        ):
+            _load_codes_for_accounts(
+                [_account(1001, "NORMAL")],
+                {
+                    1001: [
+                        {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                        {"code": "AAPL", "qty": 5, "position_side": "LONG"},
+                    ]
+                },
+            )
+
+    def test_load_futu_stock_codes_rejects_non_string_nonzero_long_codes(self):
+        for invalid_code in (True, 123, b"US.AAPL"):
+            with self.subTest(code=invalid_code), self.assertRaisesRegex(
+                service.FutuPortfolioError,
+                "非零持仓返回了无效证券代码",
+            ):
+                _load_codes_for_accounts(
+                    [_account(1001, "NORMAL")],
+                    {
+                        1001: [
+                            {
+                                "code": "US.AAPL",
+                                "qty": 10,
+                                "position_side": "LONG",
+                            },
+                            {
+                                "code": invalid_code,
+                                "qty": 5,
+                                "position_side": "LONG",
+                            },
+                        ]
+                    },
+                )
 
     def test_default_firm_uses_one_official_none_discovery_context(self):
         trade_contexts = []
@@ -299,6 +686,30 @@ class FutuPortfolioServiceTest(unittest.TestCase):
 
         self.assertEqual(trade_contexts, [])
         self.assertEqual(quote_contexts, [])
+
+    def test_configured_account_id_must_be_a_positive_integer(self):
+        for configured_acc_id in ("0", "-1", "1.5"):
+            with self.subTest(acc_id=configured_acc_id):
+                trade_contexts = []
+                quote_contexts = []
+                api = _fake_api(trade_contexts, quote_contexts)
+
+                with patch.dict(
+                    "os.environ",
+                    {"FUTU_ACC_ID": configured_acc_id},
+                    clear=True,
+                ), patch.object(
+                    service,
+                    "_load_futu_api",
+                    return_value=api,
+                ), self.assertRaisesRegex(
+                    service.FutuPortfolioError,
+                    "FUTU_ACC_ID 必须是正整数账户 ID",
+                ):
+                    service.load_futu_stock_codes()
+
+                self.assertEqual(trade_contexts, [])
+                self.assertEqual(quote_contexts, [])
 
     def test_account_discovery_failure_is_not_retried_or_partially_ignored(self):
         trade_contexts = []
@@ -433,6 +844,20 @@ class FutuPortfolioServiceTest(unittest.TestCase):
         ]
         self.assertEqual(queried_account_ids, [1001, 3003])
 
+    def test_load_futu_stock_codes_skips_non_long_before_validating_fields(self):
+        result, _ = _load_codes_for_accounts(
+            [_account(1001, "NORMAL")],
+            {
+                1001: [
+                    {"qty": "bad", "position_side": "SHORT"},
+                    {"qty": None, "position_side": "N/A"},
+                    {"code": "US.AAPL", "qty": 10, "position_side": "LONG"},
+                ]
+            },
+        )
+
+        self.assertEqual(result, ["AAPL"])
+
     def test_load_futu_stock_codes_skips_unknown_position_sides(self):
         result, _ = _load_codes_for_accounts(
             [_account(1001, "NORMAL")],
@@ -447,21 +872,24 @@ class FutuPortfolioServiceTest(unittest.TestCase):
 
         self.assertEqual(result, [])
 
-    def test_load_futu_stock_codes_skips_non_finite_quantities(self):
-        result, _ = _load_codes_for_accounts(
-            [_account(1001, "NORMAL")],
-            {
-                1001: [
+    def test_load_futu_stock_codes_rejects_non_finite_or_missing_quantities(self):
+        for quantity in (float("nan"), float("inf"), float("-inf"), None, True):
+            with self.subTest(quantity=quantity), self.assertRaisesRegex(
+                service.FutuPortfolioError,
+                "持仓数量无效.*US.AAPL",
+            ):
+                _load_codes_for_accounts(
+                    [_account(1001, "NORMAL")],
                     {
-                        "code": "US.AAPL",
-                        "qty": float("nan"),
-                        "position_side": "LONG",
-                    }
-                ],
-            },
-        )
-
-        self.assertEqual(result, [])
+                        1001: [
+                            {
+                                "code": "US.AAPL",
+                                "qty": quantity,
+                                "position_side": "LONG",
+                            }
+                        ],
+                    },
+                )
 
     def test_load_futu_stock_codes_skips_malaysian_ipo_accounts(self):
         result, trade_contexts = _load_codes_for_accounts(
@@ -507,9 +935,18 @@ class FutuPortfolioServiceTest(unittest.TestCase):
     def test_to_analysis_code(self):
         cases = [
             ("US.MSFT", "MSFT"),
+            ("US.BRK.B", "BRK.B"),
             ("HK.01810", "HK01810"),
+            ("HK.700", "HK00700"),
             ("SZ.000001", "000001"),
-            ("JP.9984", "9984.T"),
+            ("SH.600519", "600519"),
+            ("HK.123456", None),
+            ("HK.BAD", None),
+            ("SH.1", None),
+            ("SZ.1234567", None),
+            ("US.AAICPRC", None),
+            ("US.SPX", None),
+            ("JP.9984", None),
             ("SG.D05", None),
         ]
         for futu_code, expected in cases:

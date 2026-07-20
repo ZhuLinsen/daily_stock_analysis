@@ -10,6 +10,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional
 
+from data_provider.us_index_mapping import is_us_stock_code
+from src.services.stock_code_utils import normalize_code
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +44,8 @@ class _FutuApi:
 
 
 _SUPPORTED_ACCOUNT_ROLES = frozenset({"NORMAL", "MASTER"})
-_SUPPORTED_ANALYSIS_MARKETS = frozenset({"US", "HK", "SH", "SZ", "JP"})
+_SUPPORTED_ANALYSIS_MARKETS = frozenset({"US", "HK", "SH", "SZ"})
+_UNKNOWN_SECURITY_TYPES = frozenset({"", "N/A", "NONE", "UNKNOWN", "NAN"})
 _STATIC_INFO_BATCH_SIZE = 100
 
 
@@ -140,9 +144,12 @@ def _configured_account_id() -> Optional[int]:
     if not value:
         return None
     try:
-        return int(value)
+        account_id = int(value)
     except ValueError as exc:
-        raise FutuPortfolioError("FUTU_ACC_ID 必须是整数账户 ID") from exc
+        raise FutuPortfolioError("FUTU_ACC_ID 必须是正整数账户 ID") from exc
+    if account_id <= 0:
+        raise FutuPortfolioError("FUTU_ACC_ID 必须是正整数账户 ID")
+    return account_id
 
 
 def _configured_security_firm(api: _FutuApi) -> Any:
@@ -180,10 +187,18 @@ def _discover_real_accounts(api: _FutuApi, host: str, port: int) -> List[_FutuAc
                 continue
             if _enum_text(row.get("acc_role")) not in _SUPPORTED_ACCOUNT_ROLES:
                 continue
+            raw_acc_id = row.get("acc_id")
             try:
-                acc_id = int(row.get("acc_id"))
-            except (TypeError, ValueError):
-                continue
+                acc_id = int(raw_acc_id)
+                exact_integer = isinstance(raw_acc_id, str) or bool(
+                    raw_acc_id == acc_id
+                )
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise FutuPortfolioError(
+                    "Futu 账户查询返回了无效账户 ID"
+                ) from exc
+            if isinstance(raw_acc_id, bool) or not exact_integer or acc_id <= 0:
+                raise FutuPortfolioError("Futu 账户查询返回了无效账户 ID")
             if acc_id in seen_ids:
                 continue
             returned_firm_name = _enum_text(row.get("security_firm"))
@@ -245,13 +260,6 @@ def _load_position_codes(
             if ret != api.RET_OK:
                 raise FutuPortfolioError(f"查询 Futu 真实持仓失败: {data}")
             for row in _iter_rows(data, "Futu 持仓查询"):
-                try:
-                    quantity = float(row.get("qty", 0) or 0)
-                except (TypeError, ValueError):
-                    quantity = 0
-                code = str(row.get("code", "") or "").strip().upper()
-                if not math.isfinite(quantity) or quantity == 0 or not code:
-                    continue
                 position_side = _enum_text(row.get("position_side"))
                 if position_side == "SHORT":
                     skipped_short_count += 1
@@ -259,6 +267,34 @@ def _load_position_codes(
                 if position_side != "LONG":
                     skipped_unknown_side_count += 1
                     continue
+                raw_code = row.get("code")
+                code = (
+                    raw_code.strip().upper()
+                    if isinstance(raw_code, str)
+                    else ""
+                )
+                raw_quantity = row.get("qty")
+                try:
+                    if isinstance(raw_quantity, bool):
+                        raise TypeError("boolean quantity")
+                    quantity = float(raw_quantity)
+                except (TypeError, ValueError) as exc:
+                    suffix = f": {code}" if code else ""
+                    raise FutuPortfolioError(f"Futu 持仓数量无效{suffix}") from exc
+                if not math.isfinite(quantity):
+                    suffix = f": {code}" if code else ""
+                    raise FutuPortfolioError(f"Futu 持仓数量无效{suffix}")
+                if quantity == 0:
+                    continue
+                if not isinstance(raw_code, str):
+                    raise FutuPortfolioError("Futu 非零持仓返回了无效证券代码")
+                if not code:
+                    raise FutuPortfolioError("Futu 非零持仓返回了空证券代码")
+                market, separator, symbol = code.partition(".")
+                if not separator or not market or not symbol:
+                    raise FutuPortfolioError(
+                        f"Futu 非零持仓返回了无效证券代码: {code}"
+                    )
                 if code in seen_codes:
                     continue
                 seen_codes.add(code)
@@ -286,6 +322,17 @@ def _market_prefix(code: str) -> str:
     return code.split(".", 1)[0] if "." in code else ""
 
 
+def _is_cn_b_share_code(code: str) -> bool:
+    """Return whether a qualified Futu code is a Shanghai/Shenzhen B-share."""
+
+    prefix, separator, symbol = code.partition(".")
+    if not separator or not (symbol.isdigit() and len(symbol) == 6):
+        return False
+    return (prefix == "SH" and symbol.startswith("900")) or (
+        prefix == "SZ" and symbol.startswith("200")
+    )
+
+
 def _to_analysis_code(futu_code: str) -> Optional[str]:
     """Convert a supported Futu code into the analysis pipeline format."""
 
@@ -295,13 +342,16 @@ def _to_analysis_code(futu_code: str) -> Optional[str]:
     prefix = prefix.upper()
     symbol = symbol.upper()
     if prefix == "US":
-        return symbol
-    if prefix == "HK" and symbol.isdigit():
-        return f"HK{symbol.zfill(5)}"
-    if prefix in {"SH", "SZ"} and symbol.isdigit():
-        return symbol
-    if prefix == "JP" and symbol.isdigit():
-        return f"{symbol}.T"
+        normalized = normalize_code(symbol)
+        if normalized == symbol and is_us_stock_code(normalized):
+            return normalized
+        return None
+    if prefix == "HK":
+        normalized = normalize_code(f"HK.{symbol}")
+        return f"HK{normalized}" if normalized is not None else None
+    if prefix in {"SH", "SZ"}:
+        normalized = normalize_code(f"{prefix}.{symbol}")
+        return normalized if normalized == symbol else None
     return None
 
 
@@ -311,22 +361,26 @@ def _filter_stock_codes(
     port: int,
     position_codes: List[str],
 ) -> List[str]:
-    """Keep static-type stocks and convert them into analysis codes."""
+    """Keep A/HK/US stocks and report unsupported Futu market codes."""
 
     if not position_codes:
         return []
 
     grouped: dict[str, List[str]] = {}
-    unsupported_count = 0
+    unsupported_codes: List[str] = []
     for code in position_codes:
         prefix = _market_prefix(code)
-        if prefix not in _SUPPORTED_ANALYSIS_MARKETS:
-            unsupported_count += 1
+        if prefix not in _SUPPORTED_ANALYSIS_MARKETS or _is_cn_b_share_code(code):
+            unsupported_codes.append(code)
             continue
         grouped.setdefault(prefix, []).append(code)
 
     if not grouped:
-        logger.warning("已跳过 %d 个当前分析流程不支持的 Futu 市场持仓", unsupported_count)
+        logger.warning(
+            "已跳过 %d 个当前分析流程不支持的 Futu 持仓: %s",
+            len(unsupported_codes),
+            ", ".join(unsupported_codes),
+        )
         return []
 
     stock_codes = set()
@@ -337,7 +391,7 @@ def _filter_stock_codes(
         for prefix, codes in grouped.items():
             market = getattr(api.Market, prefix, None)
             if market is None:
-                unsupported_count += len(codes)
+                unsupported_codes.extend(codes)
                 continue
             for start in range(0, len(codes), _STATIC_INFO_BATCH_SIZE):
                 batch = codes[start : start + _STATIC_INFO_BATCH_SIZE]
@@ -354,8 +408,11 @@ def _filter_stock_codes(
                     code = str(row.get("code", "") or "").strip().upper()
                     if not code:
                         continue
+                    stock_type = _enum_text(row.get("stock_type"))
+                    if stock_type in _UNKNOWN_SECURITY_TYPES:
+                        continue
                     classified_codes.add(code)
-                    if _enum_text(row.get("stock_type")) == "STOCK":
+                    if stock_type == "STOCK":
                         stock_codes.add(code)
     except FutuPortfolioError:
         raise
@@ -364,21 +421,39 @@ def _filter_stock_codes(
     finally:
         _safe_close(context)
 
-    missing_count = sum(
-        1 for codes in grouped.values() for code in codes if code not in classified_codes
-    )
-    if unsupported_count:
-        logger.warning("已跳过 %d 个当前分析流程不支持的 Futu 市场持仓", unsupported_count)
-    if missing_count:
-        logger.warning("已跳过 %d 个无法确认证券类型的 Futu 持仓", missing_count)
+    missing_codes = [
+        code
+        for codes in grouped.values()
+        for code in codes
+        if code not in classified_codes
+    ]
+    if unsupported_codes:
+        logger.warning(
+            "已跳过 %d 个当前分析流程不支持的 Futu 持仓: %s",
+            len(unsupported_codes),
+            ", ".join(unsupported_codes),
+        )
+    if missing_codes:
+        raise FutuPortfolioError(
+            "无法确认证券类型的 Futu 持仓: " + ", ".join(missing_codes)
+        )
 
     result: List[str] = []
+    conversion_failures: List[str] = []
     for futu_code in position_codes:
         if futu_code not in stock_codes:
             continue
         analysis_code = _to_analysis_code(futu_code)
-        if analysis_code and analysis_code not in result:
+        if not analysis_code:
+            conversion_failures.append(futu_code)
+            continue
+        if analysis_code not in result:
             result.append(analysis_code)
+    if conversion_failures:
+        raise FutuPortfolioError(
+            "无法转换已确认的 Futu 正股代码到当前分析格式: "
+            + ", ".join(conversion_failures)
+        )
     return result
 
 
@@ -391,7 +466,8 @@ def load_futu_stock_codes() -> List[str]:
     account role, while read-only describes this integration's query-only API
     calls. Firm discovery uses the SDK's ``SecurityFirm.NONE`` auto-detection
     unless ``FUTU_SECURITY_FIRM`` is explicitly set. Position data is always
-    refreshed.
+    refreshed. Symbol conversion is limited to A/HK/US stocks; holdings from
+    other Futu markets are logged with their codes and skipped.
     """
     api = _load_futu_api()
     host, port = _connection_settings()

@@ -73,6 +73,7 @@ from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.brokers.futu.portfolio import FutuPortfolioError
+from data_provider.base import canonical_stock_code
 from src.services.stock_list_parser import split_stock_list
 from src.services.stock_code_utils import resolve_index_stock_code_for_analysis
 
@@ -544,7 +545,7 @@ def _resolve_portfolio_stock_codes(args: argparse.Namespace) -> Optional[List[st
     from src.brokers.futu.portfolio import load_futu_stock_codes
 
     stock_codes = [
-        resolve_index_stock_code_for_analysis(code)
+        canonical_stock_code(code)
         for code in load_futu_stock_codes()
         if (code or "").strip()
     ]
@@ -688,6 +689,32 @@ def _save_reused_market_review_report(
         logger.warning("复用大盘上下文保存大盘复盘报告失败: %s", exc)
 
 
+def _run_auto_backtest(config: Config) -> None:
+    """Run the independently configured auto-backtest without failing analysis."""
+
+    try:
+        if not getattr(config, 'backtest_enabled', False):
+            return
+
+        from src.services.backtest_service import BacktestService
+
+        logger.info("开始自动回测...")
+        service = BacktestService()
+        stats = service.run_backtest(
+            force=False,
+            eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
+            min_age_days=getattr(config, 'backtest_min_age_days', 14),
+            limit=200,
+        )
+        logger.info(
+            f"自动回测完成: processed={stats.get('processed')} "
+            f"saved={stats.get('saved')} completed={stats.get('completed')} "
+            f"insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
+        )
+    except Exception as exc:
+        logger.warning(f"自动回测失败（已忽略）: {exc}")
+
+
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
@@ -701,15 +728,27 @@ def run_full_analysis(
     这是定时任务调用的主函数。Futu 持仓解析失败始终传播给调用方；
     ``raise_errors`` 只控制持仓解析成功后的分析流程异常语义。
     """
-    # Import pipeline modules outside the broad try/except so that import-time
-    # failures propagate to the caller instead of being silently swallowed.
-    from src.core.market_review import run_market_review
-    from src.core.pipeline import StockAnalysisPipeline
-
     # Portfolio resolution is its own CLI contract boundary. A broker import
     # failure must reach the one-shot caller, while all later work keeps the
     # existing run_full_analysis return-value semantics.
     portfolio_stock_codes = _resolve_portfolio_stock_codes(args)
+    portfolio_is_empty = portfolio_stock_codes == []
+    market_review_requested = (
+        getattr(config, 'market_review_enabled', False)
+        and not getattr(args, 'no_market_review', False)
+    )
+    if portfolio_is_empty and not market_review_requested:
+        logger.info(
+            "真实账户中无符合条件的 Futu 持仓，"
+            "本轮跳过个股分析和大盘复盘。"
+        )
+        _run_auto_backtest(config)
+        return True
+
+    # Import pipeline modules outside the broad try/except so that import-time
+    # failures propagate to the caller instead of being silently swallowed.
+    from src.core.market_review import run_market_review
+    from src.core.pipeline import StockAnalysisPipeline
 
     try:
         _refresh_stock_index_cache_for_analysis(config)
@@ -726,14 +765,24 @@ def run_full_analysis(
             config, args, effective_codes
         )
         if should_skip:
-            logger.info(
-                "今日所有相关市场均为非交易日，跳过执行。可使用 --force-run 强制执行。"
-            )
+            if portfolio_is_empty:
+                logger.info(
+                    "真实账户中无符合条件的 Futu 持仓，"
+                    "本轮无需执行个股分析或大盘复盘，跳过执行。"
+                )
+            else:
+                logger.info(
+                    "今日所有相关市场均为非交易日，跳过执行。"
+                    "可使用 --force-run 强制执行。"
+                )
             return True
         if set(filtered_codes) != set(effective_codes):
             skipped = set(effective_codes) - set(filtered_codes)
             logger.info("今日休市股票已跳过: %s", skipped)
         stock_codes = filtered_codes
+        skip_futu_stock_analysis = (
+            portfolio_stock_codes is not None and not stock_codes
+        )
 
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
@@ -813,13 +862,20 @@ def run_full_analysis(
             )
 
         # 1. 运行个股分析
-        results = pipeline.run(
-            stock_codes=stock_codes,
-            dry_run=args.dry_run,
-            send_notification=not args.no_notify,
-            merge_notification=merge_notification,
-            current_time=analysis_reference_time,
-        )
+        if skip_futu_stock_analysis:
+            if portfolio_is_empty:
+                logger.info("真实账户中无符合条件的 Futu 持仓，跳过个股分析。")
+            else:
+                logger.info("Futu 持仓经交易日过滤后无可分析股票，跳过个股分析。")
+            results = []
+        else:
+            results = pipeline.run(
+                stock_codes=stock_codes,
+                dry_run=args.dry_run,
+                send_notification=not args.no_notify,
+                merge_notification=merge_notification,
+                current_time=analysis_reference_time,
+            )
 
         if should_use_daily_market_context and not market_context_summary:
             (
@@ -1008,24 +1064,7 @@ def run_full_analysis(
             logger.error(f"飞书文档生成失败: {e}")
 
         # === Auto backtest ===
-        try:
-            if getattr(config, 'backtest_enabled', False):
-                from src.services.backtest_service import BacktestService
-
-                logger.info("开始自动回测...")
-                service = BacktestService()
-                stats = service.run_backtest(
-                    force=False,
-                    eval_window_days=getattr(config, 'backtest_eval_window_days', 10),
-                    min_age_days=getattr(config, 'backtest_min_age_days', 14),
-                    limit=200,
-                )
-                logger.info(
-                    f"自动回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
-                    f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
-                )
-        except Exception as e:
-            logger.warning(f"自动回测失败（已忽略）: {e}")
+        _run_auto_backtest(config)
 
         return True
 

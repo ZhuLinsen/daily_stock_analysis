@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [新功能] 新增 `--portfolio futu`，只读导入 Futu OpenD 真实账户中的非零多头正股持仓并覆盖股票列表；同步支持并验证 Futu SDK 在源码、Docker、每日 Actions 及 Windows/macOS Desktop 打包链路中的可用性。
+- [新功能] 新增 `--portfolio futu`，只读导入 Futu OpenD 真实账户的沪深 A 股、港股、美股 LONG 正股持仓作为分析列表。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
