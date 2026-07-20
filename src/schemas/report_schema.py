@@ -284,7 +284,7 @@ class PipelineTerminationExplanation(BaseModel):
     last_completed_stage: Optional[str] = None
 
 
-class PipelineDecisionAdjustmentExplanation(BaseModel):
+class PipelineActionAdjustmentExplanation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: Literal[
@@ -294,13 +294,13 @@ class PipelineDecisionAdjustmentExplanation(BaseModel):
         "daily_market_context",
         "final_action_refresh",
     ]
-    from_signal: Literal["buy", "hold", "sell"]
-    to_signal: Literal["buy", "hold", "sell"]
+    from_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
+    to_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
 
     @model_validator(mode="after")
-    def validate_change(self) -> "PipelineDecisionAdjustmentExplanation":
-        if self.from_signal == self.to_signal:
-            raise ValueError("pipeline adjustment must change the signal")
+    def validate_change(self) -> "PipelineActionAdjustmentExplanation":
+        if self.from_action == self.to_action:
+            raise ValueError("pipeline adjustment must change the action")
         return self
 
 
@@ -321,19 +321,20 @@ class AgentDisagreementExplanation(BaseModel):
     degraded_events: List[DegradedEventExplanation] = Field(default_factory=list)
     pipeline_termination: Optional[PipelineTerminationExplanation] = None
     data_quality: Optional[AgentDataQualityExplanation] = None
-    final_adjustments: List[PipelineDecisionAdjustmentExplanation] = Field(default_factory=list)
-    final_signal: Literal["buy", "hold", "sell"]
+    pipeline_start_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
+    final_adjustments: List[PipelineActionAdjustmentExplanation] = Field(default_factory=list)
+    final_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
     decision_path: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def validate_final_signal_chain(self) -> "AgentDisagreementExplanation":
-        expected = self.risk_control.post_risk_signal
+    def validate_final_action_chain(self) -> "AgentDisagreementExplanation":
+        expected = self.pipeline_start_action
         for adjustment in self.final_adjustments:
-            if adjustment.from_signal != expected:
+            if adjustment.from_action != expected:
                 raise ValueError("pipeline adjustment chain is discontinuous")
-            expected = adjustment.to_signal
-        if expected != self.final_signal:
-            raise ValueError("final_signal must match the completed adjustment chain")
+            expected = adjustment.to_action
+        if expected != self.final_action:
+            raise ValueError("final_action must match the completed adjustment chain")
         return self
 
 

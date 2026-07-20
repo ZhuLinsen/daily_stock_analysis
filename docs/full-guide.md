@@ -885,9 +885,9 @@ Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreeme
 
 结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
 
-Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与资金流、市场阶段、daily-market context 和最终 action 刷新。只有这些可能改变决策的步骤全部结束后，系统才基于 `AgentResult.runtime_facts` 确定性生成唯一的可选 `dashboard.agent_disagreement_explanation`。该字段包含基础 Agent 方向关系、实际 risk application、stage degradation、Pipeline termination、低敏数据质量限制、按执行顺序记录的 Pipeline signal adjustments，以及与最终 `AnalysisResult.decision_type` 一致的 `final_signal`。`risk_control.post_risk_signal` 只描述 Agent 风控后的阶段结果；后续调整记录在 `final_adjustments`，不会被错误归因为 risk override。
+Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与资金流、市场阶段、daily-market context 和最终 action 刷新。系统在每个可能改变公开动作的步骤后使用与 DecisionSignal builder 相同的解析入口刷新八态 action，并按执行顺序记录真实的 `from_action` / `to_action` 转换。只有这些步骤全部结束后，系统才基于 `AgentResult.runtime_facts` 确定性生成唯一的可选 `dashboard.agent_disagreement_explanation`。该字段以 `pipeline_start_action` 为调整链起点，以 `final_action` 作为唯一权威最终结论；`final_action` 与报告 `action`、历史记录 action 和 `DecisionSignal.action` 一致。三态 `decision_type` 不再作为 explanation 的最终结论；`risk_control.post_risk_signal` 仅保留为 Agent 风控阶段的统计背景事实。
 
-模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。字段在历史报告 JSON 中随 dashboard 一起持久化，并在 DecisionSignal 提取前完成，因此报告、历史记录和 DecisionSignal 使用同一个最终 action。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
+模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。非法 Agent signal 沿用既有策略意见有效性规则从 runtime facts 和公开分歧统计中排除，不会静默转换成 `hold`。若合法股票报告的自由文本无法解析成八态 action，Pipeline 会将已有合法三态 `decision_type` 显式映射为同名 action，避免当前报告产生空最终动作；该兼容映射不改变旧历史报告的 DecisionSignal 提取规则。字段在历史报告 JSON 中随 dashboard 一起持久化，并在 DecisionSignal 提取前完成。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 

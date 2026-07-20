@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.agent.final_explanation import (
-    PipelineDecisionAdjustment,
+    PipelineActionAdjustment,
     build_pipeline_final_explanation,
 )
 from src.agent.risk_override import RiskOverrideApplication
@@ -69,12 +69,13 @@ def test_build_explanation_keeps_risk_and_pipeline_adjustments_distinct():
     payload = build_pipeline_final_explanation(
         runtime_facts=facts,
         pipeline_start_signal="buy",
-        final_signal="hold",
+        pipeline_start_action="buy",
+        final_action="watch",
         pipeline_adjustments=(
-            PipelineDecisionAdjustment(
+            PipelineActionAdjustment(
                 source="daily_market_context",
-                from_signal="buy",
-                to_signal="hold",
+                from_action="buy",
+                to_action="watch",
             ),
         ),
         data_quality={
@@ -88,11 +89,12 @@ def test_build_explanation_keeps_risk_and_pipeline_adjustments_distinct():
     assert payload["final_adjustments"] == [
         {
             "source": "daily_market_context",
-            "from_signal": "buy",
-            "to_signal": "hold",
+            "from_action": "buy",
+            "to_action": "watch",
         }
     ]
-    assert payload["final_signal"] == "hold"
+    assert payload["pipeline_start_action"] == "buy"
+    assert payload["final_action"] == "watch"
     assert payload["decision_path"] == "daily_market_context_adjusted"
     assert payload["data_quality"] == {
         "level": "limited",
@@ -108,7 +110,8 @@ def test_build_explanation_uses_actual_risk_application_without_pipeline_relabel
     payload = build_pipeline_final_explanation(
         runtime_facts=_facts(),
         pipeline_start_signal="hold",
-        final_signal="hold",
+        pipeline_start_action="hold",
+        final_action="hold",
     )
 
     assert payload["risk_control"]["reason"] == "risk_veto_applied"
@@ -122,16 +125,17 @@ def test_schema_rejects_discontinuous_pipeline_adjustment_chain():
     payload = build_pipeline_final_explanation(
         runtime_facts=_facts(),
         pipeline_start_signal="hold",
-        final_signal="hold",
+        pipeline_start_action="hold",
+        final_action="hold",
     )
     payload["final_adjustments"] = [
         {
             "source": "market_phase",
-            "from_signal": "buy",
-            "to_signal": "sell",
+            "from_action": "buy",
+            "to_action": "sell",
         }
     ]
-    payload["final_signal"] = "sell"
+    payload["final_action"] = "sell"
 
     with pytest.raises(ValidationError):
         AgentDisagreementExplanation.model_validate(payload)
@@ -141,7 +145,8 @@ def test_optional_report_schema_round_trips_final_explanation():
     explanation = build_pipeline_final_explanation(
         runtime_facts=_facts(),
         pipeline_start_signal="hold",
-        final_signal="hold",
+        pipeline_start_action="hold",
+        final_action="hold",
     )
     report = AnalysisReportSchema.model_validate(
         {
@@ -164,7 +169,8 @@ def test_schema_rejects_sensitive_or_unknown_fields(field):
     payload = build_pipeline_final_explanation(
         runtime_facts=_facts(),
         pipeline_start_signal="hold",
-        final_signal="hold",
+        pipeline_start_action="hold",
+        final_action="hold",
     )
     payload[field] = "private"
 
@@ -183,12 +189,13 @@ def test_missing_risk_application_preserves_pipeline_start_signal():
     payload = build_pipeline_final_explanation(
         runtime_facts=facts,
         pipeline_start_signal="buy",
-        final_signal="hold",
+        pipeline_start_action="buy",
+        final_action="watch",
         pipeline_adjustments=(
-            PipelineDecisionAdjustment(
+            PipelineActionAdjustment(
                 source="daily_market_context",
-                from_signal="buy",
-                to_signal="hold",
+                from_action="buy",
+                to_action="watch",
             ),
         ),
     )
@@ -201,11 +208,51 @@ def test_missing_risk_application_preserves_pipeline_start_signal():
         "reason": "not_evaluated",
         "post_risk_signal": "buy",
     }
-    assert payload["final_signal"] == "hold"
     assert payload["final_adjustments"] == [
         {
             "source": "daily_market_context",
-            "from_signal": "buy",
-            "to_signal": "hold",
+            "from_action": "buy",
+            "to_action": "watch",
         }
     ]
+
+
+def test_final_explanation_has_one_authoritative_public_action():
+    facts = AgentRuntimeFacts(
+        base_agent_opinions=(
+            BaseAgentOpinionFact(agent="technical", signal="buy", confidence=0.8),
+        ),
+    )
+
+    payload = build_pipeline_final_explanation(
+        runtime_facts=facts,
+        pipeline_start_signal="hold",
+        pipeline_start_action="buy",
+        final_action="buy",
+    )
+
+    assert "final_signal" not in payload
+    assert payload["pipeline_start_action"] == "buy"
+    assert payload["final_action"] == "buy"
+    assert payload["base_disagreement"]["type"] == "insufficient_opinions"
+
+
+def test_final_explanation_excludes_invalid_runtime_facts_instead_of_forging_neutral():
+    facts = AgentRuntimeFacts(
+        base_agent_opinions=(
+            BaseAgentOpinionFact(agent="technical", signal="sideways", confidence=0.8),
+            BaseAgentOpinionFact(agent="intel", signal="unknown", confidence=0.7),
+        ),
+    )
+
+    payload = build_pipeline_final_explanation(
+        runtime_facts=facts,
+        pipeline_start_signal="hold",
+        pipeline_start_action="watch",
+        final_action="watch",
+    )
+
+    assert payload["base_disagreement"] == {
+        "type": "insufficient_opinions",
+        "agents": [],
+    }

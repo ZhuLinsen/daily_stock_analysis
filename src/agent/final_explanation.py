@@ -7,49 +7,54 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Any, Iterable, Optional, Sequence
 
-from src.agent.protocols import normalize_decision_signal
+from src.agent.protocols import normalize_decision_signal, normalize_strategy_signal
 from src.agent.runtime_facts import AgentRuntimeFacts
+from src.schemas.decision_action import normalize_decision_action
 from src.schemas.report_schema import AgentDisagreementExplanation
 
 
 @dataclass(frozen=True)
-class PipelineDecisionAdjustment:
-    """One real signal transition made after Agent risk application."""
+class PipelineActionAdjustment:
+    """One real public-action transition made during Pipeline finalization."""
 
     source: str
-    from_signal: str
-    to_signal: str
+    from_action: str
+    to_action: str
 
     def __post_init__(self) -> None:
         source = str(self.source or "").strip()
         if not source:
             raise ValueError("pipeline adjustment requires a source")
-        from_signal = normalize_decision_signal(self.from_signal)
-        to_signal = normalize_decision_signal(self.to_signal)
-        if from_signal == to_signal:
-            raise ValueError("pipeline adjustment must change the signal")
+        from_action = normalize_decision_action(self.from_action)
+        to_action = normalize_decision_action(self.to_action)
+        if from_action is None or to_action is None:
+            raise ValueError("pipeline adjustment requires canonical actions")
+        if from_action == to_action:
+            raise ValueError("pipeline adjustment must change the action")
         object.__setattr__(self, "source", source)
-        object.__setattr__(self, "from_signal", from_signal)
-        object.__setattr__(self, "to_signal", to_signal)
+        object.__setattr__(self, "from_action", from_action)
+        object.__setattr__(self, "to_action", to_action)
 
 
-def capture_pipeline_adjustment(
-    adjustments: list[PipelineDecisionAdjustment],
+def capture_pipeline_action_adjustment(
+    adjustments: list[PipelineActionAdjustment],
     *,
     source: str,
     before: Any,
     after: Any,
 ) -> None:
-    """Append a transition only when a Pipeline step changed the signal."""
-    before_signal = normalize_decision_signal(before)
-    after_signal = normalize_decision_signal(after)
-    if before_signal == after_signal:
+    """Append a transition only when a Pipeline step changed the public action."""
+    before_action = normalize_decision_action(before)
+    after_action = normalize_decision_action(after)
+    if before_action is None or after_action is None:
+        raise ValueError("pipeline action capture requires canonical actions")
+    if before_action == after_action:
         return
     adjustments.append(
-        PipelineDecisionAdjustment(
+        PipelineActionAdjustment(
             source=source,
-            from_signal=before_signal,
-            to_signal=after_signal,
+            from_action=before_action,
+            to_action=after_action,
         )
     )
 
@@ -58,20 +63,21 @@ def build_pipeline_final_explanation(
     *,
     runtime_facts: AgentRuntimeFacts,
     pipeline_start_signal: Any,
-    final_signal: Any,
-    pipeline_adjustments: Sequence[PipelineDecisionAdjustment] = (),
+    pipeline_start_action: Any,
+    final_action: Any,
+    pipeline_adjustments: Sequence[PipelineActionAdjustment] = (),
     data_quality: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Return the single validated explanation for the final report signal."""
+    """Return the single validated explanation for the final public action."""
     normalized_start = normalize_decision_signal(pipeline_start_signal)
-    normalized_final = normalize_decision_signal(final_signal)
+    normalized_start_action = normalize_decision_action(pipeline_start_action)
+    normalized_action = normalize_decision_action(final_action)
+    if normalized_start_action is None or normalized_action is None:
+        raise ValueError("final explanation requires canonical public actions")
     opinions = [
-        {
-            "agent": fact.agent,
-            "signal": normalize_decision_signal(fact.signal),
-            "confidence": fact.confidence,
-        }
+        payload
         for fact in runtime_facts.base_agent_opinions
+        if (payload := _public_opinion_payload(fact)) is not None
     ]
     base_type = _classify_base_disagreement(item["signal"] for item in opinions)
     risk_control = _risk_control_payload(
@@ -91,15 +97,16 @@ def build_pipeline_final_explanation(
         "base_disagreement": {"type": base_type, "agents": opinions},
         "risk_control": risk_control,
         "degraded_events": degraded_events,
+        "pipeline_start_action": normalized_start_action,
         "final_adjustments": [
             {
                 "source": item.source,
-                "from_signal": item.from_signal,
-                "to_signal": item.to_signal,
+                "from_action": item.from_action,
+                "to_action": item.to_action,
             }
             for item in pipeline_adjustments
         ],
-        "final_signal": normalized_final,
+        "final_action": normalized_action,
         "decision_path": _decision_path(
             base_type=base_type,
             risk_control=risk_control,
@@ -119,6 +126,18 @@ def build_pipeline_final_explanation(
         mode="json",
         exclude_none=True,
     )
+
+
+def _public_opinion_payload(fact: Any) -> Optional[dict[str, Any]]:
+    """Project one valid runtime opinion without inventing neutral signals."""
+    canonical, invalid, _ = normalize_strategy_signal(getattr(fact, "signal", None))
+    if invalid:
+        return None
+    return {
+        "agent": str(getattr(fact, "agent", "") or "unknown"),
+        "signal": normalize_decision_signal(canonical),
+        "confidence": getattr(fact, "confidence", 0.0),
+    }
 
 
 def _data_quality_payload(value: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
@@ -192,7 +211,7 @@ def _decision_path(
     base_type: str,
     risk_control: dict[str, Any],
     degraded: bool,
-    pipeline_adjustments: Sequence[PipelineDecisionAdjustment],
+    pipeline_adjustments: Sequence[PipelineActionAdjustment],
 ) -> str:
     if pipeline_adjustments:
         return f"{pipeline_adjustments[-1].source}_adjusted"
@@ -208,7 +227,7 @@ def _decision_path(
 
 
 __all__ = [
-    "PipelineDecisionAdjustment",
+    "PipelineActionAdjustment",
     "build_pipeline_final_explanation",
-    "capture_pipeline_adjustment",
+    "capture_pipeline_action_adjustment",
 ]
