@@ -389,6 +389,17 @@ daily_stock_analysis/
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
 
+### Futu 持仓导入配置
+
+| 变量名 | 说明 | 默认值 | 必填 |
+|--------|------|--------|:----:|
+| `FUTU_OPEND_HOST` | OpenD 地址；锁定的 `futu-api==10.8.6808` 仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
+| `FUTU_OPEND_PORT` | OpenD 端口，合法范围 `1-65535`。 | `11111` | 可选 |
+| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` 枚举名；`NONE` 表示使用 SDK 官方自动识别一次，也可显式指定券商。 | `NONE` | 可选 |
+| `FUTU_ACC_ID` | 指定一个符合条件的 REAL 账户 ID；留空时合并所有状态为 `ACTIVE` 的 `NORMAL`（普通）和 `MASTER`（主）证券账户。账户 ID 应按敏感配置处理，不要提交到仓库。 | 空 | 可选 |
+
+`MASTER` 仅表示 Futu 的主账户角色，不表示账户具有只读属性。本集成的只读边界来自它只调用账户、持仓和证券信息查询接口，不调用交易解锁、下单、改单或撤单接口。
+
 ### 数据源配置
 
 | 变量名 | 说明 | 默认值 | 必填 |
@@ -680,6 +691,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
@@ -687,6 +699,25 @@ python main.py --force-run            # 非交易日也强制执行（Issue #373
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
+
+### Futu 真实持仓作为分析列表
+
+标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
+
+```bash
+# 仅裁剪过的自定义环境需要执行下一行
+pip install "futu-api==10.8.6808"
+# 所有标准安装均可直接运行
+python main.py --portfolio futu
+```
+
+`--portfolio futu` 固定读取状态明确为 `ACTIVE` 的 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓；状态缺失、`N/A`、未知或 `DISABLED` 的账户一律拒绝。未设置 `FUTU_ACC_ID` 时会合并所有可用的 `NORMAL`（普通）及 `MASTER`（主）证券账户并按代码去重；设置后只读取指定的正整数账户 ID。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，`MASTER` 表示主账户而非只读属性，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。本集成的只读边界来自它只调用查询接口。
+
+只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。Futu 持仓代码转换仅支持沪深 A 股、港股和美股；沪深 B 股、日股及其他 Futu 市场持仓会在日志中列出代码并跳过，这不改变手工股票列表的既有市场支持边界。如果可用账户 ID 无效，或 `LONG` 持仓数量无效、非零 `LONG` 持仓代码无效、静态类型缺失 / 未知，或已确认的正股代码无法转换为当前分析格式，整次持仓导入会明确失败，不会返回静默截断的部分结果。
+
+OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。锁定的 `futu-api==10.8.6808` 网络层使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
+
+若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。若没有符合条件的 Futu 持仓，本轮会跳过个股分析且不会回退到 `STOCK_LIST`；已启用的大盘复盘仍按原配置执行，大盘复盘也未请求时不会刷新股票索引或构造分析管线，已启用的自动回测仍作为独立步骤执行。单次 CLI 仅在 SDK、OpenD、账户发现、持仓读取或证券分类等持仓解析边界失败时返回非零退出码；持仓解析成功后的交易日历、分析管线和报告异常仍沿用原分析流程的记录与容错语义。已启动服务与定时调度会记录持仓导入错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。现有分析日志会记录本轮股票代码，但不会记录账户 ID、持仓数量、成本或资金；分享运行日志前请按需脱敏。
 
 ---
 
