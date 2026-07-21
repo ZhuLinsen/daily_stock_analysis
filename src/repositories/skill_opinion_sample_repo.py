@@ -22,17 +22,22 @@ class SkillOpinionSampleRepository:
         if not values:
             return 0
 
-        statement = sqlite_insert(SkillOpinionSampleRecord).values(values)
-        statement = statement.on_conflict_do_nothing(
-            index_elements=[
-                "analysis_history_id",
-                "skill_id",
-                "sample_schema_version",
-            ]
-        )
-        with self.db.session_scope() as session:
+        def _insert(session):
+            statement = sqlite_insert(SkillOpinionSampleRecord).values(values)
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[
+                    "analysis_history_id",
+                    "skill_id",
+                    "sample_schema_version",
+                ]
+            )
             result = session.execute(statement)
             return result.rowcount or 0
+
+        return self.db._run_write_transaction(
+            "insert skill opinion samples",
+            _insert,
+        )
 
     def list_for_history(self, analysis_history_id: int) -> List[SkillOpinionSampleRecord]:
         with self.db.get_session() as session:

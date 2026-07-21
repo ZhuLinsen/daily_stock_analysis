@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import inspect
+from sqlalchemy.exc import OperationalError
 
 from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
 from src.config import Config
@@ -107,6 +109,42 @@ def test_service_ignores_duplicate_key_without_rolling_back_other_samples(isolat
         ("alpha", "buy", 0.8),
         ("beta", "hold", 0.6),
     ]
+
+
+def test_service_retries_sqlite_locked_write_without_losing_samples(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    service = SkillOpinionSampleService(db_manager=isolated_db)
+    first_session = isolated_db.get_session()
+    second_session = isolated_db.get_session()
+    locked = OperationalError(
+        "INSERT",
+        None,
+        sqlite3.OperationalError("database is locked"),
+    )
+
+    with patch.object(
+        isolated_db,
+        "get_session",
+        side_effect=[first_session, second_session],
+    ):
+        with patch.object(first_session, "execute", side_effect=locked):
+            with patch("src.storage.time.sleep") as sleep:
+                created = service.persist(
+                    analysis_history_id=history_id,
+                    stock_code="600519",
+                    opinions=(
+                        SkillOpinionFact(
+                            skill_id="alpha",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                )
+
+    assert created == 1
+    sleep.assert_called_once_with(isolated_db._sqlite_write_retry_base_delay)
+    rows = SkillOpinionSampleRepository(isolated_db).list_for_history(history_id)
+    assert [(row.skill_id, row.signal) for row in rows] == [("alpha", "buy")]
 
 
 def test_sample_schema_is_idempotent_and_has_identity_constraints(isolated_db) -> None:
