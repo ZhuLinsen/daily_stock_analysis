@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -246,6 +247,57 @@ def write_reports(candidates: Iterable[Candidate], json_path: Path, md_path: Pat
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def configured_fallback_codes(value: str, count: int) -> list[str]:
+    """Return unique configured A-share codes without inventing market data."""
+
+    codes: list[str] = []
+    for code in re.findall(r"(?<!\d)\d{6}(?!\d)", value or ""):
+        if code not in codes:
+            codes.append(code)
+        if len(codes) >= count:
+            break
+    return codes
+
+
+def write_fallback_reports(
+    codes: Sequence[str], reason: str, json_path: Path, md_path: Path
+) -> None:
+    """Record that configured stocks were used because live screening was unavailable."""
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
+        json.dumps(
+            [
+                {
+                    "code": code,
+                    "source": "configured_stock_list",
+                    "degraded": True,
+                }
+                for code in codes
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    lines = [
+        "# A股盘中候选池（降级模式）",
+        "",
+        f"生成时间：{datetime.now(SHANGHAI_TZ):%Y-%m-%d %H:%M:%S}（北京时间）",
+        "",
+        "> 实时全市场行情源暂时不可用，本次改用已配置自选股继续分析。",
+        "> 未生成实时排名和行情指标，不应据此追涨；请以正文中的观察条件和风险控制为准。",
+        "",
+        "| 排名 | 代码 | 来源 |",
+        "|---:|---|---|",
+    ]
+    lines.extend(
+        f"| {rank} | {code} | 已配置自选股 |" for rank, code in enumerate(codes, 1)
+    )
+    lines.extend(["", f"降级原因：{reason}"])
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="筛选 A 股盘中候选股票")
     parser.add_argument("--count", type=int, default=10)
@@ -263,7 +315,26 @@ def main() -> int:
         print("SKIP_NON_TRADING_DAY")
         return 0
 
-    candidates = select_candidates(fetch_market_snapshot(), count=args.count)
+    try:
+        candidates = select_candidates(fetch_market_snapshot(), count=args.count)
+    except RuntimeError as exc:
+        fallback_codes = configured_fallback_codes(
+            os.getenv("STOCK_LIST", ""), count=args.count
+        )
+        if not fallback_codes:
+            raise RuntimeError(
+                f"实时选股失败且未配置可用的 STOCK_LIST：{exc}"
+            ) from exc
+        reason = str(exc)
+        print(
+            "[行情源] 实时选股不可用，改用已配置自选股继续分析："
+            f"{reason}",
+            file=sys.stderr,
+        )
+        write_fallback_reports(fallback_codes, reason, args.json, args.markdown)
+        print(",".join(fallback_codes))
+        return 0
+
     write_reports(candidates, args.json, args.markdown)
     print(",".join(item.code for item in candidates))
     return 0

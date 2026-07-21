@@ -30,6 +30,11 @@ def main() -> int:
         ROOT / ".github" / "workflows" / "codeql.yml",
     ]
     missing.extend(str(path.relative_to(ROOT)) for path in required_files if not path.is_file())
+    selector_text = (ROOT / "scripts" / "select_intraday_candidates.py").read_text(
+        encoding="utf-8"
+    )
+    if "改用已配置自选股继续分析" not in selector_text:
+        missing.append("configured-stock fallback")
     upstream_text = UPSTREAM_WORKFLOW.read_text(encoding="utf-8")
     if "Send Telegram alert when automatic sync is blocked" not in upstream_text:
         missing.append("upstream sync Telegram alert")
