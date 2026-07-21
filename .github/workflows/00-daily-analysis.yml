@@ -16,7 +16,7 @@ on:
           - default
           - full
           - market_only
-      stocks:
+      s:
         description: '临时指定的股票代码(英文逗号分隔，留空使用配置值)'
         required: false
         default: ''
@@ -51,7 +51,7 @@ jobs:
           pip install -r requirements.txt
           pip install "litellm==1.48.0" --force-reinstal
 
-      - name: Run Daily Stock Analysis
+      - name: Run Daily  Analysis
         env:
           # 以下配置会从 GitHub Repository Secrets 中安全读取
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
@@ -73,15 +73,14 @@ jobs:
           # 根据手动触发时传入的参数来组合运行命令
           ARGS=""
           if [ "${{ github.event.inputs.mode }}" = "full" ]; then
-            ARGS="$ARGS --market-review"
+          ARGS="$ARGS --market-review"
           elif [ "${{ github.event.inputs.mode }}" = "market_only" ]; then
-              ARGS="$ARGS --market-review --serve-only"
+          ARGS="$ARGS --market-review --serve-only"
           fi
 
           if [ -n "${{ github.event.inputs.stocks }}" ]; then
-            ARGS="$ARGS --stocks ${{ github.event.inputs.stocks }}"
+          ARGS="$ARGS --stocks ${{ github.event.inputs.stocks }}"
           fi
-
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
