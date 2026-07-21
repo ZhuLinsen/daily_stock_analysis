@@ -2472,8 +2472,10 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.report_integrity_enabled = False
             mock_config.return_value = mock_cfg
 
+            from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
             from src.core.pipeline import StockAnalysisPipeline
             from src.enums import ReportType
+
             pipeline = StockAnalysisPipeline(config=mock_cfg)
             pipeline.search_service.is_available = False
             pipeline._ensure_agent_history = MagicMock()
@@ -2494,7 +2496,15 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_executor.run.return_value = SimpleNamespace(
                 success=True,
                 provider="agent-provider",
-                runtime_facts=SimpleNamespace(skill_opinions=("sample",)),
+                runtime_facts=AgentRuntimeFacts(
+                    skill_opinions=(
+                        SkillOpinionFact(
+                            skill_id="alpha",
+                            signal="buy",
+                            confidence=0.7,
+                        ),
+                    ),
+                ),
                 dashboard={"stock_name": "科创芯片ETF"},
             )
             with patch('src.agent.factory.build_agent_executor', return_value=mock_executor):
