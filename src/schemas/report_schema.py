@@ -288,11 +288,9 @@ class PipelineActionAdjustmentExplanation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: Literal[
-        "agent_result_conversion",
         "structure_and_fundamentals",
         "market_phase",
         "daily_market_context",
-        "final_action_refresh",
     ]
     from_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]
     to_action: Literal["buy", "add", "hold", "reduce", "sell", "watch", "avoid", "alert"]

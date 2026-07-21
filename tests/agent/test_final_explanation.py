@@ -141,6 +141,27 @@ def test_schema_rejects_discontinuous_pipeline_adjustment_chain():
         AgentDisagreementExplanation.model_validate(payload)
 
 
+@pytest.mark.parametrize("source", ["agent_result_conversion", "final_action_refresh"])
+def test_schema_rejects_unreachable_action_adjustment_sources(source):
+    payload = build_pipeline_final_explanation(
+        runtime_facts=_facts(),
+        pipeline_start_signal="hold",
+        pipeline_start_action="buy",
+        final_action="buy",
+    )
+    payload["final_adjustments"] = [
+        {
+            "source": source,
+            "from_action": "buy",
+            "to_action": "watch",
+        }
+    ]
+    payload["final_action"] = "watch"
+
+    with pytest.raises(ValidationError):
+        AgentDisagreementExplanation.model_validate(payload)
+
+
 def test_optional_report_schema_round_trips_final_explanation():
     explanation = build_pipeline_final_explanation(
         runtime_facts=_facts(),

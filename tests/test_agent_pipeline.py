@@ -821,6 +821,51 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.action, "hold")
         self.assertEqual(result.action_label, "持有")
 
+    def test_final_action_refresh_keeps_ambiguous_action_fail_closed(self):
+        """Pipeline refresh must not invent an action outside the shared resolver."""
+        pipeline = self._make_pipeline()
+
+        from src.analyzer import AnalysisResult
+        from src.enums import ReportType
+        from src.services.decision_signal_extractor import (
+            build_decision_signal_payload_from_report,
+        )
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=82,
+            trend_prediction="看多",
+            operation_advice="买盘增强，继续观察",
+            decision_type="buy",
+            action=None,
+        )
+
+        direct_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-direct",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=result.operation_advice,
+        )
+        refreshed_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-refreshed",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+
+        self.assertIsNone(result.action)
+        self.assertIsNone(result.action_label)
+        self.assertIsNone(direct_payload)
+        self.assertIsNone(refreshed_payload)
+
     def test_convert_invalid_dashboard_preserves_local_trend_result(self):
         """Invalid Agent dashboard should not erase already-computed trend data."""
         pipeline = self._make_pipeline()
@@ -1718,17 +1763,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertNotIn("final_signal", explanation)
-            self.assertEqual(explanation["pipeline_start_action"], "hold")
-            self.assertEqual(
-                explanation["final_adjustments"],
-                [
-                    {
-                        "source": "agent_result_conversion",
-                        "from_action": "hold",
-                        "to_action": "buy",
-                    }
-                ],
-            )
+            self.assertEqual(explanation["pipeline_start_action"], "buy")
+            self.assertEqual(explanation["final_adjustments"], [])
             self.assertEqual(explanation["final_action"], "buy")
 
             saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
@@ -1754,6 +1790,108 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertIsNotNone(signal_payload)
             self.assertEqual(signal_payload["action"], "buy")
             self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
+
+    def test_analyze_with_agent_keeps_ambiguous_action_fail_closed_across_outputs(self):
+        """Ambiguous advice must not gain an action through Pipeline ordering."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 2044
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 82,
+                    "trend_prediction": "看多",
+                    "operation_advice": "买盘增强，继续观察",
+                    "decision_type": "buy",
+                    "analysis_summary": "方向偏多，但操作建议仍需观察。",
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-review-ambiguous-action",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "buy")
+            self.assertIsNone(result.action)
+            self.assertIsNone(result.action_label)
+            self.assertNotIn("agent_disagreement_explanation", result.dashboard)
+
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            self.assertIsNone(saved_result.action)
+            self.assertNotIn("agent_disagreement_explanation", saved_result.dashboard)
+
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            signal_payload = build_decision_signal_payload_from_report(
+                signal_result,
+                source_report_id=2044,
+                trace_id="q-review-ambiguous-action",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNone(signal_payload)
 
     def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
         """Should use resolved stock name from dashboard for search and DB persistence."""
@@ -2136,7 +2274,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 dashboard={
                     "sentiment_score": 82,
                     "trend_prediction": "bullish",
-                    "operation_advice": "Buy now and add aggressively.",
+                    "operation_advice": "Buy now.",
                     "decision_type": "buy",
                     "confidence_level": "high",
                     "analysis_summary": "Strong stock signal.",
