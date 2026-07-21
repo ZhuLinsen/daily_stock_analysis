@@ -33,6 +33,8 @@ def main() -> int:
     upstream_text = UPSTREAM_WORKFLOW.read_text(encoding="utf-8")
     if "Send Telegram alert when automatic sync is blocked" not in upstream_text:
         missing.append("upstream sync Telegram alert")
+    if upstream_text.count("secrets.UPSTREAM_SYNC_TOKEN") < 2:
+        missing.append("upstream sync workflow-capable token")
     if missing:
         raise SystemExit("Personal automation contract is incomplete: " + ", ".join(missing))
     print("Personal automation contract is intact.")

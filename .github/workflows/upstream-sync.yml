@@ -23,6 +23,10 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          # The default GITHUB_TOKEN cannot publish upstream changes that touch
+          # workflow files. This fine-grained PAT is limited to this repository
+          # with Contents and Workflows write permissions.
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
 
       - name: Detect upstream updates
         id: detect
@@ -76,7 +80,7 @@ jobs:
           steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           MERGE_STATUS: ${{ steps.merge.outputs.status }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
