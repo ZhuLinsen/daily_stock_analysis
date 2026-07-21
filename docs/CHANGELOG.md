@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] 免费全市场行情源同时断开时自动降级到已配置自选股，继续生成分析与 Telegram 推送，并在候选池报告中明确标记降级模式。
 - [新功能] Fork 每日自动检查并安全合并上游更新，Dependabot 覆盖 Python、Web、桌面端、GitHub Actions 和 Docker 依赖，非主版本更新经 CI 后自动合并。
 - [改进] A 股 Telegram 自动推送调整为交易日 09:47、14:07 两次盘中选股分析及 15:20 收盘复盘，并保留 macOS 本地双击随时触发入口。
 - [改进] macOS 本地启动器兼容 Finder 的 Homebrew PATH，支持任意顺序参数、`--dry-run` 与 `--no-open`，并在触发后优先定位本次 GitHub Actions 运行页面。

@@ -96,3 +96,70 @@ def test_sina_style_columns_use_neutral_missing_metrics():
 
     assert len(selected) == 10
     assert all(item.volume_ratio == 1.0 for item in selected)
+
+
+def test_configured_fallback_codes_are_unique_and_limited():
+    codes = MODULE.configured_fallback_codes(
+        "600519, 000001;600519 SH600036 invalid-1234567", count=2
+    )
+
+    assert codes == ["600519", "000001"]
+
+
+def test_main_uses_configured_stocks_when_all_market_sources_fail(
+    monkeypatch, tmp_path, capsys
+):
+    json_path = tmp_path / "candidates.json"
+    markdown_path = tmp_path / "candidates.md"
+    monkeypatch.setenv("STOCK_LIST", "600519,000001")
+    monkeypatch.setattr(MODULE, "is_trading_day", lambda: True)
+    monkeypatch.setattr(
+        MODULE,
+        "fetch_market_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("所有行情源均失败")),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT_PATH),
+            "--count",
+            "10",
+            "--json",
+            str(json_path),
+            "--markdown",
+            str(markdown_path),
+        ],
+    )
+
+    assert MODULE.main() == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "600519,000001"
+    assert "改用已配置自选股" in captured.err
+    assert "降级模式" in markdown_path.read_text(encoding="utf-8")
+    payload = __import__("json").loads(json_path.read_text(encoding="utf-8"))
+    assert [row["code"] for row in payload] == ["600519", "000001"]
+
+
+def test_main_still_fails_without_configured_fallback(monkeypatch, tmp_path):
+    monkeypatch.delenv("STOCK_LIST", raising=False)
+    monkeypatch.setattr(MODULE, "is_trading_day", lambda: True)
+    monkeypatch.setattr(
+        MODULE,
+        "fetch_market_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("所有行情源均失败")),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT_PATH),
+            "--json",
+            str(tmp_path / "candidates.json"),
+            "--markdown",
+            str(tmp_path / "candidates.md"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="未配置可用的 STOCK_LIST"):
+        MODULE.main()
