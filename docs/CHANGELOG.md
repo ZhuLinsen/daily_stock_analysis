@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] #2026 外股代码映射到中文显示名时英文新闻相关性判定漏判：新增同源 STOCK_ENGLISH_NAME_MAP 单一真源、canonicalize_foreign_stock_code 规范化入口与 _foreign_english_query_terms 别名解析，使 AAPL/00700/BABA 等 ticker 即使 stock_name 为中文也能在查询构建、相关性打分与多维度情报路径上复用 canonical 英文名，并补齐 .US/.HK suffix / HK 前缀全形式的归类与回归用例；同时在 _score_news_relevance 对 alias 展开 term 做去重，避免 legal alias 展开短名与显式 short alias 重复计分。
+- [修复] #2051 `.github/workflows/pr-review.yml` 在 `pull_request_target` 触发下检出 fork PR head 被 GitHub 默认拒绝，导致 `security-check` 失败、`auto-check`/`ai-review`/`labeler`/`comment` 串行依赖全 skip、fork PR 无 AI 审查报告：为 `security-check`、`auto-check`、`ai-review`（PR 代码检出）、`labeler`、`comment` 5 个 review-only job 显式 opt-in `allow-unsafe-pr-checkout: true`；这些 job 仅做 `git diff`、`py_compile`/`flake8` 静态检查、跑 base 仓库 `ai_review.py` 脚本对 PR diff 做静态分析、GitHub API 评论回写，不 import / 不执行 PR 提交的 Python 模块、不安装 PR 依赖；同步 `docs/CONTRIBUTING.md` / `docs/CONTRIBUTING_EN.md` CI 表格补 pr-review 行说明。
 
 ## [3.27.0] - 2026-07-19
 

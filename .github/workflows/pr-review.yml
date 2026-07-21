@@ -52,6 +52,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+          # pr-review.yml 触发于 pull_request_target，运行在 base 仓库的 trusted 上下文
+          # （GITHUB_TOKEN、secrets、default-branch cache）。GitHub 自 2024 起对 pull_request_target
+          # 下检出 fork PR head 默认拒绝，需显式 opt-in。本 job 仅做 `git diff --name-only` 静态
+          # 检查敏感文件，不执行 PR 代码、不安装 PR 依赖，可安全 opt-in。详见 issue #2051。
+          allow-unsafe-pr-checkout: true
       
       - name: 🔄 获取 base 分支
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
@@ -96,7 +101,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
-      
+          # auto-check 仅做 `git diff --name-only` + `python -m py_compile`（字节码编译，不 import
+          # PR 代码逻辑）+ `flake8 --select=E9,F63,F7,F82`（静态语法/未定义名检查，不执行 PR
+          # 代码）。pip install 仅装 flake8 工具本身，不装 PR 依赖。本 job 是 review-only workflow，
+          # 可安全 opt-in fork PR head 检出。详见 issue #2051。
+          allow-unsafe-pr-checkout: true
       - name: 🔄 获取 base 分支
         run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
       
@@ -213,6 +222,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           path: pr-code
+          # ai-review 子步骤 `python ../main-scripts/.github/scripts/ai_review.py` 跑的是
+          # 上面检出的 **base 仓库** 的 ai_review.py（路径 `main-scripts/.github/scripts/`），
+          # PR 代码仅作为 git diff 输入被该脚本静态分析，不 import、不执行 PR 提交的 Python 模块；
+          # pip install 只装工具链 google-genai/openai/httpx，不装 PR 依赖，可安全 opt-in。
+          # 详见 issue #2051。
+          allow-unsafe-pr-checkout: true
       
       - name: 🔄 获取 base 分支
         working-directory: pr-code
@@ -259,6 +274,11 @@ jobs:
     steps:
       - name: 📥 检出代码
         uses: actions/checkout@v5
+        with:
+          # labeler 仅用 actions/github-script 调用 GitHub API 做 PR 文件分类与 addLabels，
+          # 不读 PR checkout 内容。保留 checkout 与 opt-in 主要为防御性一致和未来 labeler
+          # 步骤可能用到的内容读取；当前 step 实际无 checkout 依赖。详见 issue #2051。
+          allow-unsafe-pr-checkout: true
       
       - name: 🏷️ 添加标签
         if: github.event_name == 'pull_request_target'
@@ -342,6 +362,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # comment job 用 actions/github-script 调用 GitHub API 生成审查报告评论
+          # （listFiles / listComments / createComment / updateComment）。读 ai_review_result.txt
+          # 来自 ai-review job 上传的 artifact，不依赖 checkout 的文件内容也不执行 PR 代码，
+          # 但由于 pull_request_target 触发时默认 ref 仍指向 fork PR merge commit，需要 opt-in
+          # 避免 GitHub 拒绝 checkout。详见 issue #2051。
+          allow-unsafe-pr-checkout: true
       
       - name: 📥 下载 AI 审查结果
         uses: actions/download-artifact@v7

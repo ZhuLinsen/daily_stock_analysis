@@ -83,6 +83,7 @@ After opening a PR, CI will automatically run the following PR checks:
 | `backend-gate` | `scripts/ci_gate.sh` — py_compile + flake8 critical errors + `./scripts/test.sh code` + `./scripts/test.sh yfinance` + offline pytest | ✅ |
 | `docker-build` | Docker image build and key module import smoke test | ✅ |
 | `web-gate` | `npm run lint` + `npm run build` (triggered when `apps/dsa-web/` changes) | ✅ (when triggered) |
+| `pr-review` | review-only workflow triggered by `pull_request_target`: sensitive-file flagging, Python syntax / `flake8` static checks, AI review, auto labels, and a review report comment. The workflow only performs static analysis and comment writeback; it never executes PR-supplied code or installs PR dependencies. A fork PR's commits are checked out only after the PR head opts in via `allow-unsafe-pr-checkout: true`, and that checkout is used solely for `git diff` and static diagnostics. See `.github/workflows/pr-review.yml`. | ❌ (advisory) |
 
 Separately, the repository also has a non-blocking `network-smoke` workflow in `.github/workflows/network-smoke.yml`, but it is only triggered by `schedule` and `workflow_dispatch`, not by pull requests.
 

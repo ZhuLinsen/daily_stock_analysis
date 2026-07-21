@@ -81,6 +81,7 @@ docs: 更新 README 部署说明
 | backend-gate | `scripts/ci_gate.sh`（py_compile + flake8 严重错误 + 本地核心脚本 + offline pytest） | ✅ |
 | docker-build | Docker 镜像构建与关键模块导入 smoke | ✅ |
 | web-gate | 前端变更时执行 `npm run lint` + `npm run build` | ✅（触发时） |
+| pr-review | review-only workflow（`pull_request_target` 触发）：敏感文件标记、Python 语法/`flake8` 静态检查、AI 审查、自动标签、审查报告评论。本工作流仅做静态分析与评论回写，不执行 PR 提交的代码、不安装 PR 依赖；仅在 PR head 显式 opt-in `allow-unsafe-pr-checkout: true` 后才会检出 fork PR 的提交用于 `git diff` 和静态诊断。详见 `.github/workflows/pr-review.yml` | ❌（辅助项） |
 | network-smoke | 定时/手动执行 `pytest -m network` + `scripts/test.sh quick`（非阻断） | ❌（观测项） |
 
 **本地运行检查：**
