@@ -32,7 +32,7 @@ macOS 双击仓库根目录的 `trigger_daily_stock_analysis.command`，默认�
 
 ## 自动保持最新
 
-- `Sync Upstream` 每日北京时间 05:17 检查上游 `main`。发现新提交后，先合并并校验本仓库的三时点推送、动态选股和启动器契约，校验通过后更新本仓库 `main`；发生冲突、校验失败或推送失败时停止更新，同时创建维护 Issue 并发送 Telegram 告警。
+- `Sync Upstream` 每日北京时间 05:17 检查上游 `main`。发现新提交后，先合并并校验本仓库的三时点推送、动态选股和启动器契约，校验通过后使用专用 `UPSTREAM_SYNC_TOKEN` 更新本仓库 `main`；发生冲突、校验失败或推送失败时停止更新，同时使用该令牌创建维护 Issue 并发送 Telegram 告警。该令牌需限定到本仓库，并授予 `Contents: Read and write`、`Workflows: Read and write` 与 `Issues: Read and write`，用于上游提交包含工作流文件变更时完成推送并保留故障记录。
 - Dependabot 每周检查 Python、Web、桌面端、GitHub Actions 和 Docker 依赖。非主版本更新在仓库 CI 通过后自动合并；主版本更新保留人工兼容性审查。
 - `.github/scripts/validate_personal_automation.py` 是上游同步的失效保护，防止上游更新静默覆盖本仓库关键定制。
 
@@ -45,7 +45,7 @@ macOS 双击仓库根目录的 `trigger_daily_stock_analysis.command`，默认�
 
 ## 前置设置
 
-仓库需要在 `Settings -> Actions -> General` 中允许工作流具有读写权限并启用自动合并，在 `Settings -> General` 中启用 Issues，在 `Settings -> Security` 中启用 Dependabot Alerts。Telegram 继续使用现有 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 和可选的 `TELEGRAM_MESSAGE_THREAD_ID` Secrets。
+仓库需要在 `Settings -> Actions -> General` 中允许工作流具有读写权限并启用自动合并，在 `Settings -> General` 中启用 Issues，在 `Settings -> Security` 中启用 Dependabot Alerts，并在 Actions Secrets 中配置 `UPSTREAM_SYNC_TOKEN`。Telegram 继续使用现有 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` 和可选的 `TELEGRAM_MESSAGE_THREAD_ID` Secrets。
 
 ## 回滚
 
