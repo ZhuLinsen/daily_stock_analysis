@@ -62,6 +62,7 @@ logger = logging.getLogger(__name__)
 SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
 TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
+_AKSHARE_MARKET_STATS_CALL_TIMEOUT = 20.0
 _AKSHARE_TIMEOUT_PROCESS_JOIN_GRACE = 1.0
 _AKSHARE_TIMEOUT_PROCESS_START_METHOD = "spawn"
 
@@ -1769,7 +1770,11 @@ class AkshareFetcher(BaseFetcher):
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=request_start"
             )
-            df = ak.stock_zh_a_spot_em()
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_a_spot_em,
+                timeout=_AKSHARE_MARKET_STATS_CALL_TIMEOUT,
+                call_name="stock_zh_a_spot_em",
+            )
             elapsed = time.monotonic() - started_at
             logger.info(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
@@ -1799,7 +1804,11 @@ class AkshareFetcher(BaseFetcher):
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot action=request_start"
             )
-            df = ak.stock_zh_a_spot()
+            df = _akshare_call_with_timeout(
+                ak.stock_zh_a_spot,
+                timeout=_AKSHARE_MARKET_STATS_CALL_TIMEOUT,
+                call_name="stock_zh_a_spot",
+            )
             elapsed = time.monotonic() - started_at
             logger.info(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
