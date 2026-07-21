@@ -595,6 +595,136 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn(b'"error":"current_required"', response.body)
 
+    # --- Issue #1970 hardening: disable auth must enforce current-password re-auth
+    # regardless of whether the request carries a cryptographically valid session cookie.
+
+    def _auth_setup_with_stored_password(self):
+        """Set up enabled auth + stored admin password shared by the disable tests."""
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=true\n",
+            encoding="utf-8",
+        )
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            auth.refresh_auth_state()
+            auth.set_initial_password("passwd6")
+
+    def test_disable_auth_with_valid_session_but_no_current_password_returns_400(self):
+        """Closing auth with a valid session cookie but no currentPassword -> 400 current_required.
+
+        Issue #1970: a leaked session cookie alone must never be enough to disable auth.
+        """
+        self._auth_setup_with_stored_password()
+        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            with patch.object(auth_endpoint, "verify_session", return_value=True):
+                response = asyncio.run(
+                    auth_endpoint.auth_update_settings(
+                        request,
+                        auth_endpoint.AuthSettingsRequest(authEnabled=False),
+                    )
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b'"error":"current_required"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_disable_auth_with_valid_session_and_wrong_current_password_returns_401(self):
+        """Closing auth with valid session + wrong currentPassword -> 401 invalid_password."""
+        self._auth_setup_with_stored_password()
+        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            with patch.object(auth_endpoint, "verify_session", return_value=True):
+                response = asyncio.run(
+                    auth_endpoint.auth_update_settings(
+                        request,
+                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
+                    )
+                )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn(b'"error":"invalid_password"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_disable_auth_with_valid_session_and_correct_current_password_succeeds(self):
+        """Closing auth with valid session + correct currentPassword -> 200 disable."""
+        self._auth_setup_with_stored_password()
+        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            with patch.object(auth_endpoint, "verify_session", return_value=True):
+                response = asyncio.run(
+                    auth_endpoint.auth_update_settings(
+                        request,
+                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
+                    )
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'"authEnabled":false', response.body)
+        self.assertIn(b'"loggedIn":false', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
+        self.assertIn("dsa_session=", response.headers["set-cookie"])
+
+    def test_disable_auth_without_session_and_no_current_password_returns_400(self):
+        """Closing auth without session cookie + no currentPassword -> 400 current_required.
+
+        Regression guard: behavior without a session cookie must remain unchanged.
+        """
+        self._auth_setup_with_stored_password()
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    self._build_request(),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False),
+                )
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b'"error":"current_required"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_disable_auth_without_session_and_wrong_current_password_returns_401(self):
+        """Closing auth without session cookie + wrong currentPassword -> 401 invalid_password."""
+        self._auth_setup_with_stored_password()
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    self._build_request(),
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
+                )
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn(b'"error":"invalid_password"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_disable_auth_repeated_wrong_password_triggers_rate_limit_429(self):
+        """Repeated invalid currentPassword attempts on the disable path must trigger 429.
+
+        Mock verify_stored_password so we can drive >= RATE_LIMIT_MAX_FAILURES attempts
+        from a single client IP without depending on timing.
+        """
+        self._auth_setup_with_stored_password()
+        request = self._build_request()
+        checked_ip = auth.get_client_ip(request)
+        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
+            with patch.object(auth_endpoint, "verify_stored_password", return_value=False):
+                # Prefill the in-process rate-limit map so we cross the threshold on the
+                # last attempt rather than consuming real time in the test suite.
+                import time as _time
+                from src.auth import RATE_LIMIT_MAX_FAILURES
+
+                auth._rate_limit = {checked_ip: (RATE_LIMIT_MAX_FAILURES, _time.time())}
+                response = asyncio.run(
+                    auth_endpoint.auth_update_settings(
+                        request,
+                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
+                    )
+                )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIn(b'"error":"rate_limited"', response.body)
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

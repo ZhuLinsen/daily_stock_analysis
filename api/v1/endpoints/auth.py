@@ -282,32 +282,33 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
                     )
                 clear_rate_limit(ip)
     else:
+        # target_enabled is False here: caller wants to disable auth.
+        # High-risk action: require current admin password re-authentication even when
+        # the request carries a cryptographically valid session cookie. A leaked session
+        # cookie must never be enough to flip the system into an unauthenticated state
+        # (CSRF / session-hijacking hardening for Issue #1970).
         if current_enabled:
-            cookie_val = request.cookies.get(COOKIE_NAME)
-            is_valid_session = cookie_val and verify_session(cookie_val)
-
-            if not is_valid_session:
-                if not current_password:
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": "current_required", "message": "关闭认证前请输入当前密码"},
-                    )
-                ip = get_client_ip(request)
-                if not check_rate_limit(ip):
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": "rate_limited",
-                            "message": "Too many failed attempts. Please try again later.",
-                        },
-                    )
-                if not verify_stored_password(current_password):
-                    record_login_failure(ip)
-                    return JSONResponse(
-                        status_code=401,
-                        content={"error": "invalid_password", "message": "当前密码错误"},
-                    )
-                clear_rate_limit(ip)
+            if not current_password:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "current_required", "message": "关闭认证前请输入当前密码"},
+                )
+            ip = get_client_ip(request)
+            if not check_rate_limit(ip):
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "rate_limited",
+                        "message": "Too many failed attempts. Please try again later.",
+                    },
+                )
+            if not verify_stored_password(current_password):
+                record_login_failure(ip)
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "invalid_password", "message": "当前密码错误"},
+                )
+            clear_rate_limit(ip)
 
     if target_enabled != current_enabled:
         if not _apply_auth_enabled(target_enabled, request=request):
