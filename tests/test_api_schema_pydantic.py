@@ -44,6 +44,17 @@ DECISION_SIGNAL_SCHEMAS = (
     "DecisionSignalStatusUpdateRequest",
     "DecisionSignalWarning",
 )
+SKILL_OPINION_OUTCOME_PATHS = (
+    "/api/v1/skill-opinion-outcomes/run",
+    "/api/v1/skill-opinion-outcomes",
+)
+SKILL_OPINION_OUTCOME_SCHEMAS = (
+    "SkillOpinionOutcomeItem",
+    "SkillOpinionOutcomeListResponse",
+    "SkillOpinionOutcomeRunError",
+    "SkillOpinionOutcomeRunRequest",
+    "SkillOpinionOutcomeRunResponse",
+)
 P6_SIGNAL_LINKED_PATHS = (
     "/api/v1/alerts/triggers",
     "/api/v1/portfolio/risk",
@@ -165,6 +176,14 @@ def test_decision_signal_static_api_spec_matches_runtime_paths() -> None:
     for schema_name in DECISION_SIGNAL_SCHEMAS:
         assert static_spec["components"]["schemas"][schema_name] == runtime_spec["components"]["schemas"][schema_name]
 
+    for path in SKILL_OPINION_OUTCOME_PATHS:
+        assert static_spec["paths"][path] == runtime_spec["paths"][path]
+        for operation in static_spec["paths"][path].values():
+            assert "401" in operation["responses"]
+            assert operation["security"] == [{"AdminSessionCookie": []}]
+    for schema_name in SKILL_OPINION_OUTCOME_SCHEMAS:
+        assert static_spec["components"]["schemas"][schema_name] == runtime_spec["components"]["schemas"][schema_name]
+
     for path in P6_SIGNAL_LINKED_PATHS:
         assert static_spec["paths"][path] == runtime_spec["paths"][path]
     for schema_name in P6_SIGNAL_LINKED_SCHEMAS:
@@ -183,5 +202,6 @@ def test_v1_prefix_is_applied_at_app_mount_level() -> None:
     runtime_paths = create_app().openapi()["paths"]
     assert "/api/v1/history" in runtime_paths
     assert "/api/v1/decision-signals" in runtime_paths
+    assert "/api/v1/skill-opinion-outcomes" in runtime_paths
     assert "/api/v1/history/" not in runtime_paths
     assert "/api/v1/decision-signals/" not in runtime_paths

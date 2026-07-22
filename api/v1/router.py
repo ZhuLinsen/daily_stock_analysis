@@ -19,6 +19,7 @@ from api.v1.endpoints import (
     auth,
     backtest,
     decision_signals,
+    skill_opinion_outcomes,
     health,
     history,
     intelligence,
@@ -96,6 +97,12 @@ router.include_router(
     decision_signals.router,
     prefix="/decision-signals",
     tags=["DecisionSignals"]
+)
+
+router.include_router(
+    skill_opinion_outcomes.router,
+    prefix="/skill-opinion-outcomes",
+    tags=["SkillOpinionOutcomes"],
 )
 
 router.include_router(

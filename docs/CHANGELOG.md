@@ -8,7 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [修复] Outcome 行情候选在显式沪深交易所与代码市场冲突时不再降级匹配裸码，并将历史非法样本持久化为不可变的 unable 终态。
 - [chore] 暂停 PR Review 的自动触发，仅保留 `workflow_dispatch` 手动入口，避免辅助评审重复运行及评论权限失败产生误导性红灯；正式 CI 检查保持不变。
+- [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 和本地已存日线独立计算的 `skill_opinion_outcomes`，并提供最小管理员执行与逐条只读查询 API；未来数据不足保持可重试 pending，终态结果不可被同版本覆盖，本阶段不接入表现统计、样本充足度或自动权重。
 - [新功能] Multi-Agent specialist 运行在分析历史保存成功后，按独立 skill 持久化版本化、低敏且幂等的有效 opinion 样本，为后续后验评估提供真实数据；本阶段不计算 outcome、不统计表现、不调整权重。
 - [新功能] Multi-Agent 报告按八态用户 action 追踪 Pipeline 最终调整，排除非法 Agent 意见；仅在 canonical action 可唯一解析时生成 explanation 与 DecisionSignal，并以同一个 `final_action` 统一最终动作契约。
 - [新功能] 新增 `--portfolio futu`，只读导入 Futu OpenD 真实账户的沪深 A 股、港股、美股 LONG 正股持仓作为分析列表。

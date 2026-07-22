@@ -125,6 +125,13 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalOutcomeStatsResponse,
     DecisionSignalStatusUpdateRequest,
 )
+from api.v1.schemas.skill_opinion_outcomes import (
+    SkillOpinionOutcomeItem,
+    SkillOpinionOutcomeListResponse,
+    SkillOpinionOutcomeRunError,
+    SkillOpinionOutcomeRunRequest,
+    SkillOpinionOutcomeRunResponse,
+)
 
 __all__ = [
     # common
@@ -236,4 +243,10 @@ __all__ = [
     "DecisionSignalOutcomeStatsBucket",
     "DecisionSignalOutcomeStatsResponse",
     "DecisionSignalStatusUpdateRequest",
+    # skill opinion outcomes
+    "SkillOpinionOutcomeItem",
+    "SkillOpinionOutcomeListResponse",
+    "SkillOpinionOutcomeRunError",
+    "SkillOpinionOutcomeRunRequest",
+    "SkillOpinionOutcomeRunResponse",
 ]

@@ -19,7 +19,10 @@ from src.repositories.stock_repo import StockRepository
 from src.schemas.decision_action import build_action_fields
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager
 from src.utils.data_processing import parse_json_field
-from src.services.stock_code_utils import normalize_code as normalize_backtest_code
+from src.services.stock_code_utils import (
+    build_daily_code_candidates,
+    normalize_code as normalize_backtest_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -428,23 +431,7 @@ class BacktestService:
 
     @staticmethod
     def _build_daily_code_candidates(code: Optional[str]) -> List[str]:
-        if not code:
-            return []
-
-        raw_code = str(code).strip()
-        if not raw_code:
-            return []
-
-        raw_code = raw_code.upper()
-        normalized_code = normalize_stock_code(raw_code)
-        backtest_normalized_code = normalize_backtest_code(raw_code)
-        candidates = [raw_code]
-        for candidate in (normalized_code, backtest_normalized_code):
-            if candidate and candidate != raw_code:
-                candidates.append(candidate)
-        for candidate in list(candidates):
-            candidates.extend(BacktestRepository._build_market_code_variants(raw_code, candidate))
-        return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+        return build_daily_code_candidates(code)
 
     @staticmethod
     def _normalize_code(code: Optional[str]) -> Optional[str]:

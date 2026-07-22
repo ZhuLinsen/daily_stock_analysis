@@ -1,5 +1,23 @@
 # 多策略投资建议契约：Baseline 语义、Phase 1 收敛、Phase 2/3/4 边界
 
+## Skill Opinion Outcome 边界（Issue #1904 P2 PR2）
+
+`skill_opinion_outcomes` 的一条记录表示一条不可变 `skill_opinion_sample` 在一个 `horizon`、一个 `engine_version` 下的独立后验结果。唯一键为 `(skill_opinion_sample_id, horizon, engine_version)`。初始 horizon 仅允许 `1d`、`3d`、`5d`、`10d`；`limit` 限制待处理的 `sample × horizon` outcome key 数量，不是 sample 数量。
+
+每条 outcome 必须使用 sample 自己的 canonical `signal`。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；不得读取 `AnalysisHistory.operation_advice`、最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`hold` 只在价格窗口完整后写为 `eval_status=observational`、`outcome=observational`，其 `direction_correct` 和 `directional_return_pct` 均为 `NULL`。
+
+收益字段沿用仓库既有百分数单位：`5.0` 表示 `5%`。`stock_return_pct = (end_close - start_price) / start_price * 100`；bullish 的 `directional_return_pct` 等于股票收益，bearish 等于其相反数。方向收益严格大于零才算 `hit`；小于或等于零均为 `miss`，所以零收益必须保存为 `outcome=miss`、`direction_correct=false`、`directional_return_pct=0`。
+
+分析日期优先使用持久化 `market_phase_summary.effective_daily_bar_date`。命中该来源时，起始日线必须是完全相同日期的 `StockDaily`；缺失时写 `pending/missing_start_bar`，不得回退到更早日期。只有兼容来源 `enhanced_context.date` 或 `AnalysisHistory.created_at.date()` 才允许通过 `StockRepository.get_start_daily()` 选择该日期或此前最近一条本地日线。
+
+horizon v1 按 `StockRepository.get_forward_bars()` 返回的本地已存 `stock_daily` 有序行计数：起始 bar 之后第 N 条本地日线是 N 日 outcome 的结束 bar。仓库虽然有基于 `exchange_calendars` 的市场阶段与有效日线日期解析，但当前没有复用中的 forward 日线完整性校验；因此 v1 无法识别中间真实交易日缺失，不能把该口径描述为已验证完整的交易日历窗口。结果必须保存实际 `start_trade_date` 和 `end_trade_date` 供审计。本阶段不请求外部行情，也不新增 provider。
+
+`eval_status` 仅允许 `pending`、`evaluated`、`observational`、`unable`。缺少起始 bar/close、未来本地日线不足或结束 close 不可用均为可重试 `pending`；`unable` 只用于 `invalid_signal`、`missing_analysis_date` 等永久无效输入。运行时 evaluation/persistence exception 不写 terminal outcome，只在本次运行结果与低敏日志中记录 `sample_id`、`horizon`、`error_type`，下次运行继续选择该 key。
+
+Outcome 写入必须复用 `DatabaseManager._run_write_transaction()` 的 `BEGIN IMMEDIATE`、busy timeout 和 locked retry。在同一 engine version 下，只有 `pending` 可以更新；`evaluated`、`observational`、`unable` 均不可覆盖。规则语义变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 的顺序显式清理，不能依赖 SQLite 外键开关。
+
+本阶段通过管理员鉴权的 `POST /api/v1/skill-opinion-outcomes/run` 显式调用 `SkillOpinionOutcomeService.run_outcomes()`，并通过 `GET /api/v1/skill-opinion-outcomes` 提供逐条只读分页查询。POST 只接受 sample、history、skill、stock、horizon 和 outcome-key limit 筛选，不能由客户端提供 signal、价格、outcome、direction、engine version 或最终 Agent decision。API 不提供表现统计、样本充足度、排名或权重，也不把 Outcome Service 导入主分析 Pipeline。
+
 本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 2 只在 Phase 1 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
 
 ## Skill opinion 样本边界（Issue #1904 P2 PR1）
