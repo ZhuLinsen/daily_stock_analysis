@@ -196,9 +196,13 @@ async def auth_status(request: Request):
     "/settings",
     summary="Update auth settings",
     description=(
-        "Enable or disable password login. When enabling without an existing password, "
-        "password + passwordConfirm are required. When re-enabling with a stored password, "
-        "currentPassword is required."
+        "Enable or disable password login. "
+        "When enabling without an existing password, password + passwordConfirm are required. "
+        "When re-enabling with a stored password, currentPassword is required. "
+        "When disabling auth (authEnabled=false) while auth is currently enabled, "
+        "currentPassword is required to re-authenticate the admin — a valid session cookie "
+        "alone is NOT enough for this high-risk action (CSRF / session-hijacking hardening "
+        "for Issue #1970)."
     ),
 )
 async def auth_update_settings(request: Request, body: AuthSettingsRequest):

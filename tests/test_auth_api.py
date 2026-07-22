@@ -616,13 +616,12 @@ class AuthApiTestCase(unittest.TestCase):
         self._auth_setup_with_stored_password()
         request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            with patch.object(auth_endpoint, "verify_session", return_value=True):
-                response = asyncio.run(
-                    auth_endpoint.auth_update_settings(
-                        request,
-                        auth_endpoint.AuthSettingsRequest(authEnabled=False),
-                    )
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    request,
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False),
                 )
+            )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(b'"error":"current_required"', response.body)
@@ -633,13 +632,12 @@ class AuthApiTestCase(unittest.TestCase):
         self._auth_setup_with_stored_password()
         request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            with patch.object(auth_endpoint, "verify_session", return_value=True):
-                response = asyncio.run(
-                    auth_endpoint.auth_update_settings(
-                        request,
-                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
-                    )
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    request,
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
                 )
+            )
 
         self.assertEqual(response.status_code, 401)
         self.assertIn(b'"error":"invalid_password"', response.body)
@@ -650,13 +648,12 @@ class AuthApiTestCase(unittest.TestCase):
         self._auth_setup_with_stored_password()
         request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            with patch.object(auth_endpoint, "verify_session", return_value=True):
-                response = asyncio.run(
-                    auth_endpoint.auth_update_settings(
-                        request,
-                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
-                    )
+            response = asyncio.run(
+                auth_endpoint.auth_update_settings(
+                    request,
+                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
                 )
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'"authEnabled":false', response.body)
@@ -724,6 +721,135 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertIn(b'"error":"rate_limited"', response.body)
         self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+
+class AuthDisableViaRealASGITestCase(unittest.TestCase):
+    """End-to-end regression tests through the real ASGI / AuthMiddleware stack.
+
+    Issue #1970 / PR #2050: a leaked session cookie alone must NEVER be enough to
+    disable auth — `currentPassword` must be enforced on the disable path even when
+    the request carries a cryptographically valid session.
+
+    These tests deliberately exercise the full ``create_app`` + ``AuthMiddleware`` +
+    ``api.v1.endpoints.auth.router`` composition via httpx.ASGITransport (the same
+    Starlette TestClient path used by ``tests/test_api_health.py``), instead of
+    invoking the handler directly. They log in via the real ``POST /api/v1/auth/login``
+    endpoint to obtain a genuine signed cookie, then issue ``POST /api/v1/auth/settings``
+    with ``authEnabled=false`` to confirm the disable contract under the real
+    middleware + endpoint combination path.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._temp_dir = tempfile.TemporaryDirectory()
+        cls.data_dir = Path(cls._temp_dir.name)
+        cls.env_path = cls.data_dir / ".env"
+        cls.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=true\n",
+            encoding="utf-8",
+        )
+        os.environ["ENV_FILE"] = str(cls.env_path)
+        os.environ["DATABASE_PATH"] = str(cls.data_dir / "test.db")
+        Config.reset_instance()
+
+        # Force AuthMiddleware to enforce auth for the duration of this class,
+        # independent of the cached ``src.auth._auth_enabled`` flag (which flips
+        # to False after a successful disable). The endpoint reads
+        # ``src.auth.is_auth_enabled`` directly, so patching the middleware copy
+        # keeps the API protected for negative-path tests even after disable.
+        cls._middleware_auth_patcher = patch(
+            "api.middlewares.auth.is_auth_enabled", return_value=True
+        )
+        cls._middleware_auth_patcher.start()
+
+        cls._data_dir_patcher = patch.object(
+            auth, "_get_data_dir", return_value=cls.data_dir
+        )
+        cls._data_dir_patcher.start()
+
+        _reset_auth_globals()
+        auth.refresh_auth_state()
+        auth.set_initial_password("passwd6")
+
+        # Minimal create_app: static_dir pointed at the temp data dir so the
+        # frontend-asset consistency check has nothing to scan.
+        from api.app import create_app
+        from fastapi.testclient import TestClient
+        cls.client = TestClient(create_app(static_dir=cls.data_dir))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._middleware_auth_patcher.stop()
+        cls._data_dir_patcher.stop()
+        Config.reset_instance()
+        os.environ.pop("ENV_FILE", None)
+        os.environ.pop("DATABASE_PATH", None)
+        _reset_auth_globals()
+        cls._temp_dir.cleanup()
+
+    def setUp(self) -> None:
+        # Each test starts from auth-enabled + a stored password; the disable
+        # path mutates the .env so we restore it before every test.
+        _reset_auth_globals()
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=true\n",
+            encoding="utf-8",
+        )
+        Config.reset_instance()
+        auth.refresh_auth_state()
+        if not auth.has_stored_password():
+            auth.set_initial_password("passwd6")
+
+    def _login_for_session(self) -> dict:
+        """Authenticate via the real /api/v1/auth/login endpoint and return cookies."""
+        login_resp = self.client.post(
+            "/api/v1/auth/login",
+            json={"password": "passwd6"},
+        )
+        self.assertEqual(login_resp.status_code, 200, login_resp.text)
+        # The TestClient persists cookies across requests; expose them for assertions.
+        return dict(self.client.cookies)
+
+    def test_disable_via_real_asgi_with_valid_session_but_no_current_password_returns_400(self):
+        """Real middleware + endpoint: valid session cookie + no currentPassword -> 400.
+
+        This is the regression the Issue #1970 fix introduces: a leaked session
+        cookie alone MUST NOT be enough to flip the system into unauthenticated
+        mode. The HTTP-level contract surfaces as a 400 ``current_required`` from
+        the endpoint (after middleware has admitted the request because the
+        session cookie is cryptographically valid).
+        """
+        self._login_for_session()
+        resp = self.client.post(
+            "/api/v1/auth/settings",
+            json={"authEnabled": False},
+        )
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json().get("error"), "current_required")
+        # Auth must remain enabled because the request was rejected.
+        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+
+    def test_disable_via_real_asgi_with_valid_session_and_correct_current_password_succeeds(self):
+        """Real middleware + endpoint: valid session + correct currentPassword -> 200.
+
+        Positive path: a logged-in admin who supplies the correct currentPassword
+        can disable auth, the .env flips to ADMIN_AUTH_ENABLED=false, and the
+        response sets a fresh (rotated) session cookie.
+        """
+        self._login_for_session()
+        resp = self.client.post(
+            "/api/v1/auth/settings",
+            json={"authEnabled": False, "currentPassword": "passwd6"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertFalse(body.get("authEnabled"))
+        self.assertFalse(body.get("loggedIn"))
+        self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
+        # The endpoint rotates the session secret on a successful disable; assert
+        # a Set-Cookie header is present so downstream clients cannot reuse the
+        # pre-disable cookie.
+        self.assertIn("dsa_session=", resp.headers.get("set-cookie", ""))
 
 
 if __name__ == "__main__":
