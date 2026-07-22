@@ -335,7 +335,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
     title: 'AlphaSift 安装来源',
     summary: '配置显式修复安装使用的受信任 AlphaSift pip 来源。',
-    usage: '默认固定到已验证的 ZhuLinsen/alphasift commit；正常部署通过 requirements 安装，只有手动调用修复安装入口时才使用该来源。',
+    usage: '默认固定到已验证的 AlphaSift fork commit；正常部署通过 requirements 安装，只有手动调用修复安装入口时才使用该来源。',
     valueNotes: ['自定义本地路径或 wheel 不会走修复安装；请先手动安装到当前后端 Python 环境。', '该字段按敏感值处理，设置页不会直接展示完整内容。'],
     impact: ['影响 AlphaSift 适配层来源校验和显式修复安装。'],
     notes: ['请确认来源可信；AlphaSift 是实验性质选股能力，启用前应理解相关风险。'],
@@ -1511,7 +1511,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
     title: 'AlphaSift Install Source',
     summary: 'Configures the trusted AlphaSift pip source used by explicit repair installs.',
-    usage: 'Defaults to a verified ZhuLinsen/alphasift commit. Normal deployments install AlphaSift through requirements; this source is used only when the repair install endpoint is called manually.',
+    usage: 'Defaults to a verified AlphaSift fork commit. Normal deployments install AlphaSift through requirements; this source is used only when the repair install endpoint is called manually.',
     valueNotes: ['Custom local paths or wheels are not handled by the repair endpoint; install them into the backend Python environment first.', 'This field is treated as sensitive, so the settings page does not show the full value.'],
     impact: ['Affects AlphaSift adapter source validation and explicit repair installs.'],
     notes: ['Use a trusted source only. AlphaSift is an experimental screening capability, so understand the risk before enabling it.'],

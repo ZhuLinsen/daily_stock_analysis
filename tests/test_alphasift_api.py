@@ -124,7 +124,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
     def test_default_install_spec_is_commit_pinned(self) -> None:
         self.assertRegex(
             DEFAULT_ALPHASIFT_TEST_SPEC,
-            r"^git\+https://github\.com/ZhuLinsen/alphasift\.git@[0-9a-f]{40}$",
+            r"^git\+https://github\.com/lihuashan0718-svg/alphasift\.git@[0-9a-f]{40}$",
         )
 
     def test_status_defaults_to_disabled(self) -> None:
@@ -1877,6 +1877,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                     "risk_enabled": True,
                     "portfolio_diversity_enabled": True,
                     "portfolio_concentration_notes": ["sector concentration adjusted"],
+                    "universe_audit": {"status": "ok", "snapshot_count": 100},
                     "candidates": [
                         {
                             "code": "600519",
@@ -1889,6 +1890,22 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                             "price": 1688.0,
                             "industry": "Baijiu",
                             "factor_scores": {"value": 88.0},
+                            "daily_source": "dsa:EfinanceFetcher",
+                            "daily_adjustment": "qfq",
+                            "daily_as_of": "2026-06-03",
+                            "main_wave_eligible": True,
+                            "main_wave_raw_score": 42.0,
+                            "main_wave_score": 84.0,
+                            "main_wave_hit_count": 6,
+                            "main_wave_rules": [
+                                {
+                                    "id": "near_60d_low",
+                                    "matched": True,
+                                    "observed": 8.2,
+                                    "operator": "<",
+                                    "threshold": 20,
+                                }
+                            ],
                         }
                     ],
                 }
@@ -1920,12 +1937,18 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["daily_enriched"], True)
         self.assertEqual(payload["daily_enrich_count"], 12)
         self.assertEqual(payload["portfolio_concentration_notes"], ["sector concentration adjusted"])
+        self.assertEqual(payload["universe_audit"]["status"], "ok")
         self.assertEqual(payload["candidates"][0]["code"], "600519")
         self.assertEqual(payload["candidates"][0]["llm_score"], 90.0)
         self.assertEqual(payload["candidates"][0]["llm_thesis"], "LLM likes the setup")
         self.assertEqual(payload["candidates"][0]["risk_level"], "medium")
         self.assertEqual(payload["candidates"][0]["price"], 1688.0)
         self.assertEqual(payload["candidates"][0]["industry"], "Baijiu")
+        self.assertEqual(payload["candidates"][0]["daily_adjustment"], "qfq")
+        self.assertEqual(payload["candidates"][0]["main_wave_raw_score"], 42.0)
+        self.assertEqual(payload["candidates"][0]["main_wave_score"], 84.0)
+        self.assertEqual(payload["candidates"][0]["main_wave_hit_count"], 6)
+        self.assertEqual(payload["candidates"][0]["main_wave_rules"][0]["id"], "near_60d_low")
 
     def test_screen_prefers_dsa_daily_history_for_alphasift_enrichment(self) -> None:
         config = self._config(enabled=True)
@@ -1942,6 +1965,8 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 lookback_days=20,
                 source="akshare",
                 retries=1,
+                cache_dir="/tmp/alphasift-daily",
+                cache_ttl_seconds=3600,
             )
             captured["daily_df"] = daily_df
             captured["context"] = kwargs.get("context")
@@ -1973,6 +1998,10 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
 
         daily_df = captured["daily_df"]
         self.assertEqual(daily_df.attrs["source"], "dsa:EfinanceFetcher")
+        self.assertEqual(daily_df.attrs["daily_source"], "dsa:EfinanceFetcher")
+        self.assertEqual(daily_df.attrs["daily_adjustment"], "qfq")
+        self.assertEqual(daily_df.attrs["daily_as_of"], "2026-06-03")
+        self.assertTrue(daily_df.attrs["daily_fetched_at"].endswith("Z"))
         self.assertEqual(daily_df.loc[0, "date"], "2026-06-03")
         self.assertEqual(daily_df.loc[0, "volume"], 123400)
         self.assertEqual(daily_df.loc[0, "open"], 10.5)
@@ -1982,6 +2011,133 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         dsa_history_mock.assert_called_once_with("600519", lookback_days=20)
         original_daily_fetch.assert_not_called()
         self.assertIs(daily_module.fetch_daily_history, original_daily_fetch)
+
+    def test_dsa_daily_adjustment_requires_consistent_known_db_sources(self) -> None:
+        import pandas as pd
+
+        adjusted_cache = pd.DataFrame({
+            "data_source": ["EfinanceFetcher", "AkshareFetcher"],
+        })
+        mixed_cache = pd.DataFrame({
+            "data_source": ["EfinanceFetcher", "TushareFetcher"],
+        })
+        unknown_cache = pd.DataFrame({"data_source": [None, ""]})
+
+        self.assertEqual(
+            alphasift_service._dsa_daily_adjustment(adjusted_cache, "db_cache"),
+            "qfq",
+        )
+        self.assertEqual(
+            alphasift_service._dsa_daily_adjustment(mixed_cache, "db_cache"),
+            "unknown",
+        )
+        self.assertEqual(
+            alphasift_service._dsa_daily_adjustment(unknown_cache, "db_cache"),
+            "unknown",
+        )
+        self.assertEqual(
+            alphasift_service._dsa_daily_adjustment(pd.DataFrame(), "TushareFetcher"),
+            "none",
+        )
+
+    def test_main_wave_daily_bridge_falls_back_when_dsa_history_is_unadjusted(self) -> None:
+        import pandas as pd
+
+        parent_module = ModuleType("alphasift")
+        daily_module = ModuleType("alphasift.daily")
+        fallback = pd.DataFrame({
+            "date": ["2026-06-03"],
+            "open": [10.0],
+            "high": [10.8],
+            "low": [9.8],
+            "close": [10.5],
+            "volume": [123400],
+        })
+        original_daily_fetch = MagicMock(return_value=fallback)
+        daily_module.fetch_daily_history = original_daily_fetch
+        parent_module.daily = daily_module
+
+        with (
+            patch.dict(sys.modules, {"alphasift": parent_module, "alphasift.daily": daily_module}),
+            patch(
+                "src.services.alphasift_service.get_dsa_daily_history",
+                return_value=(
+                    [{"trade_date": "20260603", "close": "10.5", "vol": "123400"}],
+                    "TushareFetcher",
+                ),
+            ),
+            alphasift_service._alphasift_dsa_daily_history_provider(),
+        ):
+            result = daily_module.fetch_daily_history(
+                "600519",
+                source="auto",
+                retries=1,
+                require_adjusted=True,
+            )
+
+        self.assertIs(result, fallback)
+        original_daily_fetch.assert_called_once_with(
+            "600519",
+            lookback_days=120,
+            source="auto",
+            retries=1,
+            require_adjusted=True,
+        )
+
+    def test_main_wave_daily_bridge_does_not_fill_missing_ohlcv(self) -> None:
+        normalized = alphasift_service._normalize_dsa_daily_history(
+            [{"trade_date": "20260603", "close": "10.5", "vol": "123400"}],
+            fill_missing=False,
+        )
+
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(normalized))
+        self.assertNotIn("open", normalized.columns)
+
+    def test_main_wave_daily_bridge_requires_complete_valid_60_day_history(self) -> None:
+        import pandas as pd
+
+        valid = pd.DataFrame({
+            "date": pd.date_range("2026-01-01", periods=60).strftime("%Y-%m-%d"),
+            "open": [10.0] * 60,
+            "high": [10.8] * 60,
+            "low": [9.8] * 60,
+            "close": [10.5] * 60,
+            "volume": [123400.0] * 60,
+        })
+
+        self.assertTrue(alphasift_service._dsa_daily_has_complete_ohlcv(valid))
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(valid.iloc[:59]))
+
+        duplicate_date = valid.copy()
+        duplicate_date.loc[59, "date"] = duplicate_date.loc[58, "date"]
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(duplicate_date))
+
+        missing_value = valid.copy()
+        missing_value.loc[59, "close"] = None
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(missing_value))
+
+        non_positive_price = valid.copy()
+        non_positive_price.loc[59, "low"] = 0
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(non_positive_price))
+
+        negative_volume = valid.copy()
+        negative_volume.loc[59, "volume"] = -1
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(negative_volume))
+
+        invalid_ohlc = valid.copy()
+        invalid_ohlc.loc[59, "high"] = 9.0
+        self.assertFalse(alphasift_service._dsa_daily_has_complete_ohlcv(invalid_ohlc))
+
+    def test_dsa_llm_candidate_pool_covers_top_8_to_12(self) -> None:
+        self.assertEqual(alphasift_service._resolve_dsa_llm_max_candidates(3), 8)
+        self.assertEqual(alphasift_service._resolve_dsa_llm_max_candidates(5), 10)
+        self.assertEqual(alphasift_service._resolve_dsa_llm_max_candidates(20), 12)
+
+    def test_dsa_tickflow_adjustment_mapping_is_fail_closed(self) -> None:
+        self.assertEqual(alphasift_service._dsa_tickflow_adjustment("forward"), "qfq")
+        self.assertEqual(alphasift_service._dsa_tickflow_adjustment("backward"), "hfq")
+        self.assertEqual(alphasift_service._dsa_tickflow_adjustment("none"), "none")
+        self.assertEqual(alphasift_service._dsa_tickflow_adjustment("forward_additive"), "unknown")
 
     def test_screen_enriches_top_candidates_with_dsa_context(self) -> None:
         config = self._config(enabled=True)
@@ -2221,6 +2377,39 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(context["fundamentals"]["coverage"]["valuation"], "available")
         news_mock.assert_not_called()
 
+    def test_normalize_candidate_preserves_sentiment_evidence(self) -> None:
+        candidate = alphasift_service._normalize_candidate(
+            {
+                "code": "600519",
+                "name": "贵州茅台",
+                "final_score": 86.2,
+                "sentiment_available": True,
+                "sentiment_score": 72.0,
+                "sentiment_label": "positive",
+                "sentiment_confidence": 0.78,
+                "sentiment_source_count": 2,
+                "sentiment_positive_events": ["回购增持", "主力净流入"],
+                "sentiment_negative_events": [],
+                "sentiment_evidence": [
+                    {
+                        "source": "announcement",
+                        "polarity": "positive",
+                        "category": "回购增持",
+                        "text": "公司公告回购方案",
+                    }
+                ],
+                "sentiment_as_of": "2026-07-22",
+                "sentiment_score_delta": 1.7,
+            },
+            1,
+        )
+
+        self.assertTrue(candidate["sentiment_available"])
+        self.assertEqual(candidate["sentiment_score"], 72.0)
+        self.assertEqual(candidate["sentiment_positive_events"], ["回购增持", "主力净流入"])
+        self.assertEqual(candidate["sentiment_evidence"][0]["source"], "announcement")
+        self.assertEqual(candidate["sentiment_score_delta"], 1.7)
+
     def test_screen_bridges_dsa_llm_config_into_alphasift_runtime(self) -> None:
         config = Config(
             alphasift_enabled=True,
@@ -2328,8 +2517,11 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(context["llm"]["model_list"][0]["litellm_params"]["extra_headers"], {"x-tenant": "dsa"})
         self.assertIn("get_candidate_context", context["dsa"])
         self.assertEqual(context["dsa"]["mode"], "pre_rank_light")
-        self.assertEqual(context["dsa"]["max_candidates"], 3)
-        self.assertFalse(context["dsa"]["include_news"])
+        self.assertEqual(context["dsa"]["max_candidates"], 10)
+        self.assertTrue(context["dsa"]["include_news"])
+        self.assertTrue(context["dsa"]["include_fundamentals"])
+        self.assertEqual(context["dsa"]["news_max_results"], 3)
+        self.assertIn("news", context["dsa"]["capabilities"])
         self.assertNotIn("search_stock_news", context["dsa"])
         self.assertEqual(payload["candidate_count"], 0)
 

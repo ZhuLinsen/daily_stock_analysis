@@ -37,10 +37,12 @@ _ALPHASIFT_INSTALL_LOCK = threading.RLock()
 ALPHASIFT_MANAGED_LITELLM_PROVIDERS = frozenset({"gemini", "vertex_ai", "anthropic", "openai", "deepseek"})
 _ALPHASIFT_RUNTIME_ENV_LOCK = threading.RLock()
 DSA_ENRICHMENT_MAX_CANDIDATES = 3
-DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
+DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 8
+DSA_PRE_RANK_CONTEXT_HARD_MAX_CANDIDATES = 12
 DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
 DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
 DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 3
+_ALPHASIFT_ADJUSTED_DAILY_MODES = frozenset({"qfq", "hfq", "auto_adjusted", "split_adjusted"})
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
@@ -1149,6 +1151,11 @@ class AlphaSiftService:
             "risk_enabled": raw_data.get("risk_enabled"),
             "portfolio_diversity_enabled": raw_data.get("portfolio_diversity_enabled"),
             "portfolio_concentration_notes": raw_data.get("portfolio_concentration_notes") or [],
+            "universe_audit": (
+                raw_data.get("universe_audit")
+                if isinstance(raw_data.get("universe_audit"), dict)
+                else {}
+            ),
         }
 
 
@@ -1860,13 +1867,43 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
         lookback_days: int = 120,
         source: str = "akshare",
         retries: int = 2,
+        cache_dir: Any = None,
+        cache_ttl_seconds: Any = None,
+        **kwargs: Any,
     ) -> Any:
+        require_adjusted = bool(kwargs.get("require_adjusted"))
         try:
             dsa_df, dsa_source = get_dsa_daily_history(code, lookback_days=lookback_days)
-            normalized = _normalize_dsa_daily_history(dsa_df)
-            if normalized is not None and not normalized.empty:
-                normalized.attrs["source"] = f"dsa:{dsa_source}"
+            adjustment = _dsa_daily_adjustment(dsa_df, dsa_source)
+            normalized = _normalize_dsa_daily_history(
+                dsa_df,
+                fill_missing=not require_adjusted,
+            )
+            adjusted_input_ready = (
+                adjustment in _ALPHASIFT_ADJUSTED_DAILY_MODES
+                and _dsa_daily_has_complete_ohlcv(normalized)
+            )
+            if normalized is not None and not normalized.empty and (
+                not require_adjusted or adjusted_input_ready
+            ):
+                daily_source = f"dsa:{dsa_source}"
+                normalized.attrs.update({
+                    "source": daily_source,
+                    "daily_source": daily_source,
+                    "daily_adjustment": adjustment,
+                    "daily_as_of": _dsa_daily_as_of(normalized),
+                    "daily_fetched_at": _utc_now_iso(),
+                })
                 return normalized
+            if require_adjusted:
+                logger.info(
+                    "AlphaSift requires complete adjusted history for %s; "
+                    "DSA source %s reported adjustment=%s, falling back to %s",
+                    code,
+                    dsa_source,
+                    adjustment,
+                    source,
+                )
         except Exception as exc:
             logger.warning(
                 "AlphaSift DSA daily history fetch failed for %s; falling back to AlphaSift source %s: %s",
@@ -1874,7 +1911,17 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
                 source,
                 exc,
             )
-        return original_fetch(code, lookback_days=lookback_days, source=source, retries=retries)
+        fallback_kwargs = {
+            "lookback_days": lookback_days,
+            "source": source,
+            "retries": retries,
+            **kwargs,
+        }
+        if cache_dir is not None:
+            fallback_kwargs["cache_dir"] = cache_dir
+        if cache_ttl_seconds is not None:
+            fallback_kwargs["cache_ttl_seconds"] = cache_ttl_seconds
+        return original_fetch(code, **fallback_kwargs)
 
     with _ALPHASIFT_RUNTIME_ENV_LOCK:
         setattr(daily_module, "fetch_daily_history", fetch_daily_history_with_dsa)
@@ -2864,14 +2911,16 @@ def _build_alphasift_context(config: Config, *, max_results: Optional[int] = Non
         "dsa": {
             "contract_version": "1",
             "mode": "pre_rank_light",
-            "max_candidates": DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES,
-            "include_news": False,
-            "news_max_results": 0,
+            "max_candidates": _resolve_dsa_pre_rank_context_max_candidates(max_results),
+            "include_news": True,
+            "include_fundamentals": True,
+            "news_max_results": 3,
             "capabilities": [
                 "candidate_context",
                 "daily_history",
                 "realtime_quote",
                 "fundamental_context",
+                "news",
             ],
             "get_candidate_context": get_dsa_candidate_context,
             "get_daily_history": get_dsa_daily_history,
@@ -2879,6 +2928,15 @@ def _build_alphasift_context(config: Config, *, max_results: Optional[int] = Non
             "get_fundamental_context": get_dsa_fundamental_context,
         },
     }
+
+
+def _resolve_dsa_pre_rank_context_max_candidates(max_results: Optional[int]) -> int:
+    """Bound pre-rank DSA context fan-out while covering a useful Top-K."""
+    requested = max_results if isinstance(max_results, int) and max_results > 0 else 3
+    return min(
+        DSA_PRE_RANK_CONTEXT_HARD_MAX_CANDIDATES,
+        max(DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES, requested * 2),
+    )
 
 @contextmanager
 def _alphasift_litellm_headers(config: Config) -> Iterator[None]:
@@ -3035,7 +3093,10 @@ def _resolve_dsa_llm_max_candidates(max_results: Optional[int]) -> int:
     requested = max_results if isinstance(max_results, int) and max_results > 0 else DSA_ENRICHMENT_MAX_CANDIDATES
     return min(
         DSA_ALPHASIFT_LLM_MAX_CANDIDATES,
-        max(requested, requested * DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER),
+        max(
+            DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES,
+            requested * DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER,
+        ),
     )
 
 
@@ -3182,7 +3243,7 @@ def get_dsa_daily_history(stock_code: str, *, lookback_days: int = 120) -> Tuple
     return load_history_df(normalized_code, days=days)
 
 
-def _normalize_dsa_daily_history(raw_df: Any) -> Any:
+def _normalize_dsa_daily_history(raw_df: Any, *, fill_missing: bool = True) -> Any:
     if raw_df is None:
         return None
 
@@ -3209,11 +3270,12 @@ def _normalize_dsa_daily_history(raw_df: Any) -> Any:
 
     if "close" not in normalized.columns:
         return pd.DataFrame()
-    for column in ("open", "high", "low"):
-        if column not in normalized.columns:
-            normalized[column] = normalized["close"]
-    if "volume" not in normalized.columns:
-        normalized["volume"] = 0
+    if fill_missing:
+        for column in ("open", "high", "low"):
+            if column not in normalized.columns:
+                normalized[column] = normalized["close"]
+        if "volume" not in normalized.columns:
+            normalized["volume"] = 0
 
     if "date" in normalized.columns:
         normalized["date"] = normalized["date"].map(_normalize_daily_date_value)
@@ -3221,8 +3283,139 @@ def _normalize_dsa_daily_history(raw_df: Any) -> Any:
     for column in ("open", "high", "low", "close", "volume", "amount"):
         if column in normalized.columns:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-    normalized = normalized.dropna(subset=["close"])
+    if fill_missing:
+        normalized = normalized.dropna(subset=["close"])
     return normalized.reset_index(drop=True)
+
+
+def _dsa_daily_has_complete_ohlcv(df: Any) -> bool:
+    if df is None or getattr(df, "empty", True) or len(df) < 60:
+        return False
+    required = {"date", "open", "high", "low", "close", "volume"}
+    if not required.issubset(getattr(df, "columns", ())):
+        return False
+    try:
+        dates = df["date"].map(_env_text)
+        if dates.eq("").any() or dates.duplicated().any():
+            return False
+
+        numeric_columns = ["open", "high", "low", "close", "volume"]
+        values = df.loc[:, numeric_columns].apply(
+            lambda column: column.map(_safe_float)
+        )
+        if values.isna().any().any():
+            return False
+
+        prices = values.loc[:, ["open", "high", "low", "close"]]
+        if (prices <= 0).any().any() or (values["volume"] < 0).any():
+            return False
+
+        invalid_ohlc = (
+            (values["high"] < values["low"])
+            | (values["high"] < values["open"])
+            | (values["high"] < values["close"])
+            | (values["low"] > values["open"])
+            | (values["low"] > values["close"])
+        )
+        return not invalid_ohlc.any()
+    except Exception:
+        return False
+
+
+def _dsa_daily_adjustment(raw_df: Any, source: Any) -> str:
+    explicit = _dsa_adjustment_label(
+        getattr(raw_df, "attrs", {}).get("daily_adjustment")
+        if hasattr(raw_df, "attrs")
+        else None
+    )
+    if explicit != "unknown":
+        return explicit
+
+    source_name = _env_text(source)
+    if source_name.lower() == "db_cache":
+        cached_sources = _dsa_cached_daily_sources(raw_df)
+        if not cached_sources:
+            return "unknown"
+        adjustments = {_dsa_adjustment_for_source(item) for item in cached_sources}
+        if "unknown" in adjustments or len(adjustments) != 1:
+            return "unknown"
+        return adjustments.pop()
+    return _dsa_adjustment_for_source(source_name)
+
+
+def _dsa_cached_daily_sources(raw_df: Any) -> set[str]:
+    if raw_df is None:
+        return set()
+    try:
+        columns = getattr(raw_df, "columns", ())
+        if "data_source" in columns:
+            values = raw_df["data_source"].tolist()
+        else:
+            values = []
+    except Exception:
+        values = []
+    return {text for text in (_env_text(value) for value in values) if text}
+
+
+def _dsa_adjustment_for_source(source: Any) -> str:
+    normalized = _env_text(source).lower().replace("_", "").replace("-", "")
+    if normalized in {
+        "efinancefetcher",
+        "aksharefetcher",
+        "tencentfetcher",
+        "baostockfetcher",
+    }:
+        return "qfq"
+    if normalized == "yfinancefetcher":
+        return "auto_adjusted"
+    if normalized in {"tusharefetcher", "pytdxfetcher"}:
+        return "none"
+    if normalized == "tickflowfetcher":
+        from src.config import Config as DsaConfig
+
+        return _dsa_tickflow_adjustment(DsaConfig.get_instance().tickflow_kline_adjust)
+    return "unknown"
+
+
+def _dsa_tickflow_adjustment(value: Any) -> str:
+    normalized = _env_text(value).lower()
+    if normalized == "forward":
+        return "qfq"
+    if normalized == "backward":
+        return "hfq"
+    if normalized == "none":
+        return "none"
+    return "unknown"
+
+
+def _dsa_adjustment_label(value: Any) -> str:
+    normalized = _env_text(value).lower().replace("-", "_")
+    aliases = {
+        "forward": "qfq",
+        "forward_adjusted": "qfq",
+        "backward": "hfq",
+        "backward_adjusted": "hfq",
+        "auto": "auto_adjusted",
+        "adjusted": "auto_adjusted",
+        "raw": "none",
+        "unadjusted": "none",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in {
+        "qfq",
+        "hfq",
+        "auto_adjusted",
+        "split_adjusted",
+        "none",
+    } else "unknown"
+
+
+def _dsa_daily_as_of(df: Any) -> str:
+    if df is None or "date" not in getattr(df, "columns", ()):
+        return ""
+    values = [_env_text(value) for value in df["date"].tolist()]
+    values = [value for value in values if value]
+    return max(values) if values else ""
 
 
 def _normalize_daily_date_value(value: Any) -> str:
@@ -3609,6 +3802,48 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         "amount": _first_present(item, source, "amount"),
         "industry": item.get("industry") or source.get("industry") or "",
         "factor_scores": item.get("factor_scores") or source.get("factor_scores") or {},
+        "daily_source": item.get("daily_source") or source.get("daily_source") or "",
+        "daily_adjustment": item.get("daily_adjustment") or source.get("daily_adjustment") or "unknown",
+        "daily_as_of": item.get("daily_as_of") or source.get("daily_as_of") or "",
+        "daily_fetched_at": item.get("daily_fetched_at") or source.get("daily_fetched_at") or "",
+        "daily_quality_score": _first_present(item, source, "daily_quality_score"),
+        "daily_quality_flags": item.get("daily_quality_flags") or source.get("daily_quality_flags") or "",
+        "main_wave_eligible": bool(_first_present(item, source, "main_wave_eligible")),
+        "main_wave_ineligible_reasons": (
+            item.get("main_wave_ineligible_reasons")
+            or source.get("main_wave_ineligible_reasons")
+            or ""
+        ),
+        "main_wave_raw_score": _first_present(item, source, "main_wave_raw_score"),
+        "main_wave_raw_max_score": (
+            _first_present(item, source, "main_wave_raw_max_score")
+            if _first_present(item, source, "main_wave_raw_max_score") is not None
+            else 50.0
+        ),
+        "main_wave_score": _first_present(item, source, "main_wave_score"),
+        "main_wave_max_score": (
+            _first_present(item, source, "main_wave_max_score")
+            if _first_present(item, source, "main_wave_max_score") is not None
+            else 100.0
+        ),
+        "main_wave_hit_count": _first_present(item, source, "main_wave_hit_count") or 0,
+        "main_wave_rules": _main_wave_rules(item, source),
+        "sentiment_available": bool(_first_present(item, source, "sentiment_available")),
+        "sentiment_score": _first_present(item, source, "sentiment_score"),
+        "sentiment_label": item.get("sentiment_label") or source.get("sentiment_label") or "unavailable",
+        "sentiment_confidence": _first_present(item, source, "sentiment_confidence") or 0.0,
+        "sentiment_source_count": _first_present(item, source, "sentiment_source_count") or 0,
+        "sentiment_positive_events": _string_list_value(
+            _first_present(item, source, "sentiment_positive_events")
+        ),
+        "sentiment_negative_events": _string_list_value(
+            _first_present(item, source, "sentiment_negative_events")
+        ),
+        "sentiment_evidence": _dict_list_value(
+            _first_present(item, source, "sentiment_evidence")
+        ),
+        "sentiment_as_of": item.get("sentiment_as_of") or source.get("sentiment_as_of") or "",
+        "sentiment_score_delta": _first_present(item, source, "sentiment_score_delta") or 0.0,
         "dsa_context": dsa_context,
         "dsa_news": dsa_news,
         "dsa_analysis_summary": dsa_analysis_summary,
@@ -3616,6 +3851,25 @@ def _normalize_candidate(raw: Any, rank: int) -> Dict[str, Any]:
         "post_analysis_tags": item.get("post_analysis_tags") or source.get("post_analysis_tags") or [],
         "raw": source,
     }
+
+
+def _main_wave_rules(primary: Dict[str, Any], source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    value = _first_present(primary, source, "main_wave_rules")
+    if not isinstance(value, list):
+        return []
+    return [dict(rule) for rule in value if isinstance(rule, dict)]
+
+
+def _string_list_value(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _dict_list_value(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _extract_dsa_news_from_context(context: Any) -> List[Dict[str, Any]]:

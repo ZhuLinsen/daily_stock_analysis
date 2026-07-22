@@ -49,6 +49,30 @@ export type AlphaSiftCandidate = {
   amount?: number | null;
   industry?: string;
   factorScores?: Record<string, number>;
+  dailySource?: string;
+  dailyAdjustment?: string;
+  dailyAsOf?: string;
+  dailyFetchedAt?: string;
+  dailyQualityScore?: number | null;
+  dailyQualityFlags?: string;
+  mainWaveEligible?: boolean;
+  mainWaveIneligibleReasons?: string;
+  mainWaveRawScore?: number | null;
+  mainWaveRawMaxScore?: number | null;
+  mainWaveScore?: number | null;
+  mainWaveMaxScore?: number | null;
+  mainWaveHitCount?: number | null;
+  mainWaveRules?: AlphaSiftMainWaveRule[];
+  sentimentAvailable?: boolean;
+  sentimentScore?: number | null;
+  sentimentLabel?: string;
+  sentimentConfidence?: number | null;
+  sentimentSourceCount?: number | null;
+  sentimentPositiveEvents?: string[];
+  sentimentNegativeEvents?: string[];
+  sentimentEvidence?: AlphaSiftSentimentEvidence[];
+  sentimentAsOf?: string;
+  sentimentScoreDelta?: number | null;
   postAnalysisSummaries?: Record<string, string>;
   postAnalysisTags?: string[];
   dsaContext?: {
@@ -72,7 +96,56 @@ export type AlphaSiftCandidate = {
     publishedDate?: string | null;
   }>;
   dsaAnalysisSummary?: string;
-  raw: Record<string, unknown>;
+  raw?: Record<string, unknown>;
+};
+
+export type AlphaSiftMainWaveRule = {
+  id: string;
+  name?: string;
+  stage?: string;
+  available?: boolean;
+  matched?: boolean;
+  observed?: unknown;
+  operator?: string;
+  threshold?: unknown;
+  unit?: string;
+  windowTradingDays?: number | null;
+  rawScore?: number | null;
+  rawMaxScore?: number | null;
+  normalizedScore?: number | null;
+  normalizedMaxScore?: number | null;
+  asOf?: string;
+  evidence?: Record<string, unknown>;
+  unavailableReasons?: string[];
+};
+
+export type AlphaSiftSentimentEvidence = {
+  source?: string;
+  polarity?: 'positive' | 'negative' | string;
+  category?: string;
+  text?: string;
+  weight?: number | null;
+};
+
+export type AlphaSiftUniverseAudit = {
+  status?: 'ok' | 'degraded' | 'failed' | string;
+  market?: string;
+  snapshotCount?: number;
+  uniqueCodeCount?: number;
+  invalidCodeRows?: number;
+  duplicateCodeRows?: number;
+  codesValid?: boolean;
+  codesUnique?: boolean;
+  minimumRequiredCount?: number | null;
+  minimumCountMet?: boolean;
+  dailyCoverageTargetCount?: number;
+  dailyAttemptedCount?: number;
+  dailySuccessCount?: number;
+  dailyCoverageRatio?: number | null;
+  dailyCoverageComplete?: boolean | null;
+  countsMonotonic?: boolean;
+  candidateCodesUnique?: boolean;
+  stages?: Array<{ stage?: string; count?: number }>;
 };
 
 export type AlphaSiftStrategy = {
@@ -214,6 +287,7 @@ export type AlphaSiftScreenResponse = {
   riskEnabled?: boolean | null;
   portfolioDiversityEnabled?: boolean | null;
   portfolioConcentrationNotes?: string[];
+  universeAudit?: AlphaSiftUniverseAudit;
 };
 
 export type AlphaSiftScreenAccepted = {

@@ -140,6 +140,55 @@ const formatPercent = (value: unknown) => {
   return `${(Number(value) * 100).toFixed(0)}%`;
 };
 
+const formatRuleValue = (value: unknown, unit?: string) => {
+  if (typeof value === 'boolean') {
+    return value ? '是' : '否';
+  }
+  if (value == null || value === '') {
+    return '-';
+  }
+  if (typeof value === 'number') {
+    const formatted = Number.isInteger(value) ? String(value) : value.toFixed(2);
+    if (unit === 'pct') {
+      return `${formatted}%`;
+    }
+    if (unit === 'ratio') {
+      return formatted;
+    }
+    return formatted;
+  }
+  return String(value);
+};
+
+const formatAdjustment = (value?: string) => {
+  const labels: Record<string, string> = {
+    qfq: '前复权',
+    hfq: '后复权',
+    auto_adjusted: '自动复权',
+    split_adjusted: '拆股复权',
+    none: '未复权',
+    unknown: '未知',
+  };
+  return labels[value || 'unknown'] || value || '未知';
+};
+
+const hasMainWaveData = (item: AlphaSiftCandidate) =>
+  item.mainWaveScore != null || item.mainWaveRawScore != null || (item.mainWaveRules?.length ?? 0) > 0;
+
+const SENTIMENT_LABELS: Record<string, string> = {
+  strong_positive: '强正面',
+  positive: '偏正面',
+  neutral: '中性',
+  negative: '偏负面',
+  strong_negative: '强负面',
+  unavailable: '不可用',
+};
+
+const formatSentimentLabel = (value?: string) => SENTIMENT_LABELS[value || 'unavailable'] || value || '不可用';
+
+const hasSentimentData = (item: AlphaSiftCandidate) =>
+  item.sentimentAvailable === true && item.sentimentScore != null;
+
 const getCandidateReason = (item: AlphaSiftCandidate) => {
   if (item.reason) {
     return item.reason;
@@ -153,7 +202,8 @@ const getCandidateReason = (item: AlphaSiftCandidate) => {
 };
 
 const getSignal = (item: AlphaSiftCandidate) => {
-  const rawSignal = item.raw.action ?? item.raw.signal ?? item.raw.recommendation;
+  const raw = item.raw || {};
+  const rawSignal = raw.action ?? raw.signal ?? raw.recommendation;
   return typeof rawSignal === 'string' && rawSignal.trim() ? rawSignal : '观察';
 };
 
@@ -1269,6 +1319,17 @@ const StockScreeningPage: React.FC = () => {
             <span>
               DSA增强：{screenMeta?.dsaEnrichment?.enrichedCount ?? '-'} / {screenMeta?.dsaEnrichment?.requestedCount ?? '-'}
             </span>
+            {screenMeta?.universeAudit ? (
+              <span>
+                股票池审计：{screenMeta.universeAudit.status || '-'} · 唯一代码 {screenMeta.universeAudit.uniqueCodeCount ?? '-'}
+                {screenMeta.universeAudit.minimumRequiredCount != null
+                  ? ` / 最低 ${screenMeta.universeAudit.minimumRequiredCount}`
+                  : ''}
+                {screenMeta.universeAudit.dailyCoverageTargetCount
+                  ? ` · 日K ${screenMeta.universeAudit.dailySuccessCount ?? 0}/${screenMeta.universeAudit.dailyCoverageTargetCount}`
+                  : ''}
+              </span>
+            ) : null}
           </div>
         </div>
       </section>
@@ -1328,6 +1389,8 @@ const StockScreeningPage: React.FC = () => {
                       : '暂无 LLM 判断';
                   const dsaWarnings = item.dsaContext?.warnings || [];
                   const dsaNews = item.dsaNews || [];
+                  const mainWaveRules = item.mainWaveRules || [];
+                  const mainWaveAvailable = hasMainWaveData(item);
                   return (
                     <Fragment key={`${item.rank}-${item.code}`}>
                       <tr className="border-t border-border align-top transition-colors hover:bg-hover/50">
@@ -1337,7 +1400,25 @@ const StockScreeningPage: React.FC = () => {
                         <td className="px-4 py-3 text-secondary-text">{item.industry || '-'}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.price)}</td>
                         <td className="px-4 py-3 text-secondary-text">{formatNumber(item.changePct)}%</td>
-                        <td className="px-4 py-3 font-bold text-cyan">{formatScore(item.score)}</td>
+                        <td className="px-4 py-3 font-bold text-cyan">
+                          <div className="space-y-0.5">
+                            {mainWaveAvailable ? (
+                              <>
+                                <span className="block">{formatNumber(item.mainWaveScore)}/100</span>
+                                <span className="block text-[11px] font-medium text-secondary-text">
+                                  原始 {formatNumber(item.mainWaveRawScore)}/50 · {item.mainWaveHitCount ?? 0}/8
+                                </span>
+                              </>
+                            ) : (
+                              <span className="block">{formatScore(item.score)}</span>
+                            )}
+                            {hasSentimentData(item) ? (
+                              <span className="block text-[11px] font-medium text-secondary-text">
+                                情绪 {formatNumber(item.sentimentScore, 0)} · {formatSentimentLabel(item.sentimentLabel)}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
                         <td className="px-4 py-3 text-secondary-text">{llmDegraded ? '未重排' : formatScore(item.llmScore)}</td>
                         <td className="px-4 py-3">
                           <span className="rounded-lg bg-success/10 px-2.5 py-1 text-xs font-semibold text-success">
@@ -1367,6 +1448,74 @@ const StockScreeningPage: React.FC = () => {
                                   <p className="text-xs font-semibold text-secondary-text">操作信号</p>
                                   <p className="mt-1 text-sm text-foreground">{getSignal(item)}</p>
                                 </div>
+                                {mainWaveAvailable ? (
+                                  <div>
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-xs font-semibold text-secondary-text">主升浪 V2</p>
+                                      <span className={`text-xs font-semibold ${item.mainWaveEligible ? 'text-success' : 'text-warning'}`}>
+                                        {item.mainWaveEligible ? '数据合格' : '数据不合格'}
+                                      </span>
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-3 gap-2">
+                                      <div className="border border-border bg-card px-3 py-2">
+                                        <span className="block text-xs text-secondary-text">原始规则分</span>
+                                        <span className="text-sm font-semibold text-foreground">
+                                          {formatNumber(item.mainWaveRawScore)}/{formatNumber(item.mainWaveRawMaxScore ?? 50, 0)}
+                                        </span>
+                                      </div>
+                                      <div className="border border-border bg-card px-3 py-2">
+                                        <span className="block text-xs text-secondary-text">折算分</span>
+                                        <span className="text-sm font-semibold text-foreground">
+                                          {formatNumber(item.mainWaveScore)}/{formatNumber(item.mainWaveMaxScore ?? 100, 0)}
+                                        </span>
+                                      </div>
+                                      <div className="border border-border bg-card px-3 py-2">
+                                        <span className="block text-xs text-secondary-text">规则命中</span>
+                                        <span className="text-sm font-semibold text-foreground">{item.mainWaveHitCount ?? 0}/8</span>
+                                      </div>
+                                    </div>
+                                    {!item.mainWaveEligible && item.mainWaveIneligibleReasons ? (
+                                      <p className="mt-2 text-xs text-warning">{item.mainWaveIneligibleReasons}</p>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {mainWaveAvailable || item.sentimentAvailable || (item.sentimentEvidence?.length ?? 0) > 0 ? (
+                                  <div>
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-xs font-semibold text-secondary-text">情绪面</p>
+                                      <span className={`text-xs font-semibold ${hasSentimentData(item) ? 'text-foreground' : 'text-warning'}`}>
+                                        {hasSentimentData(item)
+                                          ? `${formatNumber(item.sentimentScore, 0)}/100 · ${formatSentimentLabel(item.sentimentLabel)}`
+                                          : '数据不可用'}
+                                      </span>
+                                    </div>
+                                    {hasSentimentData(item) ? (
+                                      <>
+                                        <p className="mt-1 text-xs text-secondary-text">
+                                          置信度 {formatPercent(item.sentimentConfidence)} · 来源 {item.sentimentSourceCount ?? 0} 个
+                                          {item.sentimentAsOf ? ` · 截止 ${item.sentimentAsOf}` : ''}
+                                          {item.sentimentScoreDelta ? ` · 综合分 ${item.sentimentScoreDelta > 0 ? '+' : ''}${formatNumber(item.sentimentScoreDelta)}` : ''}
+                                        </p>
+                                        {(item.sentimentPositiveEvents?.length ?? 0) > 0 || (item.sentimentNegativeEvents?.length ?? 0) > 0 ? (
+                                          <p className="mt-2 text-sm leading-6 text-foreground">
+                                            {[...(item.sentimentPositiveEvents || []).map((event) => `正面:${event}`), ...(item.sentimentNegativeEvents || []).map((event) => `风险:${event}`)].join('，')}
+                                          </p>
+                                        ) : null}
+                                        {(item.sentimentEvidence?.length ?? 0) > 0 ? (
+                                          <div className="mt-2 space-y-1 border-l-2 border-border pl-3">
+                                            {(item.sentimentEvidence || []).slice(0, 4).map((evidence, evidenceIndex) => (
+                                              <p key={`${item.code}-sentiment-${evidenceIndex}`} className="text-xs leading-5 text-secondary-text">
+                                                {evidence.source || '来源'} · {evidence.category || '事件'} · {evidence.text || '-'}
+                                              </p>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </>
+                                    ) : (
+                                      <p className="mt-1 text-sm text-warning">暂无可核验的新闻、公告、资金流或行情情绪证据。</p>
+                                    )}
+                                  </div>
+                                ) : null}
                                 {item.dsaAnalysisSummary ? (
                                   <div>
                                     <p className="text-xs font-semibold text-secondary-text">DSA 增强摘要</p>
@@ -1396,6 +1545,36 @@ const StockScreeningPage: React.FC = () => {
                                 </div>
                               </div>
                               <div className="space-y-3">
+                                {mainWaveAvailable ? (
+                                  <div>
+                                    <p className="text-xs font-semibold text-secondary-text">规则证据</p>
+                                    <div className="mt-2 divide-y divide-border border border-border bg-card">
+                                      {mainWaveRules.map((rule) => (
+                                        <div key={rule.id} className="grid gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                                          <div className="min-w-0">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                              <span className={rule.matched ? 'text-success' : rule.available === false ? 'text-warning' : 'text-secondary-text'}>
+                                                {rule.matched ? '命中' : rule.available === false ? '不可用' : '未命中'}
+                                              </span>
+                                              <span className="text-sm font-semibold text-foreground">{rule.name || rule.id}</span>
+                                              {rule.stage ? <span className="text-xs text-secondary-text">{rule.stage}</span> : null}
+                                            </div>
+                                            <p className="mt-1 text-xs text-secondary-text">
+                                              观测 {formatRuleValue(rule.observed, rule.unit)} {rule.operator || ''} 阈值 {formatRuleValue(rule.threshold, rule.unit)}
+                                              {rule.windowTradingDays ? ` · ${rule.windowTradingDays}日` : ''}
+                                            </p>
+                                          </div>
+                                          <span className="text-sm font-semibold text-foreground">
+                                            {formatNumber(rule.rawScore, 0)}/{formatNumber(rule.rawMaxScore, 0)}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <p className="mt-2 text-xs text-secondary-text">
+                                      日K来源 {item.dailySource || '-'} · {formatAdjustment(item.dailyAdjustment)} · 数据日期 {item.dailyAsOf || '-'}
+                                    </p>
+                                  </div>
+                                ) : null}
                                 <div>
                                   <p className="text-xs font-semibold text-secondary-text">主要因子</p>
                                   <div className="mt-2 grid grid-cols-2 gap-2">

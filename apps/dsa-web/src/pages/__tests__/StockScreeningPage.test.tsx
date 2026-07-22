@@ -1076,4 +1076,94 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('DSA 增强提示')).toBeInTheDocument();
     expect(screen.getByText('stock_news_unavailable')).toBeInTheDocument();
   });
+
+  it('shows main-wave scores, rule evidence, provenance, and universe audit', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600001',
+          name: '主升样本',
+          score: 84,
+          reason: '规则候选',
+          dailySource: 'dsa:EfinanceFetcher',
+          dailyAdjustment: 'qfq',
+          dailyAsOf: '2026-07-21',
+          mainWaveEligible: true,
+          mainWaveRawScore: 42,
+          mainWaveRawMaxScore: 50,
+          mainWaveScore: 84,
+          mainWaveMaxScore: 100,
+          mainWaveHitCount: 6,
+          mainWaveRules: [
+            {
+              id: 'near_60d_low',
+              name: '靠近60日低点',
+              stage: '建仓区',
+              available: true,
+              matched: true,
+              observed: 8.2,
+              operator: '<',
+              threshold: 20,
+              unit: 'pct',
+              windowTradingDays: 60,
+              rawScore: 8,
+              rawMaxScore: 8,
+            },
+          ],
+          sentimentAvailable: true,
+          sentimentScore: 72,
+          sentimentLabel: 'positive',
+          sentimentConfidence: 0.78,
+          sentimentSourceCount: 2,
+          sentimentPositiveEvents: ['回购增持', '主力净流入'],
+          sentimentNegativeEvents: [],
+          sentimentEvidence: [
+            {
+              source: 'announcement',
+              polarity: 'positive',
+              category: '回购增持',
+              text: '公司公告回购方案',
+              weight: 1,
+            },
+          ],
+          sentimentAsOf: '2026-07-22',
+          sentimentScoreDelta: 1.7,
+        },
+      ],
+      candidateCount: 1,
+      snapshotCount: 5193,
+      universeAudit: {
+        status: 'ok',
+        uniqueCodeCount: 5193,
+        minimumRequiredCount: 4000,
+        dailySuccessCount: 5193,
+        dailyCoverageTargetCount: 5193,
+      },
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+
+    expect(await screen.findByText(/股票池审计：ok · 唯一代码 5193 \/ 最低 4000 · 日K 5193\/5193/)).toBeInTheDocument();
+    expect(screen.getAllByText('84.00/100').length).toBeGreaterThan(0);
+    expect(screen.getByText('原始 42.00/50 · 6/8')).toBeInTheDocument();
+    expect(screen.getByText('靠近60日低点')).toBeInTheDocument();
+    expect(screen.getByText(/观测 8.20% < 阈值 20% · 60日/)).toBeInTheDocument();
+    expect(screen.getByText(/日K来源 dsa:EfinanceFetcher · 前复权 · 数据日期 2026-07-21/)).toBeInTheDocument();
+    expect(screen.getByText('情绪面')).toBeInTheDocument();
+    expect(screen.getByText('72/100 · 偏正面')).toBeInTheDocument();
+    expect(screen.getByText(/置信度 78% · 来源 2 个 · 截止 2026-07-22 · 综合分 \+1.70/)).toBeInTheDocument();
+    expect(screen.getByText(/正面:回购增持，正面:主力净流入/)).toBeInTheDocument();
+    expect(screen.getByText(/announcement · 回购增持 · 公司公告回购方案/)).toBeInTheDocument();
+    expect(screen.getByText('观察')).toBeInTheDocument();
+  });
 });

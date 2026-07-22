@@ -8,7 +8,7 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
 
 - 默认关闭：`ALPHASIFT_ENABLED=false`。
 - 启用入口：设置页或选股页点击开启，或在 `.env` 中配置 `ALPHASIFT_ENABLED=true`。
-- 依赖来源：`requirements.txt` 固定到已验证的 AlphaSift 适配层 commit：`git+https://github.com/ZhuLinsen/alphasift.git@9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf#egg=alphasift`（对应提交 `https://github.com/ZhuLinsen/alphasift/commit/9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`，覆盖 PR `https://github.com/ZhuLinsen/alphasift/pull/16`、`https://github.com/ZhuLinsen/alphasift/pull/19`、`https://github.com/ZhuLinsen/alphasift/pull/22`、`https://github.com/ZhuLinsen/alphasift/pull/23`、`https://github.com/ZhuLinsen/alphasift/pull/24`、`https://github.com/ZhuLinsen/alphasift/pull/25`、`https://github.com/ZhuLinsen/alphasift/pull/26`、`https://github.com/ZhuLinsen/alphasift/pull/28`、`https://github.com/ZhuLinsen/alphasift/pull/29`、`https://github.com/ZhuLinsen/alphasift/pull/30`、`https://github.com/ZhuLinsen/alphasift/pull/31`、`https://github.com/ZhuLinsen/alphasift/pull/32`、`https://github.com/ZhuLinsen/alphasift/pull/33`、`https://github.com/ZhuLinsen/alphasift/pull/35`、`https://github.com/ZhuLinsen/alphasift/pull/36` 与 `https://github.com/ZhuLinsen/alphasift/pull/37`）。该来源覆盖 `alphasift.dsa_adapter` 契约、`screen/list_strategies/get_status` 调用、Tencent 日 K、Sina snapshot、source health、stale daily fallback、候选级 quote context、wrapper 数据源 caller-side timeout、东财直连限速与抖动、日线数据源健康度/降级诊断、硬过滤瀑布诊断、策略评估摘要、题材匹配得分、策略目录元数据、`blue_chip_income` / `low_volatility_quality` 策略，以及 LLM ranking 的 `LLM_MAX_TOKENS` 输出上限、timeout 后不重复 JSON-mode 重试和更稳健的 JSON 解析边界。
+- 依赖来源：`requirements.txt` 固定到已验证的 AlphaSift 适配层 commit：`git+https://github.com/lihuashan0718-svg/alphasift.git@eefd544062c800174d57e0c3db346ab1fb763b76#egg=alphasift`（对应提交 `https://github.com/lihuashan0718-svg/alphasift/commit/eefd544062c800174d57e0c3db346ab1fb763b76`，覆盖 PR `https://github.com/ZhuLinsen/alphasift/pull/16`、`https://github.com/ZhuLinsen/alphasift/pull/19`、`https://github.com/ZhuLinsen/alphasift/pull/22`、`https://github.com/ZhuLinsen/alphasift/pull/23`、`https://github.com/ZhuLinsen/alphasift/pull/24`、`https://github.com/ZhuLinsen/alphasift/pull/25`、`https://github.com/ZhuLinsen/alphasift/pull/26`、`https://github.com/ZhuLinsen/alphasift/pull/28`、`https://github.com/ZhuLinsen/alphasift/pull/29`、`https://github.com/ZhuLinsen/alphasift/pull/30`、`https://github.com/ZhuLinsen/alphasift/pull/31`、`https://github.com/ZhuLinsen/alphasift/pull/32`、`https://github.com/ZhuLinsen/alphasift/pull/33`、`https://github.com/ZhuLinsen/alphasift/pull/35`、`https://github.com/ZhuLinsen/alphasift/pull/36` 与 `https://github.com/ZhuLinsen/alphasift/pull/37`）。该来源覆盖 `alphasift.dsa_adapter` 契约、`screen/list_strategies/get_status` 调用、Tencent 日 K、Sina snapshot、source health、stale daily fallback、候选级 quote context、wrapper 数据源 caller-side timeout、东财直连限速与抖动、日线数据源健康度/降级诊断、硬过滤瀑布诊断、策略评估摘要、题材匹配得分、策略目录元数据、`blue_chip_income` / `low_volatility_quality` 策略，以及 LLM ranking 的 `LLM_MAX_TOKENS` 输出上限、timeout 后不重复 JSON-mode 重试和更稳健的 JSON 解析边界，并追加主升浪 V2 八规则、复权日 K 审计与确定性情绪分析。
 - 修复安装来源：`ALPHASIFT_INSTALL_SPEC` 仍保留，默认等于同一个受信任 commit。它不再是策略列表或选股接口的运行时安装主路径，只用于显式调用 `/api/v1/alphasift/install` 时做修复安装和来源校验；未显式配置时才按代码常量 `DEFAULT_ALPHASIFT_INSTALL_SPEC` 回退。
 - 迁移边界（显式 `.env` 优先）：
   - 若 `.env` 中显式保留旧 pin（如 `...de54ea0da367be85770d9589a5bf7ded4f62d386`），DSA 会把该值当作用户覆盖，不会在运行期自动替换为新 pin；
@@ -24,7 +24,7 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
 
 ## 外部契约来源与迁移边界
 
-- 外部契约依据：本次 AlphaSift 运行契约（含 `schema_version=2` 的热点缓存与题材详情字段）对应 GitHub 提交 `https://github.com/ZhuLinsen/alphasift/commit/9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`。
+- 外部契约依据：本次 AlphaSift 运行契约（含 `schema_version=2` 的热点缓存与题材详情字段）对应 GitHub 提交 `https://github.com/lihuashan0718-svg/alphasift/commit/eefd544062c800174d57e0c3db346ab1fb763b76`。
   该 commit 在 DSA 中通过以下链路生效：`requirements.txt` 安装 pin、`src/config.py` 默认 `DEFAULT_ALPHASIFT_INSTALL_SPEC`、`.env.example` 默认示例值。
 - 升级路径：
   - 部署侧只需按部署方式 `git pull` + `pip install -r requirements.txt` + 重启服务；
@@ -36,12 +36,12 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
   - 安装入口说明：`/api/v1/alphasift/install` 仅允许当前代码 `ALLOWED_ALPHASIFT_INSTALL_SPECS`（目前为单值集合）中的来源。若确有需要临时接入其他来源，先在环境中手动安装并确认适配层可导入，再重启服务。
 - 兼容说明：`ALPHASIFT_INSTALL_SPEC` 只影响 `install` 调用时的来源校验；`requirements.txt` 与 `src/config.py` 的常量是实际运行时源码约束。`status` 返回 `install_spec_is_default` 可快速判断当前配置是否与 DSA 代码默认源一致。
 
-- DSA 增强：AlphaSift 通过 DSA provider context 在 LLM 重排前只补充 Top 候选的轻量实时行情和基本面上下文，不在初筛阶段抓新闻；DSA API 返回阶段会对最终 Top 候选补新闻和辅助摘要，并通过 `dsa_enrichment` 记录复用或补全情况。
-- 日 K 线补特征：DSA 调用 AlphaSift 时会优先复用 DSA 历史行情加载链路（数据库缓存、Tushare、Efinance、Akshare、Pytdx、Baostock、Yfinance 等 fallback），仅在 DSA 链路无可用数据时回退到 AlphaSift 原始日线数据源，减少单一上游超时拖垮选股。
+- DSA 增强：AlphaSift 通过 DSA provider context 在 LLM 重排前为动态 Top 8–12 候选补充轻量实时行情、基本面和最多 3 条新闻；DSA API 返回阶段会复用已有字段并对最终 Top 候选补全缺失新闻和辅助摘要，通过 `dsa_enrichment` 记录复用或补全情况。
+- 日 K 线补特征：DSA 调用 AlphaSift 时会优先复用 DSA 历史行情加载链路（数据库缓存、Tushare、Efinance、Akshare、Pytdx、Baostock、Yfinance 等 fallback），仅在 DSA 链路无可用数据时回退到 AlphaSift 原始日线数据源，减少单一上游超时拖垮选股。桥接结果显式携带 `daily_source`、`daily_adjustment`、`daily_as_of`、`daily_fetched_at`；Efinance/AkShare/Tencent/Baostock 标记为前复权，YFinance 标记为自动复权，Tushare/Pytdx 标记为未复权，TickFlow 按 `TICKFLOW_KLINE_ADJUST` 判定。数据库缓存只有在所有行的 `data_source` 都能一致确认复权方式时才继承该标记，否则为 `unknown`。
 - LLM 环境：DSA 调用 AlphaSift 时会桥接 DSA 已解析的 `LITELLM_MODEL`、`LITELLM_FALLBACK_MODELS`、`LLM_CHANNELS`、`LLM_<NAME>_*`、`LITELLM_CONFIG`、渠道额外请求头和各模型密钥；AlphaSift 独立运行时仍使用自己的 `.env`/环境变量。`LLM_TIMEOUT_SEC` 与 `LLM_MAX_TOKENS` 可被 AlphaSift 选股 LLM 重排读取，分别限制单次请求耗时和输出 token 上限。
 - 快照源：DSA 调用 AlphaSift 时，未显式配置 `SNAPSHOT_SOURCE_PRIORITY` 会按 token-aware 顺序注入：有 `TUSHARE_TOKEN` 时为 `tushare,sina,efinance,akshare_em,em_datacenter`，无 token 时为 `sina,efinance,akshare_em,em_datacenter`；同时注入 `DAILY_SOURCE=auto`、`DAILY_FETCH_RETRIES=3`、`DAILY_FETCH_MAX_WORKERS=1` 和默认候选上下文 `news,fund_flow,announcement,quote`。显式配置的源顺序、日线源和候选上下文 provider 会原样保留。
 - 外部数据源超时护栏：AlphaSift 对 efinance、AkShare、Baostock、Tushare、yfinance 等第三方 wrapper 源增加 caller-side timeout；`ALPHASIFT_SNAPSHOT_CALL_TIMEOUT_SEC` 默认 60 秒，`ALPHASIFT_DAILY_CALL_TIMEOUT_SEC` 默认 20 秒，`ALPHASIFT_SOURCE_CALL_TIMEOUT_SEC` 可作为全局兜底，设为 `0`/`off`/`disabled` 可关闭。超时后会记录 source health 与 `last_error`，并继续尝试后续数据源或 last-good / daily history fallback，减少一次 wrapper 卡死拖垮整次选股。
-- 最新 AlphaSift 能力：锁定 commit `9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf` 包含选股 pipeline 性能优化、Tencent 日 K、Sina snapshot、source health、stale daily fallback、candidate quote context、wrapper 数据源 caller-side timeout、东财直连共享重试会话/限速/随机抖动、LLM ranking timeout/max tokens 边界、last-good snapshot fallback、日线历史缓存、行业/概念 provider cache、热点/行业热度因子、hotspot 热点题材榜单、本地 scorecard/post-analysis 元信息、日线数据源健康度排序与告警、硬过滤瀑布诊断、策略评估摘要、多窗口价格路径评估、题材匹配得分、策略目录元数据、`blue_chip_income` 与 `low_volatility_quality` 策略。DSA 调用时会注入隔离缓存默认路径 `data/alphasift`、`data/alphasift/snapshot.last_good.json`、`data/alphasift/daily_history`、`data/alphasift/industry_provider_cache`；Web 选股页提供“热点题材”手动刷新入口，请求 `/api/v1/alphasift/hotspots` 时会显式使用 `akshare` provider 优先拉取具体概念/题材异动（例如钼、铅锌、铜、诊断服务等实时板块异动），行业板块仅作为兜底；默认打开页面时优先读取上一次成功且不少于 3 条的热点题材缓存，点击刷新才实时拉取并覆盖缓存，实时拉取失败时会尽量回退旧缓存；如果 AlphaSift 合约层只返回少量或缺少涨跌幅等关键字段的热点，DSA 会用东方财富板块异动直连榜单替代。点击题材会请求 `/api/v1/alphasift/hotspots/{topic}` 展示发酵路线与概念股；题材详情另有 DSA 侧 30 分钟磁盘缓存，路径为 `data/alphasift/hotspot_details` 或自定义 `ALPHASIFT_DATA_DIR/hotspot_details`，重复点开同一题材会优先返回缓存，实时详情失败时可回退过期缓存；手动刷新热点榜单并保留当前题材时会对详情请求传入 `refresh=true` 绕过详情缓存；不会默认触发 AlphaSift 的 DSA deep-analysis 回调，避免无提示扩大递归调用面。
+- 最新 AlphaSift 能力：锁定 commit `eefd544062c800174d57e0c3db346ab1fb763b76` 包含选股 pipeline 性能优化、Tencent 日 K、Sina snapshot、source health、stale daily fallback、candidate quote context、wrapper 数据源 caller-side timeout、东财直连共享重试会话/限速/随机抖动、LLM ranking timeout/max tokens 边界、last-good snapshot fallback、日线历史缓存、行业/概念 provider cache、热点/行业热度因子、hotspot 热点题材榜单、本地 scorecard/post-analysis 元信息、日线数据源健康度排序与告警、硬过滤瀑布诊断、策略评估摘要、多窗口价格路径评估、题材匹配得分、策略目录元数据、`blue_chip_income`、`low_volatility_quality` 与 `main_wave_v2` 策略，并提供复权日 K 审计、八规则证据及确定性情绪分析。DSA 调用时会注入隔离缓存默认路径 `data/alphasift`、`data/alphasift/snapshot.last_good.json`、`data/alphasift/daily_history`、`data/alphasift/industry_provider_cache`；Web 选股页提供“热点题材”手动刷新入口，请求 `/api/v1/alphasift/hotspots` 时会显式使用 `akshare` provider 优先拉取具体概念/题材异动（例如钼、铅锌、铜、诊断服务等实时板块异动），行业板块仅作为兜底；默认打开页面时优先读取上一次成功且不少于 3 条的热点题材缓存，点击刷新才实时拉取并覆盖缓存，实时拉取失败时会尽量回退旧缓存；如果 AlphaSift 合约层只返回少量或缺少涨跌幅等关键字段的热点，DSA 会用东方财富板块异动直连榜单替代。点击题材会请求 `/api/v1/alphasift/hotspots/{topic}` 展示发酵路线与概念股；题材详情另有 DSA 侧 30 分钟磁盘缓存，路径为 `data/alphasift/hotspot_details` 或自定义 `ALPHASIFT_DATA_DIR/hotspot_details`，重复点开同一题材会优先返回缓存，实时详情失败时可回退过期缓存；手动刷新热点榜单并保留当前题材时会对详情请求传入 `refresh=true` 绕过详情缓存；不会默认触发 AlphaSift 的 DSA deep-analysis 回调，避免无提示扩大递归调用面。
 - 热点刷新容错：`/api/v1/alphasift/hotspots` 未显式传入 provider 且未配置 `INDUSTRY_PROVIDER` 时，默认使用 DSA EastMoney 兜底 provider（响应中 provider 为 `akshare`），避免落到 AlphaSift 的空 provider 路径；东方财富热点直连源遇到连接中断、超时或 `Connection aborted` 会做短 backoff 重试；手动刷新失败且没有可用热点缓存时返回稳定空态 payload、`source_errors=["eastmoney_hotspot_unavailable"]` 和用户可读 `message`，原始异常仅保留在服务端日志或诊断链路中。桌面端更新会保留 `data/alphasift/hotspots.json`、`data/alphasift/hotspot.history.jsonl`、`data/alphasift/hotspot_details` 与 `data/alphasift/snapshot.last_good.json`，避免更新后丢失 last-good 缓存。
 - 热点数据源补充：DSA provider 使用直连 HTTP 思路，东财板块兜底源使用 `push2.eastmoney.com/api/qt/clist/get` 并保留涨跌幅、领涨股、上涨/下跌家数等字段；题材详情会在一次 provider 生命周期内缓存并合并东方财富成分股、同花顺页面解析和板块异动龙头兜底，优先返回多只概念股，发酵路线按日期聚合展示，避免把同一盘中观察拆成多条同时间节点；事件催化不再使用 DSA 内置静态文案，只展示 AlphaSift 合约时间线、同花顺摘要、已配置新闻搜索源或东财板块异动结构拿到的真实信息；新闻搜索命中的消息会优先通过已配置 LLM 压缩成一句题材催化摘要，LLM 不可用时回退本地短摘要，避免在时间线中展示完整报道。
 - 风险提示：前端设置页和选股页展示第三方来源与投资风险说明；不会弹窗打断用户。
@@ -96,7 +96,7 @@ def screen(
 }
 ```
 
-候选项建议包含 `code`、`name`、`score`、`reason`、`risk_level`、`risk_flags`、`price`、`change_pct`、`amount`、`industry`、`factor_scores`，以及 LLM 字段：`llm_score`、`llm_confidence`、`llm_thesis`、`llm_catalysts`、`llm_risks`、`llm_watch_items` 等。
+候选项建议包含 `code`、`name`、`score`、`reason`、`risk_level`、`risk_flags`、`price`、`change_pct`、`amount`、`industry`、`factor_scores`，以及 LLM 字段：`llm_score`、`llm_confidence`、`llm_thesis`、`llm_catalysts`、`llm_risks`、`llm_watch_items` 等。主升浪 V2 候选还包含原始 `main_wave_raw_score / 50`、折算 `main_wave_score / 100`、`main_wave_hit_count / 8`、逐项 `main_wave_rules`，以及对应的日 K 来源和复权元数据；顶层 `universe_audit` 记录股票池规模、代码唯一性、日 K 覆盖率和过滤阶段数量。
 
 DSA 会在支持 `context` 的适配层中传入：
 
@@ -111,10 +111,11 @@ context = {
     "dsa": {
         "contract_version": "1",
         "mode": "pre_rank_light",
-        "max_candidates": 3,
-        "include_news": False,
-        "news_max_results": 0,
-        "capabilities": ["candidate_context", "daily_history", "realtime_quote", "fundamental_context"],
+        "max_candidates": 8,  # max(8, max_results * 2)，硬上限 12
+        "include_news": True,
+        "include_fundamentals": True,
+        "news_max_results": 3,
+        "capabilities": ["candidate_context", "daily_history", "realtime_quote", "fundamental_context", "news"],
         "get_candidate_context": callable,
         "get_daily_history": callable,
         "get_realtime_quote": callable,
@@ -123,9 +124,9 @@ context = {
 }
 ```
 
-AlphaSift 会在 L1 初筛后、LLM 重排前调用 `context["dsa"]` 中的 provider，为有限 Top 候选补充 DSA 行情和基本面轻量上下文，并把 `dsa_context` 随候选返回。新闻搜索、完整摘要和缺失字段补全由 DSA API 在最终 Top 候选阶段执行；若候选已经携带完整新闻上下文，DSA API 返回阶段会复用这些字段，避免重复请求。
+AlphaSift 会在 L1 初筛后、LLM 重排前调用 `context["dsa"]` 中的 provider。预排序候选数按 `max(8, max_results * 2)` 计算并封顶 12，为这些候选补充 DSA 行情、基本面和最多 3 条新闻，再把 `dsa_context` 随候选返回。DSA API 在最终 Top 候选阶段复用已有新闻，只补全缺失字段和辅助摘要，避免重复请求。
 
-AlphaSift 侧已在 `ZhuLinsen/alphasift@9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf` 提供 DSA provider context 支持、DSA adapter contract，并支持复用 DSA 的 `LLM_TIMEOUT_SEC`；同一 pin 还会读取 `LLM_MAX_TOKENS` 限制 LLM 重排输出，且 timeout 后不再盲目重试无 JSON mode 请求。`dsa_adapter` 稳定契约仍只返回 DSA 已消费的策略基础字段和选股结果字段；上游新增的 strategy facets、overview、本地只读 API 和策略卡片能力暂不进入 DSA API 契约。
+AlphaSift 侧已在 `lihuashan0718-svg/alphasift@eefd544062c800174d57e0c3db346ab1fb763b76` 提供 DSA provider context 支持、DSA adapter contract，并支持复用 DSA 的 `LLM_TIMEOUT_SEC`；同一 pin 还会读取 `LLM_MAX_TOKENS` 限制 LLM 重排输出，且 timeout 后不再盲目重试无 JSON mode 请求。`dsa_adapter` 稳定契约仍只返回 DSA 已消费的策略基础字段和选股结果字段；上游新增的 strategy facets、overview、本地只读 API 和策略卡片能力暂不进入 DSA API 契约。
 
 ## DSA 后端行为
 
@@ -139,7 +140,7 @@ AlphaSift 侧已在 `ZhuLinsen/alphasift@9f522747caafd3c0b1ddb7e14d5cf44c8580b6c
 ## 配置兼容边界（LLM / LiteLLM / Base URL）
 
 - 兼容语义与版本证据（可追溯）：
-  - 运行依赖约束：`requirements.txt` 中将 LiteLLM 固定到 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，并通过 `git+https://github.com/ZhuLinsen/alphasift.git@9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf` 安装 AlphaSift 适配层。
+  - 运行依赖约束：`requirements.txt` 中将 LiteLLM 固定到 `litellm>=1.80.10,!=1.82.7,!=1.82.8,<2.0.0`，并通过 `git+https://github.com/lihuashan0718-svg/alphasift.git@eefd544062c800174d57e0c3db346ab1fb763b76` 安装 AlphaSift 适配层。
   - 文档依据：
     - LiteLLM Providers: https://docs.litellm.ai/docs/providers
     - LiteLLM OpenAI-compatible: https://docs.litellm.ai/docs/providers/openai_compatible
@@ -172,7 +173,7 @@ AlphaSift 侧已在 `ZhuLinsen/alphasift@9f522747caafd3c0b1ddb7e14d5cf44c8580b6c
 
 - 依赖与源码约束核验：`requirements.txt` 中的 `litellm` 约束与 `src/config.py`/`requirements.txt` 一致。
 - Hotspot 契约兼容核验：`docs/alphasift-integration.md` 与 `api/v1/endpoints/alphasift.py`、`src/services/alphasift_service.py` 保持 `hotspots`/`hotspots/{topic}` 字段与 `tests/test_alphasift_api.py` 一致，调用前后默认使用 `snapshot.last_good` 缓存兜底。
-- 外部版本来源：本次集成依赖来源为 `https://github.com/ZhuLinsen/alphasift/commit/9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf`，需在复验时按该 commit pin 回放导入与接口契约。
+- 外部版本来源：本次集成依赖来源为 `https://github.com/lihuashan0718-svg/alphasift/commit/eefd544062c800174d57e0c3db346ab1fb763b76`，需在复验时按该 commit pin 回放导入与接口契约。
 - 行为核验：`src/services/alphasift_service.py` 的 `_build_alphasift_runtime_env` 与 `_build_alphasift_context` 仅在调用期写入进程环境；`/api/v1/alphasift/screen`、`strategies`、`status` 在运行期不回写 `.env`。
 - 回退核验：关闭 `ALPHASIFT_ENABLED` 并重启配置链路后，系统恢复原始 `LITELLM_MODEL/FALLBACK_MODELS`、`LLM_CHANNELS` 与 `LLM_*` 运行语义，不执行迁移清理脚本。
 - 语义来源核验：LiteLLM 文档（https://docs.litellm.ai/docs/providers）、OpenAI-compatible 文档（https://docs.litellm.ai/docs/providers/openai_compatible）与 LiteLLM 配置文档（https://docs.litellm.ai/docs/proxy/configs）用于核对 provider/model/base_url/extra_headers 映射链路。
@@ -194,8 +195,8 @@ AlphaSift 侧已在 `ZhuLinsen/alphasift@9f522747caafd3c0b1ddb7e14d5cf44c8580b6c
 - 当前只暴露 A 股 `cn` 市场。
 - 默认返回数量为 3，避免一次选股过慢或结果过多。
 - 选股页通过后台任务提交和状态轮询获取结果；任务 ID 会保存在当前浏览器 tab 的 `sessionStorage`，切换页面后返回选股页会继续恢复进度或最终结果。后端重启或任务被清理时，前端会提示任务不可恢复并允许重新运行。
-- 结果页展示运行 ID、样本数量、过滤后数量、LLM 是否重排、LLM 覆盖率和 DSA 增强计数；如果 AlphaSift 返回 warning/source error/LLM parse error 或 `llm_ranked=false`，页面会明确显示降级原因，避免把本地因子结果误展示成正常 LLM 判断；重复的快照源 fallback warning/source error 会在前端合并展示为一条“数据源降级”提示。
-- 展开候选时展示 AlphaSift 摘要、因子和 LLM 判断；若 DSA 已增强，还会展示 `DSA 增强摘要`、`DSA 新闻` 和 `DSA 增强提示`。
+- 结果页展示运行 ID、样本数量、过滤后数量、LLM 是否重排、LLM 覆盖率、DSA 增强计数和股票池审计；如果 AlphaSift 返回 warning/source error/LLM parse error 或 `llm_ranked=false`，页面会明确显示降级原因，避免把本地因子结果误展示成正常 LLM 判断；重复的快照源 fallback warning/source error 会在前端合并展示为一条“数据源降级”提示。
+- 主升浪 V2 候选在表格中同时展示原始 `x/50`、折算 `x/100` 和命中 `n/8`；展开后逐项展示八条规则的命中状态、观测值、阈值、窗口和得分，并展示日 K 来源、复权方式和行情日期。情绪面展示 0–100 分、标签、置信度、来源数、正负事件、证据、截止时间及对综合分的修正；无可核验证据时明确显示数据不可用。若 DSA 已增强，还会展示 `DSA 增强摘要`、`DSA 新闻` 和 `DSA 增强提示`。
 
 ## 桌面端说明
 

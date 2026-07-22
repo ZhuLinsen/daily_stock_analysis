@@ -75,7 +75,7 @@ from src.scheduler import normalize_schedule_times
 logger = logging.getLogger(__name__)
 
 DEFAULT_ALPHASIFT_INSTALL_SPEC = (
-    "git+https://github.com/ZhuLinsen/alphasift.git@9f522747caafd3c0b1ddb7e14d5cf44c8580b6cf"
+    "git+https://github.com/lihuashan0718-svg/alphasift.git@eefd544062c800174d57e0c3db346ab1fb763b76"
 )
 
 
