@@ -18,7 +18,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Validate upstream sync credential
+        id: auth
+        continue-on-error: true
+        env:
+          UPSTREAM_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          if [ -z "$UPSTREAM_SYNC_TOKEN" ]; then
+            echo "::error::UPSTREAM_SYNC_TOKEN is not configured."
+            exit 1
+          fi
+          repo_info="$(curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 2 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${UPSTREAM_SYNC_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}")"
+          if ! jq --exit-status '.permissions.push == true' <<<"$repo_info" >/dev/null; then
+            echo "::error::UPSTREAM_SYNC_TOKEN cannot write to ${GITHUB_REPOSITORY}."
+            exit 1
+          fi
+
       - name: Checkout current main
+        id: checkout
+        if: steps.auth.outcome == 'success'
+        continue-on-error: true
         uses: actions/checkout@v5
         with:
           ref: main
@@ -30,6 +57,8 @@ jobs:
 
       - name: Detect upstream updates
         id: detect
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
         run: |
           git remote add upstream https://github.com/ZhuLinsen/daily_stock_analysis.git
           git fetch --prune upstream main --tags
@@ -75,37 +104,63 @@ jobs:
 
       - name: Create a maintenance issue when automatic sync is blocked
         if: >-
-          always() && steps.detect.outputs.update_available == 'true' &&
+          always() && (
+          steps.auth.outcome == 'failure' ||
+          steps.checkout.outcome == 'failure' ||
+          steps.detect.outcome == 'failure' ||
+          (steps.detect.outputs.update_available == 'true' &&
           (steps.merge.outputs.status != 'success' ||
-          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+          steps.validate.outcome != 'success' || steps.push.outcome != 'success')))
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          AUTH_OUTCOME: ${{ steps.auth.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          DETECT_OUTCOME: ${{ steps.detect.outcome }}
           MERGE_STATUS: ${{ steps.merge.outputs.status }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           PUSH_OUTCOME: ${{ steps.push.outcome }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="chore: automatic upstream sync needs attention"
           existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          body="上游自动同步未能安全完成。
+
+          - credential=${AUTH_OUTCOME:-skipped}
+          - checkout=${CHECKOUT_OUTCOME:-skipped}
+          - detect=${DETECT_OUTCOME:-skipped}
+          - merge=${MERGE_STATUS:-skipped}
+          - conflicts=${CONFLICTS:-none}
+          - validate=${VALIDATE_OUTCOME:-skipped}
+          - push=${PUSH_OUTCOME:-skipped}
+          - run=${RUN_URL}"
           if [ -z "$existing" ]; then
             gh issue create \
               --title "$title" \
-              --body "上游自动同步未能安全完成。merge=${MERGE_STATUS:-skipped}; conflicts=${CONFLICTS:-none}; validate=${VALIDATE_OUTCOME:-skipped}; push=${PUSH_OUTCOME:-skipped}。请检查 Sync Upstream 工作流日志后人工处理。"
+              --body "$body"
           else
-            echo "Maintenance issue #$existing is already open."
+            gh issue comment "$existing" --body "$body"
+            echo "Updated maintenance issue #$existing."
           fi
 
       - name: Send Telegram alert when automatic sync is blocked
         if: >-
-          always() && steps.detect.outputs.update_available == 'true' &&
+          always() && (
+          steps.auth.outcome == 'failure' ||
+          steps.checkout.outcome == 'failure' ||
+          steps.detect.outcome == 'failure' ||
+          (steps.detect.outputs.update_available == 'true' &&
           (steps.merge.outputs.status != 'success' ||
-          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+          steps.validate.outcome != 'success' || steps.push.outcome != 'success')))
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
+          AUTH_OUTCOME: ${{ steps.auth.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          DETECT_OUTCOME: ${{ steps.detect.outcome }}
           MERGE_STATUS: ${{ steps.merge.outputs.status }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
@@ -117,6 +172,9 @@ jobs:
             exit 0
           fi
           message="⚠️ 上游自动同步未完成
+          credential=${AUTH_OUTCOME:-skipped}
+          checkout=${CHECKOUT_OUTCOME:-skipped}
+          detect=${DETECT_OUTCOME:-skipped}
           merge=${MERGE_STATUS:-skipped}
           conflicts=${CONFLICTS:-none}
           validate=${VALIDATE_OUTCOME:-skipped}
@@ -132,9 +190,35 @@ jobs:
           fi
           curl "${args[@]}" "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
 
+      - name: Close maintenance issue after recovery
+        if: >-
+          always() && steps.auth.outcome == 'success' &&
+          steps.checkout.outcome == 'success' &&
+          steps.detect.outcome == 'success' &&
+          (steps.detect.outputs.update_available != 'true' ||
+          (steps.merge.outputs.status == 'success' &&
+          steps.validate.outcome == 'success' && steps.push.outcome == 'success'))
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="chore: automatic upstream sync needs attention"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "自动同步链路已恢复：${RUN_URL}"
+            gh issue close "$existing" --reason completed
+          else
+            echo "No open maintenance issue needs closing."
+          fi
+
       - name: Fail when update was not published
         if: >-
-          always() && steps.detect.outputs.update_available == 'true' &&
+          always() && (
+          steps.auth.outcome == 'failure' ||
+          steps.checkout.outcome == 'failure' ||
+          steps.detect.outcome == 'failure' ||
+          (steps.detect.outputs.update_available == 'true' &&
           (steps.merge.outputs.status != 'success' ||
-          steps.validate.outcome == 'failure' || steps.push.outcome == 'failure')
+          steps.validate.outcome != 'success' || steps.push.outcome != 'success')))
         run: exit 1

@@ -36,8 +36,20 @@ def main() -> int:
     if "改用已配置自选股继续分析" not in selector_text:
         missing.append("configured-stock fallback")
     upstream_text = UPSTREAM_WORKFLOW.read_text(encoding="utf-8")
-    if "Send Telegram alert when automatic sync is blocked" not in upstream_text:
-        missing.append("upstream sync Telegram alert")
+    upstream_required_snippets = {
+        "upstream sync credential preflight": "Validate upstream sync credential",
+        "upstream sync checkout outcome": "steps.checkout.outcome == 'failure'",
+        "upstream sync detect outcome": "steps.detect.outcome == 'failure'",
+        "upstream sync Telegram alert": "Send Telegram alert when automatic sync is blocked",
+        "upstream sync maintenance issue": "Create a maintenance issue when automatic sync is blocked",
+        "upstream sync recovery closure": "Close maintenance issue after recovery",
+        "safe maintenance issue token": "GH_TOKEN: ${{ github.token }}",
+    }
+    missing.extend(
+        label
+        for label, snippet in upstream_required_snippets.items()
+        if snippet not in upstream_text
+    )
     if upstream_text.count("secrets.UPSTREAM_SYNC_TOKEN") < 2:
         missing.append("upstream sync workflow-capable token")
     if missing:
