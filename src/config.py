@@ -856,6 +856,7 @@ class Config:
     agent_decision_agent_timeout_s: float = 0
     agent_portfolio_agent_timeout_s: float = 0
     agent_skill_agent_timeout_s: float = 0
+    agent_skill_concurrency: int = 3
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
     agent_deep_research_timeout: int = 180  # Max seconds for /research command before returning timeout
@@ -1786,6 +1787,13 @@ class Config:
             agent_skill_agent_timeout_s=parse_env_float(
                 os.getenv('AGENT_SKILL_AGENT_TIMEOUT_S'), 0,
                 field_name='AGENT_SKILL_AGENT_TIMEOUT_S', minimum=0,
+            ),
+            agent_skill_concurrency=parse_env_int(
+                os.getenv('AGENT_SKILL_CONCURRENCY'),
+                3,
+                field_name='AGENT_SKILL_CONCURRENCY',
+                minimum=1,
+                maximum=4,
             ),
             agent_risk_override=os.getenv('AGENT_RISK_OVERRIDE', 'true').lower() == 'true',
             agent_deep_research_budget=parse_env_int(

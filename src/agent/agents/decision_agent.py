@@ -193,9 +193,26 @@ should sum to 100; all-zero means no effective signal and must not be faked.
 
         invalid_opinions = ctx.meta.get("invalid_opinions") or []
         if invalid_opinions:
+            reason_labels = {
+                "skill_timeout": "执行超时",
+                "skill_error": "执行异常或未产出结构化观点",
+                "missing_signal": "signal 缺失",
+                "unrecognized_signal": "signal 无法识别",
+            }
+            reason_counts = {}
+            for item in invalid_opinions:
+                if not isinstance(item, dict):
+                    continue
+                reason = str(item.get("reason") or "unrecognized_signal")
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            reason_summary = "、".join(
+                f"{reason_labels.get(reason, reason)} {count} 个"
+                for reason, count in reason_counts.items()
+            )
             parts.append("## Invalid Skill Opinions (Diagnostics only — not in evidence chain)")
             parts.append(
-                f"共 {len(invalid_opinions)} 个 skill 观点因 signal 缺失或无法识别，已从证据链移除；"
+                f"共 {len(invalid_opinions)} 个 skill 观点未进入证据链"
+                f"（{reason_summary or '原因未分类'}）；"
                 f"仅供你在 data_limitations 中标注，不得作为决策依据。"
             )
             parts.append("")

@@ -1668,6 +1668,12 @@ class StockAnalysisPipeline:
                         ),
                     )
                     if valid_saved_history_id:
+                        self._persist_skill_opinion_samples_after_history_save(
+                            runtime_facts=getattr(agent_result, "runtime_facts", None),
+                            analysis_history_id=saved_history_id,
+                            stock_code=code,
+                            analysis_context_pack_overview=analysis_context_pack_overview,
+                        )
                         self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
@@ -2554,6 +2560,42 @@ class StockAnalysisPipeline:
         if self.analysis_skills is not None:
             snapshot["skills"] = list(self.analysis_skills)
         return snapshot
+
+    def _persist_skill_opinion_samples_after_history_save(
+        self,
+        *,
+        runtime_facts: Any,
+        analysis_history_id: int,
+        stock_code: str,
+        analysis_context_pack_overview: Optional[Dict[str, Any]],
+    ) -> None:
+        """Best-effort persistence for valid individual skill opinions."""
+        opinions = getattr(runtime_facts, "skill_opinions", ()) if runtime_facts else ()
+        if not opinions:
+            return
+
+        quality_level = None
+        if isinstance(analysis_context_pack_overview, dict):
+            quality = analysis_context_pack_overview.get("data_quality")
+            if isinstance(quality, dict):
+                quality_level = quality.get("level")
+
+        try:
+            from src.services.skill_opinion_sample_service import SkillOpinionSampleService
+
+            SkillOpinionSampleService(db_manager=self.db).persist(
+                analysis_history_id=analysis_history_id,
+                stock_code=stock_code,
+                opinions=opinions,
+                data_quality_level=quality_level,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Skill opinion sample persistence skipped after history save: "
+                "stock_code=%s error_type=%s",
+                stock_code,
+                type(exc).__name__,
+            )
 
     def _extract_decision_signal_after_history_save(
         self,

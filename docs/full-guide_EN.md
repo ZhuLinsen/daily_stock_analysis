@@ -153,9 +153,12 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `SEARXNG_BASE_URLS` | SearXNG self-hosted instances (quota-free fallback, enable format: json in settings.yml); when empty the app auto-discovers public instances | Optional |
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
+| `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; when unset/empty defaults to the official `http://api.tushare.pro`. Set to a `http://` or `https://` URL only when routing through a corporate proxy, cross-border network, or a self-hosted mirror | Optional |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API key for optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement; permission or entitlement failures fall back to existing providers | Optional |
 
 > **GitHub Actions:** The bundled `00-daily-analysis.yml` maps `TUSHARE_TOKEN`, `TICKFLOW_API_KEY` / `TICKFLOW_*`, and the documented `LONGBRIDGE_*` variables into the job environment. Store `TICKFLOW_API_KEY` in **Secrets**; non-sensitive TickFlow priority, adjustment, and batch switches can live in **Variables** or **Secrets**. Longbridge OAuth still requires a client id plus `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` for headless Actions runs, while the legacy `LONGBRIDGE_APP_KEY` / `LONGBRIDGE_APP_SECRET` / `LONGBRIDGE_ACCESS_TOKEN` triplet remains supported.
+
+> **`TUSHARE_HTTP_URL` mapping in the daily workflow:** `00-daily-analysis.yml` maps `TUSHARE_HTTP_URL` with `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` — the same vars-first precedence used for `TICKFLOW_PRIORITY` and other non-sensitive knobs. The endpoint is an "address" rather than a credential, so **Variables** is preferred for team review and audit visibility. Note that the real precedence is "vars wins when non-empty": a **Secrets** entry with the same name is **not** a tamper fallback that overrides a non-empty Variable — Secrets is only selected when the Variable is empty. Build your threat model on that actual semantics. GitHub exposes Variables and Secrets as two independent write-permission models: anyone (human or automation) with write access to repository Variables can set a non-empty Variable and silently reroute the runtime endpoint — including `TUSHARE_TOKEN` and the full request body to an attacker-controlled URL — without reading or modifying any Secret. Secrets only protect value confidentiality; they do **not** provide "endpoint integrity" or "priority override" guarantees. If you need stronger access control over the endpoint, use GitHub Environment protection rules, CODEOWNERS, branch protection, or a dedicated deployment approval flow — **do not treat "put it in Secrets and leave Variables empty" as a tamper guard**. Leaving it unset or empty preserves the default `http://api.tushare.pro` endpoint — the fetcher does not error when this variable is missing.
 
 #### ✅ Minimum Configuration Example
 
@@ -207,6 +210,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
 | `AGENT_BACKEND` | Runtime for the existing ask-stock Chat: `auto` (recommended, preserves the default model), `litellm`, or `codex_app_server` (experimental, single-agent Chat only) | `auto` | No |
 | `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
+| `AGENT_SKILL_CONCURRENCY` | Specialist-mode strategy worker concurrency cap, range `1-4`. Up to four strategies are selected; the default runs three concurrently and queues the fourth under the shared pipeline budget | `3` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |
@@ -343,6 +347,7 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
 | `TUSHARE_TOKEN` | Tushare Pro Token | - | Optional |
+| `TUSHARE_HTTP_URL` | Tushare Pro HTTP endpoint; defaults to `http://api.tushare.pro` when unset/empty. Set only when routing through a corporate proxy, cross-border network, or a self-hosted mirror (must start with `http://` or `https://`). | `http://api.tushare.pro` | Optional |
 | `TICKFLOW_API_KEY` | TickFlow API key; enables optional A-share daily K-lines, realtime quotes, stock list/name lookup, and CN market review enhancement. Permission failures fall back to existing providers. | - | Optional |
 | `TICKFLOW_PRIORITY` | TickFlow daily K-line provider priority; lower values are tried earlier. No effect unless `TICKFLOW_API_KEY` is configured. Does not affect realtime quotes, which are ordered by `REALTIME_SOURCE_PRIORITY`. | `2` | Optional |
 | `TICKFLOW_KLINE_ADJUST` | TickFlow daily K-line adjustment mode: `none`, `forward`, `backward`, `forward_additive`, or `backward_additive`. | `none` | Optional |

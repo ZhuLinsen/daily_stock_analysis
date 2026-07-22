@@ -51,11 +51,13 @@ class TestAgentConfig(unittest.TestCase):
         self.assertFalse(config.agent_mode)
         self.assertEqual(config.agent_max_steps, AGENT_MAX_STEPS_DEFAULT)
         self.assertEqual(config.agent_skills, [])
+        self.assertEqual(config.agent_skill_concurrency, 3)
 
     @patch.dict(os.environ, {
         'AGENT_MODE': 'true',
         'AGENT_MAX_STEPS': '15',
         'AGENT_SKILLS': 'dragon_head,shrink_pullback,volume_breakout',
+        'AGENT_SKILL_CONCURRENCY': '4',
     }, clear=True)
     def test_agent_config_from_env(self):
         """Agent config should be loaded from environment."""
@@ -65,6 +67,15 @@ class TestAgentConfig(unittest.TestCase):
         self.assertTrue(config.agent_mode)
         self.assertEqual(config.agent_max_steps, 15)
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback', 'volume_breakout'])
+        self.assertEqual(config.agent_skill_concurrency, 4)
+
+    @patch.dict(os.environ, {'AGENT_SKILL_CONCURRENCY': '9'}, clear=True)
+    def test_agent_skill_concurrency_is_clamped(self):
+        """Agent skill concurrency should stay within the supported 1-4 range."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_skill_concurrency, 4)
 
     @patch.dict(os.environ, {'AGENT_MODE': 'false'}, clear=True)
     def test_agent_mode_disabled(self):
@@ -2472,8 +2483,10 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.report_integrity_enabled = False
             mock_config.return_value = mock_cfg
 
+            from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
             from src.core.pipeline import StockAnalysisPipeline
             from src.enums import ReportType
+
             pipeline = StockAnalysisPipeline(config=mock_cfg)
             pipeline.search_service.is_available = False
             pipeline._ensure_agent_history = MagicMock()
@@ -2494,11 +2507,21 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_executor.run.return_value = SimpleNamespace(
                 success=True,
                 provider="agent-provider",
+                runtime_facts=AgentRuntimeFacts(
+                    skill_opinions=(
+                        SkillOpinionFact(
+                            skill_id="alpha",
+                            signal="buy",
+                            confidence=0.7,
+                        ),
+                    ),
+                ),
                 dashboard={"stock_name": "科创芯片ETF"},
             )
             with patch('src.agent.factory.build_agent_executor', return_value=mock_executor):
                 mock_diagnostic_snapshot.return_value = {"trace_id": "trace-1391", "query_id": "q-1391"}
                 pipeline.db.save_analysis_history = MagicMock(return_value=1)
+                pipeline._persist_skill_opinion_samples_after_history_save = MagicMock()
 
                 result = pipeline._analyze_with_agent(
                     code="588200",
@@ -2515,6 +2538,20 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertIn("diagnostics", history_context)
             self.assertEqual(history_context["diagnostics"]["trace_id"], "trace-1391")
             self.assertEqual(history_context["stock_name"], "科创芯片ETF")
+            pipeline._persist_skill_opinion_samples_after_history_save.assert_called_once()
+            sample_kwargs = (
+                pipeline._persist_skill_opinion_samples_after_history_save.call_args.kwargs
+            )
+            self.assertIs(
+                sample_kwargs["runtime_facts"],
+                mock_executor.run.return_value.runtime_facts,
+            )
+            self.assertEqual(sample_kwargs["analysis_history_id"], 1)
+            self.assertEqual(sample_kwargs["stock_code"], "588200")
+            self.assertEqual(
+                sample_kwargs["analysis_context_pack_overview"]["data_quality"]["level"],
+                "poor",
+            )
 
 
 # ============================================================

@@ -4014,6 +4014,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": [],
     },
+    "AGENT_SKILL_CONCURRENCY": {
+        "title": "Strategy Skill Concurrency",
+        "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "3",
+        "options": [],
+        "validation": {"min": 1, "max": 4},
+        "display_order": 64,
+        "help_key": "settings.agent.AGENT_SKILL_CONCURRENCY",
+        "examples": [
+            "AGENT_SKILL_CONCURRENCY=3",
+            "AGENT_SKILL_CONCURRENCY=4",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
     "AGENT_DEEP_RESEARCH_BUDGET": {
         "title": "Deep Research Token Budget",
         "description": "Maximum token budget for Deep Research planning, follow-up research, and final synthesis.",

@@ -109,6 +109,7 @@ class StrategyEngine:
                 normalized_raw = dict(raw_data)
                 normalized_raw.setdefault("original_signal", original_signal)
                 normalized_raw["normalized_signal"] = canonical
+                source_opinion = opinion
                 opinion = AgentOpinion(
                     agent_name=opinion.agent_name,
                     signal=canonical,
@@ -118,6 +119,7 @@ class StrategyEngine:
                     raw_data=normalized_raw,
                     timestamp=opinion.timestamp,
                 )
+                opinion._confidence_input_valid = source_opinion.confidence_input_valid
             valid_skill_opinions.append(opinion)
             evidence_opinions.append(opinion)
 
@@ -129,8 +131,22 @@ class StrategyEngine:
             evidence_opinions=evidence_opinions,
         )
 
-    def process(self, opinions: List[AgentOpinion]) -> StrategyResult:
-        return self.process_partition(self.partition_only(opinions))
+    def process(
+        self,
+        opinions: List[AgentOpinion],
+        *,
+        diagnostic_records: Optional[List[Dict[str, Any]]] = None,
+    ) -> StrategyResult:
+        partition = self.partition_only(opinions)
+        existing_diagnostics = [
+            dict(record)
+            for record in (diagnostic_records or [])
+            if isinstance(record, dict)
+        ]
+        if existing_diagnostics:
+            partition.invalid_records = existing_diagnostics + partition.invalid_records
+            partition.invalid_count = len(partition.invalid_records)
+        return self.process_partition(partition)
 
     def process_partition(self, partition: EvidencePartition) -> StrategyResult:
         if not partition.valid_skill_opinions:

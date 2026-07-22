@@ -5,7 +5,7 @@ Strategy synthesis helpers for skill-agent consensus.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, Dict, Iterable, List, Optional
 
 from src.agent.protocols import (
@@ -15,9 +15,17 @@ from src.agent.protocols import (
     normalize_strategy_signal,
     strategy_signal_score,
 )
+from src.agent.skills.deliberation import DeliberationMediator
 from src.agent.skills.defaults import extract_skill_id
 
 _SEVERITY_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3}
+_SCORE_TO_SIGNAL = [
+    (4.5, "strong_buy"),
+    (3.5, "buy"),
+    (2.5, "hold"),
+    (1.5, "sell"),
+    (0.0, "strong_sell"),
+]
 
 
 def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinion:
@@ -195,6 +203,12 @@ class ConflictDetector:
 class StrategySynthesizer:
     """Build an explainable synthesis payload for strategy consensus."""
 
+    def __init__(
+        self,
+        deliberation_mediator: Optional[Any] = None,
+    ) -> None:
+        self.deliberation_mediator = deliberation_mediator or DeliberationMediator()
+
     def synthesize(
         self,
         opinions: List[StrategyOpinion],
@@ -208,6 +222,17 @@ class StrategySynthesizer:
     ) -> Dict[str, Any]:
         conflict_severity = _highest_severity(conflicts)
         adjusted_confidence = self.adjust_confidence(weighted_confidence, conflict_severity)
+        deliberation = self.deliberation_mediator.deliberate(
+            opinions,
+            conflicts,
+            final_signal=final_signal,
+        )
+        if deliberation is not None:
+            adjusted_confidence = max(
+                0.0,
+                min(1.0, adjusted_confidence + deliberation.summary.confidence_adjustment),
+            )
+        revision_projection = self._build_revision_projection(opinions, deliberation)
         final_score = strategy_signal_score(final_signal)
         supporting, opposing = self._group_opinions(opinions, final_score)
         consensus_level = self._consensus_level(
@@ -222,7 +247,7 @@ class StrategySynthesizer:
         # list itself. In the E2E path the explicit partition value takes precedence.
         invalid_count = max(invalid_count, sum(1 for op in opinions if op.invalid_signal))
 
-        return {
+        payload = {
             "final_signal": final_signal,
             "weighted_score": round(weighted_score, 4),
             "confidence": round(adjusted_confidence, 4),
@@ -244,6 +269,11 @@ class StrategySynthesizer:
                 "conflict_count": len(conflicts),
             },
         }
+        if deliberation is not None:
+            payload["deliberation"] = deliberation.to_dict()
+        if revision_projection is not None:
+            payload["revision_projection"] = revision_projection
+        return payload
 
     @staticmethod
     def adjust_confidence(confidence: float, conflict_severity: str) -> float:
@@ -346,6 +376,69 @@ class StrategySynthesizer:
             return "low"
         return "medium"
 
+    def _build_revision_projection(
+        self,
+        opinions: List[StrategyOpinion],
+        deliberation: Optional[Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Preview synthesis if softened deliberation responses were accepted.
+
+        This is intentionally preview-only: it does not mutate opinions and does
+        not override the authoritative final_signal already produced upstream.
+        """
+        if deliberation is None:
+            return None
+
+        valid_opinions = [op for op in opinions if not op.invalid_signal]
+        if not valid_opinions:
+            return None
+
+        softened_by_skill = _softened_response_by_skill(deliberation.responses)
+        projected_opinions: List[StrategyOpinion] = []
+        changed_skills: List[str] = []
+        for opinion in valid_opinions:
+            response = softened_by_skill.get(opinion.skill_id)
+            if response is None or not _is_safe_projection_response(response, opinion):
+                projected_opinions.append(opinion)
+                continue
+
+            projected_opinions.append(
+                replace(
+                    opinion,
+                    signal=response.revised_signal,
+                    confidence=max(0.0, min(1.0, response.revised_confidence)),
+                )
+            )
+            if opinion.skill_id not in changed_skills:
+                changed_skills.append(opinion.skill_id)
+
+        weighted_score, weighted_confidence = _confidence_weighted_projection(projected_opinions)
+        projected_signal = _signal_from_score(weighted_score)
+        projected_conflicts = ConflictDetector().detect(projected_opinions, final_signal=projected_signal)
+        projected_conflict_severity = _highest_severity(projected_conflicts)
+        projected_confidence = self.adjust_confidence(weighted_confidence, projected_conflict_severity)
+
+        return {
+            "status": "computed",
+            "mode": "preview_only",
+            "source_mode": str(getattr(deliberation, "mode", "")),
+            "projected_signal": projected_signal,
+            "projected_weighted_score": round(weighted_score, 4),
+            "projected_confidence": round(projected_confidence, 4),
+            "projected_original_confidence": round(weighted_confidence, 4),
+            "projected_conflict_count": len(projected_conflicts),
+            "projected_conflict_severity": projected_conflict_severity,
+            "projected_consensus_level": self._consensus_level(
+                projected_opinions,
+                projected_conflicts,
+                projected_signal,
+                insufficient_evidence=False,
+            ),
+            "changed_skill_count": len(changed_skills),
+            "changed_skills": changed_skills,
+            "final_signal_overridden": False,
+        }
+
 
 def _as_float(value: Any, default: float) -> float:
     try:
@@ -376,6 +469,73 @@ def _highest_severity(conflicts: List[StrategyConflict]) -> str:
     if not conflicts:
         return "none"
     return max((conflict.severity for conflict in conflicts), key=lambda severity: _SEVERITY_RANK.get(severity, 0))
+
+
+def _confidence_weighted_projection(opinions: List[StrategyOpinion]) -> tuple[float, float]:
+    weighted: List[tuple[StrategyOpinion, float]] = [
+        (opinion, max(0.0, min(1.0, opinion.confidence)))
+        for opinion in opinions
+        if not opinion.invalid_signal
+    ]
+    weight_sum = sum(weight for _, weight in weighted)
+    if weight_sum <= 0:
+        return 3.0, 0.0
+
+    weighted_score = sum(
+        strategy_signal_score(opinion.signal) * weight
+        for opinion, weight in weighted
+    ) / weight_sum
+    weighted_confidence = sum(
+        max(0.0, min(1.0, opinion.confidence)) * weight
+        for opinion, weight in weighted
+    ) / weight_sum
+    return weighted_score, weighted_confidence
+
+
+def _signal_from_score(score: float) -> str:
+    for threshold, signal in _SCORE_TO_SIGNAL:
+        if score >= threshold:
+            return signal
+    return "hold"
+
+
+def _softened_response_by_skill(responses: Any) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    if not isinstance(responses, list):
+        return result
+
+    for response in responses:
+        if getattr(response, "revision", "") != "softened":
+            continue
+        skill_id = str(getattr(response, "skill_id", "") or "")
+        revised_signal = str(getattr(response, "revised_signal", "") or "")
+        if not skill_id or not revised_signal:
+            continue
+        _, invalid, _ = normalize_strategy_signal(revised_signal)
+        if invalid:
+            continue
+
+        current = result.get(skill_id)
+        if current is None or _projection_preference(response) < _projection_preference(current):
+            result[skill_id] = response
+    return result
+
+
+def _is_safe_projection_response(response: Any, opinion: StrategyOpinion) -> bool:
+    """Reject projection inputs that are more aggressive than the source opinion."""
+    if str(getattr(response, "original_signal", "") or "") != opinion.signal:
+        return False
+    revised_signal = str(getattr(response, "revised_signal", "") or "")
+    if revised_signal != DeliberationMediator._softened_signal(opinion.signal):
+        return False
+    revised_confidence = _as_float(getattr(response, "revised_confidence", None), -1.0)
+    return 0.0 <= revised_confidence <= opinion.confidence + 0.0001
+
+
+def _projection_preference(response: Any) -> tuple[float, float]:
+    signal = str(getattr(response, "revised_signal", "") or "hold")
+    confidence = _as_float(getattr(response, "revised_confidence", 0.0), 0.0)
+    return abs(strategy_signal_score(signal) - strategy_signal_score("hold")), confidence
 
 
 def _opinion_to_item(opinion: StrategyOpinion) -> Dict[str, Any]:

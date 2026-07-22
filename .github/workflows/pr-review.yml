@@ -1,29 +1,9 @@
-# PR 自动审查 - 元数据检查 + AI 语义审查
-# 特权 pull_request_target 流程只读取 GitHub API 数据，不检出或执行 fork PR 代码。
+# PR 手动辅助审查 - 元数据检查 + AI 语义审查
+# 暂停 PR 自动触发；维护者可按 PR 编号手动运行，且不会检出或执行 fork PR 代码。
 
 name: PR Review
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '**.py'
-      - '**.md'
-      - '**.ts'
-      - '**.tsx'
-      - 'docs/**'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'apps/dsa-web/**'
-      - 'requirements.txt'
-      - '.github/requirements-ci.txt'
-      - 'pyproject.toml'
-      - 'setup.cfg'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
-      - '.github/workflows/**'
-      - '.github/scripts/**'
-      - 'docker/Dockerfile'
-      - 'docker-compose.yml'
   workflow_dispatch:
     inputs:
       pr_number:

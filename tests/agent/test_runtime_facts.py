@@ -30,6 +30,7 @@ from src.agent.runtime_facts import (
     DegradationBoundary,
     DegradedEvent,
     PipelineTerminationFact,
+    SkillOpinionFact,
     build_agent_runtime_facts,
 )
 
@@ -154,6 +155,27 @@ def test_runtime_facts_only_project_independent_low_sensitivity_opinions():
         assert forbidden not in serialized
 
 
+def test_runtime_facts_capture_latest_valid_individual_skill_opinions_only():
+    ctx = AgentContext()
+    ctx.add_opinion(AgentOpinion(agent_name="skill_alpha", signal="sell", confidence=0.4))
+    ctx.add_opinion(AgentOpinion(agent_name="skill_beta", signal="moon", confidence=0.9))
+    ctx.add_opinion(AgentOpinion(agent_name="skill_alpha", signal="strong-buy", confidence=0.876))
+    ctx.add_opinion(AgentOpinion(agent_name="skill_consensus", signal="buy", confidence=0.9))
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.7))
+
+    facts = build_agent_runtime_facts(ctx)
+
+    assert facts.skill_opinions == (
+        SkillOpinionFact(
+            skill_id="alpha",
+            signal="strong_buy",
+            confidence=0.88,
+            observed_at=ctx.opinions[2].timestamp,
+        ),
+    )
+    serialized = json.dumps(asdict(facts.skill_opinions[0]), ensure_ascii=False).lower()
+    for forbidden in ("reasoning", "raw_data", "token", "secret"):
+        assert forbidden not in serialized
 def test_runtime_facts_exclude_invalid_opinion_signals_instead_of_forging_hold():
     ctx = AgentContext()
     ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8))
