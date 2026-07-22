@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from src.storage import DatabaseManager, SkillOpinionSampleRecord
+from src.storage import AnalysisHistory, DatabaseManager, SkillOpinionSampleRecord
 
 
 class SkillOpinionSampleRepository:
@@ -23,7 +23,27 @@ class SkillOpinionSampleRepository:
             return 0
 
         def _insert(session):
-            statement = sqlite_insert(SkillOpinionSampleRecord).values(values)
+            history_ids = {
+                row.get("analysis_history_id")
+                for row in values
+                if row.get("analysis_history_id") is not None
+            }
+            if not history_ids:
+                return 0
+            existing_history_ids = set(
+                session.execute(
+                    select(AnalysisHistory.id).where(AnalysisHistory.id.in_(history_ids))
+                ).scalars()
+            )
+            eligible_values = [
+                row
+                for row in values
+                if row.get("analysis_history_id") in existing_history_ids
+            ]
+            if not eligible_values:
+                return 0
+
+            statement = sqlite_insert(SkillOpinionSampleRecord).values(eligible_values)
             statement = statement.on_conflict_do_nothing(
                 index_elements=[
                     "analysis_history_id",

@@ -2448,7 +2448,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if not ids:
             return 0
 
-        with self.session_scope() as session:
+        def _write(session: Session) -> int:
             existing_ids = sorted(
                 session.execute(
                     select(AnalysisHistory.id).where(AnalysisHistory.id.in_(ids))
@@ -2493,6 +2493,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 delete(AnalysisHistory).where(AnalysisHistory.id.in_(existing_ids))
             )
             return result.rowcount or 0
+
+        return self._run_write_transaction(
+            "delete analysis history records",
+            _write,
+        )
 
     def get_distinct_stocks_from_history(
         self,

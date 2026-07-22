@@ -3,15 +3,24 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import inspect
 from sqlalchemy.exc import OperationalError
 
-from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
+from src.agent.protocols import AgentContext, AgentOpinion
+from src.agent.runtime_facts import (
+    AgentRuntimeFacts,
+    SkillOpinionFact,
+    build_agent_runtime_facts,
+)
+from src.agent.skills.skill_agent import SkillAgent
 from src.config import Config
 from src.core.pipeline import StockAnalysisPipeline
 from src.repositories.skill_opinion_sample_repo import SkillOpinionSampleRepository
@@ -46,6 +55,29 @@ def _add_history(db: DatabaseManager, code: str = "600519") -> int:
         session.add(row)
         session.flush()
         return int(row.id)
+
+
+def _skill_agent_facts(confidence) -> tuple[object, AgentRuntimeFacts]:
+    ctx = AgentContext(stock_code="600519", stock_name="Test Stock")
+    with patch.object(SkillAgent, "_load_skill", return_value=None):
+        agent = SkillAgent(
+            skill_id="alpha",
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        )
+    opinion = agent.post_process(
+        ctx,
+        json.dumps(
+            {
+                "signal": "buy",
+                "confidence": confidence,
+                "reasoning": "valid test opinion",
+            }
+        ),
+    )
+    if opinion is not None:
+        ctx.add_opinion(opinion)
+    return opinion, build_agent_runtime_facts(ctx)
 
 
 def test_service_persists_low_sensitivity_samples_idempotently(isolated_db) -> None:
@@ -147,6 +179,30 @@ def test_service_retries_sqlite_locked_write_without_losing_samples(isolated_db)
     assert [(row.skill_id, row.signal) for row in rows] == [("alpha", "buy")]
 
 
+def test_history_deletion_retries_sqlite_locked_write(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    first_session = isolated_db.get_session()
+    second_session = isolated_db.get_session()
+    locked = OperationalError(
+        "SELECT",
+        None,
+        sqlite3.OperationalError("database is locked"),
+    )
+
+    with patch.object(
+        isolated_db,
+        "get_session",
+        side_effect=[first_session, second_session],
+    ):
+        with patch.object(first_session, "execute", side_effect=locked):
+            with patch("src.storage.time.sleep") as sleep:
+                deleted = isolated_db.delete_analysis_history_records([history_id])
+
+    assert deleted == 1
+    sleep.assert_called_once_with(isolated_db._sqlite_write_retry_base_delay)
+    assert isolated_db.get_analysis_history_by_id(history_id) is None
+
+
 def test_sample_schema_is_idempotent_and_has_identity_constraints(isolated_db) -> None:
     from src.storage import Base
 
@@ -179,6 +235,33 @@ def test_service_rejects_invalid_identity_without_creating_samples(isolated_db) 
     assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
 
 
+@pytest.mark.parametrize(
+    "confidence",
+    [float("nan"), float("inf"), -0.01, 1.01, 10**400],
+)
+def test_service_rejects_invalid_confidence_as_final_guard(
+    isolated_db,
+    confidence,
+) -> None:
+    history_id = _add_history(isolated_db)
+    service = SkillOpinionSampleService(db_manager=isolated_db)
+
+    with pytest.raises(ValueError, match="skill opinion confidence"):
+        service.persist(
+            analysis_history_id=history_id,
+            stock_code="600519",
+            opinions=(
+                SkillOpinionFact(
+                    skill_id="alpha",
+                    signal="buy",
+                    confidence=confidence,
+                ),
+            ),
+        )
+
+    assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
+
+
 def test_history_deletion_removes_dependent_skill_samples(isolated_db) -> None:
     history_id = _add_history(isolated_db)
     SkillOpinionSampleService(db_manager=isolated_db).persist(
@@ -190,6 +273,151 @@ def test_history_deletion_removes_dependent_skill_samples(isolated_db) -> None:
     assert isolated_db.delete_analysis_history_records([history_id]) == 1
     with isolated_db.get_session() as session:
         assert session.query(SkillOpinionSampleRecord).count() == 0
+
+
+def test_delayed_sample_write_after_history_deletion_creates_no_orphan(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    opinion, facts = _skill_agent_facts(0.73)
+    assert opinion is not None
+
+    assert isolated_db.delete_analysis_history_records([history_id]) == 1
+    assert SkillOpinionSampleService(db_manager=isolated_db).persist(
+        analysis_history_id=history_id,
+        stock_code="600519",
+        opinions=facts.skill_opinions,
+    ) == 0
+
+    assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
+
+
+def test_interleaved_sample_insert_and_history_delete_leave_no_orphan(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    _, facts = _skill_agent_facts(0.73)
+    service = SkillOpinionSampleService(db_manager=isolated_db)
+    original_run_write_transaction = isolated_db._run_write_transaction
+    insert_has_write_lock = threading.Event()
+    allow_insert = threading.Event()
+    delete_started = threading.Event()
+
+    def coordinated_transaction(operation_name, write_operation):
+        if operation_name == "insert skill opinion samples":
+
+            def _pause_after_write_lock(session):
+                insert_has_write_lock.set()
+                assert allow_insert.wait(timeout=5)
+                return write_operation(session)
+
+            return original_run_write_transaction(operation_name, _pause_after_write_lock)
+        if operation_name == "delete analysis history records":
+            delete_started.set()
+        return original_run_write_transaction(operation_name, write_operation)
+
+    with patch.object(
+        isolated_db,
+        "_run_write_transaction",
+        side_effect=coordinated_transaction,
+    ):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            insert_future = executor.submit(
+                service.persist,
+                analysis_history_id=history_id,
+                stock_code="600519",
+                opinions=facts.skill_opinions,
+            )
+            assert insert_has_write_lock.wait(timeout=5)
+            delete_future = executor.submit(
+                isolated_db.delete_analysis_history_records,
+                [history_id],
+            )
+            assert delete_started.wait(timeout=5)
+            allow_insert.set()
+            assert insert_future.result(timeout=5) == 1
+            assert delete_future.result(timeout=5) == 1
+
+    assert isolated_db.get_analysis_history_by_id(history_id) is None
+    assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
+
+
+@pytest.mark.parametrize("confidence", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_skill_agent_confidence_creates_no_sample(
+    isolated_db,
+    confidence,
+) -> None:
+    history_id = _add_history(isolated_db)
+    opinion, facts = _skill_agent_facts(confidence)
+
+    assert opinion is None
+    assert facts.skill_opinions == ()
+    assert SkillOpinionSampleService(db_manager=isolated_db).persist(
+        analysis_history_id=history_id,
+        stock_code="600519",
+        opinions=facts.skill_opinions,
+    ) == 0
+    assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
+
+
+@pytest.mark.parametrize("confidence", [-0.01, 1.01, 10**400, True, "0.8", None])
+def test_skill_agent_rejects_out_of_range_or_non_numeric_confidence(confidence) -> None:
+    opinion, facts = _skill_agent_facts(confidence)
+
+    assert opinion is None
+    assert facts.skill_opinions == ()
+
+
+@pytest.mark.parametrize("confidence", [float("nan"), float("inf"), float("-inf")])
+def test_runtime_facts_defensively_filter_clamped_invalid_skill_confidence(
+    confidence,
+) -> None:
+    ctx = AgentContext()
+    ctx.add_opinion(
+        AgentOpinion(
+            agent_name="skill_alpha",
+            signal="buy",
+            confidence=confidence,
+        )
+    )
+
+    assert build_agent_runtime_facts(ctx).skill_opinions == ()
+
+
+def test_runtime_facts_preserve_invalid_confidence_through_canonical_copy() -> None:
+    from src.agent.skills.engine import StrategyEngine
+
+    partition = StrategyEngine().partition_only(
+        [
+            AgentOpinion(
+                agent_name="skill_alpha",
+                signal="strong-buy",
+                confidence=float("nan"),
+            )
+        ]
+    )
+    ctx = AgentContext(opinions=partition.valid_skill_opinions)
+
+    assert ctx.opinions[0].signal == "strong_buy"
+    assert build_agent_runtime_facts(ctx).skill_opinions == ()
+
+
+def test_valid_skill_agent_confidence_persists_through_real_chain(isolated_db) -> None:
+    history_id = _add_history(isolated_db)
+    opinion, facts = _skill_agent_facts(0.73)
+
+    assert opinion is not None
+    assert facts.skill_opinions == (
+        SkillOpinionFact(
+            skill_id="alpha",
+            signal="buy",
+            confidence=0.73,
+            observed_at=opinion.timestamp,
+        ),
+    )
+    assert SkillOpinionSampleService(db_manager=isolated_db).persist(
+        analysis_history_id=history_id,
+        stock_code="600519",
+        opinions=facts.skill_opinions,
+    ) == 1
+    rows = SkillOpinionSampleRepository(isolated_db).list_for_history(history_id)
+    assert [(row.skill_id, row.confidence) for row in rows] == [("alpha", 0.73)]
 
 
 def test_pipeline_helper_is_noop_without_skill_opinions() -> None:

@@ -61,7 +61,7 @@ class SkillOpinionSampleService:
                 raise ValueError("skill_id exceeds 128 characters")
             try:
                 confidence = float(opinion.confidence)
-            except (TypeError, ValueError) as exc:
+            except (OverflowError, TypeError, ValueError) as exc:
                 raise ValueError("skill opinion confidence must be numeric") from exc
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise ValueError("skill opinion confidence must be between 0 and 1")

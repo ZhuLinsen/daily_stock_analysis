@@ -8,6 +8,7 @@ errors, tokens, or a user-facing final explanation.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Tuple
@@ -159,12 +160,13 @@ def _iter_skill_opinions(ctx: AgentContext):
             continue
         skill_id = extract_skill_id(opinion.agent_name)
         signal, invalid, _ = normalize_strategy_signal(opinion.signal)
-        if not skill_id or invalid:
+        confidence = _valid_skill_confidence(opinion)
+        if not skill_id or invalid or confidence is None:
             continue
         latest[skill_id] = SkillOpinionFact(
             skill_id=skill_id,
             signal=signal,
-            confidence=_safe_confidence(opinion.confidence),
+            confidence=round(confidence, 2),
             observed_at=_safe_timestamp(opinion.timestamp),
         )
     yield from latest.values()
@@ -241,6 +243,22 @@ def _safe_confidence(confidence: Any) -> float:
     except (TypeError, ValueError):
         value = 0.0
     return round(max(0.0, min(1.0, value)), 2)
+
+
+def _valid_skill_confidence(opinion: AgentOpinion) -> Optional[float]:
+    """Reject invalid skill confidence instead of converting it into a sample."""
+    if not opinion.confidence_input_valid:
+        return None
+    confidence = opinion.confidence
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return None
+    try:
+        value = float(confidence)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        return None
+    return value
 
 
 def _safe_timestamp(value: Any) -> Optional[float]:
