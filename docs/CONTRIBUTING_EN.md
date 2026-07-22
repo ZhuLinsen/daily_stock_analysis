@@ -83,6 +83,7 @@ After opening a PR, CI will automatically run the following PR checks:
 | `backend-gate` | `scripts/ci_gate.sh` — py_compile + flake8 critical errors + `./scripts/test.sh code` + `./scripts/test.sh yfinance` + offline pytest | ✅ |
 | `docker-build` | Docker image build and key module import smoke test | ✅ |
 | `web-gate` | `npm run lint` + `npm run build` (triggered when `apps/dsa-web/` changes) | ✅ (when triggered) |
+| `pr-review` | Advisory `pull_request_target` review that reads PR metadata and diff through the GitHub API for sensitive-file flags, AI review, labels, and report comments. It never checks out or executes fork PR code; Python and Flake8 execution remains in `backend-gate`. | ❌ (advisory) |
 
 Separately, the repository also has a non-blocking `network-smoke` workflow in `.github/workflows/network-smoke.yml`, but it is only triggered by `schedule` and `workflow_dispatch`, not by pull requests.
 
