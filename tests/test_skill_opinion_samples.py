@@ -237,7 +237,7 @@ def test_service_rejects_invalid_identity_without_creating_samples(isolated_db) 
 
 @pytest.mark.parametrize(
     "confidence",
-    [float("nan"), float("inf"), -0.01, 1.01, 10**400],
+    [float("nan"), float("inf"), -0.01, 1.01, 10**400, True, False],
 )
 def test_service_rejects_invalid_confidence_as_final_guard(
     isolated_db,
@@ -260,6 +260,31 @@ def test_service_rejects_invalid_confidence_as_final_guard(
         )
 
     assert SkillOpinionSampleRepository(isolated_db).list_for_history(history_id) == []
+
+
+@pytest.mark.parametrize("confidence", [0, 1, 0.5])
+def test_service_accepts_numeric_boundary_confidence_as_final_guard(
+    isolated_db,
+    confidence,
+) -> None:
+    history_id = _add_history(isolated_db)
+
+    assert SkillOpinionSampleService(db_manager=isolated_db).persist(
+        analysis_history_id=history_id,
+        stock_code="600519",
+        opinions=(
+            SkillOpinionFact(
+                skill_id="alpha",
+                signal="buy",
+                confidence=confidence,
+            ),
+        ),
+    ) == 1
+
+    rows = SkillOpinionSampleRepository(isolated_db).list_for_history(history_id)
+    assert [(row.skill_id, row.confidence) for row in rows] == [
+        ("alpha", float(confidence)),
+    ]
 
 
 def test_history_deletion_removes_dependent_skill_samples(isolated_db) -> None:

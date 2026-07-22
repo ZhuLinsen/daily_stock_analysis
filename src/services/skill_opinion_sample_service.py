@@ -59,6 +59,8 @@ class SkillOpinionSampleService:
                 raise ValueError("skill opinion requires a valid skill_id and signal")
             if len(skill_id) > 128:
                 raise ValueError("skill_id exceeds 128 characters")
+            if isinstance(opinion.confidence, bool):
+                raise ValueError("skill opinion confidence must be numeric")
             try:
                 confidence = float(opinion.confidence)
             except (OverflowError, TypeError, ValueError) as exc:
