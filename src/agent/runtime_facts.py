@@ -105,9 +105,12 @@ def _iter_base_agent_opinions(ctx: AgentContext):
     for opinion in ctx.opinions:
         if not _is_base_agent_opinion(opinion):
             continue
+        signal = _effective_signal(opinion.agent_name, opinion.signal)
+        if signal is None:
+            continue
         yield BaseAgentOpinionFact(
             agent=str(opinion.agent_name or "unknown"),
-            signal=_effective_signal(opinion.agent_name, opinion.signal),
+            signal=signal,
             confidence=_safe_confidence(opinion.confidence),
         )
 
@@ -168,18 +171,13 @@ def _risk_override_application(ctx: AgentContext) -> Optional[RiskOverrideApplic
     return application if isinstance(application, RiskOverrideApplication) else None
 
 
-def _normalize_opinion_signal(signal: Any) -> str:
-    if not isinstance(signal, str):
-        return "hold"
-    normalized = signal.strip().lower()
-    if normalized in {"strong_buy", "buy", "hold", "sell", "strong_sell"}:
-        return normalized
-    return "hold"
-
-
-def _effective_signal(agent_name: str, signal: Any) -> str:
+def _effective_signal(agent_name: str, signal: Any) -> Optional[str]:
     """Apply the base-opinion semantics established in PR #2021."""
-    normalized = _normalize_opinion_signal(signal)
+    from src.agent.protocols import normalize_strategy_signal
+
+    normalized, invalid, _ = normalize_strategy_signal(signal)
+    if invalid:
+        return None
     if _is_risk_agent(agent_name) and normalized in _BULLISH_SIGNALS:
         return "hold"
     return normalized
