@@ -1,203 +1,106 @@
-# PR 自动审查 - 语法检查 + AI 语义审查
-# 当有 PR 创建或更新时自动触发
+# PR 手动辅助审查 - 元数据检查 + AI 语义审查
+# 暂停 PR 自动触发；维护者可按 PR 编号手动运行，且不会检出或执行 fork PR 代码。
 
 name: PR Review
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '**.py'
-      - '**.md'
-      - '**.ts'
-      - '**.tsx'
-      - 'docs/**'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'apps/dsa-web/**'
-      - 'requirements.txt'
-      - '.github/requirements-ci.txt'
-      - 'pyproject.toml'
-      - 'setup.cfg'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
-      - '.github/workflows/**'
-      - '.github/scripts/**'
-      - 'docker/Dockerfile'
-      - 'docker-compose.yml'
-  # 支持手动触发（用于重新审查）
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 要重新审查的 PR 编号
+        required: true
+        type: number
 
-# 限制并发，避免同一 PR 多次触发时重复评论
 concurrency:
-  group: pr-review-${{ github.event.pull_request.number || github.run_id }}
+  group: pr-review-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
-  # ==================== 安全检查（检测敏感文件修改）====================
+  # ==================== 安全检查（仅通过 API 读取 PR 元数据）====================
   security-check:
     name: 🔒 安全检查
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       safe_to_run: ${{ steps.check_sensitive.outputs.safe_to_run }}
       sensitive_files_changed: ${{ steps.check_sensitive.outputs.sensitive_files_changed }}
-    
+      has_py_changes: ${{ steps.check_sensitive.outputs.has_py_changes }}
+      has_reviewable_changes: ${{ steps.check_sensitive.outputs.has_reviewable_changes }}
+
     steps:
-      - name: 📥 检出代码
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-      
-      - name: 🔄 获取 base 分支
-        run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
-      
       - name: 🔒 检查敏感文件修改
         id: check_sensitive
-        run: |
-          BASE_REF="${{ github.base_ref || 'main' }}"
-          SENSITIVE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD | grep -E '^(\.github/workflows/.*\.yml|\.github/scripts/.*\.py)$' || echo "")
-          
-          if [ -n "$SENSITIVE_FILES" ]; then
-            echo "⚠️ **检测到敏感文件修改，需要人工审核！**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "修改的敏感文件：" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$SENSITIVE_FILES" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "已标记为敏感变更，请重点人工复核；自动流程继续执行。" >> $GITHUB_STEP_SUMMARY
-            echo "sensitive_files_changed=true" >> $GITHUB_OUTPUT
-            echo "safe_to_run=true" >> $GITHUB_OUTPUT
-          else
-            echo "✅ 未检测到敏感文件修改" >> $GITHUB_STEP_SUMMARY
-            echo "sensitive_files_changed=false" >> $GITHUB_OUTPUT
-            echo "safe_to_run=true" >> $GITHUB_OUTPUT
-          fi
-
-  # ==================== 静态检查（先于 AI 审查）====================
-  auto-check:
-    name: 🔍 静态检查
-    runs-on: ubuntu-latest
-    needs: [security-check]
-    if: needs.security-check.outputs.safe_to_run == 'true'
-    outputs:
-      syntax_ok: ${{ steps.syntax.outputs.syntax_ok }}
-      has_py_changes: ${{ steps.check_files.outputs.has_py_changes }}
-      has_reviewable_changes: ${{ steps.check_files.outputs.has_reviewable_changes }}
-    
-    steps:
-      - name: 📥 检出代码
-        uses: actions/checkout@v5
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-      
-      - name: 🔄 获取 base 分支
-        run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
-      
-      - name: 🐍 设置 Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-      
-      - name: 📦 安装依赖
-        run: |
-          pip install --upgrade pip
-          pip install flake8
-      
-      - name: 📋 检查变更文件
-        id: check_files
-        run: |
-          BASE_REF="${{ github.base_ref || 'main' }}"
-          CHANGED_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' 2>/dev/null || echo "")
-          REVIEWABLE_FILES=$(git diff --name-only origin/$BASE_REF...HEAD -- '*.py' '*.md' 'docs/**' 'README.md' 'AGENTS.md' 'requirements.txt' '.github/requirements-ci.txt' 'pyproject.toml' 'setup.cfg' '.github/PULL_REQUEST_TEMPLATE.md' '.github/workflows/**' '.github/scripts/**' 2>/dev/null || echo "")
+          script: |
+            const pullNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+              core.setFailed('A valid PR number is required.');
+              return;
+            }
 
-          if [ -z "$REVIEWABLE_FILES" ]; then
-            echo "has_reviewable_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "has_reviewable_changes=true" >> $GITHUB_OUTPUT
-          fi
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+              per_page: 100
+            });
 
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "has_py_changes=false" >> $GITHUB_OUTPUT
-            echo "✅ 没有修改 Python 文件" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "has_py_changes=true" >> $GITHUB_OUTPUT
-            echo "CHANGED_FILES<<EOF" >> $GITHUB_ENV
-            echo "$CHANGED_FILES" >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
-          fi
-      
-      - name: 🐍 Python 语法检查
-        id: syntax
-        if: steps.check_files.outputs.has_py_changes == 'true'
-        run: |
-          echo "## 🐍 语法检查" >> $GITHUB_STEP_SUMMARY
-          echo "检查文件: $CHANGED_FILES"
-          
-          ERRORS=""
-          SYNTAX_OK="true"
-          for file in $CHANGED_FILES; do
-            if [ -f "$file" ]; then
-              if ! python -m py_compile "$file" 2>&1; then
-                ERRORS="$ERRORS\n❌ $file 语法错误"
-                SYNTAX_OK="false"
-              fi
-            fi
-          done
-          
-          echo "syntax_ok=$SYNTAX_OK" >> $GITHUB_OUTPUT
-          
-          if [ "$SYNTAX_OK" = "false" ]; then
-            echo -e "$ERRORS" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ 所有文件语法正确" >> $GITHUB_STEP_SUMMARY
-          fi
-      
-      - name: 🔎 Flake8 检查（严重错误）
-        if: steps.check_files.outputs.has_py_changes == 'true'
-        run: |
-          echo "## 🔎 代码质量检查" >> $GITHUB_STEP_SUMMARY
-          RESULT=$(flake8 $CHANGED_FILES --select=E9,F63,F7,F82 --format='%(path)s:%(row)d: %(code)s %(text)s' 2>/dev/null || true)
-          if [ -n "$RESULT" ]; then
-            echo "⚠️ 发现以下问题：" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$RESULT" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ 未发现严重代码问题" >> $GITHUB_STEP_SUMMARY
-          fi
-      
-      - name: 📊 变更统计
-        run: |
-          BASE_REF="${{ github.base_ref || 'main' }}"
-          echo "## 📊 变更统计" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          STATS=$(git diff --stat origin/$BASE_REF...HEAD 2>/dev/null | tail -1)
-          echo "$STATS" >> $GITHUB_STEP_SUMMARY
+            const sensitive = files
+              .map(file => file.filename)
+              .filter(filename => /^(\.github\/workflows\/.*\.ya?ml|\.github\/scripts\/.*\.py)$/.test(filename));
+            const isReviewable = filename =>
+              /\.(py|md|ts|tsx)$/.test(filename) ||
+              filename === 'README.md' ||
+              filename === 'AGENTS.md' ||
+              filename === 'requirements.txt' ||
+              filename === '.github/requirements-ci.txt' ||
+              filename === 'pyproject.toml' ||
+              filename === 'setup.cfg' ||
+              filename === '.github/PULL_REQUEST_TEMPLATE.md' ||
+              filename === 'docker/Dockerfile' ||
+              filename === 'docker-compose.yml' ||
+              filename.startsWith('apps/dsa-web/') ||
+              filename.startsWith('.github/workflows/') ||
+              filename.startsWith('.github/scripts/');
 
-  # ==================== AI 代码审查（依赖静态检查通过）====================
+            core.setOutput('safe_to_run', 'true');
+            core.setOutput('sensitive_files_changed', sensitive.length ? 'true' : 'false');
+            core.setOutput('has_py_changes', files.some(file => file.filename.endsWith('.py')) ? 'true' : 'false');
+            core.setOutput('has_reviewable_changes', files.some(file => isReviewable(file.filename)) ? 'true' : 'false');
+
+            if (sensitive.length) {
+              await core.summary
+                .addHeading('⚠️ 检测到敏感文件修改，需要人工审核！', 2)
+                .addCodeBlock(sensitive.join('\n'))
+                .addRaw('已标记为敏感变更；后续流程只通过 GitHub API 把 PR diff 当作数据读取，不检出或执行 PR 代码。')
+                .write();
+            } else {
+              await core.summary.addRaw('✅ 未检测到敏感文件修改').write();
+            }
+
+  # ==================== AI 代码审查（只运行 base 分支脚本）====================
   ai-review:
     name: 🤖 AI 代码审查
     runs-on: ubuntu-latest
-    needs: [security-check, auto-check]
+    needs: [security-check]
     if: |
       needs.security-check.outputs.safe_to_run == 'true' &&
-      needs.auto-check.result == 'success' &&
-      needs.auto-check.outputs.has_reviewable_changes == 'true' &&
+      needs.security-check.outputs.has_reviewable_changes == 'true' &&
       vars.ENABLE_AI_REVIEW != 'false'
-    
+    permissions:
+      contents: read
+      pull-requests: read
+
     steps:
-      # 先检出主分支（获取最新的 .github/scripts）
-      - name: 📥 检出主分支脚本
+      - name: 📥 检出可信主分支脚本
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -205,32 +108,21 @@ jobs:
             .github/scripts
           sparse-checkout-cone-mode: false
           path: main-scripts
-      
-      # 再检出 PR 代码（用于 diff 分析）
-      - name: 📥 检出 PR 代码
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          path: pr-code
-      
-      - name: 🔄 获取 base 分支
-        working-directory: pr-code
-        run: git fetch origin ${{ github.base_ref || 'main' }}:refs/remotes/origin/${{ github.base_ref || 'main' }}
-      
+          persist-credentials: false
+
       - name: 🐍 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      
-      - name: 📦 安装依赖
+
+      - name: 📦 安装 AI 客户端依赖
         run: pip install google-genai openai httpx
-      
+
       - name: 🤖 AI 审查代码变更
-        working-directory: pr-code
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_BASE_REF: ${{ github.base_ref || 'main' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          AI_REVIEW_SOURCE: github_api
+          GITHUB_TOKEN: ${{ github.token }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
@@ -238,111 +130,93 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           AI_REVIEW_STRICT: ${{ vars.AI_REVIEW_STRICT || 'false' }}
-          CI_SYNTAX_OK: ${{ needs.auto-check.outputs.syntax_ok || '' }}
-          CI_HAS_PY_CHANGES: ${{ needs.auto-check.outputs.has_py_changes || 'false' }}
-          CI_AUTO_CHECK_RESULT: ${{ needs.auto-check.result || '' }}
-        run: python ../main-scripts/.github/scripts/ai_review.py
-      
+          CI_DELEGATED_TO_PULL_REQUEST: 'true'
+          CI_HAS_PY_CHANGES: ${{ needs.security-check.outputs.has_py_changes }}
+        run: python main-scripts/.github/scripts/ai_review.py
+
       - name: 📤 上传审查结果
         uses: actions/upload-artifact@v6
         if: always()
         with:
           name: ai-review-result
-          path: pr-code/ai_review_result.txt
+          path: ai_review_result.txt
           if-no-files-found: ignore
 
-  # ==================== PR 标签自动分类 ====================
+  # ==================== PR 标签自动分类（仅 GitHub API）====================
   labeler:
     name: 🏷️ 自动标签
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+
     steps:
-      - name: 📥 检出代码
-        uses: actions/checkout@v5
-      
       - name: 🏷️ 添加标签
-        if: github.event_name == 'pull_request_target'
         uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         with:
           script: |
-            const { data: files } = await github.rest.pulls.listFiles({
+            const pullNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+              core.setFailed('A valid PR number is required.');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number
+              pull_number: pullNumber,
+              per_page: 100
             });
-            
             const labels = new Set();
-            
+
             for (const file of files) {
               const filename = file.filename.toLowerCase();
-              
-              if (filename.includes('notification') || filename.includes('webhook')) {
-                labels.add('notification');
-              }
-              if (filename.includes('feishu')) {
-                labels.add('feishu');
-              }
-              if (filename.includes('data_provider') || filename.includes('fetcher')) {
-                labels.add('data-source');
-              }
-              if (filename.includes('analyzer') || filename.includes('ai')) {
-                labels.add('ai');
-              }
-              if (filename.endsWith('.md') || filename.includes('doc')) {
-                labels.add('documentation');
-              }
-              if (filename.includes('workflow') || filename.includes('.github')) {
-                labels.add('ci/cd');
-              }
-              if (filename.includes('config')) {
-                labels.add('configuration');
-              }
-              if (filename.includes('test')) {
-                labels.add('testing');
-              }
+              if (filename.includes('notification') || filename.includes('webhook')) labels.add('notification');
+              if (filename.includes('feishu')) labels.add('feishu');
+              if (filename.includes('data_provider') || filename.includes('fetcher')) labels.add('data-source');
+              if (filename.includes('analyzer') || filename.includes('ai')) labels.add('ai');
+              if (filename.endsWith('.md') || filename.includes('doc')) labels.add('documentation');
+              if (filename.includes('workflow') || filename.includes('.github')) labels.add('ci/cd');
+              if (filename.includes('config')) labels.add('configuration');
+              if (filename.includes('test')) labels.add('testing');
             }
-            
-            const additions = files.reduce((sum, f) => sum + f.additions, 0);
-            const deletions = files.reduce((sum, f) => sum + f.deletions, 0);
-            const totalChanges = additions + deletions;
-            
-            if (totalChanges < 50) {
-              labels.add('size/S');
-            } else if (totalChanges < 200) {
-              labels.add('size/M');
-            } else if (totalChanges < 500) {
-              labels.add('size/L');
-            } else {
-              labels.add('size/XL');
-            }
-            
+
+            const totalChanges = files.reduce((sum, file) => sum + file.additions + file.deletions, 0);
+            if (totalChanges < 50) labels.add('size/S');
+            else if (totalChanges < 200) labels.add('size/M');
+            else if (totalChanges < 500) labels.add('size/L');
+            else labels.add('size/XL');
+
             if (labels.size > 0) {
               try {
                 await github.rest.issues.addLabels({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: context.issue.number,
+                  issue_number: pullNumber,
                   labels: Array.from(labels)
                 });
                 console.log(`Added labels: ${Array.from(labels).join(', ')}`);
-              } catch (e) {
-                console.log(`Failed to add labels: ${e.message}`);
+              } catch (error) {
+                console.log(`Failed to add labels: ${error.message}`);
               }
             }
 
-  # ==================== 自动评论检查结果 ====================
+  # ==================== 自动评论检查结果（仅 GitHub API）====================
   comment:
     name: 💬 审查报告
     runs-on: ubuntu-latest
-    needs: [security-check, auto-check, ai-review]
-    if: always() && github.event_name == 'pull_request_target' && needs.security-check.outputs.safe_to_run == 'true'
-    
+    needs: [security-check, ai-review]
+    if: always() && needs.security-check.outputs.safe_to_run == 'true'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      issues: write
+
     steps:
-      - name: 📥 检出代码
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      
       - name: 📥 下载 AI 审查结果
         uses: actions/download-artifact@v7
         if: needs.ai-review.result == 'success'
@@ -350,72 +224,68 @@ jobs:
         with:
           name: ai-review-result
           path: .
-      
+
       - name: 💬 生成审查报告
-        env:
-          AUTO_CHECK_RESULT: ${{ needs.auto-check.result }}
-          AI_REVIEW_RESULT: ${{ needs.ai-review.result }}
         uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          AI_REVIEW_RESULT: ${{ needs.ai-review.result }}
         with:
           script: |
             const fs = require('fs');
-            
-            const { data: files } = await github.rest.pulls.listFiles({
+            const pullNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+              core.setFailed('A valid PR number is required.');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number
+              pull_number: pullNumber,
+              per_page: 100
             });
-            
-            const additions = files.reduce((sum, f) => sum + f.additions, 0);
-            const deletions = files.reduce((sum, f) => sum + f.deletions, 0);
-            const changedFiles = files.length;
-            
+            const additions = files.reduce((sum, file) => sum + file.additions, 0);
+            const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
+
             let aiReview = '';
             try {
               aiReview = fs.readFileSync('ai_review_result.txt', 'utf8');
-            } catch (e) {
+            } catch (error) {
               console.log('No AI review result found');
             }
-            
-            const { data: comments } = await github.rest.issues.listComments({
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number
+              issue_number: pullNumber,
+              per_page: 100
             });
-            
-            const botComment = comments.find(c => 
-              c.user.type === 'Bot' && 
-              c.body.includes('## 🤖 自动审查报告')
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' && comment.body.includes('## 🤖 自动审查报告')
             );
-            
-            const checkStatus = process.env.AUTO_CHECK_RESULT === 'success' ? '✅ 通过' : '⚠️ 有问题';
-            const aiStatus = process.env.AI_REVIEW_RESULT === 'success' ? '✅ 已完成' : 
-                            process.env.AI_REVIEW_RESULT === 'skipped' ? '⏭️ 跳过' : '⚠️ 失败';
-            
+
+            const aiStatus = process.env.AI_REVIEW_RESULT === 'success' ? '✅ 已完成' :
+              process.env.AI_REVIEW_RESULT === 'skipped' ? '⏭️ 跳过' : '⚠️ 失败';
             let report = `## 🤖 自动审查报告
 
             | 项目 | 结果 |
             |------|------|
-            | 📊 变更文件 | ${changedFiles} 个 |
+            | 📊 变更文件 | ${files.length} 个 |
             | ➕ 新增行数 | ${additions} 行 |
             | ➖ 删除行数 | ${deletions} 行 |
-            | 🔍 静态检查 | ${checkStatus} |
+            | 🔍 代码检查 | 由独立 \`pull_request\` CI / \`backend-gate\` 执行 |
             | 🧠 AI 审查 | ${aiStatus} |
 
             ### 📁 修改的文件
 
             `;
-            
+
             for (const file of files.slice(0, 20)) {
-              const status = file.status === 'added' ? '🆕' : 
-                            file.status === 'removed' ? '🗑️' : '📝';
+              const status = file.status === 'added' ? '🆕' : file.status === 'removed' ? '🗑️' : '📝';
               report += `- ${status} \`${file.filename}\` (+${file.additions}/-${file.deletions})\n`;
             }
-            
-            if (files.length > 20) {
-              report += `\n... 还有 ${files.length - 20} 个文件\n`;
-            }
-            
+            if (files.length > 20) report += `\n... 还有 ${files.length - 20} 个文件\n`;
             if (aiReview) {
               report += `
             ---
@@ -425,13 +295,12 @@ jobs:
             ${aiReview}
             `;
             }
-            
             report += `
             ---
 
-            > 💡 **提示**: 请确保代码已通过本地测试，并遵循项目代码规范。
+            > 💡 **提示**: 请同时核对独立 CI 结果，并遵循项目代码规范。
             `;
-            
+
             if (botComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -443,7 +312,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: pullNumber,
                 body: report
               });
             }

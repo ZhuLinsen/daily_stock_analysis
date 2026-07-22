@@ -109,6 +109,7 @@ class StrategyEngine:
                 normalized_raw = dict(raw_data)
                 normalized_raw.setdefault("original_signal", original_signal)
                 normalized_raw["normalized_signal"] = canonical
+                source_opinion = opinion
                 opinion = AgentOpinion(
                     agent_name=opinion.agent_name,
                     signal=canonical,
@@ -118,6 +119,7 @@ class StrategyEngine:
                     raw_data=normalized_raw,
                     timestamp=opinion.timestamp,
                 )
+                opinion._confidence_input_valid = source_opinion.confidence_input_valid
             valid_skill_opinions.append(opinion)
             evidence_opinions.append(opinion)
 

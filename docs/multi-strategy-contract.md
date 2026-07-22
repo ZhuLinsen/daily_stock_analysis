@@ -2,6 +2,14 @@
 
 本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 2 只在 Phase 1 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
 
+## Skill opinion 样本边界（Issue #1904 P2 PR1）
+
+`AgentRuntimeFacts.skill_opinions` 只投影 individual SkillAgent 的低敏字段：`skill_id`、canonical `signal`、`confidence` 和 opinion 时间。`skill_consensus` / `strategy_consensus`、DecisionAgent、基础 Agent 以及 Invalid Opinion 均不得进入该集合；同一次运行出现同一 `skill_id` 的多条有效观点时，只保留最后一条。SkillAgent 首次解析时必须拒绝非数字、非有限或超出 `[0, 1]` 的 confidence；AgentOpinion 保留输入合法性标记供 RuntimeFacts 防御校验，禁止将非法输入 clamp 后作为有效样本继续使用。
+
+分析历史成功保存后，Pipeline 以 best-effort 方式写入 `skill_opinion_samples` sidecar。父历史存在性检查与样本插入必须位于同一个 SQLite 原子写事务中，历史删除复用相同的写事务与 locked retry；无论插入或删除谁先执行，均不得留下孤儿样本。幂等键为 `(analysis_history_id, skill_id, sample_schema_version)`；重复执行不得覆盖首次保存的不可变样本。写入失败只记录低敏错误类型，不得使报告、历史记录或 DecisionSignal 主流程失败。
+
+当前 `sample_schema_version=skill-opinion-sample-v1`。`skill_version` 与 `horizon` 仅保留为空值兼容位：现有 Skill 定义和 SkillAgent 输出没有可信的版本与周期契约，因此本阶段不得从 LLM `raw_data` 猜测或伪造。PR1 不创建 outcome、不提供 skill 表现统计、不实现 `get_skill_summary()`，也不改变 `AgentMemory` / `SkillAggregator` 权重。
+
 ## 术语与边界
 
 当前仓库里有多种名为 opinion / signal / consensus / synthesis 的数据面，Baseline 必须先消歧，避免把现有运行时结构误写成未来 phase。
