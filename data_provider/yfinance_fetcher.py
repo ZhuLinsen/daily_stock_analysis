@@ -34,6 +34,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
@@ -880,6 +881,10 @@ class YfinanceFetcher(BaseFetcher):
             except Exception:
                 name = STOCK_NAME_MAP.get(symbol, '')
 
+            # 复用上方已获取的 ticker_info，无额外请求
+            pe_ratio = _safe_float(ticker_info.get('trailingPE'))
+            pb_ratio = _safe_float(ticker_info.get('priceToBook'))
+
             missing_fields = [
                 field
                 for field, value in {
@@ -887,8 +892,8 @@ class YfinanceFetcher(BaseFetcher):
                     "prev_close": prev_close,
                     "volume": volume,
                     "amount": None,
-                    "pe_ratio": None,
-                    "pb_ratio": None,
+                    "pe_ratio": pe_ratio,
+                    "pb_ratio": pb_ratio,
                 }.items()
                 if value is None
             ]
@@ -912,8 +917,8 @@ class YfinanceFetcher(BaseFetcher):
                 high=high,
                 low=low,
                 pre_close=prev_close,
-                pe_ratio=None,
-                pb_ratio=None,
+                pe_ratio=pe_ratio,
+                pb_ratio=pb_ratio,
                 total_mv=market_cap,
                 circ_mv=None,
             )

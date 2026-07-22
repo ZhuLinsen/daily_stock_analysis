@@ -121,9 +121,16 @@ def build_visible_chat_history(
     session_id: str,
     llm_adapter: Any,
     config: Any,
+    *,
+    allow_llm_compression: bool = True,
 ) -> List[Dict[str, str]]:
     """Return visible chat history according to the compression state table."""
-    state = _build_visible_history_state(session_id, llm_adapter, config)
+    state = _build_visible_history_state(
+        session_id,
+        llm_adapter,
+        config,
+        allow_llm_compression=allow_llm_compression,
+    )
     return _strip_internal_message_ids(state.messages)
 
 
@@ -222,10 +229,12 @@ def _build_visible_history_state(
     session_id: str,
     llm_adapter: Any,
     config: Any,
+    *,
+    allow_llm_compression: bool = True,
 ) -> VisibleHistoryState:
     """Return visible history with private ``_message_id`` anchors."""
     db = get_db()
-    if not getattr(config, "agent_context_compression_enabled", False):
+    if not allow_llm_compression or not getattr(config, "agent_context_compression_enabled", False):
         selected = _load_visible_messages(session_id, limit=20)
         messages = _to_chat_messages(selected, include_ids=True)
         return VisibleHistoryState(

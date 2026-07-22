@@ -6,12 +6,16 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, get_args
+from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.core.trading_calendar import MarketPhase
-from src.repositories.decision_signal_repo import DecisionSignalRepository
+from src.repositories.decision_signal_repo import (
+    DecisionSignalCreateResult,
+    DecisionSignalRepository,
+)
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.report_language import normalize_report_language
 from src.schemas.decision_action import (
@@ -73,6 +77,33 @@ class DecisionSignalStorageError(RuntimeError):
     """Raised when persisted decision-signal data is internally inconsistent."""
 
 
+DecisionSignalWriteDisposition = Literal["created", "existing", "refreshed"]
+
+
+@dataclass(frozen=True)
+class DecisionSignalWriteOutcome:
+    """Typed internal result for the single DecisionSignal write path."""
+
+    item: Dict[str, Any]
+    created: bool
+    refreshed: bool
+    duplicate: bool
+
+    def __post_init__(self) -> None:
+        if sum((self.created, self.refreshed, self.duplicate)) != 1:
+            raise DecisionSignalStorageError("invalid DecisionSignal write outcome")
+
+    @property
+    def disposition(self) -> DecisionSignalWriteDisposition:
+        if self.created:
+            return "created"
+        if self.refreshed:
+            return "refreshed"
+        if self.duplicate:
+            return "existing"
+        raise DecisionSignalStorageError("DecisionSignal write outcome has no disposition")
+
+
 class DecisionSignalService:
     """Business logic for DecisionSignal storage, querying, and serialization."""
 
@@ -87,18 +118,74 @@ class DecisionSignalService:
         self.db = db_manager or getattr(self.repo, "db", None) or DatabaseManager.get_instance()
 
     def create_signal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        fields, lifecycle = self._normalize_payload(payload)
-        result = self.repo.create_if_absent(
-            fields,
-            allow_relaxed_horizon_fill=lifecycle["horizon_defaulted"],
-        )
+        outcome = self.create_signal_with_outcome(payload)
+        return {"item": outcome.item, "created": outcome.created}
+
+    def create_signal_with_outcome(self, payload: Dict[str, Any]) -> DecisionSignalWriteOutcome:
+        """Create through the canonical path while preserving repository disposition."""
+
+        result = self._store_signal(payload)
         # Active duplicates can be retries after a prior partial create; rerun invalidation to repair old opposing signals.
         if result.row.status == "active":
             self._invalidate_opposing_active_signals(
                 result.row,
                 reference_at=result.invalidation_reference_at,
             )
-        return {"item": self._serialize(result.row), "created": result.created}
+        return self._write_outcome(result)
+
+    def create_history_bound_signal_with_outcome(
+        self,
+        payload: Dict[str, Any],
+        *,
+        history_created_at: Optional[datetime],
+        market_phase_summary: Any = None,
+    ) -> DecisionSignalWriteOutcome:
+        """Persist a report-derived signal on the source report's timeline."""
+
+        history_payload = dict(payload)
+        self._apply_history_bound_lifecycle(
+            history_payload,
+            created_at=history_created_at,
+            market_phase_summary=market_phase_summary,
+        )
+        result = self._store_signal(history_payload)
+        if result.row.status == "active":
+            if result.row.created_at is None:
+                raise DecisionSignalStorageError(
+                    "history-bound DecisionSignal has no created_at"
+                )
+            self._invalidate_opposing_active_signals(
+                result.row,
+                reference_at=result.row.created_at,
+            )
+            self._invalidate_history_bound_if_superseded(result.row.id)
+
+        final_row = self.repo.get(result.row.id)
+        if final_row is None:
+            raise DecisionSignalStorageError(
+                f"history-bound DecisionSignal disappeared after write: {result.row.id}"
+            )
+        return self._write_outcome(result, row=final_row)
+
+    def _store_signal(self, payload: Dict[str, Any]) -> DecisionSignalCreateResult:
+        fields, lifecycle = self._normalize_payload(payload)
+        return self.repo.create_if_absent(
+            fields,
+            allow_relaxed_horizon_fill=lifecycle["horizon_defaulted"],
+        )
+
+    def _write_outcome(
+        self,
+        result: DecisionSignalCreateResult,
+        *,
+        row: Optional[DecisionSignalRecord] = None,
+    ) -> DecisionSignalWriteOutcome:
+        return DecisionSignalWriteOutcome(
+            item=self._serialize(row if row is not None else result.row),
+            created=result.created,
+            refreshed=result.refreshed,
+            duplicate=result.duplicate,
+        )
 
     def get_signal(self, signal_id: int) -> Dict[str, Any]:
         row = self.repo.get(signal_id)
@@ -426,14 +513,10 @@ class DecisionSignalService:
             )
             if payload is None:
                 return
-            self._apply_history_backfill_lifecycle(
+            self.create_history_bound_signal_with_outcome(
                 payload,
-                created_at=getattr(record, "created_at", None),
+                history_created_at=getattr(record, "created_at", None),
             )
-            created = self.create_signal(payload)
-            signal_id = created.get("item", {}).get("id")
-            if isinstance(signal_id, int):
-                self._invalidate_history_backfill_if_superseded(signal_id)
         except Exception as exc:
             logger.warning(
                 "Decision signal lazy backfill failed: source_report_id=%s error=%s",
@@ -548,22 +631,36 @@ class DecisionSignalService:
                     return text
         return None
 
-    def _apply_history_backfill_lifecycle(
+    def _apply_history_bound_lifecycle(
         self,
         payload: Dict[str, Any],
         *,
         created_at: Optional[datetime],
+        market_phase_summary: Any = None,
     ) -> None:
-        """Anchor lazy backfill expiry to the report time instead of query time."""
+        """Anchor a history-derived signal to the source report time."""
 
-        if created_at is None:
-            return
+        if not isinstance(created_at, datetime):
+            raise ValueError("source report created_at is required for persistence")
         history_created_at = self._coerce_history_created_at_to_utc_naive(created_at)
-        if history_created_at is None:
-            payload["status"] = "expired"
-            return
 
         payload["_created_at_override"] = history_created_at
+        payload["status"] = "active"
+        payload.pop("expires_at", None)
+        sanitized_phase_summary = self._sanitize_history_market_phase_summary(
+            market_phase_summary
+        )
+        if sanitized_phase_summary:
+            raw_metadata = payload.get("metadata")
+            if raw_metadata is None:
+                metadata: Dict[str, Any] = {}
+            elif isinstance(raw_metadata, dict):
+                metadata = dict(raw_metadata)
+            else:
+                raise ValueError("metadata must be an object")
+            metadata["market_phase_summary"] = sanitized_phase_summary
+            payload["metadata"] = metadata
+
         horizon = payload.get("horizon") or self._default_horizon(
             action=str(payload.get("action") or ""),
             market_phase=payload.get("market_phase"),
@@ -571,7 +668,7 @@ class DecisionSignalService:
         if horizon:
             payload["horizon"] = horizon
 
-        expires_at = self._history_backfill_expires_at(
+        expires_at = self._history_bound_expires_at(
             created_at=history_created_at,
             horizon=horizon,
             market=str(payload.get("market") or ""),
@@ -582,6 +679,22 @@ class DecisionSignalService:
         payload["expires_at"] = expires_at
         if self._is_expired(expires_at):
             payload["status"] = "expired"
+
+    @staticmethod
+    def _sanitize_history_market_phase_summary(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        allowed_fields = (
+            "phase",
+            "session_date",
+            "minutes_to_open",
+            "minutes_to_close",
+        )
+        return {
+            field_name: value[field_name]
+            for field_name in allowed_fields
+            if value.get(field_name) not in (None, "")
+        }
 
     @staticmethod
     def _coerce_history_created_at_to_utc_naive(value: datetime) -> datetime:
@@ -597,7 +710,7 @@ class DecisionSignalService:
         except (OverflowError, OSError):
             return to_utc_naive_datetime(value)
 
-    def _invalidate_history_backfill_if_superseded(self, signal_id: int) -> None:
+    def _invalidate_history_bound_if_superseded(self, signal_id: int) -> None:
         row = self.repo.get(signal_id)
         if row is None or row.status != "active":
             return
@@ -624,7 +737,7 @@ class DecisionSignalService:
             )
             if updated is None:
                 logger.warning(
-                    "Decision signal disappeared before stale backfill invalidation: "
+                    "Decision signal disappeared before history-bound invalidation: "
                     "signal_id=%s invalidated_by=%s",
                     row.id,
                     newer_row.id,
@@ -632,7 +745,7 @@ class DecisionSignalService:
             return
 
     @classmethod
-    def _history_backfill_expires_at(
+    def _history_bound_expires_at(
         cls,
         *,
         created_at: datetime,

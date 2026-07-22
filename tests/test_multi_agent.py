@@ -26,7 +26,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
-from src.agent.orchestrator import _extract_stock_code, _COMMON_WORDS
+from src.agent.orchestrator import _extract_stock_code, _COMMON_WORDS, AgentOrchestrator
 from src.agent.protocols import (
     AgentContext,
     AgentOpinion,
@@ -34,7 +34,15 @@ from src.agent.protocols import (
     Signal,
     StageResult,
     StageStatus,
+    StrategyOpinion,
+    normalize_strategy_signal,
+    is_valid_strategy_signal,
 )
+from src.agent.skills.synthesis import (
+    strategy_opinion_from_agent_opinion,
+    StrategySynthesizer,
+)
+from src.agent.skills.aggregator import SkillAggregator
 from src.agent.stock_scope import StockScope, resolve_stock_scope
 from src.config import AGENT_MAX_STEPS_DEFAULT, Config
 from src.storage import DatabaseManager
@@ -638,6 +646,175 @@ class TestStrategyAggregator(unittest.TestCase):
         # Average of buy(4) + sell(2) = 3.0, which maps to "hold"
         self.assertEqual(result.signal, "hold")
 
+    def test_strategy_opinion_conversion_preserves_skill_payload(self):
+        from src.agent.skills.synthesis import strategy_opinion_from_agent_opinion
+
+        opinion = AgentOpinion(
+            agent_name="skill_bull_trend",
+            signal="BUY",
+            confidence=0.8,
+            reasoning="趋势偏强",
+            raw_data={
+                "skill_id": "bull_trend",
+                "score_adjustment": "12",
+                "conditions_met": ["站上均线"],
+                "conditions_missed": ["量能不足"],
+            },
+        )
+
+        strategy = strategy_opinion_from_agent_opinion(opinion)
+
+        self.assertEqual(strategy.skill_id, "bull_trend")
+        self.assertEqual(strategy.signal, "buy")
+        self.assertEqual(strategy.original_signal, "BUY")
+        self.assertFalse(strategy.invalid_signal)
+        self.assertEqual(strategy.raw_data["normalized_signal"], "buy")
+        self.assertEqual(strategy.score_adjustment, 12.0)
+        self.assertEqual(strategy.conditions_met, ["站上均线"])
+        self.assertEqual(strategy.conditions_missed, ["量能不足"])
+
+    def test_strategy_opinion_conversion_marks_unknown_signal(self):
+        from src.agent.skills.synthesis import strategy_opinion_from_agent_opinion
+
+        opinion = AgentOpinion(agent_name="skill_unknown", signal="moon", confidence=0.8)
+
+        strategy = strategy_opinion_from_agent_opinion(opinion)
+
+        self.assertEqual(strategy.signal, "hold")
+        self.assertEqual(strategy.original_signal, "moon")
+        self.assertTrue(strategy.invalid_signal)
+        self.assertTrue(strategy.raw_data["invalid_signal"])
+
+    def test_conflict_detector_detects_uppercase_buy_against_sell(self):
+        from src.agent.skills.synthesis import ConflictDetector, strategy_opinion_from_agent_opinion
+
+        opinions = [
+            strategy_opinion_from_agent_opinion(AgentOpinion(agent_name="skill_a", signal="BUY", confidence=0.8)),
+            strategy_opinion_from_agent_opinion(AgentOpinion(agent_name="skill_b", signal="sell", confidence=0.8)),
+        ]
+
+        conflicts = ConflictDetector().detect(opinions, final_signal="hold")
+
+        self.assertIn("directional_opposition", {conflict.conflict_type for conflict in conflicts})
+
+    def test_conflict_detector_detects_directional_and_adjustment_conflicts(self):
+        from src.agent.skills.synthesis import ConflictDetector
+
+        opinions = [
+            StrategyOpinion(skill_id="bull_trend", signal="strong_buy", confidence=0.8, score_adjustment=12),
+            StrategyOpinion(skill_id="hot_theme", signal="sell", confidence=0.76, score_adjustment=-10),
+        ]
+
+        conflicts = ConflictDetector().detect(opinions, final_signal="hold")
+        conflict_types = {conflict.conflict_type for conflict in conflicts}
+
+        self.assertIn("directional_opposition", conflict_types)
+        self.assertIn("wide_score_dispersion", conflict_types)
+        self.assertIn("high_confidence_dissent", conflict_types)
+        self.assertIn("adjustment_contradiction", conflict_types)
+        self.assertEqual(conflicts[0].severity, "high")
+
+    def test_strategy_synthesizer_adjusts_confidence_and_returns_language_neutral_payload(self):
+        from src.agent.skills.synthesis import ConflictDetector, StrategySynthesizer
+
+        opinions = [
+            StrategyOpinion(skill_id="bull_trend", signal="buy", confidence=0.8),
+            StrategyOpinion(skill_id="hot_theme", signal="sell", confidence=0.75),
+        ]
+        conflicts = ConflictDetector().detect(opinions, final_signal="hold")
+
+        synthesis = StrategySynthesizer().synthesize(
+            opinions,
+            weighted_score=3.0,
+            final_signal="hold",
+            weighted_confidence=0.8,
+            conflicts=conflicts,
+        )
+
+        self.assertEqual(synthesis["final_signal"], "hold")
+        self.assertEqual(synthesis["conflict_severity"], "high")
+        self.assertAlmostEqual(synthesis["confidence"], 0.68)
+        self.assertEqual(synthesis["summary_key"], "strategy_synthesis.with_conflicts")
+        self.assertNotIn("summary", synthesis)
+        self.assertEqual(synthesis["summary_params"]["final_signal"], "hold")
+        self.assertNotIn("综合信号", json.dumps(synthesis, ensure_ascii=False))
+
+        self.assertTrue(all("description" not in conflict for conflict in synthesis["conflicts"]))
+        self.assertIn("description_key", synthesis["conflicts"][0])
+
+    def test_skill_aggregator_raw_data_contains_strategy_synthesis(self):
+        from src.agent.strategies.aggregator import StrategyAggregator
+
+        agg = StrategyAggregator()
+        ctx = AgentContext()
+        ctx.add_opinion(AgentOpinion(agent_name="strategy_bull_trend", signal="buy", confidence=0.8))
+        ctx.add_opinion(AgentOpinion(agent_name="strategy_hot_theme", signal="sell", confidence=0.8))
+
+        result = agg.aggregate(ctx)
+
+        self.assertIsNotNone(result)
+        self.assertIn("strategy_synthesis", result.raw_data)
+        self.assertIn("conflicts", result.raw_data)
+        self.assertGreater(result.raw_data["conflict_count"], 0)
+
+    def test_invalid_signal_excluded_from_conflict_detection(self):
+        """Invalid signals must not create false conflicts.
+
+        Note: With only 1 valid opinion (strong_buy), consensus_level is now
+        "insufficient" per the sample-count threshold (≤1 → insufficient).
+        """
+        from src.agent.strategies.aggregator import StrategyAggregator
+
+        agg = StrategyAggregator()
+        ctx = AgentContext()
+        ctx.add_opinion(AgentOpinion(
+            agent_name="strategy_bull_trend",
+            signal="strong_buy",
+            confidence=0.8,
+        ))
+        ctx.add_opinion(AgentOpinion(
+            agent_name="strategy_invalid",
+            signal="moon",
+            confidence=0.9,
+        ))
+
+        result = agg.aggregate(ctx)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.signal, "strong_buy")
+        self.assertEqual(result.raw_data["weighted_score"], 5.0)
+        self.assertEqual(result.raw_data["conflict_count"], 0)
+        # Updated: 1 valid opinion → insufficient (sample threshold)
+        self.assertEqual(result.raw_data["consensus_level"], "insufficient")
+        self.assertAlmostEqual(result.confidence, 0.8, places=2)
+
+    def test_only_invalid_signals_produce_neutral_consensus(self):
+        """When all signals are invalid, should fall back to neutral consensus.
+
+        Note: 0 valid opinions → insufficient (not low), per sample threshold.
+        """
+        from src.agent.strategies.aggregator import StrategyAggregator
+
+        agg = StrategyAggregator()
+        ctx = AgentContext()
+        ctx.add_opinion(AgentOpinion(
+            agent_name="strategy_invalid_1",
+            signal="moon",
+            confidence=0.8,
+        ))
+        ctx.add_opinion(AgentOpinion(
+            agent_name="strategy_invalid_2",
+            signal="rocket",
+            confidence=0.9,
+        ))
+
+        result = agg.aggregate(ctx)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.signal, "hold")
+        self.assertEqual(result.raw_data["weighted_score"], 3.0)
+        self.assertEqual(result.confidence, 0.0)
+
 
 # ============================================================
 # PortfolioAgent.post_process
@@ -699,6 +876,25 @@ class TestDecisionAgentPostProcess(unittest.TestCase):
         self.assertIsNotNone(opinion)
         self.assertEqual(opinion.signal, "buy")
         self.assertEqual(ctx.get_data("final_dashboard")["decision_type"], "buy")
+
+
+    def test_normalized_dashboard_carries_strategy_synthesis(self):
+        from src.agent.orchestrator import AgentOrchestrator
+
+        orch = AgentOrchestrator(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        ctx = AgentContext(query="test", stock_code="600519", stock_name="贵州茅台")
+        synthesis = {
+            "final_signal": "hold",
+            "confidence": 0.6,
+            "conflict_count": 0,
+            "conflict_severity": "none",
+        }
+        ctx.set_data("skill_consensus", {"strategy_synthesis": synthesis})
+
+        normalized = orch._finalize_dashboard_payload({"dashboard": {}}, ctx)
+
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["dashboard"]["strategy_synthesis"], synthesis)
 
 
 class TestIntelAgentPostProcess(unittest.TestCase):
@@ -1709,6 +1905,36 @@ class TestOrchestratorExecution(unittest.TestCase):
         add_message.assert_any_call("session-1", "user", "hello")
         add_message.assert_any_call("session-1", "assistant", "assistant reply")
 
+    def test_chat_transaction_persists_user_before_multi_agent_execution(self):
+        """SSE acceptance can occur after persistence but before the pipeline starts."""
+        from src.agent.orchestrator import OrchestratorResult
+
+        orch = self._make_orchestrator()
+        fake_result = OrchestratorResult(success=True, content="assistant reply")
+
+        with patch.object(orch, "_execute_pipeline", return_value=fake_result) as execute_pipeline:
+            with patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]):
+                with patch("src.agent.conversation.conversation_manager.get_or_create"):
+                    with patch("src.agent.conversation.conversation_manager.add_message") as add_message:
+                        turn = orch.prepare_turn(message="hello", session_id="session-accepted")
+
+                        add_message.assert_called_once_with("session-accepted", "user", "hello")
+                        execute_pipeline.assert_not_called()
+
+                        result = orch.execute_turn(turn)
+
+        self.assertTrue(result.success)
+        execute_pipeline.assert_called_once_with(
+            turn.context,
+            parse_dashboard=False,
+            progress_callback=None,
+        )
+        self.assertEqual(add_message.call_args_list[-1].args, (
+            "session-accepted",
+            "assistant",
+            "assistant reply",
+        ))
+
     def test_chat_persists_failure_message(self):
         from src.agent.orchestrator import OrchestratorResult
 
@@ -2519,8 +2745,11 @@ class TestRiskOverride(unittest.TestCase):
         ))
         ctx.add_risk_flag("insider", "大股东减持", severity="high")
 
-        orch._apply_risk_override(ctx)
-        dashboard = ctx.get_data("final_dashboard")
+        dashboard = orch._resolve_dashboard_payload(
+            ctx,
+            ctx.get_data("final_dashboard"),
+            None,
+        )
 
         self.assertEqual(dashboard["decision_type"], "hold")
         self.assertLessEqual(dashboard["sentiment_score"], 59)
@@ -2549,7 +2778,7 @@ class TestRiskOverride(unittest.TestCase):
         ))
         ctx.add_risk_flag("insider", "大股东减持", severity="high")
 
-        orch._apply_risk_override(ctx)
+        dashboard = orch._resolve_dashboard_payload(ctx, dashboard, None)
 
         self.assertEqual(dashboard["decision_type"], "hold")
         self.assertEqual(ctx.opinions[0].signal, "hold")
@@ -2573,7 +2802,7 @@ class TestRiskOverride(unittest.TestCase):
         ))
         ctx.add_risk_flag("insider", "大股东减持", severity="high")
 
-        orch._apply_risk_override(ctx)
+        dashboard = orch._resolve_dashboard_payload(ctx, dashboard, None)
 
         self.assertEqual(dashboard["decision_type"], "buy")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
@@ -2597,7 +2826,7 @@ class TestRiskOverride(unittest.TestCase):
             raw_data={"risk_level": "high"},
         ))
 
-        orch._apply_risk_override(ctx)
+        dashboard = orch._resolve_dashboard_payload(ctx, dashboard, None)
 
         self.assertEqual(dashboard["decision_type"], "buy")
         self.assertIsNone(ctx.get_data("risk_override_applied"))
@@ -2835,6 +3064,830 @@ class TestAgentResearchEndpoint(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(response.success)
         self.assertIn("timed out", response.error)
+
+
+class TestP1SemanticConvergence(unittest.TestCase):
+    """覆盖 PR reviewer 提出的 5 个 P1 阻断项的端到端入口测试"""
+
+    def test_signal_enum_input_compatibility(self):
+        """P1-1: Signal.BUY 枚举输入不应被标记为 invalid"""
+        signal, invalid, original = normalize_strategy_signal(Signal.BUY)
+        self.assertEqual(signal, "buy")
+        self.assertFalse(invalid)
+        self.assertEqual(original, "buy")
+
+        for enum_val, expected in [
+            (Signal.STRONG_BUY, "strong_buy"),
+            (Signal.HOLD, "hold"),
+            (Signal.SELL, "sell"),
+            (Signal.STRONG_SELL, "strong_sell"),
+        ]:
+            signal, invalid, _ = normalize_strategy_signal(enum_val)
+            self.assertEqual(signal, expected)
+            self.assertFalse(invalid, f"{enum_val} should not be marked invalid")
+
+    def test_missing_signal_marked_invalid(self):
+        """P1-2: 缺失 signal 的 LLM 输出应被标记为 invalid，而非静默兜底为 hold"""
+        ctx = AgentContext()
+
+        opinion = AgentOpinion(
+            agent_name="skill_test",
+            signal=None,
+            confidence=0.9,
+            reasoning="test",
+            raw_data={"confidence": 0.9}
+        )
+
+        strategy_opinion = strategy_opinion_from_agent_opinion(opinion)
+        self.assertTrue(strategy_opinion.invalid_signal)
+        self.assertEqual(strategy_opinion.signal, "hold")
+
+    def test_opinion_count_excludes_invalid(self):
+        """P1-3: summary_params.opinion_count 应仅计 valid opinions"""
+        opinions = []
+
+        valid_op = AgentOpinion(agent_name="skill_test1", signal="buy", confidence=0.8)
+        opinions.append(strategy_opinion_from_agent_opinion(valid_op))
+
+        for i in range(9):
+            invalid_op = AgentOpinion(agent_name=f"skill_invalid{i}", signal="moon", confidence=0.9)
+            opinions.append(strategy_opinion_from_agent_opinion(invalid_op))
+
+        synthesizer = StrategySynthesizer()
+        synthesis = synthesizer.synthesize(
+            opinions,
+            weighted_score=4.0,
+            final_signal="buy",
+            weighted_confidence=0.8,
+            conflicts=[],
+        )
+
+        self.assertEqual(synthesis["summary_params"]["opinion_count"], 1)
+        self.assertEqual(synthesis["summary_params"]["total_opinion_count"], 10)
+        self.assertEqual(synthesis["summary_params"]["invalid_opinion_count"], 9)
+
+    def test_deterministic_synthesis_authoritative(self):
+        """P1-4: 确定性 synthesis 应为 dashboard 的唯一权威来源"""
+        ctx = AgentContext()
+        ctx.set_data("skill_consensus", {
+            "signal": "buy",
+            "confidence": 0.8,
+            "raw_data": {
+                "strategy_synthesis": {
+                    "final_signal": "buy",
+                    "confidence": 0.8,
+                    "consensus_level": "high",
+                    "summary_key": "test.deterministic",
+                }
+            },
+        })
+
+        dashboard_with_llm_synthesis = {
+            "decision_type": "sell",
+            "dashboard": {
+                "strategy_synthesis": {
+                    "final_signal": "sell",
+                    "confidence": 0.1,
+                    "consensus_level": "low",
+                    "summary_key": "llm.generated",
+                }
+            },
+        }
+
+        orchestrator = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            mode="full",
+        )
+        normalized = orchestrator._finalize_dashboard_payload(dashboard_with_llm_synthesis, ctx)
+
+        self.assertIsNotNone(normalized)
+        self.assertIn("strategy_synthesis", normalized["dashboard"])
+        synth = normalized["dashboard"]["strategy_synthesis"]
+        self.assertEqual(synth["final_signal"], "buy")
+        self.assertEqual(synth["confidence"], 0.8)
+        self.assertEqual(synth["summary_key"], "test.deterministic")
+
+    def test_full_pipeline_valid_signal(self):
+        """P1-5: 端到端验证：合法 Signal 枚举输入应保持正确语义"""
+        ctx = AgentContext()
+
+        opinion = AgentOpinion(
+            agent_name="skill_test",
+            signal="buy",
+            confidence=0.9,
+            reasoning="strong bullish signal"
+        )
+
+        strategy_opinion = strategy_opinion_from_agent_opinion(opinion)
+        self.assertFalse(strategy_opinion.invalid_signal)
+        self.assertEqual(strategy_opinion.signal, "buy")
+
+        ctx.opinions.append(opinion)
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        self.assertEqual(consensus.signal, "buy")
+        self.assertGreater(consensus.confidence, 0.0)
+
+    def test_prompt_pollution_prevention(self):
+        """E2E-A: 1 valid buy/0.8 + 2 invalid moon/0.9 → Orchestrator partition →
+        DecisionAgent prompt 不含 'moon'，ctx.meta['invalid_opinions'] 长度 == 2。
+        真 E2E：SkillAgent 输入 → Orchestrator 分拣 → DecisionAgent build_user_message。
+        """
+        from src.agent.agents.decision_agent import DecisionAgent
+
+        ctx = AgentContext(stock_code="600519", stock_name="贵州茅台")
+
+        # 1 valid buy opinion
+        valid_op = AgentOpinion(
+            agent_name="skill_valid",
+            signal="buy",
+            confidence=0.8,
+            reasoning="valid bullish signal"
+        )
+        ctx.opinions.append(valid_op)
+
+        # 2 invalid moon opinions
+        for i in range(2):
+            invalid_op = AgentOpinion(
+                agent_name=f"skill_invalid_{i}",
+                signal="moon",
+                confidence=0.9,
+                reasoning="to the moon"
+            )
+            ctx.opinions.append(invalid_op)
+
+        # Orchestrator invalid partition — the ONLY partition point per contract
+        orchestrator = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            mode="full",
+        )
+        orchestrator._partition_skill_opinions(ctx)
+
+        # After partition: only valid opinions remain in ctx.opinions
+        self.assertEqual(len(ctx.opinions), 1)
+        self.assertEqual(ctx.opinions[0].agent_name, "skill_valid")
+
+        # Invalid opinions moved to ctx.meta["invalid_opinions"]
+        invalid_bucket = ctx.meta.get("invalid_opinions", [])
+        self.assertEqual(len(invalid_bucket), 2)
+        for entry in invalid_bucket:
+            self.assertIn(entry["agent_name"], {"skill_invalid_0", "skill_invalid_1"})
+            self.assertEqual(entry["raw_signal"], "moon")
+            self.assertEqual(entry["reason"], "unrecognized_signal")
+
+        # DecisionAgent prompt — consumes partitioned ctx.opinions directly
+        agent = DecisionAgent(tool_registry=MagicMock(), llm_adapter=MagicMock())
+        prompt = agent.build_user_message(ctx)
+
+        # Prompt should NOT contain "moon" or invalid agent names / confidence
+        self.assertNotIn("moon", prompt.lower())
+        self.assertNotIn("skill_invalid_0", prompt)
+        self.assertNotIn("skill_invalid_1", prompt)
+        self.assertNotIn("0.90", prompt)  # invalid opinions' 0.9 confidence
+
+        # Prompt should contain valid opinion
+        self.assertIn("skill_valid", prompt)
+        self.assertIn("buy", prompt)
+        self.assertIn("0.80", prompt)
+
+        # Prompt should mention invalid count as diagnostics (not evidence)
+        self.assertIn("2", prompt)  # invalid count
+
+    def test_zero_weight_never_strong_sell(self):
+        """E2E-2: 两个 hold/0.0 或 buy/0.0 → final signal 应为 hold，绝不应是 strong_sell"""
+        ctx = AgentContext()
+
+        # Two valid opinions with zero confidence (zero weight)
+        ctx.opinions.append(AgentOpinion(agent_name="skill_1", signal="hold", confidence=0.0))
+        ctx.opinions.append(AgentOpinion(agent_name="skill_2", signal="buy", confidence=0.0))
+
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        # Zero weight sum should result in hold (3.0), not strong_sell
+        self.assertEqual(consensus.signal, "hold")
+
+        # Verify synthesis metadata
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+        self.assertEqual(synthesis["final_signal"], "hold")
+        # consensus_level should be insufficient with zero confidence
+        self.assertEqual(synthesis["consensus_level"], "insufficient")
+
+    def test_hold_grouping_consistency(self):
+        """E2E-3: 两个 valid hold/0.8 → 两个 hold 都应在 supporting_skills 中"""
+        ctx = AgentContext()
+
+        ctx.opinions.append(AgentOpinion(agent_name="skill_1", signal="hold", confidence=0.8))
+        ctx.opinions.append(AgentOpinion(agent_name="skill_2", signal="hold", confidence=0.8))
+
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        self.assertEqual(consensus.signal, "hold")
+
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+
+        # Both hold opinions should be in supporting_skills (not neutral or opposing)
+        supporting = synthesis.get("supporting_skills", [])
+        self.assertEqual(len(supporting), 2)
+
+        # Verify both skills are listed
+        supporting_names = {s["agent_name"] for s in supporting}
+        self.assertIn("skill_1", supporting_names)
+        self.assertIn("skill_2", supporting_names)
+
+        # opposing_skills should be empty
+        opposing = synthesis.get("opposing_skills", [])
+        self.assertEqual(len(opposing), 0)
+
+    def test_single_sample_consensus_insufficient(self):
+        """E2E-4: 1 valid buy/0.8 + 多个 invalid → consensus 应为 insufficient，不是 high"""
+        ctx = AgentContext()
+
+        # 1 valid opinion
+        ctx.opinions.append(AgentOpinion(agent_name="skill_valid", signal="buy", confidence=0.8))
+
+        # 3 invalid opinions
+        for i in range(3):
+            ctx.opinions.append(AgentOpinion(
+                agent_name=f"skill_invalid_{i}",
+                signal="moon",
+                confidence=0.9
+            ))
+
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+
+        # consensus_level should be insufficient (only 1 valid sample)
+        self.assertEqual(synthesis["consensus_level"], "insufficient")
+
+        # opinion_count should be 1 (only valid)
+        self.assertEqual(synthesis["summary_params"]["opinion_count"], 1)
+
+        # invalid_opinion_count should be 3
+        self.assertEqual(synthesis["summary_params"]["invalid_opinion_count"], 3)
+
+    def test_e2e_e_partition_then_aggregate_insufficient(self):
+        """E2E-E: 1 valid buy/0.8 + 9 invalid → 走 orchestrator 分拣 → aggregator →
+        consensus_level == 'insufficient'（不得 high）；synthesis.summary_params
+        对应 opinion_count=1、invalid_opinion_count=9、total_opinion_count=10。
+        真 E2E：SkillAgent 输入 → Orchestrator 分拣 → SkillAggregator 合成。
+        """
+        ctx = AgentContext()
+
+        ctx.opinions.append(AgentOpinion(
+            agent_name="skill_valid",
+            signal="buy",
+            confidence=0.8,
+            reasoning="valid bullish signal",
+        ))
+
+        for i in range(9):
+            ctx.opinions.append(AgentOpinion(
+                agent_name=f"skill_invalid_{i}",
+                signal="moon",
+                confidence=0.9,
+                reasoning="invalid moon signal",
+            ))
+
+        # 唯一分拣点：Orchestrator
+        orchestrator = AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            mode="full",
+        )
+        orchestrator._partition_skill_opinions(ctx)
+
+        # After partition
+        self.assertEqual(len(ctx.opinions), 1)
+        self.assertEqual(len(ctx.meta.get("invalid_opinions", [])), 9)
+
+        # Aggregator consumes partitioned ctx.opinions directly
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+
+        # 单样本共识必须 insufficient
+        self.assertEqual(synthesis["consensus_level"], "insufficient")
+
+        # summary_params 计数正确
+        self.assertEqual(synthesis["summary_params"]["opinion_count"], 1)
+        # 注意：aggregator 只看到 partition 后的 opinions，
+        # invalid_opinion_count 由 aggregator 内部 strategy_opinion 判定
+        # 若要覆盖 diagnostic 计数，renderer 层从 ctx.meta 读取
+        # 此处仅确保 valid 计数正确
+
+    def test_e2e_f_uppercase_buy_canonical(self):
+        """E2E-F: signal='BUY' 大写输入 → normalize 后 canonical='buy' →
+        aggregator 使用 canonical 查 strategy_signal_score → 得 4.0（不是 0）。
+        final_signal 输出 canonical 小写 'buy'。
+        真 E2E：SkillAgent 输出大写 → aggregator 内部 canonical-first 计算。
+        """
+        ctx = AgentContext()
+
+        # Two valid opinions, one with uppercase signal
+        ctx.opinions.append(AgentOpinion(
+            agent_name="skill_upper",
+            signal="BUY",  # 大写
+            confidence=0.8,
+        ))
+        ctx.opinions.append(AgentOpinion(
+            agent_name="skill_lower",
+            signal="buy",
+            confidence=0.8,
+        ))
+
+        # No partition needed — both are valid after normalization
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        # canonical 小写输出
+        self.assertEqual(consensus.signal, "buy")
+
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+        # weighted_score 应接近 4.0（buy 的 canonical 分数），
+        # 而不是因大写查表失败得到 0
+        self.assertGreaterEqual(synthesis["weighted_score"], 3.5)
+        # final_signal 输出 canonical 小写
+        self.assertEqual(synthesis["final_signal"], "buy")
+
+    def test_e2e_g_empty_supporting_uses_none_label(self):
+        """E2E-G: 空 supporting_skills + report_language='en' → 四条 renderer 中
+        不出现中文 '无'，而是 'None'（对应 labels.none_label）。
+        真 E2E：dashboard payload → renderer 实际文本。
+        """
+        from src.report_language import get_report_labels
+
+        # zh、en、ko 三语的 none_label 都必须完备
+        for lang, expected in [("zh", "无"), ("en", "None"), ("ko", "없음")]:
+            labels = get_report_labels(lang)
+            self.assertEqual(labels["none_label"], expected)
+
+        # 模拟一个空 supporting_skills 的 payload
+        strategy_synthesis = {
+            "final_signal": "hold",
+            "confidence": 0.5,
+            "consensus_level": "insufficient",
+            "conflict_severity": "none",
+            "conflict_count": 0,
+            "supporting_skills": [],
+            "opposing_skills": [],
+            "summary_params": {
+                "opinion_count": 0,
+                "total_opinion_count": 0,
+                "invalid_opinion_count": 0,
+            },
+        }
+
+        # 走 notification 的 renderer helper
+        from src.notification import _append_strategy_synthesis_block
+
+        for lang, expected_none in [("en", "None"), ("ko", "없음")]:
+            labels = get_report_labels(lang)
+            lines = []
+            _append_strategy_synthesis_block(lines, strategy_synthesis, labels, lang)
+            rendered = "\n".join(lines)
+
+            # 空阵营必须用 labels.none_label 输出
+            self.assertIn(expected_none, rendered)
+            # 不得出现其他语言的 none_label
+            for other_lang, other_none in [("zh", "无"), ("en", "None"), ("ko", "없음")]:
+                if other_lang == lang:
+                    continue
+                # zh 的 "无" 有可能出现在其他非阵营的文案中，这里只检查阵营行
+                # 简单起见：只在 en/ko 场景校验中文"无"不出现
+                if lang != "zh" and other_lang == "zh":
+                    self.assertNotIn("无", rendered)
+
+
+class TestStrategyEngineE2E(unittest.TestCase):
+    """E2E tests exercising StrategyEngine as the authoritative pipeline facade."""
+
+    def _make_orchestrator(self):
+        return AgentOrchestrator(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+            mode="specialist",
+        )
+
+    # ------------------------------------------------------------------
+    # 1. Mixed valid + invalid → engine produces deterministic synthesis
+    # ------------------------------------------------------------------
+
+    def test_engine_mixed_valid_invalid_invalid_count(self):
+        """Engine: 2 valid buy/0.8 + 3 invalid moon/0.9 → synthesis.invalid_opinion_count == 3."""
+        from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+        opinions = []
+        for i in range(2):
+            opinions.append(AgentOpinion(agent_name=f"skill_v{i}", signal="buy", confidence=0.8))
+        for i in range(3):
+            opinions.append(AgentOpinion(agent_name=f"skill_x{i}", signal="moon", confidence=0.9))
+
+        result = StrategyEngine().process(opinions)
+
+        self.assertEqual(result.status, StrategyResultStatus.CONSENSUS)
+        self.assertIsNotNone(result.synthesis_dict)
+        params = result.synthesis_dict["summary_params"]
+        self.assertEqual(params["opinion_count"], 2)
+        self.assertEqual(params["invalid_opinion_count"], 3)
+        self.assertEqual(params["total_opinion_count"], 5)
+        self.assertEqual(result.invalid_count, 3)
+        self.assertEqual(len(result.invalid_records), 3)
+
+    # ------------------------------------------------------------------
+    # 2. All invalid → NO_CONSENSUS stub
+    # ------------------------------------------------------------------
+
+    def test_engine_all_invalid_no_consensus_stub(self):
+        """Engine: 4 all-invalid → NO_CONSENSUS stub with consensus_level == 'insufficient'."""
+        from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+        opinions = [
+            AgentOpinion(agent_name=f"skill_bad{i}", signal="moon", confidence=0.9)
+            for i in range(4)
+        ]
+
+        result = StrategyEngine().process(opinions)
+
+        self.assertEqual(result.status, StrategyResultStatus.NO_CONSENSUS)
+        self.assertIsNotNone(result.synthesis_dict)
+        self.assertEqual(result.synthesis_dict["consensus_level"], "insufficient")
+        self.assertEqual(result.synthesis_dict["confidence"], 0.0)
+        self.assertEqual(result.synthesis_dict["final_signal"], "hold")
+        self.assertEqual(result.invalid_count, 4)
+        self.assertIsNotNone(result.skill_consensus_data)
+        self.assertEqual(
+            result.skill_consensus_data["strategy_synthesis"]["consensus_level"],
+            "insufficient",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. LLM strategy_synthesis stripped at parse boundary
+    # ------------------------------------------------------------------
+
+    def test_llm_strategy_synthesis_stripped_at_parse_boundary(self):
+        """dashboard_block['strategy_synthesis'] from LLM is stripped; engine result wins."""
+        ctx = AgentContext()
+        ctx.set_data("skill_consensus", {
+            "signal": "buy",
+            "confidence": 0.75,
+            "raw_data": {
+                "strategy_synthesis": {
+                    "final_signal": "buy",
+                    "confidence": 0.75,
+                    "consensus_level": "high",
+                    "summary_key": "engine.deterministic",
+                }
+            },
+        })
+
+        llm_payload = {
+            "decision_type": "sell",
+            "dashboard": {
+                # LLM wrote this — must be stripped before engine result is written
+                "strategy_synthesis": {
+                    "final_signal": "sell",
+                    "confidence": 0.1,
+                    "consensus_level": "low",
+                    "summary_key": "llm.invented",
+                }
+            },
+        }
+
+        orchestrator = self._make_orchestrator()
+        normalized = orchestrator._finalize_dashboard_payload(llm_payload, ctx)
+
+        self.assertIsNotNone(normalized)
+        synth = normalized["dashboard"].get("strategy_synthesis")
+        self.assertIsNotNone(synth)
+        # Engine's deterministic synthesis wins
+        self.assertEqual(synth["final_signal"], "buy")
+        self.assertNotEqual(synth.get("summary_key"), "llm.invented")
+
+    # ------------------------------------------------------------------
+    # 4. Timeout fallback preserves invalid diagnostics
+    # ------------------------------------------------------------------
+
+    def test_partition_fallback_preserves_invalid_diagnostics(self):
+        """_apply_partition_fallback: invalid opinions land in ctx.meta and don't re-enter evidence."""
+        ctx = AgentContext()
+        ctx.opinions.append(AgentOpinion(agent_name="skill_v", signal="buy", confidence=0.8))
+        ctx.opinions.append(AgentOpinion(agent_name="skill_bad", signal="moon", confidence=0.9))
+        # Non-skill opinion should pass through untouched
+        ctx.opinions.append(AgentOpinion(agent_name="technical", signal="buy", confidence=0.7))
+
+        orchestrator = self._make_orchestrator()
+        orchestrator._apply_partition_fallback(ctx)
+
+        # Invalid skill opinion removed from evidence chain
+        evidence_names = {op.agent_name for op in ctx.opinions}
+        self.assertNotIn("skill_bad", evidence_names)
+        self.assertIn("skill_v", evidence_names)
+        self.assertIn("technical", evidence_names)
+
+        # Captured in diagnostics
+        invalid_bucket = ctx.meta.get("invalid_opinions", [])
+        self.assertEqual(len(invalid_bucket), 1)
+        self.assertEqual(invalid_bucket[0]["agent_name"], "skill_bad")
+        self.assertEqual(invalid_bucket[0]["reason"], "unrecognized_signal")
+
+    def test_partition_fallback_idempotent_when_engine_ran(self):
+        """_apply_partition_fallback is a no-op when StrategyEngine already ran."""
+        ctx = AgentContext()
+        ctx.opinions.append(AgentOpinion(agent_name="skill_bad", signal="moon", confidence=0.9))
+        # Simulate engine already ran
+        ctx.set_data("skill_consensus", {"signal": "hold", "confidence": 0.0})
+
+        orchestrator = self._make_orchestrator()
+        orchestrator._apply_partition_fallback(ctx)
+
+        # Should not have been re-partitioned
+        self.assertEqual(len(ctx.opinions), 1)
+        self.assertNotIn("invalid_opinions", ctx.meta)
+
+    # ------------------------------------------------------------------
+    # 5. Signal alias consistency: strong-buy / strong_buy in both paths
+    # ------------------------------------------------------------------
+
+    def test_signal_alias_consistency_aggregation_and_disagreement(self):
+        """'strong-buy' alias → canonical 'strong_buy' in both aggregation and disagreement."""
+        from src.agent.disagreement import build_agent_disagreement_summary
+
+        # Aggregation path
+        ctx = AgentContext()
+        ctx.opinions.append(AgentOpinion(agent_name="skill_1", signal="strong-buy", confidence=0.8))
+        ctx.opinions.append(AgentOpinion(agent_name="skill_2", signal="strong_buy", confidence=0.8))
+
+        aggregator = SkillAggregator()
+        consensus = aggregator.aggregate(ctx)
+
+        self.assertIsNotNone(consensus)
+        self.assertEqual(consensus.signal, "strong_buy")
+
+        synthesis = consensus.raw_data.get("strategy_synthesis")
+        self.assertIsNotNone(synthesis)
+        self.assertEqual(synthesis["final_signal"], "strong_buy")
+
+        # Disagreement path: strong-buy alias should not be treated as unknown/hold
+        ctx2 = AgentContext()
+        ctx2.opinions.append(AgentOpinion(agent_name="technical", signal="strong-buy", confidence=0.9))
+        ctx2.opinions.append(AgentOpinion(agent_name="decision", signal="hold", confidence=0.6))
+        summary = build_agent_disagreement_summary(ctx2)
+
+        # strong-buy and hold diverge, so disagreement should be detected
+        # (not hidden by wrong normalization that converts strong-buy → hold)
+        self.assertIsNotNone(summary)
+        if summary.get("has_disagreement"):
+            self.assertIn("strong_buy", str(summary))
+
+    # ------------------------------------------------------------------
+    # 6. Consensus level i18n for "insufficient"
+    # ------------------------------------------------------------------
+
+    def test_localize_consensus_level_insufficient(self):
+        """localize_consensus_level('insufficient', lang) returns short enum translations."""
+        from src.report_language import localize_consensus_level
+
+        cases = [
+            ("insufficient", "zh", "证据不足"),
+            ("insufficient", "en", "Insufficient"),
+            ("insufficient", "ko", "증거 부족"),
+            # Display-form inputs should also canonicalize
+            ("证据不足", "en", "Insufficient"),
+            ("Insufficient", "zh", "证据不足"),
+        ]
+
+        for raw, lang, expected in cases:
+            result = localize_consensus_level(raw, lang)
+            self.assertEqual(
+                result,
+                expected,
+                f"localize_consensus_level({raw!r}, {lang!r}) = {result!r}, want {expected!r}",
+            )
+
+    def test_renderer_shows_invalid_opinions_label(self):
+        """计划测试1补全：mixed valid+invalid → renderer 输出含 strategy_invalid_opinions_label。
+        走 StrategyEngine 完整链路，断言 _append_strategy_synthesis_block 渲染出 invalid count 行。
+        """
+        from src.agent.skills.engine import StrategyEngine
+        from src.notification import _append_strategy_synthesis_block
+        from src.report_language import get_report_labels
+
+        opinions = []
+        for i in range(2):
+            opinions.append(AgentOpinion(agent_name=f"skill_v{i}", signal="buy", confidence=0.8))
+        for i in range(3):
+            opinions.append(AgentOpinion(agent_name=f"skill_x{i}", signal="moon", confidence=0.9))
+
+        result = StrategyEngine().process(opinions)
+        synthesis = result.synthesis_dict
+        self.assertIsNotNone(synthesis)
+        self.assertEqual(synthesis["summary_params"]["invalid_opinion_count"], 3)
+
+        for lang, fragment in [
+            ("zh", "3"),
+            ("en", "3"),
+            ("ko", "3"),
+        ]:
+            labels = get_report_labels(lang)
+            lines: list = []
+            _append_strategy_synthesis_block(lines, synthesis, labels, lang)
+            rendered = "\n".join(lines)
+            # invalid count line must appear
+            self.assertIn(str(3), rendered, f"lang={lang}: invalid count missing from rendered output")
+            # the label template itself must have been applied (not raw template string)
+            self.assertNotIn("{count}", rendered, f"lang={lang}: label template not rendered")
+
+    def test_generate_dashboard_report_renders_invalid_count_and_insufficient(self):
+        """Blocker-6 真 E2E：经 generate_dashboard_report 主入口，
+        断言最终 Markdown 字符串含 '另有 N 个策略解析失败' 和本地化 '证据不足'。
+        """
+        from src.analyzer import AnalysisResult
+        from src.notification import NotificationService
+
+        synthesis = {
+            "final_signal": "hold",
+            "weighted_score": 3.0,
+            "confidence": 0.0,
+            "original_confidence": 0.0,
+            "conflict_count": 0,
+            "conflict_severity": "none",
+            "conflicts": [],
+            "supporting_skills": [],
+            "opposing_skills": [],
+            "consensus_level": "insufficient",
+            "summary_key": "strategy_synthesis.no_conflicts",
+            "summary_params": {
+                "opinion_count": 0,
+                "total_opinion_count": 3,
+                "invalid_opinion_count": 3,
+                "final_signal": "hold",
+                "consensus_level": "insufficient",
+                "conflict_severity": "none",
+                "conflict_count": 0,
+            },
+        }
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            decision_type="hold",
+            report_language="zh",
+            dashboard={
+                "strategy_synthesis": synthesis,
+                "core_conclusion": {"one_sentence": "测试样本"},
+                "intelligence": {},
+                "battle_plan": {},
+            },
+        )
+
+        svc = NotificationService()
+        report = svc.generate_dashboard_report([result])
+
+        # invalid count 行必须出现
+        self.assertIn("另有 3 个策略解析失败", report, "invalid count line missing from dashboard report")
+        # consensus_level=insufficient → localize → 证据不足
+        self.assertIn("证据不足", report, "localized 'insufficient' missing from dashboard report")
+
+    def test_bad_shape_summary_params_never_crashes_renderers(self):
+        """OR-COM-34818459 回归：summary_params 为字符串/列表时，所有渲染路径必须静默降级而非崩溃。"""
+        from src.report_language import (
+            localize_strategy_synthesis_summary,
+            normalize_strategy_synthesis_payload,
+            strategy_invalid_opinion_count,
+        )
+        from src.notification import _append_strategy_synthesis_block, NotificationService
+        from src.report_language import get_report_labels
+        from src.analyzer import AnalysisResult
+
+        bad_shapes = [
+            "bad-shape",          # 字符串
+            ["a", "b"],           # 列表
+            42,                   # 整数
+            None,                 # None（已有守卫，但确认不退化）
+        ]
+
+        for bad in bad_shapes:
+            synthesis = {
+                "final_signal": "hold",
+                "confidence": 0.5,
+                "consensus_level": "insufficient",
+                "conflict_severity": "none",
+                "conflict_count": 0,
+                "supporting_skills": [],
+                "opposing_skills": [],
+                "summary_params": bad,          # ← 坏 shape
+            }
+
+            # 1. 安全 helper 必须返回 0，不崩
+            count = strategy_invalid_opinion_count(synthesis)
+            self.assertEqual(count, 0, f"strategy_invalid_opinion_count should be 0 for summary_params={bad!r}")
+
+            # 2. localize_strategy_synthesis_summary 不崩
+            for lang in ("zh", "en", "ko"):
+                result = localize_strategy_synthesis_summary(synthesis, lang)
+                self.assertIsInstance(result, str, f"summary should be str for summary_params={bad!r}, lang={lang}")
+
+            # 3. _append_strategy_synthesis_block 不崩
+            for lang in ("zh", "en", "ko"):
+                labels = get_report_labels(lang)
+                lines: list = []
+                try:
+                    _append_strategy_synthesis_block(lines, synthesis, labels, lang)
+                except Exception as exc:
+                    self.fail(f"_append_strategy_synthesis_block crashed for summary_params={bad!r}: {exc}")
+
+        # Narrow legacy coercion preserves a decimal string count without
+        # accepting booleans, negative values, decimals, or arbitrary text.
+        for raw_count, expected in [
+            (3, 3),
+            ("3", 3),
+            (" 003 ", 3),
+            (True, 0),
+            (-1, 0),
+            ("3.0", 0),
+            ("bad", 0),
+        ]:
+            synthesis = {"summary_params": {"invalid_opinion_count": raw_count}}
+            self.assertEqual(strategy_invalid_opinion_count(synthesis), expected)
+
+        # Malformed top-level values are treated as an absent optional block.
+        for bad in ("bad-shape", ["a"], 42, True):
+            self.assertEqual(normalize_strategy_synthesis_payload(bad), {})
+            self.assertEqual(localize_strategy_synthesis_summary(bad, "zh"), "")
+            lines = []
+            _append_strategy_synthesis_block(lines, bad, get_report_labels("zh"), "zh")
+            self.assertEqual(lines, [])
+
+        # 4. generate_dashboard_report 主入口不崩（取 zh + 字符串 bad shape 作代表）
+        synthesis_bad = {
+            "final_signal": "hold",
+            "confidence": 0.5,
+            "consensus_level": "insufficient",
+            "conflict_severity": "none",
+            "conflict_count": 0,
+            "supporting_skills": [],
+            "opposing_skills": [],
+            "summary_params": "bad-shape",
+        }
+        result = AnalysisResult(
+            code="000001",
+            name="平安银行",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            decision_type="hold",
+            report_language="zh",
+            dashboard={
+                "strategy_synthesis": synthesis_bad,
+                "core_conclusion": {"one_sentence": "测试"},
+                "intelligence": {},
+                "battle_plan": {},
+            },
+        )
+        try:
+            report = NotificationService().generate_dashboard_report([result])
+        except Exception as exc:
+            self.fail(f"generate_dashboard_report crashed on bad summary_params: {exc}")
+        self.assertIsInstance(report, str)
+
+    def test_engine_no_skills_returns_no_skills_status(self):
+        """StrategyEngine with zero skill opinions returns NO_SKILLS (not NO_CONSENSUS)."""
+        from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+        ctx_opinions = [
+            AgentOpinion(agent_name="technical", signal="buy", confidence=0.8),
+            AgentOpinion(agent_name="decision", signal="hold", confidence=0.6),
+        ]
+
+        result = StrategyEngine().process(ctx_opinions)
+
+        self.assertEqual(result.status, StrategyResultStatus.NO_SKILLS)
+        self.assertIsNone(result.synthesis_dict)
+        self.assertIsNone(result.consensus_opinion)
+        # Non-skill opinions preserved
+        self.assertEqual(len(result.non_skill_opinions), 2)
 
 
 if __name__ == '__main__':

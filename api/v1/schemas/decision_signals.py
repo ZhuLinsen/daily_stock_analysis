@@ -261,11 +261,23 @@ class DecisionSignalMutationResponse(BaseModel):
 
 
 class DecisionSignalReassessResponse(BaseModel):
-    preview: DecisionSignalPreview
+    preview: Optional[DecisionSignalPreview] = None
     item: Optional[DecisionSignalItem] = None
     created: bool = False
+    persist_status: Optional[Literal["created", "existing", "refreshed"]] = None
     warnings: List[DecisionSignalWarning] = Field(default_factory=list)
     blocked_reason: Optional[str] = None
+
+
+class DecisionSignalReassessErrorResponse(BaseModel):
+    error: Literal[
+        "unsupported_report_type",
+        "unsupported_report_snapshot",
+        "guardrail_blocked",
+    ]
+    message: str
+    blocked_reason: Optional[str] = None
+    warnings: List[DecisionSignalWarning] = Field(default_factory=list)
 
 
 class DecisionSignalListResponse(BaseModel):

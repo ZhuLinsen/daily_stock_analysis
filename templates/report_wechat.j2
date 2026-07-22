@@ -64,6 +64,21 @@
 {% endif %}
 {% endif %}
 
+{% set strategy_synthesis = normalize_strategy_synthesis_payload(dashboard.get('strategy_synthesis')) %}
+{% if strategy_synthesis %}
+🧩 **{{ labels.strategy_synthesis_heading }}**: {{ localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language) }} | {{ labels.strategy_consensus_level_label }} {{ localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language) }} | {{ labels.strategy_conflict_label }} {{ localize_conflict_severity(strategy_synthesis.get('conflict_severity', 'none'), report_language) }}({{ strategy_synthesis.get('conflict_count', 0) }})
+{% set supporting_skills = strategy_synthesis.get('supporting_skills') or [] %}
+{% set opposing_skills = strategy_synthesis.get('opposing_skills') or [] %}
+- {{ labels.strategy_supporting_skills_label }}: {% if supporting_skills %}{% for item in supporting_skills %}{{ localize_strategy_skill(item.get('skill_id'), report_language) }}{{ '、' if not loop.last else '' }}{% endfor %}{% else %}{{ labels.none_label }}{% endif %}
+- {{ labels.strategy_opposing_skills_label }}: {% if opposing_skills %}{% for item in opposing_skills %}{{ localize_strategy_skill(item.get('skill_id'), report_language) }}{{ '、' if not loop.last else '' }}{% endfor %}{% else %}{{ labels.none_label }}{% endif %}
+{% set invalid_opinion_count = strategy_invalid_opinion_count(strategy_synthesis) %}
+{% if invalid_opinion_count and invalid_opinion_count > 0 %}- {{ labels.strategy_invalid_opinions_label.format(count=invalid_opinion_count) }}
+{% endif %}
+{% if localize_strategy_synthesis_summary(strategy_synthesis, report_language) %}
+{{ localize_strategy_synthesis_summary(strategy_synthesis, report_language)[:80] }}
+{% endif %}
+{% endif %}
+
 {% set checklist = battle.get('action_checklist', []) if battle else [] %}
 {% set fc = failed_checks(checklist) %}
 {% if fc %}

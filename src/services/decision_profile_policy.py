@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Minimal deterministic decision-profile policy for reassess preview."""
+"""Minimal deterministic decision-profile policy for reassessment."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def apply_decision_profile_policy(
     decision_profile: str,
     data_quality_level: DecisionSignalDataQuality,
 ) -> PolicyResult:
-    """Apply the P3a minimal profile policy and guardrail to a snapshot candidate."""
+    """Apply the minimal profile policy and guardrail to a snapshot candidate."""
 
     normalized_candidate = _apply_profile_bias(candidate, decision_profile)
     guardrail = _apply_guardrail(normalized_candidate, decision_profile, data_quality_level)
@@ -158,7 +158,11 @@ def _apply_guardrail(
         has_price_violation = any(code in PRICE_RELATIONSHIP_VIOLATION_CODES for code in violations)
         final_action = "alert" if has_price_violation else "watch"
         adjustments.append("action_downgraded_by_guardrail")
-        passed = False
+        # Missing confidence/invalidation or weak data can safely become a
+        # non-actionable watch signal. Contradictory price relationships cannot
+        # be persisted without changing the historical snapshot, so they stay
+        # blocked even though preview still exposes an alert fallback.
+        passed = not has_price_violation
 
     adjusted = raw_action != final_action or bool(adjustments)
     return GuardrailResult(
@@ -224,6 +228,10 @@ def _warnings_for_guardrail(guardrail: GuardrailResult) -> list[dict[str, object
         warnings.append(
             {
                 "code": "action_adjusted_by_guardrail",
+                "message": (
+                    f"原始动作 {guardrail.raw_action} 已由风控调整为 "
+                    f"{guardrail.final_action}。"
+                ),
                 "params": {
                     "raw_action": guardrail.raw_action,
                     "final_action": guardrail.final_action,
@@ -234,6 +242,7 @@ def _warnings_for_guardrail(guardrail: GuardrailResult) -> list[dict[str, object
         warnings.append(
             {
                 "code": "action_blocked_by_guardrail",
+                "message": "重评估结果未通过持久化风控，未保存为决策信号。",
                 "params": {
                     "raw_action": guardrail.raw_action,
                     "final_action": guardrail.final_action,

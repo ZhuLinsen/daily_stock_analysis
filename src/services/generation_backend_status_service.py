@@ -373,8 +373,7 @@ class GenerationBackendStatusService:
         return _SmokeRequest(backend_id=requested_backend, mode=normalized_mode, timeout_seconds=timeout)
 
     def _run_smoke(self, request: _SmokeRequest) -> None:
-        config = self._build_config(
-            self._effective_map,
+        config = self.build_effective_config(
             backend_id=request.backend_id,
             timeout_seconds=request.timeout_seconds,
         )
@@ -717,16 +716,15 @@ class GenerationBackendStatusService:
             return LITELLM_BACKEND_ID
         return (self._effective_map.get("GENERATION_FALLBACK_BACKEND") or "").strip().lower()
 
-    def _build_config(
+    def build_effective_config(
         self,
-        effective_map: Dict[str, str],
         *,
         backend_id: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
     ) -> Config:
         config = self._build_backend_config()
         primary = backend_id or config.generation_backend
-        openai_keys = self._openai_keys_from_map(effective_map)
+        openai_keys = self._openai_keys_from_map(self._effective_map)
         return Config(
             generation_backend=primary,
             generation_fallback_backend="",
@@ -736,28 +734,28 @@ class GenerationBackendStatusService:
             local_cli_backend_max_concurrency=config.local_cli_backend_max_concurrency,
             opencode_cli_model=config.opencode_cli_model,
             litellm_model=config.litellm_model,
-            litellm_fallback_models=self._split_csv(effective_map.get("LITELLM_FALLBACK_MODELS") or ""),
+            litellm_fallback_models=self._split_csv(self._effective_map.get("LITELLM_FALLBACK_MODELS") or ""),
             llm_model_list=config.llm_model_list,
             gemini_api_keys=self._split_csv(
-                effective_map.get("GEMINI_API_KEYS")
-                or effective_map.get("GEMINI_API_KEY")
+                self._effective_map.get("GEMINI_API_KEYS")
+                or self._effective_map.get("GEMINI_API_KEY")
                 or ""
             ),
             anthropic_api_keys=self._split_csv(
-                effective_map.get("ANTHROPIC_API_KEYS")
-                or effective_map.get("ANTHROPIC_API_KEY")
+                self._effective_map.get("ANTHROPIC_API_KEYS")
+                or self._effective_map.get("ANTHROPIC_API_KEY")
                 or ""
             ),
             openai_api_keys=openai_keys,
             deepseek_api_keys=self._split_csv(
-                effective_map.get("DEEPSEEK_API_KEYS")
-                or effective_map.get("DEEPSEEK_API_KEY")
+                self._effective_map.get("DEEPSEEK_API_KEYS")
+                or self._effective_map.get("DEEPSEEK_API_KEY")
                 or ""
             ),
-            gemini_api_key=(effective_map.get("GEMINI_API_KEY") or None),
-            anthropic_api_key=(effective_map.get("ANTHROPIC_API_KEY") or None),
+            gemini_api_key=(self._effective_map.get("GEMINI_API_KEY") or None),
+            anthropic_api_key=(self._effective_map.get("ANTHROPIC_API_KEY") or None),
             openai_api_key=(openai_keys[0] if openai_keys else None),
-            openai_base_url=self._openai_base_url_from_map(effective_map),
+            openai_base_url=self._openai_base_url_from_map(self._effective_map),
         )
 
     @classmethod

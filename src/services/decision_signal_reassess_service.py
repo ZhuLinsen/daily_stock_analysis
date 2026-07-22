@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Preview-only decision-profile reassessment from persisted analysis history."""
+"""Decision-profile reassessment from persisted analysis history."""
 
 from __future__ import annotations
 
@@ -18,14 +18,10 @@ from src.services.decision_profile_policy import (
     apply_decision_profile_policy,
 )
 from src.services.decision_signal_data_quality import normalize_decision_signal_data_quality
+from src.services.decision_signal_service import DecisionSignalService
 from src.storage import AnalysisHistory, DatabaseManager
 from src.utils.data_processing import parse_json_field
 from src.utils.sniper_points import find_sniper_points, parse_sniper_value
-
-
-UNSUPPORTED_PERSIST_MESSAGE = (
-    "Persisting reassessed decision_profile signals is tracked by #1757."
-)
 
 
 class DecisionSignalSourceReportNotFoundError(Exception):
@@ -40,15 +36,25 @@ class DecisionSignalUnsupportedReportSnapshotError(Exception):
     """Raised when the persisted report snapshot is insufficient for reassess."""
 
 
-class DecisionSignalReassessUnsupportedOperationError(Exception):
-    """Raised when the request asks for a future reassess operation."""
+class DecisionSignalReassessGuardrailBlockedError(Exception):
+    """Raised when persist recomputation has no safe signal to store."""
+
+    def __init__(self, *, blocked_reason: str, warnings: list[dict[str, object]]) -> None:
+        self.blocked_reason = blocked_reason
+        self.warnings = warnings
+        super().__init__(blocked_reason)
 
 
 class DecisionSignalReassessService:
-    """Build preview-only reassess responses without touching DecisionSignal rows."""
+    """Recompute a profile signal and optionally persist the authoritative result."""
 
-    def __init__(self, db: Optional[DatabaseManager] = None) -> None:
+    def __init__(
+        self,
+        db: Optional[DatabaseManager] = None,
+        signal_service: Optional[DecisionSignalService] = None,
+    ) -> None:
         self.db = db or DatabaseManager.get_instance()
+        self.signal_service = signal_service or DecisionSignalService(db_manager=self.db)
 
     def reassess(
         self,
@@ -57,8 +63,6 @@ class DecisionSignalReassessService:
         decision_profile: str,
         persist: bool = False,
     ) -> dict[str, Any]:
-        if persist:
-            raise DecisionSignalReassessUnsupportedOperationError(UNSUPPORTED_PERSIST_MESSAGE)
         decision_profile_norm = normalize_decision_profile(decision_profile)
         if decision_profile_norm is None:
             raise ValueError("decision_profile is required")
@@ -94,7 +98,7 @@ class DecisionSignalReassessService:
             "data_quality_level": data_quality_level,
             "guardrail_result": policy.guardrail_result.as_dict(),
         }
-        preview = {
+        preview: dict[str, Any] = {
             "action": preview_candidate.action,
             "score": preview_candidate.score,
             "confidence": preview_candidate.confidence,
@@ -109,13 +113,89 @@ class DecisionSignalReassessService:
             "watch_conditions": preview_candidate.watch_conditions,
             "metadata": metadata,
         }
+        if not persist:
+            return {
+                "preview": preview,
+                "item": None,
+                "created": False,
+                "persist_status": None,
+                "warnings": policy.warnings,
+                "blocked_reason": policy.blocked_reason,
+            }
+
+        if not policy.guardrail_result.passed:
+            raise DecisionSignalReassessGuardrailBlockedError(
+                blocked_reason=policy.blocked_reason or "actionable_signal_blocked_by_guardrail",
+                warnings=policy.warnings,
+            )
+
+        payload = _build_persist_payload(
+            record,
+            raw_result=raw_result,
+            decision_profile=decision_profile_norm,
+            candidate=preview_candidate,
+            metadata=metadata,
+        )
+        market_phase_summary = _as_mapping(context_snapshot.get("market_phase_summary"))
+        if not market_phase_summary:
+            market_phase_summary = _as_mapping(raw_result.get("market_phase_summary"))
+        try:
+            outcome = self.signal_service.create_history_bound_signal_with_outcome(
+                payload,
+                history_created_at=getattr(record, "created_at", None),
+                market_phase_summary=market_phase_summary,
+            )
+        except ValueError as exc:
+            raise DecisionSignalUnsupportedReportSnapshotError(
+                f"source report snapshot cannot produce a valid decision signal: {exc}"
+            ) from exc
         return {
-            "preview": preview,
-            "item": None,
-            "created": False,
+            "preview": None,
+            "item": outcome.item,
+            "created": outcome.created,
+            "persist_status": outcome.disposition,
             "warnings": policy.warnings,
-            "blocked_reason": policy.blocked_reason,
+            "blocked_reason": None,
         }
+
+
+def _build_persist_payload(
+    record: AnalysisHistory,
+    *,
+    raw_result: Mapping[str, Any],
+    decision_profile: str,
+    candidate: DecisionSignalCandidate,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    stock_code = str(getattr(record, "code", "") or "").strip()
+    market = _infer_market(stock_code)
+    if not stock_code or market is None:
+        raise DecisionSignalUnsupportedReportSnapshotError("source report has no supported stock identity")
+    return {
+        "stock_code": stock_code,
+        "stock_name": getattr(record, "name", None),
+        "market": market,
+        "source_type": "analysis",
+        "source_report_id": int(getattr(record, "id")),
+        "source_agent": "decision_profile_reassess",
+        "trigger_source": "web:decision_profile_reassess",
+        "decision_profile": decision_profile,
+        "market_phase": candidate.market_phase,
+        "action": candidate.action,
+        "score": candidate.score,
+        "confidence": candidate.confidence,
+        "horizon": candidate.horizon,
+        "entry_low": candidate.entry_low,
+        "entry_high": candidate.entry_high,
+        "stop_loss": candidate.stop_loss,
+        "target_price": candidate.target_price,
+        "invalidation": candidate.invalidation,
+        "reason": candidate.reason,
+        "risk_summary": candidate.risk_summary,
+        "watch_conditions": candidate.watch_conditions,
+        "metadata": metadata,
+        "report_language": raw_result.get("report_language"),
+    }
 
 
 def _build_candidate(

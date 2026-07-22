@@ -22,7 +22,7 @@ def test_policy_keeps_valid_snapshot_action_without_profile_upgrade() -> None:
     assert result.guardrail_result.adjusted is False
 
 
-def test_policy_blocks_buy_with_missing_confidence_as_safe_display_action() -> None:
+def test_policy_safely_downgrades_buy_with_missing_confidence() -> None:
     result = apply_decision_profile_policy(
         DecisionSignalCandidate(
             action="buy",
@@ -39,10 +39,13 @@ def test_policy_blocks_buy_with_missing_confidence_as_safe_display_action() -> N
     assert result.guardrail_result.raw_action == "buy"
     assert result.guardrail_result.final_action == "watch"
     assert result.candidate.action == "watch"
-    assert result.guardrail_result.passed is False
+    assert result.guardrail_result.passed is True
+    assert result.guardrail_result.adjusted is True
     assert "missing_confidence" in result.guardrail_result.violations
-    assert result.blocked_reason
-    assert {warning["code"] for warning in result.warnings} >= {"action_blocked_by_guardrail"}
+    assert result.guardrail_result.adjustments
+    assert result.blocked_reason is None
+    assert {warning["code"] for warning in result.warnings} == {"action_adjusted_by_guardrail"}
+    assert all(warning.get("message") for warning in result.warnings)
 
 
 def test_policy_requires_explicit_invalidation_for_aggressive_buy() -> None:
@@ -100,5 +103,12 @@ def test_policy_records_price_relationship_violations() -> None:
 
     assert result.guardrail_result.final_action == "alert"
     assert result.guardrail_result.adjusted is True
+    assert result.guardrail_result.passed is False
     assert "entry_range_invalid" in result.guardrail_result.violations
     assert "stop_loss_not_below_target_price" in result.guardrail_result.violations
+    assert result.blocked_reason
+    assert {warning["code"] for warning in result.warnings} == {
+        "action_adjusted_by_guardrail",
+        "action_blocked_by_guardrail",
+    }
+    assert all(warning.get("message") for warning in result.warnings)

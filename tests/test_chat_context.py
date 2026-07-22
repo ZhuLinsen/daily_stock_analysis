@@ -68,6 +68,25 @@ def test_disabled_compression_returns_recent_20_messages() -> None:
     assert history[-1]["content"] == "msg-24"
 
 
+def test_runtime_owned_history_ignores_litellm_compression_and_returns_recent_20() -> None:
+    db = _reset_db()
+    session_id = "chat-runtime-owned"
+    _add_messages(db, session_id, [("user", f"msg-{idx}") for idx in range(25)])
+    adapter = MagicMock()
+
+    history = build_visible_chat_history(
+        session_id,
+        adapter,
+        _config(enabled=True, trigger=1),
+        allow_llm_compression=False,
+    )
+
+    assert len(history) == 20
+    assert history[0]["content"] == "msg-5"
+    assert history[-1]["content"] == "msg-24"
+    adapter.call_text.assert_not_called()
+
+
 def test_enabled_under_trigger_without_summary_returns_full_history_over_20() -> None:
     db = _reset_db()
     session_id = "chat-full-raw"

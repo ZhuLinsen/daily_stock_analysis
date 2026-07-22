@@ -66,15 +66,7 @@ def build_decision_signal_payload_from_report(
     )
     raw_action = _raw_action_from_report(result)
     guardrail_reason = _extract_guardrail_reason(result, dashboard, score=score, raw_action=raw_action)
-    action_fields = build_action_fields(
-        operation_advice=getattr(result, "operation_advice", None),
-        explicit_action=getattr(result, "action", None),
-        report_type=report_type,
-        report_language=getattr(result, "report_language", None),
-        sentiment_score=score,
-        guardrail_reason=guardrail_reason,
-        align_with_score=True,
-    )
+    action_fields = resolve_decision_signal_action_fields(result, report_type=report_type)
     action = action_fields.get("action")
     if not action:
         return None
@@ -174,6 +166,36 @@ def build_decision_signal_payload_from_report(
         "report_language": getattr(result, "report_language", None),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def resolve_decision_signal_action_fields(
+    result: AnalysisResult,
+    *,
+    report_type: str,
+) -> Dict[str, Optional[str]]:
+    """Resolve the canonical public action shared by reports and DecisionSignal."""
+    dashboard = _as_mapping(getattr(result, "dashboard", None))
+    score_calibration = _as_mapping(dashboard.get("decision_score_calibration"))
+    score = _effective_signal_score(
+        _score_from_result(getattr(result, "sentiment_score", None)),
+        score_calibration,
+    )
+    raw_action = _raw_action_from_report(result)
+    guardrail_reason = _extract_guardrail_reason(
+        result,
+        dashboard,
+        score=score,
+        raw_action=raw_action,
+    )
+    return build_action_fields(
+        operation_advice=getattr(result, "operation_advice", None),
+        explicit_action=getattr(result, "action", None),
+        report_type=report_type,
+        report_language=getattr(result, "report_language", None),
+        sentiment_score=score,
+        guardrail_reason=guardrail_reason,
+        align_with_score=True,
+    )
 
 
 def extract_and_persist_from_analysis_result(

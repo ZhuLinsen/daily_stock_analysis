@@ -817,7 +817,7 @@ test('desktop update backup list preserves AlphaSift caches', (t) => {
   assert.ok(files.includes(path.join('data', 'alphasift', 'snapshot.last_good.json')));
 });
 
-test('desktop update backup and restore preserve generation backend env keys', (t) => {
+test('desktop update backup and restore preserve generation and Agent backend env keys', (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsa-desktop-env-backup-'));
   const appDir = path.join(tempRoot, 'app');
   const userDataDir = path.join(tempRoot, 'userData');
@@ -827,6 +827,7 @@ test('desktop update backup and restore preserve generation backend env keys', (
     'GENERATION_BACKEND=codex_cli',
     'GENERATION_FALLBACK_BACKEND=litellm',
     'CODEX_CLI_PRESET=codex',
+    'AGENT_BACKEND=codex_app_server',
     'AGENT_GENERATION_BACKEND=codex_cli',
     '',
   ].join('\n');
@@ -850,6 +851,8 @@ test('desktop update backup and restore preserve generation backend env keys', (
       getVersion: () => currentVersion,
     },
   });
+
+  assert.equal(mainModule.readEnvFileValue(envPath, 'AGENT_BACKEND'), 'codex_app_server');
 
   t.after(() => {
     fs.rmSync(tempRoot, { recursive: true, force: true });

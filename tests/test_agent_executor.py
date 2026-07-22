@@ -255,6 +255,18 @@ class TestAgentExecutor(unittest.TestCase):
                                 "stock_code": "600519",
                                 "stock_name": "贵州茅台",
                                 "previous_price": 1800,
+                                "market_structure_context": {
+                                    "schema_version": "market-structure-v1",
+                                    "status": "ok",
+                                    "market_theme_context": {
+                                        "active_themes": [{"name": "白酒"}],
+                                    },
+                                    "stock_market_position": {
+                                        "primary_theme": {"name": "白酒"},
+                                        "theme_phase": "expansion",
+                                        "stock_role": "leader",
+                                    },
+                                },
                             },
                         )
 
@@ -263,6 +275,8 @@ class TestAgentExecutor(unittest.TestCase):
         assert messages[1:3] == compressed_history
         assert messages[3]["role"] == "user"
         assert messages[3]["content"].startswith("[系统提供的历史分析上下文，可供参考对比]")
+        assert "## 市场结构上下文" in messages[3]["content"]
+        assert "个股主关联题材：白酒" in messages[3]["content"]
         assert messages[4]["role"] == "assistant"
         assert messages[-1] == {"role": "user", "content": "当前问题"}
         assert captured["stock_scope"].expected_stock_code == "600519"
@@ -286,6 +300,16 @@ class TestAgentExecutor(unittest.TestCase):
             "previous_strategy": {"action": "hold"},
             "previous_price": 1800,
             "previous_change_pct": 1.2,
+            "market_structure_context": {
+                "schema_version": "market-structure-v1",
+                "status": "ok",
+                "market_theme_context": {"active_themes": [{"name": "白酒"}]},
+                "stock_market_position": {
+                    "primary_theme": {"name": "白酒"},
+                    "theme_phase": "expansion",
+                    "stock_role": "leader",
+                },
+            },
             "skills": ["bull_trend"],
         }
 
@@ -305,6 +329,7 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertNotIn("股票名称: 贵州茅台", history_context)
         self.assertNotIn("上次分析摘要", history_context)
         self.assertNotIn("上次策略分析", history_context)
+        self.assertNotIn("市场结构上下文", history_context)
         self.assertEqual(captured["stock_scope"].mode, "switch")
         self.assertEqual(captured["stock_scope"].expected_stock_code, "AAPL")
         self.assertEqual(captured["stock_scope"].allowed_stock_codes, {"AAPL"})
@@ -368,6 +393,27 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(result.effective_context["stock_code"], "600519")
         self.assertEqual(result.effective_context["stock_name"], "贵州茅台")
         self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519", "AAPL"})
+
+    def test_strict_initial_scope_uses_explicit_message_codes(self):
+        result = resolve_stock_scope(
+            "比较 600519 和 AAPL",
+            None,
+            strict_initial_scope=True,
+        )
+
+        self.assertEqual(result.stock_scope.mode, "compare")
+        self.assertEqual(result.stock_scope.expected_stock_code, "")
+        self.assertEqual(result.stock_scope.allowed_stock_codes, {"600519", "AAPL"})
+
+    def test_default_initial_scope_keeps_litellm_behavior(self):
+        result = resolve_stock_scope("分析 AAPL", None)
+
+        self.assertIsNone(result.stock_scope)
+
+    def test_strict_initial_scope_without_code_remains_unscoped(self):
+        result = resolve_stock_scope("分析茅台", None, strict_initial_scope=True)
+
+        self.assertIsNone(result.stock_scope)
 
     def test_resolve_stock_scope_keeps_ambiguous_bare_code_on_current_stock(self):
         result = resolve_stock_scope("AAPL", {"stock_code": "600519", "stock_name": "贵州茅台"})

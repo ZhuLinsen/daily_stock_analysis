@@ -188,6 +188,25 @@ class TestValidateStructuredStockList:
 # ---------------------------------------------------------------------------
 
 class TestValidateStructuredLLM:
+    def test_codex_agent_backend_requires_single_agent_architecture(self):
+        cfg = _make_config(agent_backend="codex_app_server", agent_arch="multi")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.code == "unsupported_agent_arch")
+        assert error.severity == "error"
+        assert error.field == "AGENT_ARCH"
+        assert "single" in error.message
+
+    def test_unknown_agent_backend_is_structured_config_error(self):
+        cfg = _make_config(agent_backend="unknown")
+
+        issues = cfg.validate_structured()
+
+        error = next(i for i in issues if i.field == "AGENT_BACKEND")
+        assert error.severity == "error"
+        assert error.code == "capability_unsupported"
+
     def test_unknown_generation_backend_is_structured_config_error(self):
         cfg = _make_config(generation_backend="codex")
 

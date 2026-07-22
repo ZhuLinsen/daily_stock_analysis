@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
+from src.agent.dashboard_payload import sanitize_agent_dashboard_payload
+from src.agent.protocols import StageFailureReason
 from src.agent.stream_events import stream_event
 from src.agent.tools.registry import ToolRegistry
 from src.agent.tools.execution import (
@@ -95,6 +97,7 @@ class RunLoopResult:
     provider: str = ""
     models_used: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    failure_reason: Optional[StageFailureReason] = None
     # Raw messages list at the end of the loop (callers may want to persist)
     messages: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -128,24 +131,20 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         for block in json_blocks:
             parsed = _try_parse_json(block)
             if parsed is not None:
-                normalize_report_signal_attribution(parsed)
-                return parsed
+                return _finalize_dashboard_payload(parsed)
             parsed = _try_repair_json(block, repair_json)
             if parsed is not None:
-                normalize_report_signal_attribution(parsed)
-                return parsed
+                return _finalize_dashboard_payload(parsed)
 
     # Strategy 2: raw parse
     parsed = _try_parse_json(content)
     if parsed is not None:
-        normalize_report_signal_attribution(parsed)
-        return parsed
+        return _finalize_dashboard_payload(parsed)
 
     # Strategy 3: json_repair on full content
     parsed = _try_repair_json(content, repair_json)
     if parsed is not None:
-        normalize_report_signal_attribution(parsed)
-        return parsed
+        return _finalize_dashboard_payload(parsed)
 
     # Strategy 4: brace-delimited
     brace_start = content.find("{")
@@ -154,15 +153,20 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
         candidate = content[brace_start : brace_end + 1]
         parsed = _try_parse_json(candidate)
         if parsed is not None:
-            normalize_report_signal_attribution(parsed)
-            return parsed
+            return _finalize_dashboard_payload(parsed)
         parsed = _try_repair_json(candidate, repair_json)
         if parsed is not None:
-            normalize_report_signal_attribution(parsed)
-            return parsed
+            return _finalize_dashboard_payload(parsed)
 
     logger.warning("Failed to parse dashboard JSON from agent response")
     return None
+
+
+def _finalize_dashboard_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize reserved fields before running normal dashboard normalization."""
+    sanitized = sanitize_agent_dashboard_payload(payload)
+    normalize_report_signal_attribution(sanitized)
+    return sanitized
 
 
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -277,6 +281,7 @@ def _build_timeout_result(
         provider=provider_used,
         models_used=models_used,
         error=f"Agent timed out after {elapsed:.2f}s (limit: {max_wall_clock_seconds:.2f}s)",
+        failure_reason=StageFailureReason.TIMEOUT,
         messages=messages,
     )
 
@@ -306,6 +311,7 @@ def _build_budget_guard_result(
             "Agent step skipped due to insufficient budget: "
             f"{remaining_timeout_s:.2f}s remaining, minimum {min_step_budget_s:.1f}s required"
         ),
+        failure_reason=StageFailureReason.BUDGET_SKIP,
         messages=messages,
     )
 
@@ -571,6 +577,7 @@ def run_agent_loop(
                 provider=provider_used,
                 models_used=models_used,
                 error=final_content if is_error else None,
+                failure_reason=(StageFailureReason.STAGE_FAILURE if is_error else None),
                 messages=messages,
             ))
 
@@ -585,6 +592,7 @@ def run_agent_loop(
         provider=provider_used,
         models_used=models_used,
         error=f"Agent exceeded max steps ({max_steps}). Try increasing AGENT_MAX_STEPS if analysis tasks are complex.",
+        failure_reason=StageFailureReason.STAGE_FAILURE,
         messages=messages,
     ))
 

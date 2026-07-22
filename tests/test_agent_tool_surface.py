@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
 from src.agent.stock_scope import StockScope
 from src.agent.tool_surface import ToolSurface
-from src.agent.tools.execution import ToolAccessContext
+from src.agent.tools.execution import ToolAccessContext, check_tool_execution
 from src.agent.tools.registry import ToolDefinition, ToolParameter, ToolPolicy, ToolRegistry
+
+
+def _single_tool_registry(tool: ToolDefinition) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(tool)
+    return registry
 
 
 def _registry_with_echo(executed=None) -> ToolRegistry:
@@ -65,11 +72,140 @@ def test_public_descriptor_does_not_expose_handler_and_includes_policy_scope() -
     encoded = json.dumps(descriptor, ensure_ascii=False)
 
     assert descriptor["policy"]["policy_status"] == "declared"
+    assert descriptor["policy"]["cancellation_safe"] is False
     assert descriptor["scope"]["scope_dimensions"] == ["stock"]
     assert descriptor["scope"]["requires_stock_scope"] is True
     assert "handler" not in encoded
     assert "callable" not in encoded
     assert "<function" not in encoded
+
+
+def test_cancellation_safe_filter_only_lists_explicitly_safe_tools() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="safe",
+            description="Safe",
+            parameters=[],
+            handler=lambda: None,
+            policy=ToolPolicy.declared(read_only=True, cancellation_safe=True),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="unsafe",
+            description="Unsafe",
+            parameters=[],
+            handler=lambda: None,
+            policy=ToolPolicy.declared(read_only=True),
+        )
+    )
+
+    surface = ToolSurface(registry)
+
+    assert [item["name"] for item in surface.list_tools("public")] == ["safe", "unsafe"]
+    assert [
+        item["name"]
+        for item in surface.list_tools("public", cancellation_safe_only=True)
+    ] == ["safe"]
+
+
+def test_controlled_execution_rejects_tool_without_cancellation_contract() -> None:
+    called = False
+
+    def handler():
+        nonlocal called
+        called = True
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="unsafe",
+            description="Unsafe",
+            parameters=[],
+            handler=handler,
+            policy=ToolPolicy.declared(read_only=True),
+        )
+    )
+
+    result = ToolSurface(registry).execute_tool(
+        "unsafe",
+        {},
+        ToolAccessContext(cancel_event=threading.Event()),
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "cancellation_unsupported"
+    assert called is False
+
+
+def test_cancellation_safe_handler_exits_before_controlled_call_returns() -> None:
+    entered = threading.Event()
+    cancel_event = threading.Event()
+    results = []
+
+    def handler():
+        entered.set()
+        while True:
+            check_tool_execution()
+            cancel_event.wait(0.01)
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="cooperative",
+            description="Cooperative",
+            parameters=[],
+            handler=handler,
+            policy=ToolPolicy.declared(read_only=True, cancellation_safe=True),
+        )
+    )
+    thread = threading.Thread(
+        target=lambda: results.append(
+            ToolSurface(registry).execute_tool(
+                "cooperative",
+                {},
+                ToolAccessContext(cancel_event=cancel_event),
+            )
+        )
+    )
+
+    thread.start()
+    assert entered.wait(timeout=1)
+    cancel_event.set()
+    thread.join(timeout=1)
+
+    assert thread.is_alive() is False
+    assert results[0]["error"]["code"] == "cancelled"
+
+
+def test_controlled_deadline_is_checked_before_safe_handler() -> None:
+    called = False
+
+    def handler():
+        nonlocal called
+        called = True
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="safe",
+            description="Safe",
+            parameters=[],
+            handler=handler,
+            policy=ToolPolicy.declared(read_only=True, cancellation_safe=True),
+        )
+    )
+
+    result = ToolSurface(registry).execute_tool(
+        "safe",
+        {},
+        ToolAccessContext(deadline=time.monotonic() - 1),
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "timeout"
+    assert called is False
 
 
 def test_openai_schema_is_structurally_equal_to_registry_output() -> None:
@@ -526,6 +662,76 @@ def test_default_production_registry_has_supported_declared_policies() -> None:
     assert registry.validate_tool_policies(strict=True) == []
 
 
+def test_default_production_registry_only_exposes_bounded_tools_to_codex() -> None:
+    from src.agent.factory import get_tool_registry
+
+    safe_names = {
+        item["name"]
+        for item in ToolSurface(get_tool_registry()).list_tools(
+            "public",
+            cancellation_safe_only=True,
+        )
+    }
+
+    assert safe_names == {
+        "get_analysis_context",
+        "get_skill_backtest_summary",
+        "get_strategy_backtest_summary",
+    }
+
+
+def test_analysis_context_honors_cancellation_after_database_read(monkeypatch) -> None:
+    from src.agent.tools import data_tools
+
+    cancel_event = threading.Event()
+
+    class _Database:
+        def get_analysis_context(self, _stock_code):
+            cancel_event.set()
+            return {"code": "600519"}
+
+    monkeypatch.setattr(data_tools, "_get_db", lambda: _Database())
+
+    result = ToolSurface(_single_tool_registry(data_tools.get_analysis_context_tool)).execute_tool(
+        "get_analysis_context",
+        {"stock_code": "600519"},
+        ToolAccessContext(
+            stock_scope=StockScope(
+                expected_stock_code="600519",
+                allowed_stock_codes={"600519"},
+            ),
+            cancel_event=cancel_event,
+        ),
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "cancelled"
+
+
+def test_backtest_summary_honors_cancellation_after_database_read(monkeypatch) -> None:
+    from src.agent.tools import backtest_tools
+
+    cancel_event = threading.Event()
+
+    class _BacktestService:
+        def get_summary(self, **_kwargs):
+            cancel_event.set()
+            return {"scope": "overall"}
+
+    monkeypatch.setattr(backtest_tools, "_get_backtest_service", lambda: _BacktestService())
+
+    result = ToolSurface(
+        _single_tool_registry(backtest_tools.get_strategy_backtest_summary_tool)
+    ).execute_tool(
+        "get_strategy_backtest_summary",
+        {},
+        ToolAccessContext(cancel_event=cancel_event),
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "cancelled"
+
+
 def test_future_scope_context_fields_do_not_block_undeclared_tools() -> None:
     result = ToolSurface(_registry_with_echo()).execute_tool(
         "echo",
@@ -540,14 +746,22 @@ def test_future_scope_context_fields_do_not_block_undeclared_tools() -> None:
     assert result["ok"] is True
 
 
-def test_timeout_returns_promptly_without_waiting_for_handler_shutdown() -> None:
+def test_timeout_does_not_return_while_handler_is_still_running() -> None:
+    finished = threading.Event()
+
+    def slow_handler():
+        time.sleep(0.4)
+        finished.set()
+        return {"done": True}
+
     registry = ToolRegistry()
     registry.register(
         ToolDefinition(
             name="slow",
             description="Slow",
             parameters=[],
-            handler=lambda: (time.sleep(0.4), {"done": True})[1],
+            handler=slow_handler,
+            policy=ToolPolicy.declared(read_only=True, cancellation_safe=True),
         )
     )
 
@@ -560,8 +774,8 @@ def test_timeout_returns_promptly_without_waiting_for_handler_shutdown() -> None
 
     assert result["ok"] is False
     assert result["error"]["code"] == "timeout"
-    assert result["error"]["details"]["handler_may_continue"] is True
-    assert time.time() - started < 0.2
+    assert finished.is_set()
+    assert time.time() - started >= 0.35
 
 
 def test_max_result_bytes_truncates_public_payload_and_marks_diagnostics() -> None:

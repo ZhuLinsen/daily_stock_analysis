@@ -6,27 +6,26 @@ SkillAggregator — weighted aggregation of skill opinions.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from src.agent.memory import AgentMemory
-from src.agent.protocols import AgentContext, AgentOpinion
+from src.agent.protocols import AgentContext, AgentOpinion, StrategyConflict, StrategyOpinion
 from src.agent.skills.defaults import (
     SKILL_CONSENSUS_AGENT_NAME,
     extract_skill_id,
     is_skill_agent_name,
 )
+from src.agent.skills.synthesis import (
+    ConflictDetector,
+    StrategySynthesizer,
+    strategy_opinion_from_agent_opinion,
+    strategy_signal_score,
+)
 
 logger = logging.getLogger(__name__)
 
 _MIN_BACKTEST_SAMPLES = 30
-
-_SIGNAL_SCORES: Dict[str, float] = {
-    "strong_buy": 5.0,
-    "buy": 4.0,
-    "hold": 3.0,
-    "sell": 2.0,
-    "strong_sell": 1.0,
-}
 
 _SCORE_TO_SIGNAL = [
     (4.5, "strong_buy"),
@@ -37,6 +36,21 @@ _SCORE_TO_SIGNAL = [
 ]
 
 
+@dataclass
+class AggregationData:
+    skill_opinions: List[AgentOpinion] = field(default_factory=list)
+    weights: List[float] = field(default_factory=list)
+    skill_names: List[str] = field(default_factory=list)
+    strategy_opinions: List[StrategyOpinion] = field(default_factory=list)
+    weighted_score: float = 3.0
+    weighted_confidence: float = 0.0
+    insufficient_evidence: bool = False
+    conflicts: List[StrategyConflict] = field(default_factory=list)
+    final_signal: str = "hold"
+    individual_signals: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    total_adjustment: float = 0.0
+
+
 class SkillAggregator:
     """Aggregate multiple skill-agent opinions into one consensus."""
 
@@ -45,7 +59,28 @@ class SkillAggregator:
         ctx: AgentContext,
         min_samples: int = _MIN_BACKTEST_SAMPLES,
     ) -> Optional[AgentOpinion]:
-        skill_opinions = [op for op in ctx.opinions if is_skill_agent_name(op.agent_name)]
+        aggregation = self.calculate(ctx.opinions, min_samples=min_samples)
+        if aggregation is None:
+            return None
+
+        invalid_count = sum(1 for opinion in aggregation.strategy_opinions if opinion.invalid_signal)
+        synthesis = StrategySynthesizer().synthesize(
+            aggregation.strategy_opinions,
+            weighted_score=aggregation.weighted_score,
+            final_signal=aggregation.final_signal,
+            weighted_confidence=aggregation.weighted_confidence,
+            conflicts=aggregation.conflicts,
+            insufficient_evidence=aggregation.insufficient_evidence,
+            invalid_count=invalid_count,
+        )
+        return self.build_consensus_opinion(aggregation, synthesis)
+
+    def calculate(
+        self,
+        opinions: List[AgentOpinion],
+        min_samples: int = _MIN_BACKTEST_SAMPLES,
+    ) -> Optional[AggregationData]:
+        skill_opinions = [op for op in opinions if is_skill_agent_name(op.agent_name)]
         if not skill_opinions:
             return None
 
@@ -70,49 +105,100 @@ class SkillAggregator:
             )
             weights.append(weight)
 
-        total_weight = sum(weights) or 1.0
-        weighted_score = sum(
-            _SIGNAL_SCORES.get(op.signal, 3.0) * weight
-            for op, weight in zip(skill_opinions, weights)
-        ) / total_weight
-        weighted_confidence = sum(
-            op.confidence * weight
-            for op, weight in zip(skill_opinions, weights)
-        ) / total_weight
+        strategy_opinions = [
+            strategy_opinion_from_agent_opinion(op)
+            for op in skill_opinions
+        ]
+
+        valid_opinions_with_weights = [
+            (op, strategy, weight)
+            for op, strategy, weight in zip(skill_opinions, strategy_opinions, weights)
+            if not strategy.invalid_signal
+        ]
+        valid_weight_sum = sum(weight for _, _, weight in valid_opinions_with_weights)
+        insufficient_evidence = (
+            not valid_opinions_with_weights or valid_weight_sum <= 0
+        )
+        if not insufficient_evidence:
+            weighted_score = sum(
+                strategy_signal_score(strategy.signal) * weight
+                for _, strategy, weight in valid_opinions_with_weights
+            ) / valid_weight_sum
+            weighted_confidence = sum(
+                op.confidence * weight
+                for op, _, weight in valid_opinions_with_weights
+            ) / valid_weight_sum
+        else:
+            weighted_score = 3.0
+            weighted_confidence = 0.0
         total_adjustment = sum(
             op.raw_data.get("score_adjustment", 0)
-            for op in skill_opinions
+            for op, strategy, weight in valid_opinions_with_weights
             if isinstance(op.raw_data.get("score_adjustment"), (int, float))
         )
 
-        final_signal = "hold"
-        for threshold, signal in _SCORE_TO_SIGNAL:
-            if weighted_score >= threshold:
-                final_signal = signal
-                break
+        if insufficient_evidence:
+            final_signal = "hold"
+        else:
+            final_signal = "hold"
+            for threshold, signal in _SCORE_TO_SIGNAL:
+                if weighted_score >= threshold:
+                    final_signal = signal
+                    break
 
-        skill_names = [extract_skill_id(op.agent_name) or op.agent_name for op in skill_opinions]
+        conflicts = ConflictDetector().detect(strategy_opinions, final_signal=final_signal)
+        individual_signals = {
+            op.agent_name: {
+                "signal": strategy.signal,
+                "confidence": op.confidence,
+                "original_signal": strategy.original_signal,
+                "invalid_signal": strategy.invalid_signal,
+            }
+            for op, strategy in zip(skill_opinions, strategy_opinions)
+        }
+        return AggregationData(
+            skill_opinions=skill_opinions,
+            weights=weights,
+            skill_names=skill_ids,
+            strategy_opinions=strategy_opinions,
+            weighted_score=weighted_score,
+            weighted_confidence=weighted_confidence,
+            insufficient_evidence=insufficient_evidence,
+            conflicts=conflicts,
+            final_signal=final_signal,
+            individual_signals=individual_signals,
+            total_adjustment=total_adjustment,
+        )
+
+    @staticmethod
+    def build_consensus_opinion(
+        aggregation: AggregationData,
+        synthesis: Dict[str, Any],
+    ) -> AgentOpinion:
         reasoning_parts = [
-            f"Skill consensus from {len(skill_opinions)} skills "
-            f"({', '.join(skill_names)}): weighted score {weighted_score:.2f}/5.0"
+            f"Skill consensus from {len(aggregation.skill_opinions)} skills "
+            f"({', '.join(aggregation.skill_names)}): weighted score {aggregation.weighted_score:.2f}/5.0, "
+            f"consensus={synthesis['consensus_level']}, conflicts={synthesis['conflict_severity']}({synthesis['conflict_count']})"
         ]
-        for op, weight in zip(skill_opinions, weights):
-            name = extract_skill_id(op.agent_name) or op.agent_name
-            reasoning_parts.append(f"  - {name}: {op.signal} ({op.confidence:.0%}) weight={weight:.2f}")
+        for opinion, weight in zip(aggregation.skill_opinions, aggregation.weights):
+            name = extract_skill_id(opinion.agent_name) or opinion.agent_name
+            reasoning_parts.append(f"  - {name}: {opinion.signal} ({opinion.confidence:.0%}) weight={weight:.2f}")
 
         return AgentOpinion(
             agent_name=SKILL_CONSENSUS_AGENT_NAME,
-            signal=final_signal,
-            confidence=min(1.0, weighted_confidence),
+            signal=aggregation.final_signal,
+            confidence=synthesis["confidence"],
             reasoning="\n".join(reasoning_parts),
             raw_data={
-                "weighted_score": round(weighted_score, 2),
-                "total_adjustment": total_adjustment,
-                "skill_count": len(skill_opinions),
-                "individual_signals": {
-                    op.agent_name: {"signal": op.signal, "confidence": op.confidence}
-                    for op in skill_opinions
-                },
+                "weighted_score": round(aggregation.weighted_score, 2),
+                "total_adjustment": aggregation.total_adjustment,
+                "skill_count": len(aggregation.skill_opinions),
+                "individual_signals": aggregation.individual_signals,
+                "strategy_synthesis": synthesis,
+                "conflicts": synthesis["conflicts"],
+                "conflict_count": synthesis["conflict_count"],
+                "conflict_severity": synthesis["conflict_severity"],
+                "consensus_level": synthesis["consensus_level"],
             },
         )
 

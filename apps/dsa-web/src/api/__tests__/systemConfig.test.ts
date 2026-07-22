@@ -273,4 +273,60 @@ describe('systemConfigApi', () => {
     expect(result.success).toBe(true);
     expect(result.status.healthStatus).toBe('passed');
   });
+
+  it('loads the flat Agent backend compatibility status', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        backend: 'codex_app_server',
+        available: true,
+        experimental: true,
+        version: 'codex-cli test',
+        error_code: null,
+        message: null,
+      },
+    });
+
+    const result = await systemConfigApi.getAgentBackendStatus();
+
+    expect(get).toHaveBeenCalledWith('/api/v1/system/config/agent-backends/status');
+    expect(result).toEqual({
+      backend: 'codex_app_server',
+      available: true,
+      experimental: true,
+      version: 'codex-cli test',
+      errorCode: null,
+      message: null,
+    });
+  });
+
+  it('previews Agent backend status with unsaved draft items', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        backend: 'codex_app_server',
+        available: false,
+        experimental: true,
+        version: null,
+        error_code: 'unsupported_agent_arch',
+        message: 'single only',
+      },
+    });
+
+    const result = await systemConfigApi.previewAgentBackendStatus({
+      items: [
+        { key: 'AGENT_BACKEND', value: 'codex_app_server' },
+        { key: 'AGENT_ARCH', value: 'multi' },
+      ],
+      maskToken: '***',
+    });
+
+    expect(post).toHaveBeenCalledWith('/api/v1/system/config/agent-backends/status/preview', {
+      items: [
+        { key: 'AGENT_BACKEND', value: 'codex_app_server' },
+        { key: 'AGENT_ARCH', value: 'multi' },
+      ],
+      mask_token: '***',
+    });
+    expect(result.errorCode).toBe('unsupported_agent_arch');
+    expect(result.message).toBe('single only');
+  });
 });

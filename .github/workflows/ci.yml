@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
+      futu_packaging: ${{ steps.filter.outputs.futu_packaging }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -24,6 +25,17 @@ jobs:
           filters: |
             frontend:
               - 'apps/dsa-web/**'
+            futu_packaging:
+              - 'requirements.txt'
+              - 'main.py'
+              - 'src/brokers/futu/**'
+              - 'scripts/build-backend.ps1'
+              - 'scripts/build-backend-macos.sh'
+              - 'scripts/build-all.ps1'
+              - 'scripts/build-all-macos.sh'
+              - 'apps/dsa-desktop/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/desktop-release.yml'
 
   ai-governance:
     name: ai-governance
@@ -67,6 +79,8 @@ jobs:
             echo "Dependency install attempt ${attempt} failed, retrying in 15s..." >&2
             sleep 15
           done
+      - name: 🔌 Verify global Futu SDK
+        run: python -c "import futu; print('✅ futu SDK import OK')"
       - name: ✅ Python syntax check
         run: ./scripts/ci_gate.sh syntax
       - name: ✅ Flake8 critical checks
@@ -107,8 +121,61 @@ jobs:
           from src.patches.eastmoney_patch import eastmoney_patch; print('✅ patch')
           from bot.dispatcher import CommandDispatcher; print('✅ bot')
           from api.app import app; print('✅ api')
+          import futu; print('✅ futu')
           print('✅ All Docker imports OK')
           "
+
+  desktop-futu-package-windows:
+    name: desktop-futu-package-windows
+    runs-on: windows-latest
+    needs: [changes, ai-governance]
+    if: needs.changes.outputs.futu_packaging == 'true'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/dsa-web/package-lock.json
+      - name: 📦 Install Web dependencies
+        shell: pwsh
+        run: npm ci --prefix apps/dsa-web
+      - name: 🧊 Build and verify frozen backend
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/build-backend.ps1
+
+  desktop-futu-package-macos:
+    name: desktop-futu-package-macos
+    runs-on: macos-15
+    needs: [changes, ai-governance]
+    if: needs.changes.outputs.futu_packaging == 'true'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/dsa-web/package-lock.json
+      - name: 📦 Install Web dependencies
+        run: npm ci --prefix apps/dsa-web
+      - name: 🧊 Build and verify frozen backend
+        run: bash scripts/build-backend-macos.sh
 
   web-gate:
     name: web-gate

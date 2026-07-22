@@ -133,6 +133,133 @@ _CONFIDENCE_LEVEL_TRANSLATIONS = {
     "low": {"zh": "低", "en": "Low", "ko": "낮음"},
 }
 
+_STRATEGY_SIGNAL_CANONICAL_MAP = {
+    "strong buy": "strong_buy",
+    "strong_buy": "strong_buy",
+    "强烈买入": "strong_buy",
+    "buy": "buy",
+    "买入": "buy",
+    "hold": "hold",
+    "持有": "hold",
+    "sell": "sell",
+    "卖出": "sell",
+    "strong sell": "strong_sell",
+    "strong_sell": "strong_sell",
+    "强烈卖出": "strong_sell",
+}
+
+_STRATEGY_SIGNAL_TRANSLATIONS = {
+    "strong_buy": {"zh": "强烈买入", "en": "Strong Buy", "ko": "적극 매수"},
+    "buy": {"zh": "买入", "en": "Buy", "ko": "매수"},
+    "hold": {"zh": "持有", "en": "Hold", "ko": "보유"},
+    "sell": {"zh": "卖出", "en": "Sell", "ko": "매도"},
+    "strong_sell": {"zh": "强烈卖出", "en": "Strong Sell", "ko": "적극 매도"},
+}
+
+_CONSENSUS_LEVEL_CANONICAL_MAP = {
+    "high": "high",
+    "高": "high",
+    "medium": "medium",
+    "中": "medium",
+    "low": "low",
+    "低": "low",
+    "insufficient": "insufficient",
+    "证据不足": "insufficient",
+    "Insufficient": "insufficient",
+    "증거 부족": "insufficient",
+}
+
+_CONSENSUS_LEVEL_TRANSLATIONS = {
+    "high": {"zh": "高", "en": "High", "ko": "높음"},
+    "medium": {"zh": "中", "en": "Medium", "ko": "보통"},
+    "low": {"zh": "低", "en": "Low", "ko": "낮음"},
+    "insufficient": {"zh": "证据不足", "en": "Insufficient", "ko": "증거 부족"},
+}
+
+_CONFLICT_SEVERITY_CANONICAL_MAP = {
+    "none": "none",
+    "无": "none",
+    "low": "low",
+    "低": "low",
+    "medium": "medium",
+    "中": "medium",
+    "high": "high",
+    "高": "high",
+}
+
+_CONFLICT_SEVERITY_TRANSLATIONS = {
+    "none": {"zh": "无", "en": "None", "ko": "없음"},
+    "low": {"zh": "低", "en": "Low", "ko": "낮음"},
+    "medium": {"zh": "中", "en": "Medium", "ko": "보통"},
+    "high": {"zh": "高", "en": "High", "ko": "높음"},
+}
+
+_STRATEGY_SKILL_CANONICAL_MAP = {
+    "bull trend": "bull_trend",
+    "bull_trend": "bull_trend",
+    "默认多头趋势": "bull_trend",
+    "hot theme": "hot_theme",
+    "hot_theme": "hot_theme",
+    "热点题材": "hot_theme",
+    "volume breakout": "volume_breakout",
+    "volume_breakout": "volume_breakout",
+    "放量突破": "volume_breakout",
+    "ma golden cross": "ma_golden_cross",
+    "ma_golden_cross": "ma_golden_cross",
+    "均线金叉": "ma_golden_cross",
+    "growth quality": "growth_quality",
+    "growth_quality": "growth_quality",
+    "成长质量": "growth_quality",
+    "bottom volume": "bottom_volume",
+    "bottom_volume": "bottom_volume",
+    "底部放量": "bottom_volume",
+    "box oscillation": "box_oscillation",
+    "box_oscillation": "box_oscillation",
+    "箱体震荡": "box_oscillation",
+    "chan theory": "chan_theory",
+    "chan_theory": "chan_theory",
+    "缠论结构": "chan_theory",
+    "dragon head": "dragon_head",
+    "dragon_head": "dragon_head",
+    "龙头战法": "dragon_head",
+    "emotion cycle": "emotion_cycle",
+    "emotion_cycle": "emotion_cycle",
+    "情绪周期": "emotion_cycle",
+    "event driven": "event_driven",
+    "event_driven": "event_driven",
+    "事件驱动": "event_driven",
+    "expectation repricing": "expectation_repricing",
+    "expectation_repricing": "expectation_repricing",
+    "预期重估": "expectation_repricing",
+    "one yang three yin": "one_yang_three_yin",
+    "one_yang_three_yin": "one_yang_three_yin",
+    "一阳三阴": "one_yang_three_yin",
+    "shrink pullback": "shrink_pullback",
+    "shrink_pullback": "shrink_pullback",
+    "缩量回踩": "shrink_pullback",
+    "wave theory": "wave_theory",
+    "wave_theory": "wave_theory",
+    "波浪理论": "wave_theory",
+}
+
+_STRATEGY_SKILL_TRANSLATIONS = {
+    "bull_trend": {"zh": "默认多头趋势", "en": "Bull Trend", "ko": "기본 상승 추세"},
+    "hot_theme": {"zh": "热点题材", "en": "Hot Theme", "ko": "핫 테마"},
+    "volume_breakout": {"zh": "放量突破", "en": "Volume Breakout", "ko": "거래량 돌파"},
+    "ma_golden_cross": {"zh": "均线金叉", "en": "MA Golden Cross", "ko": "이평선 골든크로스"},
+    "growth_quality": {"zh": "成长质量", "en": "Growth Quality", "ko": "성장 품질"},
+    "bottom_volume": {"zh": "底部放量", "en": "Bottom Volume", "ko": "저점 거래량"},
+    "box_oscillation": {"zh": "箱体震荡", "en": "Box Oscillation", "ko": "박스권 등락"},
+    "chan_theory": {"zh": "缠论结构", "en": "Chan Theory", "ko": "찬 이론 구조"},
+    "dragon_head": {"zh": "龙头战法", "en": "Dragon Head", "ko": "대장주 전략"},
+    "emotion_cycle": {"zh": "情绪周期", "en": "Emotion Cycle", "ko": "심리 사이클"},
+    "event_driven": {"zh": "事件驱动", "en": "Event Driven", "ko": "이벤트 드리븐"},
+    "expectation_repricing": {"zh": "预期重估", "en": "Expectation Repricing", "ko": "기대 재평가"},
+    "one_yang_three_yin": {"zh": "一阳三阴", "en": "One Yang Three Yin", "ko": "일양삼음"},
+    "shrink_pullback": {"zh": "缩量回踩", "en": "Shrink Pullback", "ko": "거래량 축소 눌림"},
+    "wave_theory": {"zh": "波浪理论", "en": "Wave Theory", "ko": "파동 이론"},
+}
+
 _CHIP_HEALTH_CANONICAL_MAP = {
     "健康": "healthy",
     "healthy": "healthy",
@@ -278,6 +405,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "bullish_alignment_label": "多头排列",
         "yes_label": "是",
         "no_label": "否",
+        "none_label": "无",
         "trend_strength_label": "趋势强度",
         "price_metrics_label": "价格指标",
         "ma5_label": "MA5",
@@ -356,6 +484,15 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "market_conditions_label": "市场环境",
         "strongest_bullish_signal_label": "最强看多信号",
         "strongest_bearish_signal_label": "最强看空信号",
+        "strategy_synthesis_heading": "多策略综合",
+        "strategy_final_signal_label": "综合信号",
+        "strategy_consensus_level_label": "共识度",
+        "strategy_conflict_label": "冲突",
+        "strategy_confidence_label": "置信度",
+        "strategy_summary_label": "综合说明",
+        "strategy_supporting_skills_label": "支持策略",
+        "strategy_opposing_skills_label": "反方策略",
+        "strategy_invalid_opinions_label": "另有 {count} 个策略解析失败",
     },
     "en": {
         "dashboard_title": "Decision Dashboard",
@@ -402,6 +539,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "bullish_alignment_label": "Bullish Alignment",
         "yes_label": "Yes",
         "no_label": "No",
+        "none_label": "None",
         "trend_strength_label": "Trend Strength",
         "price_metrics_label": "Price Metrics",
         "ma5_label": "MA5",
@@ -480,6 +618,15 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "market_conditions_label": "Market Conditions",
         "strongest_bullish_signal_label": "Strongest Bullish Signal",
         "strongest_bearish_signal_label": "Strongest Bearish Signal",
+        "strategy_synthesis_heading": "Strategy Synthesis",
+        "strategy_final_signal_label": "Final Signal",
+        "strategy_consensus_level_label": "Consensus",
+        "strategy_conflict_label": "Conflict",
+        "strategy_confidence_label": "Confidence",
+        "strategy_summary_label": "Summary",
+        "strategy_supporting_skills_label": "Supporting Strategies",
+        "strategy_opposing_skills_label": "Opposing Strategies",
+        "strategy_invalid_opinions_label": "{count} additional strategies failed to produce valid signals",
     },
     "ko": {
         "dashboard_title": "결정 대시보드",
@@ -526,6 +673,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "bullish_alignment_label": "정배열",
         "yes_label": "예",
         "no_label": "아니오",
+        "none_label": "없음",
         "trend_strength_label": "추세 강도",
         "price_metrics_label": "가격 지표",
         "ma5_label": "MA5",
@@ -604,6 +752,15 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "market_conditions_label": "시장 환경",
         "strongest_bullish_signal_label": "최강 상승 신호",
         "strongest_bearish_signal_label": "최강 하락 신호",
+        "strategy_synthesis_heading": "전략 종합",
+        "strategy_final_signal_label": "종합 신호",
+        "strategy_consensus_level_label": "공감도",
+        "strategy_conflict_label": "충돌",
+        "strategy_confidence_label": "신뢰도",
+        "strategy_summary_label": "종합 설명",
+        "strategy_supporting_skills_label": "지지 전략",
+        "strategy_opposing_skills_label": "반대 전략",
+        "strategy_invalid_opinions_label": "추가로 {count}개 전략이 유효한 신호를 생성하지 못했습니다",
     },
 }
 
@@ -839,6 +996,46 @@ def localize_confidence_level(value: Any, language: Optional[str]) -> str:
     )
 
 
+def localize_strategy_signal(value: Any, language: Optional[str]) -> str:
+    """Translate strategy signal labels when recognized."""
+    return _translate_from_map(
+        value,
+        language,
+        canonical_map=_STRATEGY_SIGNAL_CANONICAL_MAP,
+        translations=_STRATEGY_SIGNAL_TRANSLATIONS,
+    )
+
+
+def localize_consensus_level(value: Any, language: Optional[str]) -> str:
+    """Translate strategy consensus levels when recognized."""
+    return _translate_from_map(
+        value,
+        language,
+        canonical_map=_CONSENSUS_LEVEL_CANONICAL_MAP,
+        translations=_CONSENSUS_LEVEL_TRANSLATIONS,
+    )
+
+
+def localize_conflict_severity(value: Any, language: Optional[str]) -> str:
+    """Translate strategy conflict severity when recognized."""
+    return _translate_from_map(
+        value,
+        language,
+        canonical_map=_CONFLICT_SEVERITY_CANONICAL_MAP,
+        translations=_CONFLICT_SEVERITY_TRANSLATIONS,
+    )
+
+
+def localize_strategy_skill(value: Any, language: Optional[str]) -> str:
+    """Translate strategy skill names when recognized."""
+    return _translate_from_map(
+        value,
+        language,
+        canonical_map=_STRATEGY_SKILL_CANONICAL_MAP,
+        translations=_STRATEGY_SKILL_TRANSLATIONS,
+    )
+
+
 def localize_chip_health(value: Any, language: Optional[str]) -> str:
     """Translate chip health labels between Chinese and English when recognized."""
     return _translate_from_map(
@@ -877,6 +1074,120 @@ def is_chip_structure_unavailable(chip_data: Any) -> bool:
     if any(key in chip_data for key in _CHIP_METRIC_KEYS):
         return all(is_chip_placeholder_value(chip_data.get(key)) for key in _CHIP_METRIC_KEYS)
     return all(is_chip_placeholder_value(value) for value in chip_data.values())
+
+
+def localize_strategy_conflict_description(conflict_type: Any, language: Optional[str]) -> str:
+    """Translate strategy conflict type into a display sentence at render boundaries."""
+    lang = normalize_report_language(language)
+    key = str(conflict_type or "").strip()
+    translations = {
+        "directional_opposition": {
+            "zh": "策略方向出现对立：部分策略看多，部分策略看空，综合结论需要降低确定性。",
+            "en": "Strategy directions diverge: some strategies are bullish while others are bearish, so conviction should be reduced.",
+            "ko": "전략 방향이 엇갈립니다. 일부 전략은 상승을, 일부 전략은 하락을 보며 확신도를 낮춰야 합니다.",
+        },
+        "wide_score_dispersion": {
+            "zh": "策略信号分数分布较宽，说明多策略对行情结构存在明显分歧。",
+            "en": "Strategy signal scores are widely dispersed, indicating meaningful disagreement on market structure.",
+            "ko": "전략 신호 점수 분포가 넓어 시장 구조에 대한 전략 간 이견이 큽니다.",
+        },
+        "high_confidence_dissent": {
+            "zh": "存在高置信少数派策略与综合信号明显不一致，应保留反方观点。",
+            "en": "A high-confidence minority strategy materially disagrees with the final signal and should be kept as a dissenting view.",
+            "ko": "높은 확신도의 소수 전략이 종합 신호와 크게 달라 반대 관점으로 보존해야 합니다.",
+        },
+        "adjustment_contradiction": {
+            "zh": "策略加减分方向相互矛盾，说明不同策略对同一标的的边际评分分歧较大。",
+            "en": "Strategy score adjustments contradict each other, showing large disagreement in marginal scoring.",
+            "ko": "전략별 점수 조정 방향이 서로 충돌해 동일 종목의 한계 평가 차이가 큽니다.",
+        },
+    }
+    localized = translations.get(key, {})
+    return localized.get(lang) or localized.get("zh") or key
+
+
+def normalize_strategy_synthesis_payload(value: Any) -> Dict[str, Any]:
+    """Return a renderer-safe copy of a strategy synthesis payload.
+
+    Historical records and external callers may contain pre-contract values.
+    Renderers must treat a malformed top-level payload as absent and must not
+    iterate malformed collection fields as strategy/conflict entries.
+    """
+    if not isinstance(value, dict) or not value:
+        return {}
+
+    payload = dict(value)
+    for key in ("supporting_skills", "opposing_skills", "conflicts"):
+        items = payload.get(key)
+        payload[key] = (
+            [item for item in items if isinstance(item, dict)]
+            if isinstance(items, list)
+            else []
+        )
+    return payload
+
+
+def strategy_invalid_opinion_count(strategy_synthesis: Any) -> int:
+    """Safely extract invalid_opinion_count from a possibly-malformed synthesis payload.
+
+    Guards against `summary_params` being absent OR present-but-not-a-dict
+    (e.g. a legacy string value).  `d.get(k, {})` only uses the default when
+    the key is missing; if the key exists with a bad value it returns that value
+    and the subsequent `.get()` crashes.  This helper eliminates that footgun
+    for all renderers.
+    """
+    strategy_synthesis = normalize_strategy_synthesis_payload(strategy_synthesis)
+    if not strategy_synthesis:
+        return 0
+    summary_params = strategy_synthesis.get("summary_params")
+    if not isinstance(summary_params, dict):
+        return 0
+    count = summary_params.get("invalid_opinion_count")
+    if isinstance(count, bool):
+        return 0
+    if isinstance(count, int):
+        return count if count > 0 else 0
+    if isinstance(count, str):
+        normalized = count.strip()
+        if normalized.isascii() and normalized.isdecimal():
+            parsed = int(normalized)
+            return parsed if parsed > 0 else 0
+    return 0
+
+
+def localize_strategy_synthesis_summary(strategy_synthesis: Any, language: Optional[str]) -> str:
+    """Render a language-specific summary from the structured synthesis payload."""
+    strategy_synthesis = normalize_strategy_synthesis_payload(strategy_synthesis)
+    if not strategy_synthesis:
+        return ""
+    lang = normalize_report_language(language)
+    summary_params = strategy_synthesis.get("summary_params")
+    if not isinstance(summary_params, dict):
+        summary_params = {}
+    opinion_count = summary_params.get("opinion_count")
+    if not isinstance(opinion_count, int):
+        opinion_count = len(strategy_synthesis.get("supporting_skills") or []) + len(strategy_synthesis.get("opposing_skills") or [])
+    final_signal = localize_strategy_signal(strategy_synthesis.get("final_signal"), lang)
+    consensus_level = localize_consensus_level(strategy_synthesis.get("consensus_level"), lang)
+    conflict_severity = localize_conflict_severity(strategy_synthesis.get("conflict_severity"), lang)
+    conflict_count = strategy_synthesis.get("conflict_count", 0)
+    if lang == "en":
+        if conflict_count:
+            base = f"Strategy synthesis from {opinion_count} strategies: final signal is {final_signal}, consensus level is {consensus_level}, conflict severity is {conflict_severity}."
+        else:
+            base = f"Strategy synthesis from {opinion_count} strategies: final signal is {final_signal}, consensus level is {consensus_level}, with no detected conflicts."
+        return base
+    if lang == "ko":
+        if conflict_count:
+            base = f"{opinion_count}개 전략의 종합 판단: 종합 신호는 {final_signal}, 공감도는 {consensus_level}, 충돌 강도는 {conflict_severity}입니다."
+        else:
+            base = f"{opinion_count}개 전략의 종합 판단: 종합 신호는 {final_signal}, 공감도는 {consensus_level}, 감지된 전략 충돌은 없습니다."
+        return base
+    if conflict_count:
+        base = f"来自 {opinion_count} 个策略的综合判断：综合信号为{final_signal}，共识度为{consensus_level}，冲突强度为{conflict_severity}。"
+    else:
+        base = f"来自 {opinion_count} 个策略的综合判断：综合信号为{final_signal}，共识度为{consensus_level}，未检测到策略冲突。"
+    return base
 
 
 def get_chip_unavailable_reason(value: Any, language: Optional[str]) -> str:

@@ -1,7 +1,10 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BarChart3, RefreshCw, Search, ShieldCheck } from 'lucide-react';
-import { decisionSignalsApi } from '../api/decisionSignals';
+import {
+  decisionSignalsApi,
+  getDecisionSignalReassessBlockedError,
+} from '../api/decisionSignals';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
 import {
@@ -34,6 +37,7 @@ import type {
   DecisionSignalOutcomeItem,
   DecisionSignalOutcomeStatsResponse,
   DecisionSignalReassessResponse,
+  DecisionSignalReassessBlockedError,
   DecisionSignalSourceType,
   DecisionSignalStatus,
   DecisionProfile,
@@ -47,6 +51,9 @@ import {
   getDecisionSignalMarketPhaseLabel,
   getDecisionSignalSourceTypeLabel,
 } from '../utils/decisionSignalLabels';
+import { getDecisionProfile } from '../utils/decisionSignalProfile';
+import { parseDecisionSignalDate } from '../utils/decisionSignalTime';
+import { areStockCodesEquivalent } from '../utils/stockCode';
 
 const PAGE_SIZE = 20;
 const TIMELINE_PAGE_SIZE = 100;
@@ -103,7 +110,7 @@ type PendingStatusChange = {
 
 type SelectedSignal = {
   item: DecisionSignalItem;
-  source: 'list' | 'latest' | 'timeline';
+  source: 'list' | 'latest' | 'timeline' | 'persisted';
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -294,6 +301,39 @@ function toTimelineParams(filters: TimelineFilters, stockCode: string): Decision
   };
 }
 
+function upsertDecisionSignal(
+  current: DecisionSignalItem[],
+  item: DecisionSignalItem,
+  limit?: number,
+): DecisionSignalItem[] {
+  const next = [item, ...current.filter((candidate) => candidate.id !== item.id)];
+  next.sort((left, right) => {
+    const leftTime = parseDecisionSignalDate(left.createdAt)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const rightTime = parseDecisionSignalDate(right.createdAt)?.getTime() ?? Number.NEGATIVE_INFINITY;
+    return rightTime - leftTime || right.id - left.id;
+  });
+  return limit ? next.slice(0, limit) : next;
+}
+
+function itemMatchesStockContext(item: DecisionSignalItem, context: StockContext): boolean {
+  return areStockCodesEquivalent(item.stockCode, context.code)
+    && (!context.market || item.market === context.market);
+}
+
+function itemMatchesAppliedTimeline(
+  item: DecisionSignalItem,
+  context: AppliedTimelineContext,
+  now = Date.now(),
+): boolean {
+  if (!areStockCodesEquivalent(item.stockCode, context.stockCode)) return false;
+  if (context.market && item.market !== context.market) return false;
+  if (context.status === 'active' && item.status !== 'active') return false;
+  if (context.decisionProfile && getDecisionProfile(item) !== context.decisionProfile) return false;
+  const createdAt = parseDecisionSignalDate(item.createdAt)?.getTime();
+  if (createdAt === undefined) return false;
+  return createdAt >= now - TIMELINE_RANGE_DAYS[context.range] * DAY_MS && createdAt <= now;
+}
+
 function isSameStockContext(
   previousContext: StockContext | null,
   nextContext: StockContext,
@@ -386,6 +426,9 @@ const DecisionSignalsPage: React.FC = () => {
   const [reassessProfile, setReassessProfile] = useState<DecisionProfile>('balanced');
   const [reassessResponse, setReassessResponse] = useState<DecisionSignalReassessResponse | null>(null);
   const [reassessLoading, setReassessLoading] = useState(false);
+  const [reassessPersisting, setReassessPersisting] = useState(false);
+  const [reassessPersistConfirm, setReassessPersistConfirm] = useState(false);
+  const [reassessPersistBlocked, setReassessPersistBlocked] = useState<DecisionSignalReassessBlockedError | null>(null);
   const [reassessError, setReassessError] = useState<ParsedApiError | null>(null);
   const requestIdRef = useRef(0);
   const statsRequestIdRef = useRef(0);
@@ -578,7 +621,6 @@ const DecisionSignalsPage: React.FC = () => {
   const selectedSourceReportId = selected?.item.sourceReportId ?? undefined;
   const reassessSourceReportId = selected ? selectedSourceReportId : appliedSourceReportId;
   const reassessContextKey = [
-    selected ? `selected:${selected.item.id}` : 'source',
     reassessSourceReportId ?? '',
     reassessProfile,
   ].join(':');
@@ -588,6 +630,9 @@ const DecisionSignalsPage: React.FC = () => {
     setReassessResponse(null);
     setReassessError(null);
     setReassessLoading(false);
+    setReassessPersisting(false);
+    setReassessPersistConfirm(false);
+    setReassessPersistBlocked(null);
   }, [reassessContextKey]);
 
   const handleReassess = useCallback(async () => {
@@ -596,6 +641,7 @@ const DecisionSignalsPage: React.FC = () => {
     reassessRequestIdRef.current = requestId;
     setReassessLoading(true);
     setReassessError(null);
+    setReassessPersistBlocked(null);
     try {
       const response = await decisionSignalsApi.reassess({
         sourceReportId: reassessSourceReportId,
@@ -710,6 +756,89 @@ const DecisionSignalsPage: React.FC = () => {
     }
   }, []);
 
+  const handlePersistReassess = useCallback(async () => {
+    const preview = reassessResponse?.preview;
+    const guardrail = preview && isRecord(preview.metadata.guardrail_result)
+      ? preview.metadata.guardrail_result
+      : null;
+    if (!reassessSourceReportId || !preview || guardrail?.passed !== true) return;
+
+    const requestId = reassessRequestIdRef.current + 1;
+    reassessRequestIdRef.current = requestId;
+    setReassessPersistConfirm(false);
+    setReassessPersisting(true);
+    setReassessError(null);
+    setReassessPersistBlocked(null);
+    try {
+      const response = await decisionSignalsApi.reassess({
+        sourceReportId: reassessSourceReportId,
+        decisionProfile: reassessProfile,
+        persist: true,
+      });
+      if (reassessRequestIdRef.current !== requestId) return;
+      if (!response.item || !response.persistStatus) {
+        throw new Error('DecisionSignal reassess persist response item and persist_status are required');
+      }
+      const authoritativeItem = response.item;
+      const shouldOptimisticallyUpsert = response.persistStatus !== 'existing';
+      setReassessResponse(response);
+      setSelected((current) => (
+        current
+          ? { source: 'persisted', item: authoritativeItem }
+          : null
+      ));
+      if (
+        shouldOptimisticallyUpsert
+        &&
+        activeStockContext
+        && authoritativeItem.status === 'active'
+        && itemMatchesStockContext(authoritativeItem, activeStockContext)
+      ) {
+        setLatestItems((current) => upsertDecisionSignal(current, authoritativeItem, 5));
+        void loadLatestForContext(activeStockContext);
+      }
+      if (
+        shouldOptimisticallyUpsert
+        &&
+        appliedTimelineContext
+        && itemMatchesAppliedTimeline(authoritativeItem, appliedTimelineContext)
+      ) {
+        setTimelineItems((current) => upsertDecisionSignal(current, authoritativeItem));
+        void loadTimelineForContext(
+          {
+            code: appliedTimelineContext.stockCode,
+            market: appliedTimelineContext.market || undefined,
+          },
+          appliedTimelineContext,
+        );
+      }
+      void loadSignalsForPage(page);
+    } catch (err) {
+      if (reassessRequestIdRef.current !== requestId) return;
+      const blocked = getDecisionSignalReassessBlockedError(err);
+      if (blocked) {
+        setReassessPersistBlocked(blocked);
+        setReassessError(null);
+      } else {
+        setReassessError(getParsedApiError(err));
+      }
+    } finally {
+      if (reassessRequestIdRef.current === requestId) {
+        setReassessPersisting(false);
+      }
+    }
+  }, [
+    activeStockContext,
+    appliedTimelineContext,
+    loadLatestForContext,
+    loadSignalsForPage,
+    loadTimelineForContext,
+    page,
+    reassessProfile,
+    reassessResponse,
+    reassessSourceReportId,
+  ]);
+
   const applyStockContext = useCallback((nextContext: StockContext) => {
     const nextTimeline = buildNextTimelineFilters(
       timelineFilters,
@@ -795,6 +924,9 @@ const DecisionSignalsPage: React.FC = () => {
             ? null
             : { source: 'timeline', item: updated };
         }
+        if (current.source === 'persisted') {
+          return { source: 'persisted', item: updated };
+        }
         if (!parseSourceReportId(appliedFilters.sourceReportId) && appliedFilters.status && updated.status !== appliedFilters.status) return null;
         return { source: 'list', item: updated };
       });
@@ -832,6 +964,28 @@ const DecisionSignalsPage: React.FC = () => {
 
   const renderReassessPanel = () => {
     const preview = reassessResponse?.preview ?? null;
+    const persistedItem = reassessResponse?.item ?? null;
+    const persistStatus = reassessResponse?.persistStatus ?? null;
+    const terminalExisting = persistStatus === 'existing' && persistedItem?.status !== 'active';
+    const persistedAlertVariant = terminalExisting
+      ? 'warning'
+      : persistStatus === 'existing'
+        ? 'info'
+        : 'success';
+    const persistedTitleKey: UiTextKey = terminalExisting
+      ? 'decisionSignals.reassessPersistedTerminalTitle'
+      : persistStatus === 'existing'
+        ? 'decisionSignals.reassessPersistedExistingTitle'
+        : persistStatus === 'refreshed'
+          ? 'decisionSignals.reassessPersistedRefreshedTitle'
+          : 'decisionSignals.reassessPersistedCreatedTitle';
+    const persistedMessageKey: UiTextKey = terminalExisting
+      ? 'decisionSignals.reassessPersistedTerminalExisting'
+      : persistStatus === 'existing'
+        ? 'decisionSignals.reassessPersistedExisting'
+        : persistStatus === 'refreshed'
+          ? 'decisionSignals.reassessPersistedRefreshed'
+          : 'decisionSignals.reassessPersistedCreated';
     const metadata = preview?.metadata ?? {};
     const guardrail = isRecord(metadata.guardrail_result) ? metadata.guardrail_result : null;
     const rawAction = typeof guardrail?.raw_action === 'string' ? guardrail.raw_action : null;
@@ -857,7 +1011,7 @@ const DecisionSignalsPage: React.FC = () => {
               value={reassessProfile}
               onChange={(event) => setReassessProfile(event.target.value as DecisionProfile)}
               aria-label={t('decisionSignals.reassessProfile')}
-              disabled={!reassessSourceReportId || reassessLoading}
+              disabled={!reassessSourceReportId || reassessLoading || reassessPersisting}
             >
               {REASSESS_PROFILES.map((profile) => (
                 <option key={profile} value={profile}>
@@ -869,7 +1023,7 @@ const DecisionSignalsPage: React.FC = () => {
               type="button"
               className="btn-secondary inline-flex h-10 items-center justify-center gap-2"
               onClick={() => void handleReassess()}
-              disabled={!reassessSourceReportId || reassessLoading}
+              disabled={!reassessSourceReportId || reassessLoading || reassessPersisting}
             >
               <RefreshCw className={cn('h-4 w-4', reassessLoading ? 'animate-spin' : '')} />
               {t('decisionSignals.reassessPreview')}
@@ -886,6 +1040,36 @@ const DecisionSignalsPage: React.FC = () => {
           />
         ) : null}
         {reassessError ? <ApiErrorAlert className="mt-3" error={reassessError} /> : null}
+        {reassessPersistBlocked ? (
+          <div className="mt-3 space-y-2">
+            <InlineAlert
+              variant="danger"
+              title={t('decisionSignals.reassessPersistBlockedTitle')}
+              message={reassessPersistBlocked.blockedReason}
+            />
+            {reassessPersistBlocked.warnings.length ? (
+              <ul className="list-disc space-y-1 pl-5 text-sm text-secondary-text">
+                {reassessPersistBlocked.warnings.map((warning, index) => (
+                  <li key={`${warning.code}-${index}`}>{warning.message || warning.code}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+        {persistedItem ? (
+          <InlineAlert
+            className="mt-3"
+            variant={persistedAlertVariant}
+            title={t(persistedTitleKey)}
+            message={t(
+              persistedMessageKey,
+              {
+                id: persistedItem.id,
+                status: t(STATUS_LABEL_KEYS[persistedItem.status]),
+              },
+            )}
+          />
+        ) : null}
         {preview ? (
           <div className="mt-4 space-y-3">
             {reassessResponse?.blockedReason ? (
@@ -954,6 +1138,31 @@ const DecisionSignalsPage: React.FC = () => {
                 </ul>
               </div>
             ) : null}
+            {passed === true ? (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+                  onClick={() => setReassessPersistConfirm(true)}
+                  disabled={reassessLoading || reassessPersisting}
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  {reassessPersisting
+                    ? t('decisionSignals.reassessPersisting')
+                    : t('decisionSignals.reassessPersist')}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {persistedItem && reassessResponse?.warnings.length ? (
+          <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-warning">{t('decisionSignals.reassessWarnings')}</p>
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-secondary-text">
+              {reassessResponse.warnings.map((warning, index) => (
+                <li key={`${warning.code}-${index}`}>{warning.message || warning.code}</li>
+              ))}
+            </ul>
           </div>
         ) : null}
       </div>
@@ -1389,6 +1598,17 @@ const DecisionSignalsPage: React.FC = () => {
           message={t('decisionSignals.confirmStatusTitle')}
         />
       ) : null}
+
+      <ConfirmDialog
+        isOpen={reassessPersistConfirm}
+        title={t('decisionSignals.reassessPersistConfirmTitle')}
+        message={t('decisionSignals.reassessPersistConfirmMessage')}
+        confirmText={t('decisionSignals.reassessPersist')}
+        confirmDisabled={reassessPersisting}
+        cancelDisabled={reassessPersisting}
+        onConfirm={() => void handlePersistReassess()}
+        onCancel={() => setReassessPersistConfirm(false)}
+      />
 
       <ConfirmDialog
         isOpen={Boolean(pendingStatus)}

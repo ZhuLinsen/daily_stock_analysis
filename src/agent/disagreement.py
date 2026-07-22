@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Dict, List
 
-from src.agent.protocols import AgentContext
+from src.agent.protocols import AgentContext, is_valid_strategy_signal
 from src.agent.risk_override import build_risk_override_plan
 
 _BULLISH_SIGNALS = {"strong_buy", "buy"}
@@ -25,14 +25,24 @@ def build_agent_disagreement_summary(
     *,
     risk_override_enabled: bool = True,
 ) -> Dict[str, Any]:
-    """Build a structured, low-sensitivity summary of prior agent disagreement."""
+    """Build a structured, low-sensitivity summary of prior agent disagreement.
+
+    Per docs/multi-strategy-contract.md §"Disagreement": ctx.opinions is
+    already partitioned by the orchestrator, so invalid skill opinions
+    never appear here. Invalid counts come from ctx.meta["invalid_opinions"]
+    (Diagnostics), not from re-filtering.
+    """
     buckets = {
         "bullish_agents": [],
         "bearish_agents": [],
         "neutral_agents": [],
     }
 
+    valid_count = 0
     for opinion in ctx.opinions:
+        if not is_valid_strategy_signal(opinion.signal):
+            continue
+        valid_count += 1
         signal = _effective_signal(opinion.agent_name, opinion.signal)
         agent_summary = _summarize_opinion(opinion.agent_name, signal, opinion.confidence)
         if signal in _BULLISH_SIGNALS:
@@ -55,7 +65,11 @@ def build_agent_disagreement_summary(
         degraded_result,
     )
 
-    return {
+    invalid_bucket = ctx.meta.get("invalid_opinions") or []
+    if not isinstance(invalid_bucket, list):
+        invalid_bucket = []
+
+    result = {
         **buckets,
         "conflict_type": conflict_type,
         "decision_path_hint": _decision_path_hint(conflict_type),
@@ -63,7 +77,23 @@ def build_agent_disagreement_summary(
         and risk_override_plan.override_trigger_present,
         "risk_control": risk_override_plan.to_low_sensitivity_dict(),
         "degraded_result": degraded_result,
+        "valid_opinion_count": valid_count,
     }
+
+    if invalid_bucket:
+        result["diagnostics"] = {
+            "invalid_opinions": [
+                {
+                    "agent_name": str(item.get("agent_name") or "unknown"),
+                    "reason": str(item.get("reason") or "unrecognized_signal"),
+                }
+                for item in invalid_bucket
+                if isinstance(item, dict)
+            ],
+            "invalid_count": len(invalid_bucket),
+        }
+
+    return result
 
 
 def _summarize_opinion(agent_name: str, signal: Any, confidence: Any) -> Dict[str, Any]:
@@ -76,12 +106,9 @@ def _summarize_opinion(agent_name: str, signal: Any, confidence: Any) -> Dict[st
 
 
 def _normalize_signal(signal: Any) -> str:
-    if not isinstance(signal, str):
-        return "hold"
-    normalized = signal.strip().lower()
-    if normalized in _BULLISH_SIGNALS or normalized in _BEARISH_SIGNALS or normalized == "hold":
-        return normalized
-    return "hold"
+    from src.agent.protocols import normalize_strategy_signal
+    canonical, invalid, _ = normalize_strategy_signal(signal)
+    return "hold" if invalid else canonical
 
 
 def _effective_signal(agent_name: str, signal: Any) -> str:

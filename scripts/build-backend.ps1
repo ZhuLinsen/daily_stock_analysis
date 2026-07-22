@@ -56,6 +56,11 @@ if (-not (Test-PythonCode -Python $pythonBin -Code "import alphasift.dsa_adapter
   throw 'alphasift.dsa_adapter is not importable after installing requirements.'
 }
 
+Write-Host 'Checking Futu SDK availability...'
+if (-not (Test-PythonCode -Python $pythonBin -Code "import futu")) {
+  throw 'futu is not importable after installing requirements.'
+}
+
 Write-Host 'Checking orjson availability...'
 if (-not (Test-PythonCode -Python $pythonBin -Code "import orjson")) {
   throw 'orjson is not importable after installing requirements.'
@@ -131,7 +136,8 @@ $pyInstallerArgs = @(
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
-  '--collect-all', 'alphasift'
+  '--collect-all', 'alphasift',
+  '--collect-all', 'futu'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'
@@ -155,7 +161,7 @@ if (-not (Test-Path $packagedEntry)) {
 }
 $previousProbe = $env:DSA_PACKAGED_IMPORT_PROBE
 try {
-  foreach ($module in @('alphasift.dsa_adapter', 'orjson')) {
+  foreach ($module in @('alphasift.dsa_adapter', 'futu', 'orjson')) {
     $env:DSA_PACKAGED_IMPORT_PROBE = $module
     $probeProcess = Start-Process -FilePath $packagedEntry -Wait -PassThru
     if ($probeProcess.ExitCode -ne 0) {

@@ -18,6 +18,7 @@ import type {
   DecisionSignalOutcomeStatsParams,
   DecisionSignalOutcomeStatsResponse,
   DecisionSignalReassessRequest,
+  DecisionSignalReassessBlockedError,
   DecisionSignalReassessResponse,
   DecisionSignalStatusUpdateRequest,
 } from '../types/decisionSignals';
@@ -56,15 +57,45 @@ function toDecisionSignalMutationResponse(data: Record<string, unknown>): Decisi
 
 function toDecisionSignalReassessResponse(data: Record<string, unknown>): DecisionSignalReassessResponse {
   const response = toCamelCase<DecisionSignalReassessResponse>(data);
-  const rawPreview = data.preview as Record<string, unknown> | undefined;
-  if (!rawPreview || typeof rawPreview !== 'object') {
+  const rawPreview = data.preview;
+  if (rawPreview !== null && (typeof rawPreview !== 'object' || Array.isArray(rawPreview))) {
     throw new Error('DecisionSignal reassess response preview must be an object');
   }
-  response.preview.metadata = (rawPreview.metadata as Record<string, unknown> | undefined) ?? {};
+  if (rawPreview) {
+    response.preview = toCamelCase<DecisionSignalReassessResponse['preview']>(rawPreview);
+    if (response.preview) {
+      response.preview.metadata = (rawPreview as Record<string, unknown>).metadata as Record<string, unknown> ?? {};
+    }
+  } else {
+    response.preview = null;
+  }
   if (data.item) {
     response.item = toDecisionSignalItem(data.item as Record<string, unknown>);
   }
   return response;
+}
+
+export function getDecisionSignalReassessBlockedError(
+  error: unknown,
+): DecisionSignalReassessBlockedError | null {
+  if (!error || typeof error !== 'object') return null;
+  const response = (error as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const payload = data as Record<string, unknown>;
+  if (payload.error !== 'guardrail_blocked' || typeof payload.blocked_reason !== 'string') return null;
+  const warnings = Array.isArray(payload.warnings)
+    ? payload.warnings.filter((warning): warning is Record<string, unknown> => (
+      Boolean(warning) && typeof warning === 'object' && !Array.isArray(warning)
+    )).filter((warning) => typeof warning.code === 'string').map((warning) => ({
+      code: warning.code as string,
+      message: typeof warning.message === 'string' ? warning.message : undefined,
+      params: warning.params && typeof warning.params === 'object' && !Array.isArray(warning.params)
+        ? warning.params as Record<string, unknown>
+        : undefined,
+    }))
+    : [];
+  return { blockedReason: payload.blocked_reason, warnings };
 }
 
 function toDecisionSignalListResponse(data: Record<string, unknown>): DecisionSignalListResponse {
@@ -177,7 +208,7 @@ function toSnakeReassessPayload(payload: DecisionSignalReassessRequest): Record<
   return {
     source_report_id: payload.sourceReportId,
     decision_profile: payload.decisionProfile,
-    persist: false,
+    persist: payload.persist ?? false,
   };
 }
 

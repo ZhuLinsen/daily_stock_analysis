@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Optional
 
 from src.agent.agents.base_agent import BaseAgent
@@ -106,10 +107,23 @@ Return **only** a JSON object:
             logger.warning("[SkillAgent:%s] failed to parse opinion JSON", self.skill_id)
             return None
 
+        confidence = parsed.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            logger.warning("[SkillAgent:%s] rejected invalid confidence", self.skill_id)
+            return None
+        try:
+            confidence_value = float(confidence)
+        except (OverflowError, TypeError, ValueError):
+            logger.warning("[SkillAgent:%s] rejected invalid confidence", self.skill_id)
+            return None
+        if not math.isfinite(confidence_value) or not 0.0 <= confidence_value <= 1.0:
+            logger.warning("[SkillAgent:%s] rejected invalid confidence", self.skill_id)
+            return None
+
         return AgentOpinion(
             agent_name=self.agent_name,
-            signal=parsed.get("signal", "hold"),
-            confidence=float(parsed.get("confidence", 0.5)),
+            signal=parsed.get("signal"),  # None if missing — no silent default
+            confidence=confidence_value,
             reasoning=parsed.get("reasoning", ""),
             raw_data=parsed,
         )

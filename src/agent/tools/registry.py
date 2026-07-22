@@ -43,6 +43,7 @@ class ToolPolicy:
     permissions: List[str] = field(default_factory=list)
     policy_status: str = "unknown"
     scope_dimensions: List[str] = field(default_factory=list)
+    cancellation_safe: bool = False
 
     @classmethod
     def unknown(cls) -> "ToolPolicy":
@@ -56,6 +57,7 @@ class ToolPolicy:
         side_effects: Optional[List[str]] = None,
         permissions: Optional[List[str]] = None,
         scope_dimensions: Optional[List[str]] = None,
+        cancellation_safe: bool = False,
     ) -> "ToolPolicy":
         return cls(
             read_only=read_only,
@@ -63,6 +65,7 @@ class ToolPolicy:
             permissions=list(permissions or []),
             policy_status="declared",
             scope_dimensions=list(scope_dimensions or []),
+            cancellation_safe=bool(cancellation_safe),
         )
 
     def to_public_dict(self) -> Dict[str, Any]:
@@ -71,6 +74,7 @@ class ToolPolicy:
             "side_effects": list(self.side_effects),
             "permissions": list(self.permissions),
             "policy_status": self.policy_status,
+            "cancellation_safe": self.cancellation_safe,
         }
 
 
