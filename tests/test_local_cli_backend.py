@@ -89,6 +89,37 @@ print(json.dumps({"prompt": prompt, "cwd": os.getcwd(), "sentiment_score": 70}, 
     assert "path" not in result.diagnostics["executable"]
 
 
+def test_temp_directory_cleanup_retries_transient_file_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+sys.stdin.read()
+print("cleanup-ok")
+""",
+    )
+    real_rmtree = local_cli_backend_module.shutil.rmtree
+    cleanup_calls = 0
+
+    def flaky_rmtree(path, *args, **kwargs):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            raise OSError(32, "file is temporarily in use")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_cli_backend_module.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(local_cli_backend_module.time, "sleep", lambda _: None)
+
+    result = backend.generate("hello", {})
+
+    assert result.text == "cleanup-ok"
+    assert cleanup_calls == 2
+
+
 def test_codex_preset_reads_output_last_message_instead_of_stdout(tmp_path: Path) -> None:
     final_payload = json.dumps({"prompt": "hello", "sentiment_score": 88, "source": "last_message"})
     script = _script(

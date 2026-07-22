@@ -296,8 +296,9 @@ class TavilySearchProvider(BaseSearchProvider):
     文档：https://docs.tavily.com/
     """
     
-    def __init__(self, api_keys: List[str]):
+    def __init__(self, api_keys: List[str], api_base_url: Optional[str] = None):
         super().__init__(api_keys, "Tavily")
+        self._api_base_url = (api_base_url or "").strip().rstrip('/')
     
     def _do_search(
         self,
@@ -320,7 +321,10 @@ class TavilySearchProvider(BaseSearchProvider):
             )
         
         try:
-            client = TavilyClient(api_key=api_key)
+            client = TavilyClient(
+                api_key=api_key,
+                api_base_url=self._api_base_url or None,
+            )
             
             # 执行搜索（优化：使用advanced深度、限制最近几天）
             search_kwargs: Dict[str, Any] = {
@@ -2259,6 +2263,7 @@ class SearchService:
         self,
         bocha_keys: Optional[List[str]] = None,
         tavily_keys: Optional[List[str]] = None,
+        tavily_base_url: Optional[str] = None,
         anspire_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
@@ -2274,6 +2279,7 @@ class SearchService:
         Args:
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
+            tavily_base_url: Tavily 兼容 API Base URL（可选）
             anspire_keys: Anspire Search API Key 列表
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
@@ -2309,7 +2315,9 @@ class SearchService:
 
         # 2. Tavily（免费额度更多，每月 1000 次）
         if tavily_keys:
-            self._providers.append(TavilySearchProvider(tavily_keys))
+            self._providers.append(
+                TavilySearchProvider(tavily_keys, api_base_url=tavily_base_url)
+            )
             logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
 
         # 3. Brave Search（隐私优先，全球覆盖）
@@ -4449,6 +4457,7 @@ def get_search_service() -> SearchService:
                 _search_service = SearchService(
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
+                    tavily_base_url=getattr(config, "tavily_base_url", ""),
                     anspire_keys=config.anspire_api_keys,
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,

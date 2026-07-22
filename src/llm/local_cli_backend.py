@@ -52,6 +52,7 @@ _PREVIEW_LIMIT = 800
 _FINAL_MESSAGE_OMITTED_PREVIEW = "<final-message omitted from stdout preview>"
 _STDOUT_PREVIEW_OMITTED = "<stdout preview omitted because output-last-message was too large>"
 _PROCESS_POLL_INTERVAL_SECONDS = 0.05
+_TEMP_DIR_CLEANUP_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.0, 5.0)
 _URL_PATTERN = re.compile(r"https?://[^\s,;)\]}]+", re.IGNORECASE)
 _SHELL_META_CHARS = ("|", ">", "<", ";", "`")
 _SHELL_META_STRINGS = ("&&", "||", "$(")
@@ -697,6 +698,26 @@ def resolve_local_cli_preset(preset_id: str) -> LocalCliPreset:
     return preset
 
 
+@contextmanager
+def _temporary_cli_directory() -> Iterator[str]:
+    """Create and securely remove a CLI workdir, retrying transient Windows locks."""
+
+    path = Path(tempfile.mkdtemp(prefix="dsa-local-cli-"))
+    try:
+        yield str(path)
+    finally:
+        for attempt in range(len(_TEMP_DIR_CLEANUP_RETRY_DELAYS) + 1):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt >= len(_TEMP_DIR_CLEANUP_RETRY_DELAYS):
+                    raise
+                time.sleep(_TEMP_DIR_CLEANUP_RETRY_DELAYS[attempt])
+
+
 class LocalCliGenerationBackend(GenerationBackend):
     """Restricted subprocess-backed generation backend."""
 
@@ -788,7 +809,7 @@ class LocalCliGenerationBackend(GenerationBackend):
         with _local_cli_concurrency_slot(concurrency_limit):
             self._emit_progress(stream_progress_callback, 0)
             try:
-                with tempfile.TemporaryDirectory(prefix="dsa-local-cli-") as cwd:
+                with _temporary_cli_directory() as cwd:
                     cwd_path = Path(cwd)
                     try:
                         cwd_path.chmod(0o700)

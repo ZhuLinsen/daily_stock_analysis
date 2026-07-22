@@ -82,6 +82,9 @@ verify_*.py
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+.codegraph/
+.agents/
+.trellis/
 
 # ignore static files
 static/

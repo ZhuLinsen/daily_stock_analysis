@@ -1044,6 +1044,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["secret_value", "comma_separated_keys"],
     },
+    "TAVILY_BASE_URL": {
+        "title": "Tavily Base URL",
+        "description": "Optional Tavily-compatible API base URL. Leave empty to use the official endpoint.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 31,
+        "help_key": "settings.data_source.search_api_keys",
+        "examples": [
+            "TAVILY_BASE_URL=https://api.tavily.com",
+            "TAVILY_BASE_URL=https://example.com/api/tavily",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：搜索服务配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#搜索服务配置",
+            },
+        ],
+        "warning_codes": [],
+    },
     "SERPAPI_API_KEYS": {
         "title": "SerpAPI Keys",
         "description": "Comma-separated SerpAPI keys.",

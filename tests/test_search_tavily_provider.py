@@ -22,10 +22,12 @@ from src.search_service import SearchService, TavilySearchProvider
 class _FakeTavilyClient:
     response_payload = {"results": []}
     init_api_keys = []
+    init_kwargs = []
     search_calls = []
 
-    def __init__(self, api_key=None, **_kwargs):
+    def __init__(self, api_key=None, **kwargs):
         type(self).init_api_keys.append(api_key)
+        type(self).init_kwargs.append(kwargs)
 
     def search(self, **kwargs):
         type(self).search_calls.append(kwargs)
@@ -35,6 +37,7 @@ class _FakeTavilyClient:
     def reset(cls) -> None:
         cls.response_payload = {"results": []}
         cls.init_api_keys = []
+        cls.init_kwargs = []
         cls.search_calls = []
 
 
@@ -80,6 +83,21 @@ class TestTavilySearchProvider(unittest.TestCase):
         self.assertEqual(len(resp.results), 1)
         self.assertEqual(resp.results[0].published_date, published_text)
         self.assertEqual(resp.results[0].url, "https://example.com/alibaba-earnings")
+
+    def test_provider_passes_custom_api_base_url_to_sdk(self) -> None:
+        provider = TavilySearchProvider(
+            ["dummy_key"],
+            api_base_url="https://example.com/api/tavily/",
+        )
+
+        with self._patch_tavily({"results": []}):
+            resp = provider.search("BABA latest news", max_results=3)
+
+        self.assertTrue(resp.success)
+        self.assertEqual(
+            _FakeTavilyClient.init_kwargs,
+            [{"api_base_url": "https://example.com/api/tavily"}],
+        )
 
     def test_provider_supports_publishedDate_variant(self) -> None:
         provider = TavilySearchProvider(["dummy_key"])
