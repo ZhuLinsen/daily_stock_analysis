@@ -911,6 +911,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Agent 分析的最大等待时间。'],
     notes: ['超时不影响其他股票的分析流程。'],
   },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: '策略专家并发数',
+    summary: '控制 specialist 模式下最多同时运行多少个策略专家 Agent。',
+    usage: '默认 3，允许范围 1 到 4。调低可减少瞬时模型调用压力，调高可缩短多策略批处理等待时间。',
+    valueNotes: [
+      '该值只限制策略专家 batch 的并发，不改变最终参与综合的策略选择。',
+      '整体 Agent 超时仍是共享预算；并发数低于策略数时，单个策略会按批次数量分摊剩余预算。',
+    ],
+    impact: ['影响 specialist 多策略分析的并发度、耗时和模型调用峰值。'],
+    notes: ['单个策略失败或超时会进入诊断信息，不阻塞其它策略和最终决策。'],
+  },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: '风险 Agent 否决权',
     summary: '允许风险 Agent 在检测到关键风险信号时否决买入信号。',
@@ -2067,6 +2078,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects the maximum wait time for Agent analysis.'],
     notes: ['Timeout does not affect other stocks in the analysis pipeline.'],
+  },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: 'Strategy Skill Concurrency',
+    summary: 'Controls how many specialist strategy agents can run at the same time in specialist mode.',
+    usage: 'Default is 3, allowed range is 1 to 4. Lower values reduce peak model pressure; higher values can shorten multi-strategy batch latency.',
+    valueNotes: [
+      'This only limits specialist batch concurrency and does not change which strategies participate in synthesis.',
+      'The overall Agent timeout remains a shared budget; when strategy count exceeds concurrency, each skill receives a budget slice based on the number of waves.',
+    ],
+    impact: ['Affects specialist multi-strategy concurrency, latency, and peak model calls.'],
+    notes: ['A single strategy failure or timeout enters diagnostics and does not block other strategies or the final decision.'],
   },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: 'Risk Agent Veto',

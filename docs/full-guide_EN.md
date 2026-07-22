@@ -210,6 +210,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
 | `AGENT_BACKEND` | Runtime for the existing ask-stock Chat: `auto` (recommended, preserves the default model), `litellm`, or `codex_app_server` (experimental, single-agent Chat only) | `auto` | No |
 | `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
+| `AGENT_SKILL_CONCURRENCY` | Specialist-mode strategy worker concurrency cap, range `1-4`. Up to four strategies are selected; the default runs three concurrently and queues the fourth under the shared pipeline budget | `3` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
 | `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |

@@ -242,6 +242,7 @@ daily_stock_analysis/
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
 | `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
+| `AGENT_SKILL_CONCURRENCY` | `specialist` 模式策略专家 worker 并发上限，范围 `1-4`；最多选择 4 个策略，默认 3 个并发，第 4 个进入下一批次并共享整体超时预算 | `3` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
 | `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
 | `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |

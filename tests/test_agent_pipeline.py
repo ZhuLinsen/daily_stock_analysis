@@ -51,11 +51,13 @@ class TestAgentConfig(unittest.TestCase):
         self.assertFalse(config.agent_mode)
         self.assertEqual(config.agent_max_steps, AGENT_MAX_STEPS_DEFAULT)
         self.assertEqual(config.agent_skills, [])
+        self.assertEqual(config.agent_skill_concurrency, 3)
 
     @patch.dict(os.environ, {
         'AGENT_MODE': 'true',
         'AGENT_MAX_STEPS': '15',
         'AGENT_SKILLS': 'dragon_head,shrink_pullback,volume_breakout',
+        'AGENT_SKILL_CONCURRENCY': '4',
     }, clear=True)
     def test_agent_config_from_env(self):
         """Agent config should be loaded from environment."""
@@ -65,6 +67,15 @@ class TestAgentConfig(unittest.TestCase):
         self.assertTrue(config.agent_mode)
         self.assertEqual(config.agent_max_steps, 15)
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback', 'volume_breakout'])
+        self.assertEqual(config.agent_skill_concurrency, 4)
+
+    @patch.dict(os.environ, {'AGENT_SKILL_CONCURRENCY': '9'}, clear=True)
+    def test_agent_skill_concurrency_is_clamped(self):
+        """Agent skill concurrency should stay within the supported 1-4 range."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_skill_concurrency, 4)
 
     @patch.dict(os.environ, {'AGENT_MODE': 'false'}, clear=True)
     def test_agent_mode_disabled(self):

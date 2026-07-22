@@ -131,8 +131,22 @@ class StrategyEngine:
             evidence_opinions=evidence_opinions,
         )
 
-    def process(self, opinions: List[AgentOpinion]) -> StrategyResult:
-        return self.process_partition(self.partition_only(opinions))
+    def process(
+        self,
+        opinions: List[AgentOpinion],
+        *,
+        diagnostic_records: Optional[List[Dict[str, Any]]] = None,
+    ) -> StrategyResult:
+        partition = self.partition_only(opinions)
+        existing_diagnostics = [
+            dict(record)
+            for record in (diagnostic_records or [])
+            if isinstance(record, dict)
+        ]
+        if existing_diagnostics:
+            partition.invalid_records = existing_diagnostics + partition.invalid_records
+            partition.invalid_count = len(partition.invalid_records)
+        return self.process_partition(partition)
 
     def process_partition(self, partition: EvidencePartition) -> StrategyResult:
         if not partition.valid_skill_opinions:

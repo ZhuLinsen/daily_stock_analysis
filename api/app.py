@@ -19,6 +19,17 @@ import asyncio
 import json
 import logging
 import mimetypes
+
+import sys
+
+if sys.platform == "win32" and not mimetypes.inited:
+    _orig_read_windows_registry = getattr(mimetypes.MimeTypes, 'read_windows_registry', None)
+    if _orig_read_windows_registry is not None:
+        mimetypes.MimeTypes.read_windows_registry = lambda self, strict=True: None
+        try: mimetypes.init()
+        finally: mimetypes.MimeTypes.read_windows_registry = _orig_read_windows_registry
+    else:
+        mimetypes.init()
 import os
 import re
 from contextlib import asynccontextmanager, suppress

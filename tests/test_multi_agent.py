@@ -733,8 +733,12 @@ class TestStrategyAggregator(unittest.TestCase):
 
         self.assertEqual(synthesis["final_signal"], "hold")
         self.assertEqual(synthesis["conflict_severity"], "high")
-        self.assertAlmostEqual(synthesis["confidence"], 0.68)
+        # high conflict severity first reduces 0.8 -> 0.68; mediator_v0 then
+        # applies a partially-resolved deliberation adjustment of -0.06.
+        self.assertAlmostEqual(synthesis["confidence"], 0.62)
         self.assertEqual(synthesis["summary_key"], "strategy_synthesis.with_conflicts")
+        self.assertEqual(synthesis["deliberation"]["status"], "completed")
+        self.assertEqual(synthesis["deliberation"]["mode"], "mediator_v0")
         self.assertNotIn("summary", synthesis)
         self.assertEqual(synthesis["summary_params"]["final_signal"], "hold")
         self.assertNotIn("综合信号", json.dumps(synthesis, ensure_ascii=False))
@@ -1008,6 +1012,23 @@ class TestOrchestratorModes(unittest.TestCase):
         self.assertEqual(ctx.stock_code, "600519")
         self.assertEqual(ctx.stock_name, "贵州茅台")
         self.assertEqual(ctx.meta["skills_requested"], ["bull_trend"])
+
+    def test_specialist_builder_allows_four_requested_skills(self):
+        orch = self._make_orchestrator("specialist")
+        ctx = AgentContext(query="test", stock_code="600519")
+        ctx.meta["skills_requested"] = [
+            "bull_trend",
+            "hot_theme",
+            "fund_flow",
+            "chan_theory",
+        ]
+
+        agents = orch._build_specialist_agents(ctx)
+
+        self.assertEqual(
+            [agent.skill_id for agent in agents],
+            ["bull_trend", "hot_theme", "fund_flow", "chan_theory"],
+        )
 
     def test_build_context_keeps_market_phase_context_in_meta_not_data(self):
         orch = self._make_orchestrator()
@@ -1449,6 +1470,72 @@ class TestOrchestratorExecution(unittest.TestCase):
         self.assertIn('"stage_name": "chan_theory"', combined)
         self.assertIn('"non_critical_stage_present": true', combined)
         self.assertIn('"non_critical": true', combined)
+
+    def test_strategy_engine_preserves_scheduler_diagnostics(self):
+        orch = self._make_orchestrator()
+        ctx = AgentContext(
+            query="test",
+            stock_code="600519",
+            meta={
+                "invalid_opinions": [
+                    {
+                        "agent_name": "skill_fund_flow",
+                        "reason": "skill_timeout",
+                    }
+                ]
+            },
+        )
+        ctx.add_opinion(AgentOpinion(
+            agent_name="skill_hot_theme",
+            signal="moon",
+            confidence=0.9,
+            reasoning="bad fixture",
+        ))
+        ctx.add_opinion(AgentOpinion(
+            agent_name="skill_bull_trend",
+            signal="buy",
+            confidence=0.8,
+            reasoning="valid fixture",
+            raw_data={"skill_id": "bull_trend"},
+        ))
+
+        orch._run_strategy_engine(ctx)
+
+        invalid_bucket = ctx.meta["invalid_opinions"]
+        self.assertEqual([item["agent_name"] for item in invalid_bucket], [
+            "skill_fund_flow",
+            "skill_hot_theme",
+        ])
+        self.assertEqual(invalid_bucket[0]["reason"], "skill_timeout")
+        self.assertEqual(invalid_bucket[1]["reason"], "unrecognized_signal")
+        synthesis = ctx.get_data("skill_consensus")["strategy_synthesis"]
+        self.assertEqual(synthesis["summary_params"]["opinion_count"], 1)
+        self.assertEqual(synthesis["summary_params"]["invalid_opinion_count"], 2)
+        self.assertEqual(synthesis["summary_params"]["total_opinion_count"], 3)
+
+        from src.agent.agents.decision_agent import DecisionAgent
+        prompt = DecisionAgent(
+            tool_registry=MagicMock(),
+            llm_adapter=MagicMock(),
+        ).build_user_message(ctx)
+        self.assertIn("执行超时 1 个", prompt)
+        self.assertIn("signal 无法识别 1 个", prompt)
+
+    def test_specialist_batch_timeout_is_split_across_concurrency_waves(self):
+        orch = self._make_orchestrator(config=SimpleNamespace(agent_skill_concurrency=2))
+
+        self.assertEqual(
+            orch._skill_batch_timeout_slice(3, timeout_seconds=30),
+            15,
+        )
+        self.assertEqual(
+            orch._skill_batch_timeout_slice(4, timeout_seconds=30),
+            15,
+        )
+        self.assertEqual(
+            orch._skill_batch_timeout_slice(2, timeout_seconds=30),
+            30,
+        )
 
     def test_execute_pipeline_skips_stage_when_remaining_budget_below_minimum(self):
         orch = self._make_orchestrator(config=SimpleNamespace(agent_orchestrator_timeout_s=20))
@@ -3511,6 +3598,41 @@ class TestStrategyEngineE2E(unittest.TestCase):
         self.assertEqual(params["total_opinion_count"], 5)
         self.assertEqual(result.invalid_count, 3)
         self.assertEqual(len(result.invalid_records), 3)
+
+    def test_engine_counts_scheduler_diagnostics_with_valid_opinions(self):
+        from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+        result = StrategyEngine().process(
+            [AgentOpinion(agent_name="skill_bull_trend", signal="buy", confidence=0.8)],
+            diagnostic_records=[{
+                "agent_name": "skill_hot_theme",
+                "reason": "skill_timeout",
+            }],
+        )
+
+        self.assertEqual(result.status, StrategyResultStatus.CONSENSUS)
+        params = result.synthesis_dict["summary_params"]
+        self.assertEqual(params["opinion_count"], 1)
+        self.assertEqual(params["invalid_opinion_count"], 1)
+        self.assertEqual(params["total_opinion_count"], 2)
+        self.assertEqual(result.invalid_records[0]["reason"], "skill_timeout")
+
+    def test_engine_builds_no_consensus_stub_for_scheduler_only_failure(self):
+        from src.agent.skills.engine import StrategyEngine, StrategyResultStatus
+
+        result = StrategyEngine().process(
+            [],
+            diagnostic_records=[{
+                "agent_name": "skill_hot_theme",
+                "reason": "skill_error",
+            }],
+        )
+
+        self.assertEqual(result.status, StrategyResultStatus.NO_CONSENSUS)
+        params = result.synthesis_dict["summary_params"]
+        self.assertEqual(params["opinion_count"], 0)
+        self.assertEqual(params["invalid_opinion_count"], 1)
+        self.assertEqual(params["total_opinion_count"], 1)
 
     # ------------------------------------------------------------------
     # 2. All invalid → NO_CONSENSUS stub
