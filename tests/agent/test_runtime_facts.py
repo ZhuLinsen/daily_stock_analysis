@@ -154,6 +154,19 @@ def test_runtime_facts_only_project_independent_low_sensitivity_opinions():
         assert forbidden not in serialized
 
 
+def test_runtime_facts_exclude_invalid_opinion_signals_instead_of_forging_hold():
+    ctx = AgentContext()
+    ctx.add_opinion(AgentOpinion(agent_name="technical", signal="buy", confidence=0.8))
+    ctx.add_opinion(AgentOpinion(agent_name="intel", signal="sideways", confidence=0.7))
+    ctx.add_opinion(AgentOpinion(agent_name="risk", signal=None, confidence=0.6))
+
+    facts = build_agent_runtime_facts(ctx)
+
+    assert facts.base_agent_opinions == (
+        BaseAgentOpinionFact(agent="technical", signal="buy", confidence=0.8),
+    )
+
+
 def test_legacy_executor_content_canonicalizes_escaped_reserved_field():
     payload = _dashboard()
     payload["agent_disagreement_explanation"] = {"token": "top-secret"}
