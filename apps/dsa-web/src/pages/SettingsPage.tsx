@@ -9,6 +9,7 @@ import { alphasiftApi, notifyAlphaSiftConfigChanged, notifySystemConfigChanged }
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
 import {
+  AgentBackendStatusPanel,
   AuthSettingsCard,
   ChangePasswordCard,
   GenerationBackendStatusPanel,
@@ -132,6 +133,14 @@ const GENERATION_BACKEND_STATUS_KEYS = new Set([
   'ANSPIRE_API_KEYS',
 ]);
 const LLM_CHANNEL_STATUS_KEY_PATTERN = /^LLM_[A-Z0-9_]+_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
+const AGENT_BACKEND_STATUS_KEYS = new Set([
+  'AGENT_BACKEND',
+  'AGENT_GENERATION_BACKEND',
+  'AGENT_LITELLM_MODEL',
+  'AGENT_MODE',
+  'AGENT_ARCH',
+  'AGENT_ORCHESTRATOR_TIMEOUT_S',
+]);
 
 function isLlmChannelEditorDraftKey(key: string): boolean {
   const normalized = key.trim().toUpperCase();
@@ -916,6 +925,23 @@ const SettingsPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentChangedItemsFingerprint, llmChannelDraftItemsFingerprint],
   );
+  const agentBackendDraftItems = useMemo(
+    () => {
+      const merged = new Map(
+        generationBackendDraftItems.map((item) => [item.key.trim().toUpperCase(), item]),
+      );
+      for (const item of currentChangedItems) {
+        const key = item.key.trim().toUpperCase();
+        if (AGENT_BACKEND_STATUS_KEYS.has(key)) {
+          merged.set(key, item);
+        }
+      }
+      return Array.from(merged.values());
+    },
+    // The fingerprint changes only when the draft content changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentChangedItemsFingerprint, generationBackendDraftItems],
+  );
   const handleLlmChannelDraftItemsChange = useCallback((items: Array<{ key: string; value: string }>) => {
     setLlmChannelDraftItems(items);
   }, []);
@@ -946,6 +972,13 @@ const SettingsPage: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const requestedCategory = new URLSearchParams(window.location.search).get('category');
+    if (requestedCategory && categories.some((category) => category.category === requestedCategory)) {
+      setActiveCategory(requestedCategory);
+    }
+  }, [categories, setActiveCategory]);
 
   useEffect(() => {
     void refreshSetupStatus();
@@ -1073,7 +1106,7 @@ const SettingsPage: React.FC = () => {
   const DATA_SOURCE_HIDDEN_KEYS = new Set([
     'ALPHASIFT_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set<string>();
+  const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
   const activeItems =
     activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
@@ -1367,6 +1400,17 @@ const SettingsPage: React.FC = () => {
     : t('settings.diagnosticHintWeb');
   const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
   const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);
+  const selectedAgentBackend = (rawActiveItemMap.get('AGENT_BACKEND') || 'auto').trim().toLowerCase();
+  const selectedAgentArch = (rawActiveItemMap.get('AGENT_ARCH') || 'single').trim().toLowerCase();
+  const hasCodexArchitectureConflict = selectedAgentBackend === 'codex_app_server' && selectedAgentArch !== 'single';
+  const codexArchitectureIssue: ConfigValidationIssue = {
+    key: 'AGENT_ARCH',
+    code: 'unsupported_agent_arch',
+    message: t('settings.agentBackendSingleOnly'),
+    severity: 'error',
+    expected: 'single',
+    actual: selectedAgentArch,
+  };
   const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
       title={activeCategoryTitle}
@@ -1374,16 +1418,21 @@ const SettingsPage: React.FC = () => {
     >
       {visibleActiveItems.length ? (
         <div className="divide-y divide-[var(--settings-border-soft)] overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)]">
-          {visibleActiveItems.map((item) => (
-            <SettingsField
-              key={item.key}
-              item={item}
-              value={item.value}
-              disabled={isSaving}
-              onChange={setDraftValue}
-              issues={issueByKey[item.key] || []}
-            />
-          ))}
+          {visibleActiveItems.map((item) => {
+            const fieldIssues = item.key === 'AGENT_ARCH' && hasCodexArchitectureConflict
+              ? [...(issueByKey[item.key] || []), codexArchitectureIssue]
+              : issueByKey[item.key] || [];
+            return (
+              <SettingsField
+                key={item.key}
+                item={item}
+                value={item.value}
+                disabled={isSaving}
+                onChange={setDraftValue}
+                issues={fieldIssues}
+              />
+            );
+          })}
         </div>
       ) : null}
       {promptCacheAdvancedItems.length ? (
@@ -1789,6 +1838,28 @@ const SettingsPage: React.FC = () => {
                   maskToken={maskToken}
                   disabled={isSaving || isLoading}
                 />
+              </SettingsPanelErrorBoundary>
+            ) : null}
+            {activeCategory === 'agent' ? (
+              <SettingsPanelErrorBoundary
+                title={t('settings.agentBackendStatus')}
+                resetKey={`agent-backend:${configVersion}`}
+                diagnosticHint={settingsPanelDiagnosticHint}
+              >
+                <SettingsSectionCard
+                  title={t('settings.agentBackendSectionTitle')}
+                  description={t('settings.agentBackendSectionDescription')}
+                >
+                  <AgentBackendStatusPanel
+                    items={agentBackendDraftItems}
+                    maskToken={maskToken}
+                    selectedBackend={selectedAgentBackend}
+                    agentArch={selectedAgentArch}
+                    disabled={isSaving || isLoading}
+                    onUseSingleAgent={() => setDraftValue('AGENT_ARCH', 'single')}
+                    onEnableAgentMode={() => setDraftValue('AGENT_MODE', 'true')}
+                  />
+                </SettingsSectionCard>
               </SettingsPanelErrorBoundary>
             ) : null}
             {shouldGuardActiveConfigPanel && hasActiveConfigItems ? (

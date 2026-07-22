@@ -37,6 +37,7 @@ from src.analyzer import (
     stabilize_decision_with_structure,
 )
 from src.notification import NotificationService, NotificationChannel
+from src.schemas.decision_action import normalize_decision_action
 from src.report_language import (
     get_placeholder_text,
     get_unknown_text,
@@ -51,6 +52,11 @@ from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt
 from src.analysis_context_pack_overview import render_analysis_context_pack_overview
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
+from src.agent.final_explanation import (
+    PipelineActionAdjustment,
+    build_pipeline_final_explanation,
+    capture_pipeline_action_adjustment,
+)
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
     DailyMarketContext,
@@ -76,7 +82,10 @@ from src.services.run_diagnostics import (
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
-from src.services.decision_signal_extractor import extract_and_persist_from_analysis_result
+from src.services.decision_signal_extractor import (
+    extract_and_persist_from_analysis_result,
+    resolve_decision_signal_action_fields,
+)
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -1461,13 +1470,53 @@ class StockAnalysisPipeline:
 
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
+                pipeline_adjustments: list[PipelineActionAdjustment] = []
+                runtime_facts = getattr(agent_result, "runtime_facts", None)
+                pipeline_start_signal = getattr(result, "decision_type", "hold")
+                risk_application = (
+                    getattr(runtime_facts, "risk_override_application", None)
+                    if runtime_facts is not None
+                    else None
+                )
+                if risk_application is not None:
+                    pipeline_start_signal = risk_application.post_risk_signal.value
+                initial_action_advice = getattr(result, "operation_advice", None)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=initial_action_advice,
+                )
+                pipeline_start_action = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                action_chain_valid = pipeline_start_action is not None
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
                     result.current_price = realtime_data.get("price")
                     result.change_pct = realtime_data.get("change_pct")
-                action_source_advice = getattr(result, "operation_advice", None)
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=advice_before_guardrail,
+                )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="structure_and_fundamentals",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 adjustments = apply_phase_decision_guardrails(
                     result,
                     market_phase_summary=market_phase_summary,
@@ -1477,6 +1526,25 @@ class StockAnalysisPipeline:
                 )
                 if adjustments:
                     logger.info("[phase_decision_guardrail] Applied agent adjustments for %s: %s", code, adjustments)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=advice_before_guardrail,
+                )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="market_phase",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 market_context_adjustments = apply_daily_market_context_guardrail(
                     result,
                     daily_market_context=initial_context.get("daily_market_context"),
@@ -1489,17 +1557,54 @@ class StockAnalysisPipeline:
                         code,
                         market_context_adjustments,
                     )
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=advice_before_guardrail,
+                )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="daily_market_context",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
                 if isinstance(market_structure_context, dict):
                     result.market_structure_context = market_structure_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
-                self._refresh_decision_action_for_final_result(
-                    result,
-                    report_type=report_type.value,
-                    previous_operation_advice=action_source_advice,
-                )
+                final_action = normalize_decision_action(getattr(result, "action", None))
+                if isinstance(result.dashboard, dict):
+                    result.dashboard.pop("agent_disagreement_explanation", None)
+                if (
+                    runtime_facts is not None
+                    and action_chain_valid
+                    and pipeline_start_action is not None
+                    and final_action is not None
+                ):
+                    if not isinstance(result.dashboard, dict):
+                        result.dashboard = {}
+                    result.dashboard["agent_disagreement_explanation"] = (
+                        build_pipeline_final_explanation(
+                            runtime_facts=runtime_facts,
+                            pipeline_start_signal=pipeline_start_signal,
+                            pipeline_start_action=pipeline_start_action,
+                            final_action=final_action,
+                            pipeline_adjustments=pipeline_adjustments,
+                            data_quality=(
+                                analysis_context_pack_overview.get("data_quality")
+                                if isinstance(analysis_context_pack_overview, dict)
+                                else None
+                            ),
+                        )
+                    )
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -1973,16 +2078,21 @@ class StockAnalysisPipeline:
         report_type: Any,
         previous_operation_advice: Any,
     ) -> AnalysisResult:
+        # A guardrail may rewrite the advice after the Agent action was parsed;
+        # discard that stale action before using the same resolver as the
+        # downstream DecisionSignal builder.
         previous_advice = str(previous_operation_advice or "").strip()
         current_advice = str(getattr(result, "operation_advice", None) or "").strip()
-        explicit_action = current_advice if previous_advice != current_advice else None
-        return populate_decision_action_fields(
+        if previous_advice != current_advice:
+            result.action = None
+            result.action_label = None
+        fields = resolve_decision_signal_action_fields(
             result,
-            explicit_action=explicit_action,
-            report_type=report_type,
-            use_existing_action=(previous_advice == current_advice),
-            align_with_score=(previous_advice == current_advice),
+            report_type=str(report_type or ""),
         )
+        result.action = fields["action"]
+        result.action_label = fields["action_label"]
+        return result
 
     @staticmethod
     def _agent_dashboard_value(

@@ -2177,6 +2177,208 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         parsed = SearchService._normalize_news_publish_date(rfc_text)
         self.assertEqual(parsed, expected_local_date)
 
+    # ---- Issue #2026: foreign-ticker Chinese display name -> English alias ----
+    # massif-01 on PR #2047 asked for canonical boundary unification: when
+    # STOCK_NAME_MAP maps a foreign ticker to a Chinese display name, the
+    # search/scoring layers must resolve the canonical English alias from the
+    # single source of truth (STOCK_ENGLISH_NAME_MAP in src/data/stock_mapping.py)
+    # before contacting English news providers. These tests pin the contract.
+
+    def test_is_foreign_stock_accepts_canonical_suffix_forms(self) -> None:
+        """_is_foreign_stock must accept .US/.HK suffix and HK-prefixed inputs (massif-01 blocker 1)."""
+        for code, expected in (
+            ("AAPL", True),
+            ("AAPL.US", True),
+            ("AAPL.N", True),
+            ("00700", True),
+            ("00700.HK", True),
+            ("HK00700", True),
+            ("BRK.B", True),
+            ("600519", False),
+            ("600519.SH", False),
+            ("", False),
+        ):
+            with self.subTest(stock_code=code):
+                self.assertEqual(
+                    SearchService._is_foreign_stock(code),
+                    expected,
+                    f"_is_foreign_stock({code!r}) should be {expected}",
+                )
+
+    def test_foreign_english_aliases_returns_canonical_tuple_for_chinese_display_name(self) -> None:
+        """Stock with Chinese display name must resolve to canonical English alias tuple."""
+        cases = (
+            ("AAPL", "苹果", ("Apple Inc.", "Apple")),
+            ("00700", "腾讯控股", ("Tencent Holdings", "Tencent")),
+            ("BABA", "阿里巴巴", ("Alibaba Group Holding Limited", "Alibaba")),
+            ("09988", "阿里巴巴", ("Alibaba Group Holding", "Alibaba")),
+            ("PDD", "拼多多", ("PDD Holdings Inc.", "Pinduoduo")),
+        )
+        for code, name, expected in cases:
+            with self.subTest(stock_code=code, stock_name=name):
+                aliases = SearchService._foreign_english_query_terms(code, name)
+                self.assertEqual(aliases, expected)
+
+    def test_foreign_english_aliases_empty_for_english_display_name(self) -> None:
+        """Stock whose STOCK_NAME_MAP value is already English must not invent aliases."""
+        for code, name in (("AMD", "AMD"), ("META", "Meta"), ("COIN", "Coinbase")):
+            with self.subTest(stock_code=code, stock_name=name):
+                aliases = SearchService._foreign_english_query_terms(code, name)
+                self.assertEqual(aliases, ())
+
+    def test_score_news_relevance_english_alias_for_chinese_display_name(self) -> None:
+        """massif-01 blocker 2: English alias must enable English-news matching."""
+        fresh = datetime.now().date().isoformat()
+        cases = (
+            ("AAPL", "苹果", "Apple reports earnings beat", "Quarterly results surpass estimates."),
+            ("AAPL.US", "苹果", "Apple reports earnings beat", "Quarterly results surpass estimates."),
+            ("00700", "腾讯控股", "Tencent reports profit rise", "Quarterly profit up 12% YoY"),
+            ("00700.HK", "腾讯控股", "Tencent reports profit rise", "Quarterly profit up 12% YoY"),
+            ("BABA", "阿里巴巴", "Alibaba reports earnings beat", "Quarterly revenue up 9% YoY"),
+            ("AMZN", "亚马逊", "Amazon reports earnings beat", "AWS growth re-accelerates"),
+            ("PDD", "拼多多", "Pinduoduo reports quarterly earnings", "Active buyers up 15% QoQ"),
+        )
+        for code, name, title, snippet in cases:
+            with self.subTest(stock_code=code, stock_name=name):
+                scored = SearchService._score_news_relevance(
+                    _result(title, fresh, snippet=snippet),
+                    stock_code=code,
+                    stock_name=name,
+                )
+                self.assertEqual(scored.relevance_category, "direct_company_news")
+                joined_reasons = "；".join(scored.relevance_reasons or [])
+                self.assertIn("英文别名", joined_reasons)
+
+    def test_search_stock_news_query_uses_english_alias_for_chinese_display_name(self) -> None:
+        """massif-01 blocker 1: foreign query path must use canonical English alias, not Chinese name."""
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        captured_query = {}
+
+        def _capture(query, max_results, **kwargs):
+            captured_query["value"] = query
+            return _response([_result("Apple earnings beat", datetime.now().date().isoformat())])
+
+        provider = SimpleNamespace(is_available=True, name="USProvider", search=MagicMock(side_effect=_capture))
+        service._providers = [provider]
+
+        with patch("src.search_service.time.sleep"):
+            service.search_stock_news("AAPL", "苹果", max_results=5)
+
+        q = captured_query.get("value", "")
+        self.assertIn("Apple", q)
+        self.assertNotIn("苹果", q)
+
+    def test_search_comprehensive_intel_query_uses_english_alias_for_chinese_display_name(self) -> None:
+        """search_comprehensive_intel foreign branch must use canonical English alias."""
+        service, mock_search = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        captured_queries: list[str] = []
+
+        def _capture(query, max_results, **kwargs):
+            captured_queries.append(query)
+            return _response([_result("latest_news", datetime.now().date().isoformat())])
+
+        mock_search.side_effect = _capture
+
+        with patch("src.search_service.time.sleep"):
+            service.search_comprehensive_intel(
+                stock_code="AMZN",
+                stock_name="亚马逊",
+                max_searches=3,
+            )
+
+        self.assertTrue(captured_queries, "no queries captured")
+        for q in captured_queries:
+            self.assertIn("Amazon", q)
+            self.assertNotIn("亚马逊", q)
+
+    def test_search_stock_events_query_uses_english_alias_for_chinese_display_name(self) -> None:
+        """search_stock_events foreign branch must use canonical English alias."""
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        captured_query = {}
+
+        def _capture(query, max_results, **kwargs):
+            captured_query["value"] = query
+            return _response([_result("MSFT earnings beat", datetime.now().date().isoformat())])
+
+        provider = SimpleNamespace(is_available=True, name="USProvider", search=MagicMock(side_effect=_capture))
+        service._providers = [provider]
+
+        with patch("src.search_service.time.sleep"):
+            service.search_stock_events("MSFT", "微软")
+
+        q = captured_query.get("value", "")
+        self.assertIn("Microsoft", q)
+        self.assertNotIn("微软", q)
+
+    def test_stock_english_name_map_is_subset_of_stock_name_map_foreign_keys(self) -> None:
+        """Single source of truth invariant (massif-01 blocker 3):
+        STOCK_ENGLISH_NAME_MAP keys must be a subset of STOCK_NAME_MAP's
+        foreign-ticker keys. This pins the canonical-boundary contract so the
+        two static tables cannot drift.
+        """
+        from src.data.stock_mapping import (
+            STOCK_ENGLISH_NAME_MAP,
+            STOCK_NAME_MAP,
+            canonicalize_foreign_stock_code,
+        )
+
+        stock_name_foreign_keys = {
+            canonicalize_foreign_stock_code(code)
+            for code in STOCK_NAME_MAP
+            if SearchService._is_foreign_stock(code)
+        }
+        english_map_keys = {
+            canonicalize_foreign_stock_code(code)
+            for code in STOCK_ENGLISH_NAME_MAP
+        }
+        self.assertTrue(
+            english_map_keys.issubset(stock_name_foreign_keys),
+            f"STOCK_ENGLISH_NAME_MAP has orphan keys: "
+            f"{sorted(english_map_keys - stock_name_foreign_keys)}",
+        )
+
+    def test_score_news_relevance_english_alias_dedup_prevents_double_count(self) -> None:
+        """massif-01 blocker follow-up: alias expansion dedup prevents
+        double-counting when legal alias and short alias resolve to same term.
+        For AAPL: STOCK_ENGLISH_NAME_MAP['AAPL'] = ('Apple Inc.', 'Apple')
+        _company_identity_terms('Apple Inc.') -> ['Apple Inc.', 'Apple']
+        _company_identity_terms('Apple') -> ['Apple']
+        Without dedup: snippet 'Apple reports earnings beat' would match
+        'Apple' twice (once from each alias path) → 16+16=32 direct_signal
+        With event term +12 = 44 → direct_company_news (incorrect).
+        With dedup: only one 'Apple' term scored → 16 direct_signal
+        With event term +12 = 28 → sector_related_news (correct).
+        """
+        # Setup: generic market title, snippet with only English alias hit
+        item = SearchResult(
+            title="US stocks mixed after Fed comments",
+            snippet="Apple reports earnings beat and revenue grows.",
+            url="",
+            source=""
+        )
+        scored = SearchService._score_news_relevance(
+            item, stock_code="AAPL", stock_name="苹果"
+        )
+        # Should NOT be direct (insufficient signal without title hit)
+        self.assertEqual(scored.relevance_category, "sector_related_news")
+        self.assertLess(scored.relevance_score, 38)
+        # Should have exactly one hit on the alias term
+        reasons = "；".join(scored.relevance_reasons or [])
+        self.assertIn("摘要命中公司英文别名 Apple", reasons)
+        self.assertNotIn("标题命中公司英文别名", reasons)
 
 if __name__ == "__main__":
     unittest.main()

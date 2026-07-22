@@ -14,6 +14,7 @@ from datetime import date
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.agent.tools.execution import check_tool_execution
 from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ _ANALYSIS_CONTEXT_POLICY = ToolPolicy.declared(
     side_effects=["db_read"],
     permissions=["analysis_context:read"],
     scope_dimensions=["stock"],
+    cancellation_safe=True,
 )
 _PORTFOLIO_READ_POLICY = ToolPolicy.declared(
     read_only=True,
@@ -441,8 +443,10 @@ get_chip_distribution_tool = ToolDefinition(
 
 def _handle_get_analysis_context(stock_code: str) -> dict:
     """Get stored analysis context from database."""
+    check_tool_execution()
     db = _get_db()
     context = db.get_analysis_context(stock_code)
+    check_tool_execution()
 
     if context is None:
         return {"error": f"No analysis context in DB for {stock_code}"}
@@ -450,6 +454,7 @@ def _handle_get_analysis_context(stock_code: str) -> dict:
     # Return safely serializable version (remove raw_data to save tokens)
     safe_context = {}
     for k, v in context.items():
+        check_tool_execution()
         if k == "raw_data":
             safe_context["has_raw_data"] = True
             safe_context["raw_data_count"] = len(v) if isinstance(v, list) else 0
@@ -526,7 +531,7 @@ get_stock_info_tool = ToolDefinition(
         ToolParameter(
             name="stock_code",
             type="string",
-            description="A-share stock code, e.g., '600519'",
+            description="Stock code: A-share '600519', US 'AAPL', HK '00700'",
         ),
     ],
     handler=_handle_get_stock_info,

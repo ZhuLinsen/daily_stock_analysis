@@ -205,9 +205,14 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | Total captured diagnostic stdout/stderr plus final-response size limit for one local CLI backend call; final responses duplicated to stdout by `--output-last-message` are not counted twice; range `1-33554432` | `1048576` | No |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | Global generation backend concurrency cap; range `1-16`, does not change LiteLLM Router or `MAX_WORKERS` behavior | `1` | No |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | Local CLI backend concurrency cap; range `1-4`, effective concurrency is the lower of this value and `GENERATION_BACKEND_MAX_CONCURRENCY` | `1` | No |
+| `AGENT_BACKEND` | Runtime for the existing ask-stock Chat: `auto` (recommended, preserves the default model), `litellm`, or `codex_app_server` (experimental, single-agent Chat only) | `auto` | No |
 | `AGENT_GENERATION_BACKEND` | Agent Chat generation backend. Web settings only expose `auto|litellm`; hand-written local CLI backends return an unsupported tool-calling diagnostic | `auto` | No |
 | `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-3.1-pro-preview`), recommended | - | No |
-| `AGENT_LITELLM_MODEL` | Optional Agent-only primary model; when empty it inherits the primary model, and bare names are normalized to `openai/<model>` | - | No |
+| `AGENT_LITELLM_MODEL` | Optional primary model for **Default model** ask-stock; empty inherits the primary model and bare names become `openai/<model>`; Codex does not use this setting | - | No |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | LLM compression for visible **Default model** ask-stock history; Codex uses the 20 most recent visible messages and retains this setting | `false` | No |
+| `AGENT_CONTEXT_COMPRESSION_PROFILE` | Default model ask-stock compression profile: `cost`, `balanced`, or `long_context_raw_first` | `balanced` | No |
+| `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | Estimated-history token threshold; blank follows the selected profile preset | - | No |
+| `AGENT_CONTEXT_PROTECTED_TURNS` | Number of recent user turns and following replies kept verbatim; blank follows the selected profile preset | - | No |
 | `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
 | `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
 | `LLM_HERMES_API_KEY` | Single API key for the reserved Hermes local HTTP generation channel; provide it through `.env`, runtime config, or Secrets only | - | Required for Hermes |
@@ -230,6 +235,8 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 > GitHub Actions note: the bundled `00-daily-analysis.yml` explicitly uses `litellm` when `GENERATION_FALLBACK_BACKEND` is not configured, so an unset Secret/Variable is not exported as an empty value that disables backend fallback. To disable backend fallback in Actions, set the fallback to the primary backend and let the resolver treat it as self no-op.
 
 > Generation backend status note: the Web settings quick check only reads config, drafts, and executable visibility; it does not send a real model request. JSON smoke test is a separate explicit action that sends one real request with a server-owned fixed JSON prompt/schema. `health_status` and `last_error_code/message` describe only the current status computation or smoke result, not persisted historical health.
+
+> `AGENT_BACKEND=codex_app_server` is an experimental option only for the existing ask-stock Chat. Install and sign in to Codex on the device running DSA, then open **Settings → Agent → Ask-stock method**, keep `AGENT_ARCH=single`, and set a positive overall timeout. Settings checks only whether the configuration, Codex command, and required protocol allow an attempt; it does not sign in, call a model, or read stock data. After saving, ask directly in Chat—the first question is the first real execution. Codex can currently read only saved analysis context and backtest summaries; use **Default model** for live quotes, news, market hotspots, technical-indicator recalculation, per-stock backtest details, or portfolio tools. After the user clicks Stop, the page shows **Stopping** and reports **Stopped** only after both the Codex turn and its current tool task have exited. It currently supports macOS, Linux, and a complete DSA backend running inside WSL; native Windows is not supported, while the Phase 2 `codex_cli` generation path remains unchanged. Codex Multi Agent and Codex Deep Research are not supported; existing LiteLLM Multi Agent, Deep Research, regular reports, and scheduled analysis stay unchanged. Codex is not an offline model, and services configured in Codex may process stock questions and redacted tool results. DSA does not read or store Codex credentials. Docker, remote servers, and Desktop must each expose Codex on the backend process PATH. See the [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md#codex-local-agent-phase-6-experimental-prototype).
 
 > *Note: Configure at least one of `ANSPIRE_API_KEYS`, `AIHUBMIX_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OLLAMA_API_BASE`, or `LLM_CHANNELS` / `LITELLM_CONFIG`. `ANSPIRE_API_KEYS` and `AIHUBMIX_KEY` are auto-adapted without an `OPENAI_BASE_URL`.
 
@@ -319,6 +326,17 @@ For the notification baseline, diagnostics, and deployment notes, see [Notificat
 | `SEARXNG_PUBLIC_INSTANCES_ENABLED` | Auto-discover public SearXNG instances from `searx.space` when `SEARXNG_BASE_URLS` is empty (default `true`) | Optional |
 
 > Behavior note: Search and social sentiment are optional enhancement services. If either service fails to initialize, the system logs a warning and degrades gracefully by skipping that stage without blocking the core analysis flow.
+
+### Futu Portfolio Import Configuration
+
+| Variable | Description | Default | Required |
+|--------|------|--------|:----:|
+| `FUTU_OPEND_HOST` | OpenD host. The pinned `futu-api==10.8.6808` accepts an IPv4 address or a hostname that resolves to IPv4. Cross-host connections should use only a trusted network or local port forwarding. | `127.0.0.1` | Optional |
+| `FUTU_OPEND_PORT` | OpenD port in the range `1-65535`. | `11111` | Optional |
+| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` enum name. `NONE` performs the SDK's official auto-detection once; set an explicit broker when required. | `NONE` | Optional |
+| `FUTU_ACC_ID` | Select one eligible REAL account ID. When empty, all explicitly `ACTIVE` `NORMAL` and `MASTER` securities accounts are merged. Treat account IDs as sensitive configuration and do not commit them. | empty | Optional |
+
+`MASTER` is Futu's master-account role, not a read-only attribute. This integration is read-only because it calls only account, position, and security-information queries; it never unlocks trading or places, modifies, or cancels orders.
 
 ### Data Source Configuration
 
@@ -611,12 +629,32 @@ python main.py                        # Full analysis (stocks + market review)
 python main.py --market-review        # Market review only
 python main.py --no-market-review     # Stock analysis only
 python main.py --stocks 600519,300750 # Specify stocks
+python main.py --portfolio futu       # Use real Futu LONG stock holdings (overrides --stocks/STOCK_LIST)
 python main.py --dry-run              # Fetch data only, no AI analysis
 python main.py --no-notify            # Don't send notifications
 python main.py --schedule             # Scheduled task mode
 python main.py --debug                # Debug mode (verbose logging)
 python main.py --workers 5            # Specify concurrency
 ```
+
+### Use real Futu holdings as the analysis list
+
+Standard source installs (`pip install -r requirements.txt`), official Docker images, and Windows/macOS Desktop backends already include the pinned `futu-api==10.8.6808`. Install it manually from the [Futu OpenAPI SDK guide](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) only when using a reduced custom Python environment. After starting and signing in to Futu OpenD, run:
+
+```bash
+# Only reduced custom environments need the next line
+pip install "futu-api==10.8.6808"
+# Standard installs can run the command directly
+python main.py --portfolio futu
+```
+
+`--portfolio futu` only reads `REAL` securities accounts whose status is explicitly `ACTIVE`, and refreshes positions with `refresh_cache=True` before each analysis run. Accounts with a missing, `N/A`, unknown, or `DISABLED` status are rejected. Without `FUTU_ACC_ID`, it merges all usable `NORMAL` and `MASTER` securities accounts and deduplicates symbols; when set, only that positive integer account ID is read. Per the [Futu `get_acc_list` account-role contract](https://openapi.futunn.com/futu-api-doc/en/trade/get-acc-list.html), `MASTER` means the master-account role rather than a read-only attribute, and Malaysian `IPO` accounts are not portfolio sources. The integration is read-only because it calls only query APIs.
+
+Only non-zero positions whose direction is explicitly `LONG` and whose Futu static type is `STOCK` are analyzed. `SHORT`, unknown-direction, option, ETF, warrant, futures, and other non-stock positions are excluded. Futu portfolio conversion is limited to Shanghai/Shenzhen A-shares, HK stocks, and US stocks. Shanghai/Shenzhen B-shares, JP holdings, and holdings from other Futu markets are logged with their codes and skipped; this does not change the market support for manually configured stock lists. An invalid eligible account ID, an invalid quantity on a `LONG` position, an invalid or missing code on a non-zero `LONG` position, a missing or unknown static type, or a confirmed stock code that cannot be converted to the analysis format fails the whole import instead of returning a silently truncated result.
+
+OpenD defaults to `127.0.0.1:11111`; override it with `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT`. The pinned `futu-api==10.8.6808` networking layer uses IPv4 sockets, so `FUTU_OPEND_HOST` must be an IPv4 address or a hostname that resolves to IPv4; IPv6 addresses such as `::1` are unsupported. Inside a Docker container, `127.0.0.1` refers to the container itself. When OpenD runs on the host, set `FUTU_OPEND_HOST=host.docker.internal` on macOS or Windows; on Linux, add a `host.docker.internal:host-gateway` mapping to the container before using that hostname. Cross-host connections carry real account and position data, and [Futu recommends protocol encryption for real-trading connections](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html). This integration does not modify process-wide SDK encryption settings; prefer running OpenD on the same host, or use a trusted network or local port forwarding. When `FUTU_SECURITY_FIRM` is unset, discovery makes one call with the Futu SDK's official `SecurityFirm.NONE` auto-detection mode; it does not enumerate brokers or silently combine partial probe results. Set the variable explicitly when a fixed broker is required.
+
+If `--stocks` is also present, the Futu portfolio wins. Scheduled mode reloads real positions for every run instead of reusing a startup snapshot. If no Futu holdings qualify, stock analysis is skipped without falling back to `STOCK_LIST`; an enabled market review still runs according to its existing configuration. When no market review is requested either, the run does not refresh the stock index or construct the analysis pipeline; an enabled auto-backtest still runs as an independent step. A one-shot CLI exits non-zero only when SDK, OpenD, account discovery, position loading, or security classification fails inside the portfolio-resolution boundary. Trading-calendar, pipeline, and report failures after a successful portfolio import retain the existing analysis error semantics. An already running service or scheduler logs portfolio import errors and continues. This integration only reads accounts and positions; it does not place, modify, cancel, or unlock trades. Existing analysis logs include the stock symbols for the current run, but not account IDs, quantities, costs, or cash balances; redact those symbols as needed before sharing logs.
 
 ---
 
@@ -743,6 +781,14 @@ P3 itself did not add API/Web/Bot parameters, persist fields into history/task s
 Before `DecisionAgent` runs, the multi-agent pipeline builds an internal low-sensitivity `agent_disagreement_summary` that summarizes directional disagreement across prior Agent opinions, risk-override evidence, whether risk override is enabled by the current `AGENT_RISK_OVERRIDE` setting, and non-critical stage degradation. The summary only contains agent name, signal, confidence, conflict type, decision path hint, low-sensitivity risk-control state, and degraded-stage markers. It does not include reasoning, raw data, raw error text, tokens, or private payloads.
 
 This is currently only internal Prompt input plumbing for `DecisionAgent`: the summary is stored in runtime `ctx.meta`, is not injected through Agent pre-fetched data, and does not add public API fields, Web/Desktop display, history/task-status/report metadata, dashboard schema, or final explanation fields. `risk_level=high` is risk evidence only and does not trigger override by itself; the summary and final `_apply_risk_override()` share the same override predicate and respect `AGENT_RISK_OVERRIDE=false`. Non-critical degraded stages reuse the orchestrator contract for `intel`, `risk`, and specialist/skill agents, so a remaining single directional opinion is not described as multi-agent consensus. User-visible final explanation output for #1904 remains a later phase.
+
+`AgentResult.runtime_facts` is an optional internal field for facts collected during the current Orchestrator run: base Agent opinions, degradation events, Pipeline termination, and the actual risk application. A degradation event uses `DURING_STAGE` for a stage failure and `BEFORE_STAGE` when that stage did not start because of the Pipeline deadline or budget guard. A completed stage is not recorded as a timeout degradation when the deadline check fires afterward. `pipeline_termination.last_completed_stage` is taken from the latest actual `COMPLETED` result in `AgentRunStats.stage_results` and may be empty.
+
+A structured Orchestrator dashboard is processed as input preparation, one risk application, and post-risk finalization. Post-risk finalization updates the top-level decision and operation advice, core signal and position advice, battle-plan position strategy, and the DecisionAgent signal/canonical payload. This stage does not rewrite directional wording in other free-text dashboard fields. Runtime facts and the post-risk Agent dashboard do not represent the Pipeline-final decision and do not generate a public explanation field.
+
+After a Multi-Agent result enters `StockAnalysisPipeline`, the Pipeline completes the structure and capital-flow, market-phase, and daily-market-context guardrails. After every step that can change the public action, it uses the same resolver as the DecisionSignal builder and records real eight-state `from_action` / `to_action` transitions in execution order. It deterministically generates the optional `dashboard.agent_disagreement_explanation` from `AgentResult.runtime_facts` only when the adjustment-chain start, every intermediate action, and the final action are uniquely resolved by the shared rules. The payload starts at `pipeline_start_action` and uses `final_action` as its only authoritative final conclusion; that value equals the report action, persisted history action, and `DecisionSignal.action`. The three-state `decision_type` is no longer an explanation final result. `risk_control.post_risk_signal` remains only a statistical background fact from the Agent risk stage.
+
+Any model-authored explanation at the top-level or nested dashboard location is removed at the shared Agent dashboard parsing boundary, so only the Pipeline constructs the final field. Invalid Agent signals follow the existing strategy-opinion validity rules and are excluded from runtime facts and public disagreement counts instead of being silently converted to `hold`. If free-form advice cannot resolve uniquely to an eight-state action, the shared resolver remains fail-closed: the report and history retain `action=None`, no explanation is generated, and no DecisionSignal is created; the Pipeline does not synthesize an action from `decision_type`. When a canonical action exists, the field is persisted with the dashboard in report history and completed before DecisionSignal extraction. Legacy reports, single-Agent/non-Agent paths, and compatibility callers without `runtime_facts` do not require this field. This phase does not add dedicated Web/Desktop rendering, a full trace, or the P2-P4 weighting and audit features.
 
 ### AnalysisContextPack Low-Sensitivity Visibility (Issue #1389 P4)
 

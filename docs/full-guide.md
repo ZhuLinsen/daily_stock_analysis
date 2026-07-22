@@ -237,10 +237,11 @@ daily_stock_analysis/
 | `GENERATION_BACKEND_MAX_OUTPUT_BYTES` | 单次本地 CLI backend 诊断 stdout/stderr 与最终响应捕获总上限；`--output-last-message` 重复打印到 stdout 的最终响应不重复计入；范围 `1-33554432` | `1048576` | 否 |
 | `GENERATION_BACKEND_MAX_CONCURRENCY` | generation backend 全局并发上限；范围 `1-16`，不改变 LiteLLM Router / `MAX_WORKERS` 行为 | `1` | 否 |
 | `LOCAL_CLI_BACKEND_MAX_CONCURRENCY` | 本地 CLI backend 并发上限；范围 `1-4`，有效并发取它与 `GENERATION_BACKEND_MAX_CONCURRENCY` 的较小值 | `1` | 否 |
+| `AGENT_BACKEND` | 现有问股 Chat 的运行方式：`auto`（推荐，保持默认模型）、`litellm` 或 `codex_app_server`（实验，仅 single-agent Chat） | `auto` | 否 |
 | `AGENT_GENERATION_BACKEND` | Agent Chat 生成后端；Web 设置页仅暴露 `auto|litellm`，手写 local CLI backend 会返回 unsupported tool-calling 诊断 | `auto` | 否 |
 | `LITELLM_MODEL` | 主模型，格式 `provider/model`（如 `gemini/gemini-3.1-pro-preview`），推荐优先使用 | - | 否 |
-| `AGENT_LITELLM_MODEL` | Agent 主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析 | - | 否 |
-| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 问股可见对话上下文压缩开关；默认关闭，开启后仅压缩 `session_id` 下 user/assistant 文本历史 | `false` | 否 |
+| `AGENT_LITELLM_MODEL` | 「默认模型」问股的主模型（可选）；留空继承主模型，无 provider 前缀按 `openai/<model>` 解析；Codex 不使用此项 | - | 否 |
+| `AGENT_CONTEXT_COMPRESSION_ENABLED` | 「默认模型」问股可见历史的 LLM 压缩开关；Codex 使用最近 20 条可见对话且保留该配置 | `false` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_PROFILE` | 问股上下文压缩策略：`cost` / `balanced` / `long_context_raw_first` | `balanced` | 否 |
 | `AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS` | 历史 token 估算超过该值时触发压缩；留空则跟随 profile preset | - | 否 |
 | `AGENT_CONTEXT_PROTECTED_TURNS` | 压缩时最近 N 个用户轮次及其后的回复保留原文；留空则跟随 profile preset | - | 否 |
@@ -276,6 +277,8 @@ daily_stock_analysis/
 > *注：`ANSPIRE_API_KEYS`、`AIHUBMIX_KEY`、`GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 或 `OLLAMA_API_BASE` 至少配置一个。`ANSPIRE_API_KEYS` 与 `AIHUBMIX_KEY` 无需配置 `OPENAI_BASE_URL`，系统自动适配。
 
 > 问股 single-agent 路径会在后台为 DeepSeek V4 thinking + tool-call 保存最近 3 条 provider trace，并按原时序回放 `reasoning_content` / tool 结果；该能力不新增配置项，不进入 Web 历史 API，Claude extended thinking 仅覆盖离线 plumbing，multi-agent trace 注入留作后续增强。
+
+> `AGENT_BACKEND=codex_app_server` 是仅作用于现有问股 Chat 的实验入口：需在运行 DSA 的设备安装并登录 Codex，Web 路径为「设置 → Agent 设置 → 问股生成方式」，选择后保持 `AGENT_ARCH=single`，并设置大于 0 的整体时限。设置页只检查配置、Codex 命令和所需协议是否允许尝试，不登录、不调用模型或读取股票数据；保存后可直接提问，第一次问题就是第一次真实执行。Codex 当前只能读取已保存的分析上下文和回测汇总；实时行情、新闻、市场热点、技术指标重算、个股回测明细和持仓工具请改用「默认模型」。点击停止后，页面会显示“正在停止”；只有 Codex 与本轮工具任务均已退出，才显示最终“已停止”。它当前支持 macOS、Linux 和完整运行于 WSL 的 DSA 后端，暂不支持原生 Windows；Phase 2 `codex_cli` 生成能力不受影响。它不支持 Codex Multi Agent / Codex Deep Research，也不改变现有 LiteLLM Multi Agent、Deep Research、普通报告或定时任务。Codex 不是离线模型，股票问题和脱敏工具结果可能由 Codex 配置的服务处理；DSA 不读取或保存 Codex 凭据。Docker、远程服务器和 Desktop 必须分别保证其后端进程 PATH 可见 Codex。详见 [LLM 配置指南](LLM_CONFIG_GUIDE.md#codex-本地-agentphase-6-实验原型)。
 
 ### 通知渠道配置
 
@@ -385,6 +388,17 @@ daily_stock_analysis/
 - 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
 
 兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
+
+### Futu 持仓导入配置
+
+| 变量名 | 说明 | 默认值 | 必填 |
+|--------|------|--------|:----:|
+| `FUTU_OPEND_HOST` | OpenD 地址；锁定的 `futu-api==10.8.6808` 仅支持 IPv4 地址或可解析到 IPv4 的主机名。跨主机连接只应使用受信网络或本机端口转发。 | `127.0.0.1` | 可选 |
+| `FUTU_OPEND_PORT` | OpenD 端口，合法范围 `1-65535`。 | `11111` | 可选 |
+| `FUTU_SECURITY_FIRM` | Futu `SecurityFirm` 枚举名；`NONE` 表示使用 SDK 官方自动识别一次，也可显式指定券商。 | `NONE` | 可选 |
+| `FUTU_ACC_ID` | 指定一个符合条件的 REAL 账户 ID；留空时合并所有状态为 `ACTIVE` 的 `NORMAL`（普通）和 `MASTER`（主）证券账户。账户 ID 应按敏感配置处理，不要提交到仓库。 | 空 | 可选 |
+
+`MASTER` 仅表示 Futu 的主账户角色，不表示账户具有只读属性。本集成的只读边界来自它只调用账户、持仓和证券信息查询接口，不调用交易解锁、下单、改单或撤单接口。
 
 ### 数据源配置
 
@@ -677,6 +691,7 @@ python main.py                        # 完整分析（个股 + 大盘复盘）
 python main.py --market-review        # 仅大盘复盘
 python main.py --no-market-review     # 仅个股分析
 python main.py --stocks 600519,300750 # 指定股票
+python main.py --portfolio futu       # 使用 Futu 真实 LONG 正股持仓（覆盖 --stocks/STOCK_LIST）
 python main.py --dry-run              # 仅获取数据，不 AI 分析
 python main.py --no-notify            # 不发送推送
 python main.py --schedule             # 定时任务模式
@@ -684,6 +699,25 @@ python main.py --force-run            # 非交易日也强制执行（Issue #373
 python main.py --debug                # 调试模式（详细日志）
 python main.py --workers 5            # 指定并发数
 ```
+
+### Futu 真实持仓作为分析列表
+
+标准源码安装（`pip install -r requirements.txt`）、官方 Docker 镜像和 Windows/macOS Desktop backend 已默认包含锁定的 `futu-api==10.8.6808`。仅在使用裁剪过的自定义 Python 环境时，才需要按 [Futu OpenAPI SDK 安装说明](https://openapi.futunn.com/futu-api-doc/en/intro/intro.html) 手动补装。启动并登录 Futu OpenD 后运行：
+
+```bash
+# 仅裁剪过的自定义环境需要执行下一行
+pip install "futu-api==10.8.6808"
+# 所有标准安装均可直接运行
+python main.py --portfolio futu
+```
+
+`--portfolio futu` 固定读取状态明确为 `ACTIVE` 的 `REAL` 真实证券账户，并在每次分析开始前用 `refresh_cache=True` 刷新持仓；状态缺失、`N/A`、未知或 `DISABLED` 的账户一律拒绝。未设置 `FUTU_ACC_ID` 时会合并所有可用的 `NORMAL`（普通）及 `MASTER`（主）证券账户并按代码去重；设置后只读取指定的正整数账户 ID。根据 [Futu `get_acc_list` 账户角色定义](https://openapi.futunn.com/futu-api-doc/trade/get-acc-list.html)，`MASTER` 表示主账户而非只读属性，马来西亚 `IPO` 账户不属于本功能的持仓来源并会被跳过。本集成的只读边界来自它只调用查询接口。
+
+只有持仓方向明确为 `LONG`、Futu 静态类型为 `STOCK` 且数量非零的正股持仓会进入分析；`SHORT`、方向未知、期权、ETF、窝轮、期货等持仓会被排除。Futu 持仓代码转换仅支持沪深 A 股、港股和美股；沪深 B 股、日股及其他 Futu 市场持仓会在日志中列出代码并跳过，这不改变手工股票列表的既有市场支持边界。如果可用账户 ID 无效，或 `LONG` 持仓数量无效、非零 `LONG` 持仓代码无效、静态类型缺失 / 未知，或已确认的正股代码无法转换为当前分析格式，整次持仓导入会明确失败，不会返回静默截断的部分结果。
+
+OpenD 默认地址为 `127.0.0.1:11111`，可用 `FUTU_OPEND_HOST` / `FUTU_OPEND_PORT` 覆盖。锁定的 `futu-api==10.8.6808` 网络层使用 IPv4 socket，因此 `FUTU_OPEND_HOST` 应填写 IPv4 地址或可解析到 IPv4 的主机名，不支持 `::1` 等 IPv6 地址。在 Docker 容器中，`127.0.0.1` 指向容器自身；OpenD 运行在宿主机时，macOS / Windows 可设置 `FUTU_OPEND_HOST=host.docker.internal`，Linux 需要先为容器增加 `host.docker.internal:host-gateway` 映射后再使用该主机名。跨主机连接会传输真实账户与持仓信息；[Futu 官方建议实盘连接配置协议加密](https://openapi.futunn.com/futu-api-doc/en/ftapi/protocol.html)。本功能不修改进程级 SDK 加密配置，建议优先让 OpenD 与本程序同机，或使用受信网络 / 本机端口转发。未设置 `FUTU_SECURITY_FIRM` 时只使用 Futu SDK 官方的 `SecurityFirm.NONE` 自动识别一次，不会枚举多个券商或在部分探测失败后静默拼接结果；需要固定券商时可显式配置该变量。
+
+若同时传入 `--stocks`，Futu 持仓优先；定时模式会在每轮执行前重新读取真实持仓，而不是复用启动时快照。若没有符合条件的 Futu 持仓，本轮会跳过个股分析且不会回退到 `STOCK_LIST`；已启用的大盘复盘仍按原配置执行，大盘复盘也未请求时不会刷新股票索引或构造分析管线，已启用的自动回测仍作为独立步骤执行。单次 CLI 仅在 SDK、OpenD、账户发现、持仓读取或证券分类等持仓解析边界失败时返回非零退出码；持仓解析成功后的交易日历、分析管线和报告异常仍沿用原分析流程的记录与容错语义。已启动服务与定时调度会记录持仓导入错误并继续运行。该能力只读取账户和持仓，不执行下单、改单、撤单或交易解锁。现有分析日志会记录本轮股票代码，但不会记录账户 ID、持仓数量、成本或资金；分享运行日志前请按需脱敏。
 
 ---
 
@@ -877,6 +911,14 @@ P3 当时不新增 API/Web/Bot 参数，不写入 history/task status/report met
 Multi-agent 在进入 `DecisionAgent` 前会构造内部低敏 `agent_disagreement_summary`，用于提示前序 Agent opinion 的方向分歧、风险 override 证据、风险 override 是否受当前 `AGENT_RISK_OVERRIDE` 配置启用，以及非关键阶段降级信息。该摘要只包含 agent name、signal、confidence、conflict type、decision path hint、低敏 risk control 状态和 degraded stage marker，不包含 reasoning、raw_data、原始错误文本、token 或私密 payload。
 
 该能力当前只是 `DecisionAgent` 的内部 Prompt 输入管线：摘要写入运行态 `ctx.meta`，不进入 Agent pre-fetched data，不新增 public API、Web/Desktop 展示、history/task status/report metadata、dashboard schema 或最终解释字段。`risk_level=high` 只作为风险证据，不会单独触发 override；summary 与最终 `_apply_risk_override()` 复用同一套 override 判断，并尊重 `AGENT_RISK_OVERRIDE=false`。非关键降级阶段沿用 orchestrator 的 `intel`、`risk` 和 specialist/skill agent 降级契约，避免把单一方向意见误描述成 multi-agent 共识。#1904 的用户可见最终解释输出仍属于后续阶段。
+
+`AgentResult.runtime_facts` 是内部可选字段，用于保存本次 Orchestrator 运行中已收集的基础 Agent 意见、degradation event、Pipeline termination 和实际 risk application。degradation event 使用 `DURING_STAGE` 区分 stage 自身失败，使用 `BEFORE_STAGE` 表示该 stage 因 Pipeline deadline 或 budget guard 未启动。stage 已完成后触发 deadline check 时不把该 stage 记录为 timeout degradation；`pipeline_termination.last_completed_stage` 从 `AgentRunStats.stage_results` 中最后一个真实 `COMPLETED` 结果取得，也可能为空。
+
+结构化 Orchestrator dashboard 按 input preparation、单次 risk application 和 post-risk finalization 的顺序处理。post-risk finalization 更新 top-level decision/operation advice、core signal/position advice、battle-plan position strategy，以及 DecisionAgent signal/canonical payload。本阶段不处理 dashboard 其他自由文本中的方向性措辞；runtime facts 和 post-risk Agent dashboard 也不表示 Pipeline-final decision，不生成公开 explanation 字段。
+
+Multi-Agent 结果进入 `StockAnalysisPipeline` 后，会继续完成结构与资金流、市场阶段和 daily-market context。系统在每个可能改变公开动作的步骤后使用与 DecisionSignal builder 相同的解析入口刷新八态 action，并按执行顺序记录真实的 `from_action` / `to_action` 转换。只有调整链起点、每个中间动作和最终动作都能由共享规则唯一解析时，系统才基于 `AgentResult.runtime_facts` 确定性生成可选的 `dashboard.agent_disagreement_explanation`。该字段以 `pipeline_start_action` 为调整链起点，以 `final_action` 作为唯一权威最终结论；`final_action` 与报告 `action`、历史记录 action 和 `DecisionSignal.action` 一致。三态 `decision_type` 不再作为 explanation 的最终结论；`risk_control.post_risk_signal` 仅保留为 Agent 风控阶段的统计背景事实。
+
+模型返回的顶层或嵌套同名 explanation 会在共享 Agent dashboard 解析边界被删除，最终字段只由 Pipeline 构造。非法 Agent signal 沿用既有策略意见有效性规则从 runtime facts 和公开分歧统计中排除，不会静默转换成 `hold`。若自由文本无法唯一解析成八态 action，共享 resolver 保持 fail-closed：报告与历史记录保留 `action=None`，不生成 explanation，也不创建 DecisionSignal；Pipeline 不使用 `decision_type` 私自补值。字段在存在 canonical action 时随 dashboard 一起持久化，并在 DecisionSignal 提取前完成。旧报告、single Agent/非 Agent 路径和没有 `runtime_facts` 的兼容调用不要求包含该字段；本阶段不增加 Web/Desktop 专属展示、完整 trace 或 P2-P4 的权重与审计能力。
 
 #### AnalysisContextPack 低敏可见性（Issue #1389 P4）
 

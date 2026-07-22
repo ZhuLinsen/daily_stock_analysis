@@ -135,7 +135,7 @@ export interface DecisionSignalWarning {
 export interface DecisionSignalReassessRequest {
   sourceReportId: number;
   decisionProfile: DecisionProfile;
-  persist?: false;
+  persist?: boolean;
 }
 
 export interface DecisionSignalReassessPreview {
@@ -154,12 +154,20 @@ export interface DecisionSignalReassessPreview {
   metadata: Record<string, unknown>;
 }
 
+export type DecisionSignalPersistStatus = 'created' | 'existing' | 'refreshed';
+
 export interface DecisionSignalReassessResponse {
-  preview: DecisionSignalReassessPreview;
+  preview?: DecisionSignalReassessPreview | null;
   item?: DecisionSignalItem | null;
-  created: false;
+  created: boolean;
+  persistStatus?: DecisionSignalPersistStatus | null;
   warnings: DecisionSignalWarning[];
   blockedReason?: string | null;
+}
+
+export interface DecisionSignalReassessBlockedError {
+  blockedReason: string;
+  warnings: DecisionSignalWarning[];
 }
 
 export interface DecisionSignalListResponse {

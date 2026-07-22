@@ -36,6 +36,69 @@ _CANONICAL_DECISION_SIGNAL_MAP: Dict[str, str] = {
     "strong_sell": "sell",
 }
 
+_STRATEGY_SIGNAL_ALIASES: Dict[str, str] = {
+    "strong_buy": "strong_buy",
+    "strong buy": "strong_buy",
+    "strong-buy": "strong_buy",
+    "strongbuy": "strong_buy",
+    "buy": "buy",
+    "hold": "hold",
+    "neutral": "hold",
+    "sell": "sell",
+    "strong_sell": "strong_sell",
+    "strong sell": "strong_sell",
+    "strong-sell": "strong_sell",
+    "strongsell": "strong_sell",
+}
+
+
+def normalize_strategy_signal(signal: Any, default: str = "hold") -> tuple[str, bool, str]:
+    """Normalize strategy signal labels while preserving invalid input state.
+
+    Single normalization entrypoint for the entire multi-strategy pipeline. See
+    docs/multi-strategy-contract.md §"Canonical Signal 与 Valid 判定".
+
+    Returns (canonical, invalid, original):
+    - canonical: canonical lowercase label; falls back to `default` when invalid
+    - invalid: True when input cannot be mapped to any canonical label
+    - original: original stripped string form (used for diagnostics only)
+    """
+    if signal is None:
+        original = ""
+    elif hasattr(signal, "value"):
+        original = str(signal.value).strip()
+    else:
+        original = str(signal).strip()
+    normalized = original.lower().replace("/", "_")
+    canonical = _STRATEGY_SIGNAL_ALIASES.get(normalized)
+    if canonical is not None:
+        return canonical, False, original
+    return default, True, original
+
+
+def is_valid_strategy_signal(signal: Any) -> bool:
+    """Single source of truth for signal validity across the entire pipeline.
+
+    Consumers: SkillAgent → Orchestrator partitioning → SkillAggregator →
+    StrategySynthesizer → DecisionAgent → renderers. Delegates to
+    normalize_strategy_signal so alias/canonical rules stay consistent.
+    """
+    _, invalid, _ = normalize_strategy_signal(signal)
+    return not invalid
+
+
+def strategy_signal_score(signal: str) -> float:
+    scores = {
+        "strong_buy": 5.0,
+        "buy": 4.0,
+        "hold": 3.0,
+        "sell": 2.0,
+        "strong_sell": 1.0,
+    }
+    if signal not in scores:
+        raise ValueError(f"Unknown strategy signal: {signal!r}")
+    return scores[signal]
+
 
 def normalize_decision_signal(signal: Any, default: str = "hold") -> str:
     """Map model-facing signal labels to the dashboard's stable enum."""
@@ -52,6 +115,30 @@ class StageStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+
+class StageFailureReason(str, Enum):
+    """Canonical internal reasons for an incomplete Agent stage."""
+
+    STAGE_FAILURE = "stage_failure"
+    TIMEOUT = "timeout"
+    BUDGET_SKIP = "budget_skip"
+
+
+def normalize_stage_failure_reason(reason: Any) -> StageFailureReason:
+    """Return a safe canonical failure reason for internal runtime facts.
+
+    Custom agents and older integrations may supply arbitrary strings.  Fact
+    collection must never turn an unknown diagnostic value into a pipeline
+    failure, so only the two special reasons are preserved and every other
+    value falls back to ``stage_failure``.
+    """
+    normalized = str(getattr(reason, "value", reason) or "").strip().lower()
+    if normalized == StageFailureReason.TIMEOUT.value:
+        return StageFailureReason.TIMEOUT
+    if normalized == StageFailureReason.BUDGET_SKIP.value:
+        return StageFailureReason.BUDGET_SKIP
+    return StageFailureReason.STAGE_FAILURE
 
 
 # ============================================================
@@ -155,6 +242,39 @@ class AgentOpinion:
             return None
 
 
+@dataclass
+class StrategyOpinion:
+    """Normalized view of a skill/strategy opinion for synthesis."""
+
+    skill_id: str = ""
+    agent_name: str = ""
+    signal: str = "hold"
+    confidence: float = 0.0
+    reasoning: str = ""
+    score_adjustment: float = 0.0
+    conditions_met: List[str] = field(default_factory=list)
+    conditions_missed: List[str] = field(default_factory=list)
+    key_levels: Dict[str, float] = field(default_factory=dict)
+    raw_data: Dict[str, Any] = field(default_factory=dict)
+    original_signal: str = ""
+    invalid_signal: bool = False
+
+    def __post_init__(self) -> None:
+        self.confidence = max(0.0, min(1.0, float(self.confidence)))
+
+
+@dataclass
+class StrategyConflict:
+    """Deterministic conflict found among strategy opinions."""
+
+    conflict_type: str = ""
+    severity: str = "medium"
+    description: str = ""
+    description_key: str = ""
+    participants: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 # ============================================================
 # StageResult — return type from a single pipeline stage
 # ============================================================
@@ -171,6 +291,7 @@ class StageResult:
     status: StageStatus = StageStatus.PENDING
     opinion: Optional[AgentOpinion] = None
     error: Optional[str] = None
+    failure_reason: Optional[StageFailureReason] = None
     duration_s: float = 0.0
     tokens_used: int = 0
     tool_calls_count: int = 0

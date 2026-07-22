@@ -44,8 +44,16 @@ from src.report_language import (
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
     localize_chip_health,
+    localize_conflict_severity,
+    localize_consensus_level,
+    localize_strategy_signal,
+    localize_strategy_skill,
+    localize_strategy_conflict_description,
+    localize_strategy_synthesis_summary,
     localize_trend_prediction,
     normalize_report_language,
+    normalize_strategy_synthesis_payload,
+    strategy_invalid_opinion_count,
 )
 from src.schemas.decision_action import (
     display_action_fields_for_result,
@@ -100,6 +108,74 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(text)
     except (TypeError, ValueError):
         return None
+
+
+def _format_strategy_skill_items(items: Any, report_language: str = "zh") -> str:
+    none_text = get_report_labels(report_language).get("none_label", "None")
+    if not isinstance(items, list):
+        return none_text
+    formatted: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        skill_id = str(item.get("skill_id") or "").strip()
+        signal = str(item.get("signal") or "").strip()
+        confidence = item.get("confidence")
+        if not skill_id:
+            continue
+        suffix = f"/{localize_strategy_signal(signal, report_language)}" if signal else ""
+        if isinstance(confidence, (int, float)):
+            suffix += f"/{confidence:.0%}"
+        formatted.append(f"{localize_strategy_skill(skill_id, report_language)}{suffix}")
+    return "、".join(formatted) if formatted else none_text
+
+
+def _append_strategy_synthesis_block(lines: List[str], strategy_synthesis: Any, labels: Dict[str, str], report_language: str) -> None:
+    strategy_synthesis = normalize_strategy_synthesis_payload(strategy_synthesis)
+    if not strategy_synthesis:
+        return
+    confidence = strategy_synthesis.get("confidence")
+    confidence_text = f"{confidence:.0%}" if isinstance(confidence, (int, float)) else "N/A"
+    lines.extend([
+        f"### 🧩 {labels['strategy_synthesis_heading']}",
+        "",
+        (
+            f"- {labels['strategy_final_signal_label']}: "
+            f"{localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language)} | "
+            f"{labels['strategy_consensus_level_label']}: "
+            f"{localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language)} | "
+            f"{labels['strategy_conflict_label']}: "
+            f"{localize_conflict_severity(strategy_synthesis.get('conflict_severity', 'none'), report_language)} "
+            f"({strategy_synthesis.get('conflict_count', 0)}) | "
+            f"{labels['strategy_confidence_label']}: {confidence_text}"
+        ),
+    ])
+    summary = localize_strategy_synthesis_summary(strategy_synthesis, report_language)
+    if summary:
+        lines.append(f"- {labels['strategy_summary_label']}: {summary}")
+    lines.append(
+        f"- {labels['strategy_supporting_skills_label']}: "
+        f"{_format_strategy_skill_items(strategy_synthesis.get('supporting_skills'), report_language)}"
+    )
+    lines.append(
+        f"- {labels['strategy_opposing_skills_label']}: "
+        f"{_format_strategy_skill_items(strategy_synthesis.get('opposing_skills'), report_language)}"
+    )
+    invalid_opinion_count = strategy_invalid_opinion_count(strategy_synthesis)
+    if invalid_opinion_count:
+        invalid_label = labels.get("strategy_invalid_opinions_label", "")
+        if invalid_label:
+            lines.append(f"- {invalid_label.format(count=invalid_opinion_count)}")
+    for conflict in (strategy_synthesis.get("conflicts") or [])[:3]:
+        if isinstance(conflict, dict) and conflict.get("conflict_type"):
+            participants = conflict.get("participants") or []
+            participant_text = "、".join(localize_strategy_skill(participant, report_language) for participant in participants)
+            suffix = f"（{participant_text}）" if participant_text else ""
+            lines.append(
+                f"- {localize_conflict_severity(conflict.get('severity', 'medium'), report_language)}: "
+                f"{localize_strategy_conflict_description(conflict.get('conflict_type'), report_language)}{suffix}"
+            )
+    lines.append("")
 
 if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
@@ -1445,6 +1521,12 @@ class NotificationService(
                         report_lines.append(f"**🐻 {labels['strongest_bearish_signal_label']}**: {signal_attr['strongest_bearish_signal']}")
                     report_lines.append("")
 
+                # ========== 多策略综合 ==========
+                strategy_synthesis = normalize_strategy_synthesis_payload(
+                    dashboard.get('strategy_synthesis') if dashboard else None
+                )
+                _append_strategy_synthesis_block(report_lines, strategy_synthesis, labels, report_language)
+
                 # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
                 self._append_fundamental_blocks(report_lines, result)
 
@@ -1632,6 +1714,32 @@ class NotificationService(
                         lines.append(f"🆕 {labels['no_position_label']}: {no_pos[:50]}")
                     if has_pos:
                         lines.append(f"💼 {labels['has_position_label']}: {has_pos[:50]}")
+                    lines.append("")
+
+                # 多策略综合
+                strategy_synthesis = normalize_strategy_synthesis_payload(
+                    dashboard.get('strategy_synthesis') if dashboard else None
+                )
+                if strategy_synthesis:
+                    lines.append(
+                        f"🧩 **{labels['strategy_synthesis_heading']}**: "
+                        f"{localize_strategy_signal(strategy_synthesis.get('final_signal', 'N/A'), report_language)} | "
+                        f"{labels['strategy_consensus_level_label']} "
+                        f"{localize_consensus_level(strategy_synthesis.get('consensus_level', 'N/A'), report_language)} | "
+                        f"{labels['strategy_conflict_label']} "
+                        f"{localize_conflict_severity(strategy_synthesis.get('conflict_severity', 'none'), report_language)}"
+                        f"({strategy_synthesis.get('conflict_count', 0)})"
+                    )
+                    invalid_count = strategy_invalid_opinion_count(strategy_synthesis)
+                    if invalid_count:
+                        lines.append(
+                            labels.get(
+                                'strategy_invalid_opinions_label', ''
+                            ).format(count=invalid_count)
+                        )
+                    summary = localize_strategy_synthesis_summary(strategy_synthesis, report_language)
+                    if summary:
+                        lines.append(summary[:80])
                     lines.append("")
 
                 # 检查清单简化版

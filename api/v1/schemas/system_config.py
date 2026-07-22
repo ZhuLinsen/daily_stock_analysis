@@ -157,6 +157,17 @@ class GenerationBackendStatusResponse(BaseModel):
     backends: List[GenerationBackendStatus] = Field(default_factory=list)
 
 
+class AgentBackendStatusResponse(BaseModel):
+    """Compatibility status for the selected Agent Chat backend."""
+
+    backend: str
+    available: bool
+    experimental: bool
+    version: Optional[str] = None
+    error_code: Optional[str] = None
+    message: Optional[str] = None
+
+
 class ExportSystemConfigResponse(BaseModel):
     """Export payload for raw `.env` backups."""
 
@@ -174,6 +185,13 @@ class SystemConfigUpdateItem(BaseModel):
 
 class GenerationBackendStatusPreviewRequest(BaseModel):
     """Unsaved-draft preview request for generation backend status."""
+
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+
+
+class AgentBackendStatusPreviewRequest(BaseModel):
+    """Unsaved-draft preview request for Agent Chat backend status."""
 
     items: List[SystemConfigUpdateItem] = Field(default_factory=list)
     mask_token: str = "******"

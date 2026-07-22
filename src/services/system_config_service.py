@@ -67,6 +67,7 @@ from src.llm.backend_registry import (
 )
 from src.llm.generation_params import apply_litellm_generation_params
 from src.llm.local_cli_backend import resolve_local_cli_preset
+from src.llm.response_content import strip_leading_think_wrapper
 from src.notification_contracts import (
     FEISHU_APP_BOT_ENV_GROUP,
     FEISHU_WEBHOOK_ENV_GROUP,
@@ -78,6 +79,7 @@ from src.notification_sender.gotify_sender import resolve_gotify_message_endpoin
 from src.notification_sender.ntfy_sender import resolve_ntfy_endpoint
 from src.services.stock_list_parser import split_stock_list
 from src.services.generation_backend_status_service import GenerationBackendStatusService
+from src.services.agent_backend_status_service import AgentBackendStatusService
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +162,14 @@ class SystemConfigService:
     _GENERATION_BACKEND_STATUS_LLM_CHANNEL_RE = re.compile(
         r"^LLM_[A-Z0-9_]+_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$"
     )
+    _AGENT_BACKEND_STATUS_EXACT_KEYS = {
+        "AGENT_BACKEND",
+        "AGENT_GENERATION_BACKEND",
+        "AGENT_LITELLM_MODEL",
+        "AGENT_MODE",
+        "AGENT_ARCH",
+        "AGENT_ORCHESTRATOR_TIMEOUT_S",
+    }
 
     _LLM_CAPABILITY_ORDER: Tuple[str, ...] = ("json", "tools", "stream", "vision")
     _LLM_STREAM_CHUNK_LIMIT = 8
@@ -663,6 +673,27 @@ class SystemConfigService:
             mode=mode,
             timeout_seconds=timeout_seconds,
         )
+
+    def get_agent_backend_status(self) -> Dict[str, Any]:
+        """Return cheap Agent Chat backend status for saved/runtime config."""
+        return AgentBackendStatusService(
+            config=Config.get_instance(),
+        ).get_status()
+
+    def preview_agent_backend_status(
+        self,
+        *,
+        items: Sequence[Dict[str, str]],
+        mask_token: str = "******",
+    ) -> Dict[str, Any]:
+        """Return Agent Chat backend status for an unsaved settings draft."""
+        filtered = self._filter_agent_backend_items(items)
+        return AgentBackendStatusService(
+            effective_map=self._build_agent_backend_effective_map(
+                items=filtered,
+                mask_token=mask_token,
+            ),
+        ).get_status()
 
     def export_env(self) -> Dict[str, Any]:
         """Return the raw active `.env` content for backup."""
@@ -2367,6 +2398,25 @@ class SystemConfigService:
             filtered.append({"key": key, "value": "" if item.get("value") is None else str(item.get("value"))})
         return filtered
 
+    @classmethod
+    def _filter_agent_backend_items(
+        cls,
+        items: Sequence[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        return [
+            {
+                "key": str(item.get("key", "")).strip().upper(),
+                "value": "" if item.get("value") is None else str(item.get("value")),
+            }
+            for item in items
+            if (
+                str(item.get("key", "")).strip().upper() in cls._AGENT_BACKEND_STATUS_EXACT_KEYS
+                or cls._is_generation_backend_status_key(
+                    str(item.get("key", "")).strip().upper()
+                )
+            )
+        ]
+
     def _collect_generation_backend_issues(
         self,
         *,
@@ -3257,6 +3307,40 @@ class SystemConfigService:
                     continue
             effective_map[key] = value
 
+        return self._build_display_config_map(effective_map)
+
+    def _build_agent_backend_effective_map(
+        self,
+        *,
+        items: Sequence[Dict[str, str]],
+        mask_token: str,
+    ) -> Dict[str, str]:
+        """Overlay Agent backend draft fields on the runtime-effective config."""
+        effective_map = self._build_setup_effective_config_map()
+        runtime_config = Config.get_instance()
+        effective_map.update(
+            {
+                "AGENT_BACKEND": runtime_config.agent_backend,
+                "AGENT_GENERATION_BACKEND": runtime_config.agent_generation_backend,
+                "AGENT_LITELLM_MODEL": runtime_config.agent_litellm_model,
+                "AGENT_ARCH": runtime_config.agent_arch,
+                "AGENT_ORCHESTRATOR_TIMEOUT_S": str(
+                    runtime_config.agent_orchestrator_timeout_s
+                ),
+            }
+        )
+        if runtime_config._agent_mode_explicit:
+            effective_map["AGENT_MODE"] = "true" if runtime_config.agent_mode else "false"
+        else:
+            effective_map.pop("AGENT_MODE", None)
+        saved_map = self._build_display_config_map(self._manager.read_config_map())
+        for item in self._filter_agent_backend_items(items):
+            key = item["key"]
+            value = item["value"]
+            field_schema = get_field_definition(key, value)
+            if bool(field_schema.get("is_sensitive", False)) and value == mask_token and key in saved_map:
+                continue
+            effective_map[key] = value
         return self._build_display_config_map(effective_map)
 
     @staticmethod
@@ -4232,41 +4316,63 @@ class SystemConfigService:
 
     @staticmethod
     def _extract_llm_completion_content(response: Any) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+        def _field(obj: Any, key: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        def _text_from_blocks(blocks: Any) -> str:
+            if not isinstance(blocks, list):
+                return ""
+            text_parts: List[str] = []
+            for block in blocks:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                    continue
+                block_type = str(_field(block, "type") or "").strip().lower()
+                if block_type and block_type not in {"text", "output_text"}:
+                    continue
+                text = _field(block, "text")
+                if text is None:
+                    text = _field(block, "content")
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
+            return strip_leading_think_wrapper("".join(text_parts))
+
         if response is None:
             return "", "empty_response", "Completion returned no response object", "null_response"
 
-        choices = getattr(response, "choices", None)
+        choices = _field(response, "choices")
         if not choices:
             return "", "format_error", "Completion response did not include choices", "malformed_choices"
 
         choice = choices[0]
-        content_blocks = getattr(choice, "content_blocks", None)
+        content_blocks = _field(choice, "content_blocks")
+        message = _field(choice, "message")
         if content_blocks is None:
-            message = getattr(choice, "message", None)
             if message is not None:
-                content_blocks = getattr(message, "content_blocks", None)
-        message = getattr(choice, "message", None)
+                content_blocks = _field(message, "content_blocks")
         if content_blocks is not None:
-            text_parts: List[str] = []
-            for block in content_blocks:
-                if getattr(block, "type", None) == "text":
-                    text = getattr(block, "text", "") or ""
-                    if text:
-                        text_parts.append(str(text))
-                elif hasattr(block, "content") and block.content:
-                    text_parts.append(str(block.content))
-            content = "".join(text_parts).strip()
+            content = _text_from_blocks(content_blocks)
             if content:
                 return content, None, None, None
 
         if message is None:
             return "", "format_error", "Completion response did not include a message object", "malformed_choices"
-        if not hasattr(message, "content"):
+        if isinstance(message, dict):
+            has_content = "content" in message
+        else:
+            has_content = hasattr(message, "content")
+        if not has_content:
             return "", "format_error", "Completion message did not include a content field", "malformed_choices"
-        raw_content = message.content
+        raw_content = _field(message, "content")
         if raw_content is None:
             return "", "empty_response", "Completion returned null message content", "null_content"
-        content = str(raw_content).strip()
+        content = (
+            _text_from_blocks(raw_content)
+            if isinstance(raw_content, list)
+            else strip_leading_think_wrapper(str(raw_content))
+        )
         if not content:
             return "", "empty_response", "Completion returned an empty message content", "empty_content"
         return content, None, None, None
@@ -4335,6 +4441,41 @@ class SystemConfigService:
     def _validate_cross_field(effective_map: Dict[str, str], updated_keys: Set[str]) -> List[Dict[str, Any]]:
         """Validate dependencies across multiple keys."""
         issues: List[Dict[str, Any]] = []
+
+        agent_backend = (effective_map.get("AGENT_BACKEND") or "auto").strip().lower()
+        agent_arch = (effective_map.get("AGENT_ARCH") or "single").strip().lower()
+        if agent_backend == "codex_app_server" and agent_arch != "single" and (
+            {"AGENT_BACKEND", "AGENT_ARCH"} & updated_keys
+        ):
+            issues.append(
+                {
+                    "key": "AGENT_ARCH",
+                    "code": "unsupported_agent_arch",
+                    "message": "Codex 本地 Agent 当前只支持单 Agent 问股，请切换为 single。",
+                    "severity": "error",
+                    "expected": "single",
+                    "actual": agent_arch,
+                }
+            )
+
+        timeout_raw = (effective_map.get("AGENT_ORCHESTRATOR_TIMEOUT_S") or "600").strip()
+        try:
+            agent_timeout = int(timeout_raw)
+        except ValueError:
+            agent_timeout = None
+        if agent_backend == "codex_app_server" and agent_timeout is not None and agent_timeout <= 0 and (
+            {"AGENT_BACKEND", "AGENT_ORCHESTRATOR_TIMEOUT_S"} & updated_keys
+        ):
+            issues.append(
+                {
+                    "key": "AGENT_ORCHESTRATOR_TIMEOUT_S",
+                    "code": "codex_timeout_required",
+                    "message": "Codex 本地 Agent 必须设置大于 0 的整体时限，确保每次问股都会结束。",
+                    "severity": "error",
+                    "expected": ">0 when AGENT_BACKEND=codex_app_server",
+                    "actual": timeout_raw,
+                }
+            )
 
         token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()

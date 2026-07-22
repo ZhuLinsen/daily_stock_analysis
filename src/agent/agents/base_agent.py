@@ -17,7 +17,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.memory import AgentMemory
-from src.agent.protocols import AgentContext, AgentOpinion, StageResult, StageStatus
+from src.agent.protocols import (
+    AgentContext,
+    AgentOpinion,
+    StageFailureReason,
+    StageResult,
+    StageStatus,
+)
 from src.agent.runner import RunLoopResult, run_agent_loop
 from src.agent.skills.defaults import extract_skill_id
 from src.agent.tools.registry import ToolRegistry
@@ -130,10 +136,13 @@ class BaseAgent(ABC):
             result.meta["raw_text"] = loop_result.content
             result.meta["models_used"] = loop_result.models_used
             result.meta["tool_calls_log"] = loop_result.tool_calls_log
+            failure_reason = getattr(loop_result, "failure_reason", None)
+            result.failure_reason = failure_reason
 
             if not loop_result.success:
                 result.status = StageStatus.FAILED
                 result.error = loop_result.error or "Agent loop did not produce a final answer"
+                result.failure_reason = failure_reason or StageFailureReason.STAGE_FAILURE
                 return result
 
             # Post-process into structured opinion
@@ -146,10 +155,16 @@ class BaseAgent(ABC):
 
             result.status = StageStatus.COMPLETED
 
+        except TimeoutError as exc:
+            logger.error("[%s] execution timed out: %s", self.agent_name, exc, exc_info=True)
+            result.status = StageStatus.FAILED
+            result.error = str(exc)
+            result.failure_reason = StageFailureReason.TIMEOUT
         except Exception as exc:
             logger.error("[%s] execution failed: %s", self.agent_name, exc, exc_info=True)
             result.status = StageStatus.FAILED
             result.error = str(exc)
+            result.failure_reason = StageFailureReason.STAGE_FAILURE
         finally:
             result.duration_s = round(time.time() - t0, 2)
 
