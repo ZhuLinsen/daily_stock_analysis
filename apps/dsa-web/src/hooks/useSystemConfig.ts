@@ -142,6 +142,17 @@ export function useSystemConfig() {
     return map;
   }, [mergedItems]);
 
+  // issue #1948 — key -> category 反查表,给页面层汇总 dirtyCountByCategory 用。
+  // 包括 merged items(已 schema 化)+ LLMChannelEditor 渠道草稿新增的 key(若 schema 已注册)。
+  // 未注册的 key 落到 'uncategorized' (与 itemsByCategory 行为一致)。
+  const keyToCategory = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    for (const item of mergedItems) {
+      map[item.key] = item.schema?.category ?? 'uncategorized';
+    }
+    return map;
+  }, [mergedItems]);
+
   const dirtyKeys = useMemo(() => {
     const keys: string[] = [];
     for (const item of serverItems) {
@@ -396,6 +407,7 @@ export function useSystemConfig() {
     serverItems,
     categories,
     itemsByCategory,
+    keyToCategory,
     issueByKey,
 
     // UI state

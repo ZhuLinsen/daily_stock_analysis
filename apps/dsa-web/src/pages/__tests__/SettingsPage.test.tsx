@@ -35,6 +35,7 @@ const {
   settingsPanelErrorBoundary,
   useAuthMock,
   useSystemConfigMock,
+  useUnsavedChangesGuardMock,
   webBuildInfoMock,
 } = vi.hoisted(() => ({
   analyzeAsync: vi.fn(),
@@ -66,6 +67,7 @@ const {
   settingsPanelErrorBoundary: vi.fn(),
   useAuthMock: vi.fn(),
   useSystemConfigMock: vi.fn(),
+  useUnsavedChangesGuardMock: vi.fn(() => ({ blocker: { state: 'idle', proceed: () => {}, reset: () => {} } })),
   webBuildInfoMock: {
     version: '3.11.0',
     rawVersion: '3.11.0',
@@ -80,6 +82,7 @@ const mockedAnchorClick = vi.fn();
 vi.mock('../../hooks', () => ({
   useAuth: () => useAuthMock(),
   useSystemConfig: () => useSystemConfigMock(),
+  useUnsavedChangesGuard: (...args: unknown[]) => useUnsavedChangesGuardMock(...(args as [unknown])),
 }));
 
 vi.mock('../../api/systemConfig', () => ({
@@ -204,20 +207,28 @@ vi.mock('../../components/settings', () => ({
     categories,
     activeCategory,
     onSelect,
+    dirtyCountByCategory,
   }: {
     categories: Array<{ category: string; title: string }>;
     activeCategory: string;
     onSelect: (value: string) => void;
+    dirtyCountByCategory?: Record<string, number>;
   }) => (
-    <nav>
+    <nav data-testid="settings-category-nav" data-dirty-counts={JSON.stringify(dirtyCountByCategory ?? {})}>
       {categories.map((category) => (
         <button
           key={category.category}
           type="button"
           aria-pressed={activeCategory === category.category}
           onClick={() => onSelect(category.category)}
+          data-testid={`settings-nav-category-${category.category}`}
         >
           {category.title}
+          {dirtyCountByCategory?.[category.category] ? (
+            <span data-testid={`settings-nav-dirty-${category.category}`}>
+              {dirtyCountByCategory[category.category]}
+            </span>
+          ) : null}
         </button>
       ))}
     </nav>
@@ -331,6 +342,7 @@ type ConfigState = {
   refreshAfterExternalSave: typeof refreshAfterExternalSave;
   configVersion: string;
   maskToken: string;
+  keyToCategory?: Record<string, string>;
 };
 
 type ConfigOverride = Partial<ConfigState>;
@@ -462,6 +474,16 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
     refreshAfterExternalSave,
     configVersion: 'v1',
     maskToken: '******',
+    keyToCategory: {
+      ADMIN_AUTH_ENABLED: 'system',
+      STOCK_LIST: 'base',
+      LLM_CHANNELS: 'ai_model',
+      LITELLM_MODEL: 'ai_model',
+      GENERATION_BACKEND: 'ai_model',
+      AGENT_ORCHESTRATOR_TIMEOUT_S: 'agent',
+      WECHAT_WEBHOOK_URL: 'notification',
+      SCHEDULE_ENABLED: 'system',
+    },
     ...overrides,
   };
 }
@@ -2717,5 +2739,149 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '重启安装' }));
 
     await waitFor(() => expect(desktopInstallDownloadedUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  // issue #1948 — Left-nav category dirty badges.
+  // 全面覆盖三处 dirty 来源,以及"分类切换能正确释出本类 dirty"等基本不变量。
+  describe('SettingsCategoryNav dirty badges (issue #1948)', () => {
+    it('renders no dirty badge in the nav when there is nothing unsaved', () => {
+      render(<SettingsPage />);
+
+      const nav = screen.getByTestId('settings-category-nav');
+      expect(JSON.parse(nav.getAttribute('data-dirty-counts') || '{}')).toEqual({});
+
+      expect(screen.queryByTestId('settings-nav-dirty-system')).toBeNull();
+      expect(screen.queryByTestId('settings-nav-dirty-base')).toBeNull();
+      expect(screen.queryByTestId('settings-nav-dirty-ai_model')).toBeNull();
+      expect(screen.queryByTestId('settings-nav-dirty-agent')).toBeNull();
+      expect(screen.queryByTestId('settings-nav-dirty-notification')).toBeNull();
+    });
+
+    it('shows a dirty badge on the base category when STOCK_LIST draft mismatches the server', async () => {
+      // 走 useSystemConfig.getChangedItems() 流:让 STOCK_LIST 草稿与服务器不同。
+      // keyToCategory.STOCK_LIST = 'base'。
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: true,
+          dirtyCount: 1,
+          getChangedItems: () => [{ key: 'STOCK_LIST', value: 'SH600519' }],
+        } as ConfigOverride)
+      );
+
+      render(<SettingsPage />);
+
+      const nav = await screen.findByTestId('settings-category-nav');
+      const counts = JSON.parse(nav.getAttribute('data-dirty-counts') || '{}');
+      expect(counts).toEqual({ base: 1 });
+    });
+
+    it('aggregates multiple dirty keys of the same category into a single badge count', async () => {
+      // STOCK_LIST + LLM_CHANNELS 不同类(各 1)。LLM_CHANNELS + LITELLM_MODEL + GENERATION_BACKEND 同 under ai_model (3)。
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: true,
+          dirtyCount: 5,
+          getChangedItems: () => [
+            { key: 'STOCK_LIST', value: 'SH600519' },
+            { key: 'LLM_CHANNELS', value: 'a,b' },
+            { key: 'LITELLM_MODEL', value: 'q' },
+            { key: 'GENERATION_BACKEND', value: 'codex_cli' },
+            { key: 'WECHAT_WEBHOOK_URL', value: 'https://qyapi.example.com/hook/v2' },
+          ],
+        } as ConfigOverride)
+      );
+
+      render(<SettingsPage />);
+
+      const nav = await screen.findByTestId('settings-category-nav');
+      const counts = JSON.parse(nav.getAttribute('data-dirty-counts') || '{}');
+      expect(counts).toEqual({
+        base: 1,
+        ai_model: 3,
+        notification: 1,
+      });
+    });
+
+    it('counts LLMChannelEditor-only draft items towards the ai_model dirty badge when sysconfig itself is clean', async () => {
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: false,
+          dirtyCount: 0,
+          getChangedItems: () => [],
+        } as ConfigOverride)
+      );
+
+      render(<SettingsPage />);
+
+      // Clicking the mocked LLMChannelEditor's "emit llm draft" button pushes three
+      // ai_model 类的草稿条目: LLM_CHANNELS, LITELLM_MODEL, GENERATION_BACKEND。
+      fireEvent.click(await screen.findByRole('button', { name: 'emit llm draft' }));
+
+      const nav = await screen.findByTestId('settings-category-nav');
+      const counts = JSON.parse(nav.getAttribute('data-dirty-counts') || '{}');
+      expect(counts).toEqual({
+        ai_model: 3,
+      });
+      expect(screen.getByTestId('settings-nav-dirty-ai_model')).toHaveTextContent('3');
+    });
+
+    it('falls back to "uncategorized" for dirty keys not present in the schema', async () => {
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: true,
+          dirtyCount: 2,
+          getChangedItems: () => [
+            { key: 'UNKNOWN_NEW_KEY', value: 'x' },
+            { key: 'STOCK_LIST', value: 'SH600519' },
+          ],
+        } as ConfigOverride)
+      );
+
+      render(<SettingsPage />);
+
+      const nav = await screen.findByTestId('settings-category-nav');
+      const counts = JSON.parse(nav.getAttribute('data-dirty-counts') || '{}');
+      expect(counts).toEqual({
+        uncategorized: 1,
+        base: 1,
+      });
+    });
+
+    it('updates badge counts live when getChangedItems() flips between renders', () => {
+      let changedItems: Array<{ key: string; value: string }> = [
+        { key: 'STOCK_LIST', value: 'SH600519' },
+        { key: 'LLM_CHANNELS', value: 'a,b' },
+      ];
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: true,
+          dirtyCount: 2,
+          getChangedItems: () => changedItems,
+        } as ConfigOverride)
+      );
+
+      const { rerender } = render(<SettingsPage />);
+
+      const nav1 = screen.getByTestId('settings-category-nav');
+      expect(JSON.parse(nav1.getAttribute('data-dirty-counts') || '{}')).toEqual({
+        base: 1,
+        ai_model: 1,
+      });
+
+      // Simulate the user clicking reset drafts — getChangedItems() returns [] on next call。
+      changedItems = [];
+      useSystemConfigMock.mockReturnValue(
+        buildSystemConfigState({
+          hasDirty: false,
+          dirtyCount: 0,
+          getChangedItems: () => changedItems,
+        } as ConfigOverride)
+      );
+
+      rerender(<SettingsPage />);
+
+      const nav2 = screen.getByTestId('settings-category-nav');
+      expect(JSON.parse(nav2.getAttribute('data-dirty-counts') || '{}')).toEqual({});
+    });
   });
 });
