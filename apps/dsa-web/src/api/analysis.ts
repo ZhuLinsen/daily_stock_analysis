@@ -105,6 +105,7 @@ export const analysisApi = {
       {
         send_notification: data.sendNotification ?? true,
         report_language: data.reportLanguage,
+        ...(data.region !== undefined && { region: data.region }),
       },
       {
         validateStatus: (status) => status === 202 || status === 409,

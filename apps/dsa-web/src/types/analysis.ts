@@ -27,6 +27,7 @@ export interface AnalysisRequest {
 export interface MarketReviewRequest {
   sendNotification?: boolean;
   reportLanguage?: ReportLanguage;
+  region?: string;
 }
 
 export interface MarketReviewAccepted {

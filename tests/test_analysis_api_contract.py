@@ -290,6 +290,50 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(getattr(runtime_config, "report_language", None), "en")
         self.assertEqual(call_kwargs["trigger_source"], "api")
 
+    def test_trigger_market_review_passes_canonical_request_region_without_mutating_config(self) -> None:
+        if trigger_market_review is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        request = analysis_endpoint_module.MarketReviewRequest.model_validate({
+            "send_notification": False,
+            "region": " KR, jp, KR ",
+        })
+        config = SimpleNamespace(report_language="zh", market_review_region="cn")
+        task_payload: dict[str, object] = {}
+        task_queue = MagicMock()
+
+        def _capture_background_task(task_fn, **kwargs):
+            task_payload["background_task"] = task_fn
+            return SimpleNamespace(task_id="market-task-region")
+
+        task_queue.submit_background_task.side_effect = _capture_background_task
+
+        with patch.object(
+            analysis_endpoint_module,
+            "_try_acquire_market_review_lock",
+            return_value=object(),
+        ), patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ), patch(
+            "src.core.market_review.run_market_review",
+            return_value="report",
+        ) as run_market_review, patch(
+            "api.v1.endpoints.analysis.get_task_queue",
+            return_value=task_queue,
+        ), patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+            return_value=None,
+        ):
+            response = trigger_market_review(request=request, config=config)
+            task_payload["background_task"]()
+
+        self.assertEqual(response.task_id, "market-task-region")
+        self.assertEqual(run_market_review.call_args.kwargs["override_region"], "jp,kr")
+        self.assertEqual(config.market_review_region, "cn")
+
     def test_trigger_market_review_rejects_duplicate_submission(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -527,7 +571,11 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             progress=100,
             result={
                 "result": "市场复盘报告示例文本",
-                "market_review_payload": {"kind": "market_review", "sections": []},
+                "market_review_payload": {
+                    "kind": "market_review",
+                    "region": "cn,us",
+                    "sections": [],
+                },
             },
             error=None,
             original_query=None,
@@ -541,6 +589,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.status, "completed")
         self.assertEqual(status.market_review_report, "市场复盘报告示例文本")
         self.assertEqual(status.market_review_payload["kind"], "market_review")
+        self.assertEqual(status.market_review_payload["region"], "cn,us")
         self.assertIsNone(status.result)
 
     def test_get_analysis_status_accepts_cancel_states_from_queue(self) -> None:

@@ -136,7 +136,7 @@ def _run_market_review_background(
     lock_token: Optional[_MarketReviewExecutionLock] = None,
     config: Optional[Config] = None,
     query_id: Optional[str] = None,
-) -> None:
+) -> Dict[str, Any]:
     """Run market review after the API response has been accepted."""
     from src.core.market_review import run_market_review
 
@@ -539,6 +539,7 @@ def trigger_market_review(
         config,
         getattr(request, "report_language", None),
     )
+    override_region = getattr(request, "region", None)
 
     lock_token = _try_acquire_market_review_lock(runtime_config)
     if lock_token is None:
@@ -550,13 +551,13 @@ def trigger_market_review(
             "[MarketReview] component=market_review action=submit trigger_source=api "
             "task_id=%s region=%s send_notification=%s",
             task_id,
-            getattr(runtime_config, "market_review_region", "cn") or "cn",
+            override_region or getattr(runtime_config, "market_review_region", "cn") or "cn",
             request.send_notification,
         )
         task = get_task_queue().submit_background_task(
             lambda: _run_market_review_background(
                 request.send_notification,
-                override_region=None,
+                override_region=override_region,
                 lock_token=lock_token,
                 config=runtime_config,
                 query_id=task_id,

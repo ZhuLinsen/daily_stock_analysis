@@ -30,6 +30,10 @@ from src.services.run_diagnostics import (
     record_notification_run,
 )
 from src.schemas.market_light import MARKET_LIGHT_REGIONS
+from src.utils.market_review_region import (
+    MARKET_REVIEW_REGION_ORDER,
+    normalize_market_review_region_lenient,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -43,8 +47,7 @@ _MARKET_REVIEW_MARKETS = (
     ('jp', 'jp_title', '日股'),
     ('kr', 'kr_title', '韩股'),
 )
-_MARKET_REVIEW_REGION_ORDER = tuple(market for market, _, _ in _MARKET_REVIEW_MARKETS)
-_VALID_MARKET_REVIEW_REGIONS = frozenset(_MARKET_REVIEW_REGION_ORDER)
+_MARKET_REVIEW_REGION_ORDER = MARKET_REVIEW_REGION_ORDER
 
 
 @dataclass
@@ -156,19 +159,8 @@ def _get_market_review_market_heading(language: Any, market: str) -> str:
 def _resolve_market_review_regions(raw_region: Optional[str]) -> list[str]:
     """Normalize MARKET_REVIEW_REGION into an ordered, non-empty region list."""
 
-    region = str(raw_region or 'cn').strip().lower()
-    if region == 'both':
-        return list(_MARKET_REVIEW_REGION_ORDER)
-    if ',' in region:
-        requested = {
-            item.strip().lower()
-            for item in region.split(',')
-            if item.strip().lower() in _VALID_MARKET_REVIEW_REGIONS
-        }
-        return [market for market in _MARKET_REVIEW_REGION_ORDER if market in requested] or ['cn']
-    if region in _VALID_MARKET_REVIEW_REGIONS:
-        return [region]
-    return ['cn']
+    normalized = normalize_market_review_region_lenient(raw_region) or "cn"
+    return normalized.split(",")
 
 
 def run_market_review(
