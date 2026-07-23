@@ -67,7 +67,13 @@ const {
   settingsPanelErrorBoundary: vi.fn(),
   useAuthMock: vi.fn(),
   useSystemConfigMock: vi.fn(),
-  useUnsavedChangesGuardMock: vi.fn((..._args: unknown[]) => ({ blocker: { state: 'idle', proceed: () => {}, reset: () => {} } })),
+  // useUnsavedChangesGuardMock 接收 { hasDirty: boolean } 参数但实现不使用其值
+  // (默认返回 idle blocker, 实现 hasDirty=true 的场景由具体测试用例 mockImplementationOnce 覆盖)。
+  // 必须给 vi.fn 一个显式泛型签名,否则 vi.fn(() => ...) 类型被推断为 0 args,
+  // tsc 编译 src/pages/__tests__/SettingsPage.test.tsx 调用方会报 TS2554。
+  useUnsavedChangesGuardMock: vi.fn<(options: { hasDirty: boolean }) => { blocker: { state: string; proceed: () => void; reset: () => void }; isBlocking: boolean }>(
+    () => ({ blocker: { state: 'idle', proceed: () => {}, reset: () => {} }, isBlocking: false }),
+  ),
   webBuildInfoMock: {
     version: '3.11.0',
     rawVersion: '3.11.0',
@@ -82,7 +88,7 @@ const mockedAnchorClick = vi.fn();
 vi.mock('../../hooks', () => ({
   useAuth: () => useAuthMock(),
   useSystemConfig: () => useSystemConfigMock(),
-  useUnsavedChangesGuard: (...args: unknown[]) => useUnsavedChangesGuardMock(...(args as [unknown])),
+  useUnsavedChangesGuard: (options: { hasDirty: boolean }) => useUnsavedChangesGuardMock(options),
 }));
 
 vi.mock('../../api/systemConfig', () => ({
