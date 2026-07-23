@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] `.env.example` 与 `.github/workflows/00-daily-analysis.yml` 同步映射 `TUSHARE_HTTP_URL`，避免出现"配置项有但 workflow 漏映射"的半修状态
 - [修复] #2051 PR Review 的特权 `pull_request_target` 流程不再检出 fork PR head：敏感文件、标签、报告与 AI 审查统一通过 GitHub API 将 PR 元数据和 diff 作为数据读取，只执行主分支可信脚本；Python 语法、Flake8、确定性检查和离线测试继续由无 secrets 的 `pull_request` CI / `backend-gate` 执行，兼容 `actions/checkout` 新增的 fork checkout 安全保护。
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
+- [新功能] 设置页增加未保存修改提示与分类 dirty 角标（fixes #1948）：新增 useUnsavedChangesGuard hook 同时拦截浏览器 beforeunload 与 react-router 站内路由离开；SettingsPage 顶部 sticky 与底部 fixed 双保存条；SettingsCategoryNav 分类标题右侧 amber 圆形角标聚合 dirty 数量；LLMChannelEditor 改造为 forwardRef + useImperativeHandle 以保留 channel 草稿独立提交链路；ai_model 分类改用 CSS hidden 而非 conditional render，渠道草稿跨分类切换不丢。
 
 ## [3.27.0] - 2026-07-19
 
