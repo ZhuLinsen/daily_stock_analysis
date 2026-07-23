@@ -389,6 +389,11 @@ jobs:
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
+          ALPHASIFT_STRATEGIES: ${{ vars.ALPHASIFT_STRATEGIES || secrets.ALPHASIFT_STRATEGIES || '' }}
+          ALPHASIFT_MARKET: ${{ vars.ALPHASIFT_MARKET || secrets.ALPHASIFT_MARKET || 'cn' }}
+          ALPHASIFT_PER_STRATEGY: ${{ vars.ALPHASIFT_PER_STRATEGY || secrets.ALPHASIFT_PER_STRATEGY || '3' }}
+          ALPHASIFT_SELECTION_LIMIT: ${{ vars.ALPHASIFT_SELECTION_LIMIT || secrets.ALPHASIFT_SELECTION_LIMIT || '10' }}
+          ALPHASIFT_STRATEGY_TIMEOUT_SECONDS: ${{ vars.ALPHASIFT_STRATEGY_TIMEOUT_SECONDS || secrets.ALPHASIFT_STRATEGY_TIMEOUT_SECONDS || '120' }}
           
           # ==========================================
           # 运行配置 ⬅️ 新增！
@@ -512,29 +517,20 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
-          # ===== alphasift 多策略选股（5策略×Top3，去重取10）=====
-          echo "🔍 开始 alphasift 多策略选股..."
-          STRATEGIES="dual_low balanced_alpha momentum_quality quality_value oversold_reversal"
-          ALL_CODES=""
-          for STRATEGY in $STRATEGIES; do
-            echo "   跑策略: $STRATEGY (Top 3)"
-            alphasift screen "$STRATEGY" --no-llm --no-post-analysis --max-output 3 --json > "/tmp/sel_${STRATEGY}.json" 2>/dev/null || true
-            CODES=$(python -c "import json; d=json.load(open('/tmp/sel_${STRATEGY}.json')); print(','.join([p.get('code','') for p in d.get('picks',[]) if p.get('code')]))" 2>/dev/null || echo "")
-            if [ -n "$CODES" ]; then
-              ALL_CODES="${ALL_CODES},${CODES}"
-              echo "   ✅ $STRATEGY: $CODES"
-            else
-              echo "   ⚠️ $STRATEGY: 无候选"
-            fi
-          done
-          SELECTED=$(python -c "codes='${ALL_CODES}'.strip(',').split(','); seen=[]; [seen.append(c.strip()) for c in codes if c.strip() and c.strip() not in seen]; print(','.join(seen[:10]))" 2>/dev/null || echo "")
-          if [ -n "$SELECTED" ]; then
-            export STOCK_LIST="$SELECTED"
-            echo "✅ 多策略选股完成（去重后 Top 10）: $SELECTED"
+          # ===== AlphaSift multi-strategy screening (default 5 strategies x Top3, dedupe Top10) =====
+          if [ "$MODE" = "market-only" ]; then
+            echo "INFO: market-only mode skips AlphaSift screening"
           else
-            echo "⚠️ 选股全部失败，使用默认 STOCK_LIST: $STOCK_LIST"
+            python scripts/run_alphasift_selection.py --output-file /tmp/alphasift_selected.txt
+            SELECTED="$(cat /tmp/alphasift_selected.txt 2>/dev/null || true)"
+            if [ -n "$SELECTED" ]; then
+              export STOCK_LIST="$SELECTED"
+              echo "AlphaSift selected STOCK_LIST: $STOCK_LIST"
+            else
+              echo "WARN: AlphaSift produced no picks; keep current STOCK_LIST: $STOCK_LIST"
+            fi
           fi
-          # ===== 选股结束 =====
+          # ===== screening done =====
 
           # 执行分析
           if [ "$MODE" = "market-only" ]; then

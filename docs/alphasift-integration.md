@@ -46,6 +46,20 @@ AlphaSift 作为独立仓库维护的选股引擎接入 DSA。DSA 默认不启�
 - 热点数据源补充：DSA provider 使用直连 HTTP 思路，东财板块兜底源使用 `push2.eastmoney.com/api/qt/clist/get` 并保留涨跌幅、领涨股、上涨/下跌家数等字段；题材详情会在一次 provider 生命周期内缓存并合并东方财富成分股、同花顺页面解析和板块异动龙头兜底，优先返回多只概念股，发酵路线按日期聚合展示，避免把同一盘中观察拆成多条同时间节点；事件催化不再使用 DSA 内置静态文案，只展示 AlphaSift 合约时间线、同花顺摘要、已配置新闻搜索源或东财板块异动结构拿到的真实信息；新闻搜索命中的消息会优先通过已配置 LLM 压缩成一句题材催化摘要，LLM 不可用时回退本地短摘要，避免在时间线中展示完整报道。
 - 风险提示：前端设置页和选股页展示第三方来源与投资风险说明；不会弹窗打断用户。
 
+## GitHub Actions daily screening
+
+`.github/workflows/00-daily-analysis.yml` runs `scripts/run_alphasift_selection.py` before `python main.py` in every non-`market-only` run. By default it runs `dual_low,balanced_alpha,momentum_quality,quality_value,oversold_reversal`, takes Top 3 from each strategy, deduplicates the results, and writes at most 10 codes to `STOCK_LIST` for the downstream stock analysis.
+
+The following GitHub Actions Repository variables or Secrets can override the defaults:
+
+- `ALPHASIFT_STRATEGIES`: comma-separated strategy IDs.
+- `ALPHASIFT_MARKET`: screening market, default `cn`.
+- `ALPHASIFT_PER_STRATEGY`: picks per strategy, default `3`.
+- `ALPHASIFT_SELECTION_LIMIT`: final deduplicated code limit, default `10`.
+- `ALPHASIFT_STRATEGY_TIMEOUT_SECONDS`: timeout per strategy, default `120`.
+
+The script logs each strategy success, empty result, failure, or timeout. If no usable candidates are produced, the workflow keeps the existing `STOCK_LIST` instead of hiding the AlphaSift failure.
+
 ## AlphaSift 适配层要求
 
 AlphaSift 需要提供 `alphasift.dsa_adapter` 模块，并保持以下稳定函数：
