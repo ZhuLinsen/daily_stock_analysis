@@ -1907,8 +1907,81 @@ class AkshareFetcher(BaseFetcher):
         if amount_col and amount_col in df.columns:
             df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
             stats['total_amount'] = (df[amount_col].sum() / 1e8)
-            
+
         return stats
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取股票所属板块（akshare）
+
+        通过遍历行业 + 概念板块的成分股反查实现。
+        该方法为 EfinanceFetcher.get_belong_board 的 akshare 兜底实现，
+        解决所属板块数据源单点故障问题。
+        """
+        import akshare as ak
+
+        target_code = str(stock_code).strip()
+
+        def _collect_boards(
+            names_df: pd.DataFrame,
+            cons_fn,
+            board_kind: str,
+        ) -> List[Dict[str, Any]]:
+            results: List[Dict[str, Any]] = []
+            if names_df is None or names_df.empty:
+                return results
+            for board_name in names_df["板块名称"].tolist():
+                try:
+                    cons_df = cons_fn(symbol=str(board_name))
+                except Exception as exc:
+                    logger.debug(
+                        "[Akshare] %s cons 拉取失败 (%s): %s", board_kind, board_name, exc
+                    )
+                    continue
+                if cons_df is None or cons_df.empty:
+                    continue
+                code_col = next(
+                    (col for col in cons_df.columns if str(col) in {"代码", "code"}),
+                    None,
+                )
+                if code_col is None:
+                    continue
+                if target_code in cons_df[code_col].astype(str).tolist():
+                    results.append({"name": str(board_name), "type": board_kind})
+            return results
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            industry_names_df = ak.stock_board_industry_name_em()
+            industry_results = _collect_boards(
+                industry_names_df,
+                ak.stock_board_industry_cons_em,
+                board_kind="行业",
+            )
+        except Exception as e:
+            logger.warning("[Akshare] 获取所属行业板块失败: %s", e)
+            industry_results = []
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            concept_names_df = ak.stock_board_concept_name_em()
+            concept_results = _collect_boards(
+                concept_names_df,
+                ak.stock_board_concept_cons_em,
+                board_kind="概念",
+            )
+        except Exception as e:
+            logger.warning("[Akshare] 获取所属概念板块失败: %s", e)
+            concept_results = []
+
+        all_results = industry_results + concept_results
+        if not all_results:
+            return None
+        return pd.DataFrame(all_results)
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
