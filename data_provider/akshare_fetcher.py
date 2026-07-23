@@ -2257,6 +2257,47 @@ class AkshareFetcher(BaseFetcher):
             digits = "".join(ch for ch in text if ch.isdigit())
             return digits.zfill(6) if digits else text
 
+    def get_stock_list(self) -> Optional[pd.DataFrame]:
+        """
+        获取沪深京全市场 A 股代码 + 名称列表 (akshare)
+
+        数据源：ak.stock_info_a_code_name()
+        该方法为 DataFetcherManager.batch_get_stock_names 的兜底实现，
+        配合 Baostock / Tushare / TickFlow 的 get_stock_list 使用。
+        """
+        import akshare as ak
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info("[API调用] ak.stock_info_a_code_name() 获取 A 股列表...")
+            df = ak.stock_info_a_code_name()
+            if df is None or df.empty:
+                logger.warning("[Akshare] A 股列表为空")
+                return None
+
+            rename_map: Dict[str, str] = {}
+            if "code" not in df.columns:
+                for cand in ("代码", "股票代码", "symbol"):
+                    if cand in df.columns:
+                        rename_map[cand] = "code"
+                        break
+            if "name" not in df.columns:
+                for cand in ("name", "名称", "股票名称"):
+                    if cand in df.columns:
+                        rename_map[cand] = "name"
+                        break
+            if rename_map:
+                df = df.rename(columns=rename_map)
+            if "code" not in df.columns or "name" not in df.columns:
+                logger.warning("[Akshare] A 股列表缺少 code/name 列")
+                return None
+            return df[["code", "name"]]
+        except Exception as e:
+            logger.error(f"[Akshare] get_stock_list 失败: {e}")
+            return None
+
     @staticmethod
     def _safe_float(value: Any) -> Optional[float]:
         try:
