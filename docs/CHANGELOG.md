@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
 - [新功能] Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 字符串临时选择单个或多个复盘市场；一次性覆盖不读取或修改全局配置，“服务器默认”在任务提交边界解析为 canonical 实际执行市场，并贯穿 accepted 响应、任务状态/列表/SSE、完成态结构化 payload 与 History。
 - [修复] GitHub Actions PR Review 流程中的 `_event_payload()` 此前用 `except (OSError, ValueError): return {}` 把「事件文件缺失」「文件不可读」「JSON 非法」三类异常统一吞成空对象，下游只表现为 `PR number is unavailable` 无法定位根因；现保留空对象降级行为不变，但分别对三类失败输出不含载荷内容的警告（仅含异常类型与 `GITHUB_EVENT_PATH` 源路径），并补齐三类降级路径与「坏载荷导致 PR 编号不可用」链路的回归测试（fixes #2070）
+- [新功能] 设置页增加未保存修改提示与分类 dirty 角标（fixes #1948）：新增 useUnsavedChangesGuard hook 同时拦截浏览器 beforeunload 与 react-router 站内路由离开；SettingsPage 顶部 sticky 与底部 fixed 双保存条；SettingsCategoryNav 分类标题右侧 amber 圆形角标聚合 dirty 数量；LLMChannelEditor 改造为 forwardRef + useImperativeHandle 以保留 channel 草稿独立提交链路；ai_model 分类改用 CSS hidden 而非 conditional render，渠道草稿跨分类切换不丢。
 
 ## [3.27.0] - 2026-07-19
 
