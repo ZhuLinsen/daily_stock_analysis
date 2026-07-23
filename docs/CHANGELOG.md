@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] `.env.example` 与 `.github/workflows/00-daily-analysis.yml` 同步映射 `TUSHARE_HTTP_URL`，避免出现"配置项有但 workflow 漏映射"的半修状态
 - [修复] #2051 PR Review 的特权 `pull_request_target` 流程不再检出 fork PR head：敏感文件、标签、报告与 AI 审查统一通过 GitHub API 将 PR 元数据和 diff 作为数据读取，只执行主分支可信脚本；Python 语法、Flake8、确定性检查和离线测试继续由无 secrets 的 `pull_request` CI / `backend-gate` 执行，兼容 `actions/checkout` 新增的 fork checkout 安全保护。
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
+- [修复] 个股分析 JSON 提取允许唯一显式 ```` ```json ```` 围栏外存在纯说明文字（推理模型常见的 markdown 报告包裹），同时继续拒绝围栏外的额外 JSON 候选，避免两个候选给出不同评分/建议时被静默接受其中一个并持久化错误结果；`<think>` wrapper 仍由 #2039 的 `strip_leading_think_wrapper` 处理，本变更不再触碰。
+- [文档] 将 `AGENTS.md` "关键架构模式" 实现语义（数据源架构 / LLM 路由 / 配置热加载 / 数据库 / 前后端关系）迁移到 `docs/architecture/overview.md`，AGENTS.md 仅保留指向指针，符合 "实现语义与边界条件优先放 `docs/*.md`" 的文档分层原则；同时在 `docs/INDEX.md` 的 "参考与开发" 一节登记该文档。
+- [改进] data_provider: 补齐 AkshareFetcher.get_belong_board 和 get_stock_list，新增 EfinanceFetcher.get_concept_rankings 和 get_stock_name，关闭 2 个单点故障接口（所属板块、概念涨跌榜）并补齐 2 个主数据源能力（A 股批量列表、efinance 股票名 fallback）
+- [文档] 新增 docs/data-sources-coverage.md，记录 free 源接口覆盖矩阵与付费源 key / 积分需求清单
 
 ## [3.27.0] - 2026-07-19
 
