@@ -84,6 +84,7 @@ def _payload(**overrides):
         "source_agent": "api-test",
         "source_report_id": 4301,
         "trace_id": "trace-outcome-api",
+        "decision_profile": "balanced",
         "market_phase": "postmarket",
         "trigger_source": "api",
         "action": "buy",
@@ -97,6 +98,7 @@ def _payload(**overrides):
         "metadata": {
             "market_phase_summary": {"session_date": "2024-01-02"},
             "holding_state": "holding",
+            "profile_source": "auto_default",
         },
     }
     payload.update(overrides)
@@ -151,6 +153,42 @@ def test_outcome_run_list_stats_signal_outcomes_and_feedback(client_and_db) -> N
     assert stats["total"] == 1
     assert stats["hit"] == 1
     assert stats["breakdowns"]["action"][0]["value"] == "buy"
+    calibration = stats["profile_calibration"]
+    assert calibration["minimum_completed_sample_size"] == 30
+    assert set(calibration["breakdowns"]) == {
+        "decision_profile",
+        "decision_profile_action",
+        "decision_profile_horizon",
+        "decision_profile_market_phase",
+        "decision_profile_data_quality_level",
+        "profile_source",
+    }
+    assert calibration["breakdowns"]["decision_profile"][0] == {
+        "dimensions": {"decision_profile": "balanced"},
+        "total": 1,
+        "completed": 1,
+        "unable": 0,
+        "hit": 1,
+        "miss": 0,
+        "neutral": 0,
+        "sample_sufficient": False,
+        "hit_rate_pct": None,
+        "avg_stock_return_pct": None,
+        "miss_rate_pct": None,
+        "unable_rate_pct": None,
+        "max_adverse_excursion_pct": None,
+    }
+    assert calibration["breakdowns"]["decision_profile_action"][0]["dimensions"] == {
+        "decision_profile": "balanced",
+        "action": "buy",
+    }
+    assert calibration["breakdowns"]["decision_profile_horizon"][0]["dimensions"] == {
+        "decision_profile": "balanced",
+        "horizon": "3d",
+    }
+    assert calibration["breakdowns"]["profile_source"][0]["dimensions"] == {
+        "profile_source": "auto_default",
+    }
 
     signal_outcomes_resp = client.get(f"/api/v1/decision-signals/{signal_id}/outcomes")
     assert signal_outcomes_resp.status_code == 200, signal_outcomes_resp.text
@@ -204,6 +242,12 @@ def test_outcome_api_rejects_invalid_params_and_returns_404(client_and_db) -> No
 
     missing_feedback_resp = client.get("/api/v1/decision-signals/999999/feedback")
     assert missing_feedback_resp.status_code == 404
+
+    empty_stats_resp = client.get("/api/v1/decision-signals/outcomes/stats")
+    assert empty_stats_resp.status_code == 200
+    empty_calibration = empty_stats_resp.json()["profile_calibration"]
+    assert empty_calibration["minimum_completed_sample_size"] == 30
+    assert all(not buckets for buckets in empty_calibration["breakdowns"].values())
 
 
 def test_outcome_run_retries_transient_unable_by_default(client_and_db) -> None:

@@ -17,6 +17,7 @@ import type {
   DecisionSignalOutcomeStatsBucket,
   DecisionSignalOutcomeStatsParams,
   DecisionSignalOutcomeStatsResponse,
+  DecisionSignalProfileCalibrationBucket,
   DecisionSignalReassessRequest,
   DecisionSignalReassessBlockedError,
   DecisionSignalReassessResponse,
@@ -135,6 +136,10 @@ function toDecisionSignalStatsBucket(data: Record<string, unknown>): DecisionSig
   return bucket;
 }
 
+function toProfileCalibrationBuckets(value: unknown): DecisionSignalProfileCalibrationBucket[] {
+  return Array.isArray(value) ? value as DecisionSignalProfileCalibrationBucket[] : [];
+}
+
 function toDecisionSignalOutcomeStatsResponse(data: Record<string, unknown>): DecisionSignalOutcomeStatsResponse {
   const response = toCamelCase<DecisionSignalOutcomeStatsResponse>(data);
   response.unableReasons = (data.unable_reasons as Record<string, number> | undefined) ?? {};
@@ -146,6 +151,27 @@ function toDecisionSignalOutcomeStatsResponse(data: Record<string, unknown>): De
         ? buckets.map((bucket) => toDecisionSignalStatsBucket(bucket as Record<string, unknown>))
         : [];
     }
+  }
+  const calibration = response.profileCalibration;
+  const calibrationBreakdowns = calibration?.breakdowns;
+  if (
+    calibration
+    && calibrationBreakdowns
+    && typeof calibrationBreakdowns === 'object'
+    && !Array.isArray(calibrationBreakdowns)
+  ) {
+    calibration.breakdowns = {
+      decisionProfile: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfile),
+      decisionProfileAction: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileAction),
+      decisionProfileHorizon: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileHorizon),
+      decisionProfileMarketPhase: toProfileCalibrationBuckets(calibrationBreakdowns.decisionProfileMarketPhase),
+      decisionProfileDataQualityLevel: toProfileCalibrationBuckets(
+        calibrationBreakdowns.decisionProfileDataQualityLevel,
+      ),
+      profileSource: toProfileCalibrationBuckets(calibrationBreakdowns.profileSource),
+    };
+  } else {
+    response.profileCalibration = undefined;
   }
   return response;
 }

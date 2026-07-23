@@ -31,6 +31,7 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
         "/api/v1/decision-signals/reassess",
         "/api/v1/decision-signals/latest/{stock_code}",
         "/api/v1/decision-signals/outcomes/run",
+        "/api/v1/decision-signals/outcomes/stats",
         "/api/v1/decision-signals/{signal_id}/feedback",
     ):
         assert path in topic
@@ -42,6 +43,9 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
         "DecisionSignalReassessRequest",
         "DecisionSignalReassessResponse",
         "DecisionSignalOutcomeItem",
+        "DecisionSignalProfileCalibration",
+        "DecisionSignalProfileCalibrationBreakdowns",
+        "DecisionSignalProfileCalibrationBucket",
         "DecisionSignalFeedbackRequest",
         "PortfolioDecisionSignalRiskBlock",
     ):
@@ -61,6 +65,10 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
     assert "`existing` item 原样保留" in topic
     assert "active relaxed dimension-fill 只补齐缺失的 horizon/market phase" in topic
     assert "HTTP 422" in topic
+    assert "profile_calibration.minimum_completed_sample_size" in topic
+    assert "completed >= 30" in topic
+    assert "样本不足，仅供观察。" in topic
+    assert "max_adverse_excursion_pct" in topic
     assert "decision-signals.md" in full_guide
     assert "decision-signals.md" in full_guide_en
     assert "decision-signals.md" in index
@@ -79,6 +87,9 @@ def test_decision_signal_topic_references_live_api_schema_and_docs() -> None:
     assert "for a legacy formal `NULL`, the profile key is removed" in full_guide_en
     assert "API 响应 schema 不变" not in full_guide
     assert "The API response schema is unchanged" not in full_guide_en
+    assert "profile_calibration" in full_guide
+    assert "profile_calibration" in full_guide_en
+    assert "legacy servers without the new field" in full_guide_en
 
     list_parameters = api_spec["paths"]["/api/v1/decision-signals"]["get"]["parameters"]
     latest_parameters = api_spec["paths"]["/api/v1/decision-signals/latest/{stock_code}"]["get"]["parameters"]

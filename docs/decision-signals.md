@@ -79,6 +79,34 @@ Web 展示必须把这些 wire value 映射为当前 UI 语言的用户可读标
 
 这些接口继承现有 `/api/v1/*` 管理员鉴权；`ADMIN_AUTH_ENABLED=true` 时需要有效管理员会话 Cookie。
 
+## 决策风格历史表现
+
+#1758 在现有 `GET /api/v1/decision-signals/outcomes/stats` 响应中追加 `profile_calibration`，没有新增 endpoint、数据库表、配置项或行情请求。旧的全局统计字段和八类单维 breakdown 保持原口径；一条样本仍是一条 `(signal_id, horizon, engine_version)` outcome 记录，同一信号的不同复盘周期会分别计数，不能理解成独立信号数量。
+
+`profile_calibration.minimum_completed_sample_size` 固定为 `30`，breakdowns 包含：
+
+- `decision_profile`
+- `decision_profile_action`
+- `decision_profile_horizon`
+- `decision_profile_market_phase`
+- `decision_profile_data_quality_level`
+- `profile_source`
+
+每个 bucket 的 `dimensions` 都是结构化字段，不使用拼接字符串。Profile 校准按以下来源解释：
+
+- `decision_profile` 读取关联信号的当前正式字段；`NULL` 或非法值归入 `unknown`，不会回退为 `balanced`。
+- `profile_source` 读取关联信号的当前 metadata，只接受 `auto_default`、`backfill_defaulted`、`legacy_unknown`、`user_selected`，其他情况归入 `unknown`。这是当前归因而非 outcome 时点快照，metadata 被合法替换后统计归属可能变化。
+- `action`、`horizon`、`market_phase`、`data_quality_level` 读取 outcome 已冻结字段。新建 outcome 时 data quality 优先使用 `data_quality_summary` 的显式 level；summary 缺失或有效 JSON 中没有显式 level 时，才使用规范化后的 `metadata.data_quality_level`。已存在的 outcome 不会被这项读取规则静默重写。
+
+每个 bucket 独立使用 `completed >= 30` 的门槛，父 bucket、全局样本或其他 sibling bucket 都不能解锁它。样本不足时 counts 仍返回，但 `hit_rate_pct`、`avg_stock_return_pct`、`miss_rate_pct`、`unable_rate_pct`、`max_adverse_excursion_pct` 全部为 `null`；Web 只展示样本量和“样本不足，仅供观察。”。样本充足时：
+
+- 命中率为 `hit / (hit + miss)`，未命中率为 `miss / (hit + miss)`，neutral 不进入这两个分母。
+- 无法评估率为 `unable / total`。
+- 标的平均区间涨跌沿用已有 completed outcome 的 `stock_return_pct` 平均值，不代表策略或组合收益。
+- 最大不利波动只使用 outcome 已保存的价格。`buy/add/hold/watch/alert` 按 `(start_price - min_low) / start_price`，`sell/reduce/avoid` 按 `(max_high - start_price) / start_price`，结果不小于 0；价格缺失、非有限或起始价非正时该行不可计算。Bucket 返回可计算行中的最大值；没有可计算行时为 `null`，不会为补齐指标读取行情。
+
+Web 在原有“信号表现统计”卡片内提供“保守 / 均衡 / 进取”三个用户入口，固定默认选择均衡，并只提供“按建议动作”和“按复盘周期”两个细分视图。它不排名、不推荐风格，也不增加请求、路由、导航或设置项；旧后端没有 `profile_calibration` 时仍显示原统计卡片。
+
 ## Reassess preview 与 persist
 
 `reassess` 只使用 `source_report_id` 对应的持久化历史报告快照。`persist=false` 用于用户确认前预览；`persist=true` 会以相同 `source_report_id + decision_profile` 在服务端重新计算，不信任之前 preview 或客户端缓存的任何决策字段。

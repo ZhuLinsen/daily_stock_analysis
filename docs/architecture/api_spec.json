@@ -6116,6 +6116,9 @@
             },
             "type": "object",
             "title": "Breakdowns"
+          },
+          "profile_calibration": {
+            "$ref": "#/components/schemas/DecisionSignalProfileCalibration"
           }
         },
         "type": "object",
@@ -6126,9 +6129,181 @@
           "unable",
           "hit",
           "miss",
-          "neutral"
+          "neutral",
+          "profile_calibration"
         ],
         "title": "DecisionSignalOutcomeStatsResponse"
+      },
+      "DecisionSignalProfileCalibration": {
+        "properties": {
+          "minimum_completed_sample_size": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Minimum Completed Sample Size"
+          },
+          "breakdowns": {
+            "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBreakdowns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "minimum_completed_sample_size",
+          "breakdowns"
+        ],
+        "title": "DecisionSignalProfileCalibration"
+      },
+      "DecisionSignalProfileCalibrationBreakdowns": {
+        "properties": {
+          "decision_profile": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Decision Profile"
+          },
+          "decision_profile_action": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Decision Profile Action"
+          },
+          "decision_profile_horizon": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Decision Profile Horizon"
+          },
+          "decision_profile_market_phase": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Decision Profile Market Phase"
+          },
+          "decision_profile_data_quality_level": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Decision Profile Data Quality Level"
+          },
+          "profile_source": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSignalProfileCalibrationBucket"
+            },
+            "type": "array",
+            "title": "Profile Source"
+          }
+        },
+        "type": "object",
+        "title": "DecisionSignalProfileCalibrationBreakdowns"
+      },
+      "DecisionSignalProfileCalibrationBucket": {
+        "properties": {
+          "dimensions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Dimensions"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "unable": {
+            "type": "integer",
+            "title": "Unable"
+          },
+          "hit": {
+            "type": "integer",
+            "title": "Hit"
+          },
+          "miss": {
+            "type": "integer",
+            "title": "Miss"
+          },
+          "neutral": {
+            "type": "integer",
+            "title": "Neutral"
+          },
+          "sample_sufficient": {
+            "type": "boolean",
+            "title": "Sample Sufficient"
+          },
+          "hit_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hit Rate Pct"
+          },
+          "avg_stock_return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Stock Return Pct"
+          },
+          "miss_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Miss Rate Pct"
+          },
+          "unable_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unable Rate Pct"
+          },
+          "max_adverse_excursion_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Adverse Excursion Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "completed",
+          "unable",
+          "hit",
+          "miss",
+          "neutral",
+          "sample_sufficient"
+        ],
+        "title": "DecisionSignalProfileCalibrationBucket"
       },
       "AlertTriggerItem": {
         "properties": {
