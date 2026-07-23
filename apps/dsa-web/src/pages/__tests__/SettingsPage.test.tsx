@@ -67,7 +67,7 @@ const {
   settingsPanelErrorBoundary: vi.fn(),
   useAuthMock: vi.fn(),
   useSystemConfigMock: vi.fn(),
-  useUnsavedChangesGuardMock: vi.fn(() => ({ blocker: { state: 'idle', proceed: () => {}, reset: () => {} } })),
+  useUnsavedChangesGuardMock: vi.fn((..._args: unknown[]) => ({ blocker: { state: 'idle', proceed: () => {}, reset: () => {} } })),
   webBuildInfoMock: {
     version: '3.11.0',
     rawVersion: '3.11.0',
