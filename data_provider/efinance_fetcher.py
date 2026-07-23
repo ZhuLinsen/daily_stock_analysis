@@ -1098,7 +1098,46 @@ class EfinanceFetcher(BaseFetcher):
         except Exception as e:
             logger.error(f"[efinance] 获取板块排行失败: {e}")
             return None
-    
+
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        """
+        获取股票中文名称 (efinance)
+
+        复用 ef.stock.get_base_info() 的 `股票名称` 字段。
+        该方法让 EfinanceFetcher 接入 DataFetcherManager.get_stock_name
+        的 fallback 链，避免 manager 跳过 efinance。
+        """
+        import efinance as ef
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+
+            logger.info(
+                f"[API调用] ef.stock.get_base_info(stock_codes={stock_code}) 获取股票名称..."
+            )
+            info = _ef_call_with_timeout(ef.stock.get_base_info, stock_code)
+        except Exception as e:
+            logger.debug(f"[efinance] get_stock_name {stock_code} 失败: {e}")
+            return None
+
+        if info is None:
+            return None
+
+        def _extract_name(obj) -> Optional[str]:
+            for key in ("股票名称", "name", "名称"):
+                if key in obj.index:
+                    value = obj[key]
+                    if value is not None and not (isinstance(value, float) and pd.isna(value)):
+                        return str(value).strip()
+            return None
+
+        if isinstance(info, pd.Series):
+            return _extract_name(info)
+        if isinstance(info, pd.DataFrame) and not info.empty:
+            return _extract_name(info.iloc[0])
+        return None
+
     def get_base_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
         获取股票基本信息
