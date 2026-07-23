@@ -1436,6 +1436,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: '大盘复盘任务已提交',
+      region: 'cn',
       taskId: 'task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -1458,7 +1459,10 @@ describe('HomePage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '大盘复盘' }));
 
     await waitFor(() => {
-      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({ sendNotification: true });
+      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({
+        sendNotification: true,
+        regions: undefined,
+      });
     });
     expect(await screen.findByText('大盘复盘已完成')).toBeInTheDocument();
     expect(await screen.findByText('市场复盘报告示例文本')).toBeInTheDocument();
@@ -1476,6 +1480,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: '大盘复盘任务已提交',
+      region: 'cn,us',
       taskId: 'task-region',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -1499,7 +1504,7 @@ describe('HomePage', () => {
     await waitFor(() => {
       expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({
         sendNotification: true,
-        region: 'cn,us',
+        regions: ['cn', 'us'],
       });
     });
     expect(systemConfigApi.getConfig).not.toHaveBeenCalled();
@@ -1521,6 +1526,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: 'Market review task submitted',
+      region: 'us',
       taskId: 'market-task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -1551,7 +1557,10 @@ describe('HomePage', () => {
 
     await waitFor(() => {
       expect(analysisApi.analyzeAsync).toHaveBeenCalled();
-      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({ sendNotification: true });
+      expect(analysisApi.triggerMarketReview).toHaveBeenCalledWith({
+        sendNotification: true,
+        regions: undefined,
+      });
     });
     expect(vi.mocked(analysisApi.analyzeAsync).mock.calls[0]?.[0]).not.toHaveProperty('reportLanguage');
   });
@@ -1567,6 +1576,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: 'Market review task submitted',
+      region: 'us',
       taskId: 'task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -1613,6 +1623,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: '大盘复盘任务已提交',
+      region: 'cn',
       taskId: 'task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -1660,6 +1671,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: '大盘复盘任务已提交',
+      region: 'cn',
       taskId: 'task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({
@@ -2169,6 +2181,7 @@ describe('HomePage', () => {
       status: 'accepted',
       sendNotification: true,
       message: '大盘复盘任务已提交',
+      region: 'cn',
       taskId: 'task-1',
     });
     vi.mocked(analysisApi.getStatus).mockResolvedValue({

@@ -169,6 +169,7 @@ const zh = {
   'home.marketReviewHistoryTitle': '大盘复盘历史',
   'home.marketReviewInProgress': '大盘复盘进行中',
   'home.marketReviewSubmitted': '大盘复盘已提交',
+  'home.marketReviewSubmittedWithRegion': '{message}；实际市场：{region}',
   'home.marketReviewTimeout': '大盘复盘已超时',
   'home.marketReviewTimeoutMessage': '任务长时间未返回最终结果，请在任务列表/历史中查看。',
   'home.marketReviewUnknownStatus': '大盘复盘状态异常',
@@ -199,6 +200,7 @@ const zh = {
   'home.strategy': '策略',
   'home.submitMarketReview': '提交中',
   'home.taskStatus': '任务状态：{status}（{progress}）',
+  'home.taskStatusWithRegion': '任务状态：{status}（{progress}）；实际市场：{region}',
   'home.unknownTaskStatus': '收到未知任务状态：{status}',
 
   'decisionSignals.action': '动作',
@@ -1103,6 +1105,7 @@ const en: Record<UiTextKey, string> = {
   'home.marketReviewHistoryTitle': 'Market review history',
   'home.marketReviewInProgress': 'Market review in progress',
   'home.marketReviewSubmitted': 'Market review submitted',
+  'home.marketReviewSubmittedWithRegion': '{message}; effective region: {region}',
   'home.marketReviewTimeout': 'Market review timed out',
   'home.marketReviewTimeoutMessage': 'The task did not return a final result in time. Check the task list or history.',
   'home.marketReviewUnknownStatus': 'Unexpected market review status',
@@ -1133,6 +1136,7 @@ const en: Record<UiTextKey, string> = {
   'home.strategy': 'Strategy',
   'home.submitMarketReview': 'Submitting',
   'home.taskStatus': 'Task status: {status} ({progress})',
+  'home.taskStatusWithRegion': 'Task status: {status} ({progress}); effective region: {region}',
   'home.unknownTaskStatus': 'Received unknown task status: {status}',
 
   'decisionSignals.action': 'Action',

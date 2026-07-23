@@ -1,19 +1,17 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Globe2, RotateCcw } from 'lucide-react';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
 import { cn } from '../../utils/cn';
 import {
   MARKET_REVIEW_REGION_ORDER,
-  parseMarketReviewRegion,
-  serializeMarketReviewRegions,
   type MarketReviewRegion,
-} from './marketReviewRegion';
+} from '../../utils/marketReviewRegion';
 
 type MarketReviewRegionSelectorProps = {
-  value?: string;
+  value?: readonly MarketReviewRegion[];
   disabled?: boolean;
-  onChange: (value: string | undefined) => void;
+  onChange: (value: MarketReviewRegion[] | undefined) => void;
 };
 
 export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProps> = ({
@@ -23,12 +21,12 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
 }) => {
   const { t } = useUiLanguage();
   const [open, setOpen] = useState(false);
+  const menuOpen = open && !disabled;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const defaultButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  const overrideRegions = useMemo(() => parseMarketReviewRegion(value), [value]);
-  const displayedRegions = overrideRegions ?? [];
+  const displayedRegions = value ?? [];
 
   const regionLabels: Record<MarketReviewRegion, string> = {
     cn: t('home.marketRegionCn'),
@@ -43,7 +41,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
   );
   const triggerLabel = value === undefined
     ? t('home.marketRegionServerDefault')
-    : formatRegions(overrideRegions ?? []);
+    : formatRegions([...displayedRegions]);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -53,7 +51,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
   }, []);
 
   useEffect(() => {
-    if (!open) {
+    if (!menuOpen) {
       return undefined;
     }
 
@@ -69,9 +67,20 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
       window.clearTimeout(focusTimer);
       document.removeEventListener('mousedown', handlePointerDown);
     };
-  }, [close, open]);
+  }, [close, menuOpen]);
+
+  useEffect(() => {
+    if (!disabled) {
+      return undefined;
+    }
+    const closeTimer = window.setTimeout(() => setOpen(false), 0);
+    return () => window.clearTimeout(closeTimer);
+  }, [disabled]);
 
   const toggleRegion = (region: MarketReviewRegion) => {
+    if (disabled) {
+      return;
+    }
     const next = new Set<MarketReviewRegion>(displayedRegions);
     if (next.has(region)) {
       if (next.size === 1) {
@@ -81,7 +90,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
     } else {
       next.add(region);
     }
-    onChange(serializeMarketReviewRegions(next));
+    onChange(MARKET_REVIEW_REGION_ORDER.filter((item) => next.has(item)));
   };
 
   return (
@@ -91,8 +100,8 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
         type="button"
         disabled={disabled}
         aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? 'market-review-region-menu' : undefined}
+        aria-expanded={menuOpen}
+        aria-controls={menuOpen ? 'market-review-region-menu' : undefined}
         aria-label={t('home.marketRegionSelector')}
         onClick={() => setOpen((current) => !current)}
         className={cn(
@@ -104,12 +113,12 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
         <Globe2 className="h-4 w-4 flex-shrink-0 text-primary" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate">{triggerLabel}</span>
         <ChevronDown
-          className={cn('h-3.5 w-3.5 flex-shrink-0 transition-transform', open && 'rotate-180')}
+          className={cn('h-3.5 w-3.5 flex-shrink-0 transition-transform', menuOpen && 'rotate-180')}
           aria-hidden="true"
         />
       </button>
 
-      {open ? (
+      {menuOpen ? (
         <div
           id="market-review-region-menu"
           role="dialog"
@@ -131,6 +140,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
             <button
               ref={defaultButtonRef}
               type="button"
+              disabled={disabled}
               aria-pressed={value === undefined}
               onClick={() => onChange(undefined)}
               className={cn(
@@ -150,8 +160,9 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
 
             <button
               type="button"
+              disabled={disabled}
               aria-pressed={value !== undefined && displayedRegions.length === MARKET_REVIEW_REGION_ORDER.length}
-              onClick={() => onChange('both')}
+              onClick={() => onChange([...MARKET_REVIEW_REGION_ORDER])}
               className="flex min-h-10 w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left text-sm text-secondary-text transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none"
             >
               <span className="flex h-4 w-4 items-center justify-center rounded border border-primary/60 bg-primary/10">
@@ -173,6 +184,7 @@ export const MarketReviewRegionSelector: React.FC<MarketReviewRegionSelectorProp
                   >
                     <input
                       type="checkbox"
+                      disabled={disabled}
                       checked={checked}
                       onChange={() => toggleRegion(region)}
                       className="h-4 w-4 rounded border-border accent-primary"

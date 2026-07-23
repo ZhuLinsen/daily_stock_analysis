@@ -19,13 +19,17 @@ describe('analysisApi.triggerMarketReview', () => {
         status: 'accepted',
         message: 'accepted',
         send_notification: true,
+        region: 'cn,us',
         task_id: 'market-task-1',
       },
     });
   });
 
-  it('sends a comma-separated request region as a string', async () => {
-    await analysisApi.triggerMarketReview({ sendNotification: false, region: 'cn,us' });
+  it('serializes selected markets to a comma-separated request string', async () => {
+    const result = await analysisApi.triggerMarketReview({
+      sendNotification: false,
+      regions: ['cn', 'us'],
+    });
 
     expect(post).toHaveBeenCalledWith(
       '/api/v1/analysis/market-review',
@@ -36,6 +40,7 @@ describe('analysisApi.triggerMarketReview', () => {
       },
       expect.any(Object),
     );
+    expect(result.region).toBe('cn,us');
   });
 
   it('omits region when the caller inherits the server default', async () => {

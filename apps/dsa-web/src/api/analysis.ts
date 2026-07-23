@@ -12,6 +12,7 @@ import type {
   TaskListResponse,
 } from '../types/analysis';
 import type { RunFlowSnapshot } from '../types/runFlow';
+import { serializeMarketReviewRegions } from '../utils/marketReviewRegion';
 
 // ============ API Interfaces ============
 
@@ -105,7 +106,7 @@ export const analysisApi = {
       {
         send_notification: data.sendNotification ?? true,
         report_language: data.reportLanguage,
-        ...(data.region !== undefined && { region: data.region }),
+        ...(data.regions !== undefined && { region: serializeMarketReviewRegions(data.regions) }),
       },
       {
         validateStatus: (status) => status === 202 || status === 409,

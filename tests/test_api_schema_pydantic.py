@@ -172,8 +172,23 @@ def test_market_review_request_omitted_region_inherits_server_config() -> None:
 def test_market_review_request_openapi_exposes_only_region_override_name() -> None:
     schema = MarketReviewRequest.model_json_schema()
 
-    assert schema["properties"]["region"]["example"] == "cn,us"
+    region_schema = schema["properties"]["region"]
+    assert region_schema["example"] == "cn,us"
+    string_schema = next(
+        option for option in region_schema["anyOf"] if option.get("type") == "string"
+    )
+    assert string_schema["maxLength"] == 64
+    assert string_schema["minLength"] == 1
+    assert region_schema["examples"] == ["cn", "jp,kr", "both"]
+    description = region_schema["description"]
+    for contract_text in ("cn", "both 只能单独使用", "空 token", "整体返回 4xx", "64"):
+        assert contract_text in description
     assert "market_review_region" not in schema["properties"]
+
+
+def test_market_review_request_rejects_region_over_length_boundary() -> None:
+    with pytest.raises(ValidationError, match="64"):
+        MarketReviewRequest.model_validate({"region": "cn," * 22})
 
 
 def test_analyze_request_analysis_phase_defaults_to_auto() -> None:

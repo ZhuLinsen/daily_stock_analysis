@@ -3,20 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UiLanguageProvider } from '../../../contexts/UiLanguageContext';
 import { UI_LANGUAGE_STORAGE_KEY } from '../../../utils/uiLanguage';
 import { MarketReviewRegionSelector } from '../MarketReviewRegionSelector';
-import {
-  parseMarketReviewRegion,
-  serializeMarketReviewRegions,
-} from '../marketReviewRegion';
+import { serializeMarketReviewRegions } from '../../../utils/marketReviewRegion';
 
 describe('MarketReviewRegionSelector', () => {
   beforeEach(() => {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'zh');
   });
 
-  it('parses known config values without accepting mixed invalid tokens', () => {
-    expect(parseMarketReviewRegion(' US, cn,US ')).toEqual(['cn', 'us']);
-    expect(parseMarketReviewRegion('both')).toEqual(['cn', 'hk', 'us', 'jp', 'kr']);
-    expect(parseMarketReviewRegion('cn,unknown')).toBeNull();
+  it('serializes canonical UI selections at the HTTP boundary', () => {
     expect(serializeMarketReviewRegions(['kr', 'jp'])).toBe('jp,kr');
     expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr'])).toBe('both');
   });
@@ -39,7 +33,7 @@ describe('MarketReviewRegionSelector', () => {
     expect(screen.getByRole('checkbox', { name: /美股/ })).not.toBeChecked();
 
     fireEvent.click(screen.getByRole('checkbox', { name: /日股/ }));
-    expect(onChange).toHaveBeenLastCalledWith('jp');
+    expect(onChange).toHaveBeenLastCalledWith(['jp']);
   });
 
   it('supports all markets and restoring the server default', () => {
@@ -47,7 +41,7 @@ describe('MarketReviewRegionSelector', () => {
     render(
       <UiLanguageProvider>
         <MarketReviewRegionSelector
-          value="us"
+          value={['us']}
           onChange={onChange}
         />
       </UiLanguageProvider>,
@@ -55,7 +49,7 @@ describe('MarketReviewRegionSelector', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
     fireEvent.click(screen.getByRole('button', { name: '全部市场' }));
-    expect(onChange).toHaveBeenLastCalledWith('both');
+    expect(onChange).toHaveBeenLastCalledWith(['cn', 'hk', 'us', 'jp', 'kr']);
 
     fireEvent.click(screen.getByRole('button', { name: /服务器默认/ }));
     expect(onChange).toHaveBeenLastCalledWith(undefined);
@@ -65,12 +59,36 @@ describe('MarketReviewRegionSelector', () => {
     const onChange = vi.fn();
     render(
       <UiLanguageProvider>
-        <MarketReviewRegionSelector value="us" onChange={onChange} />
+        <MarketReviewRegionSelector value={['us']} onChange={onChange} />
       </UiLanguageProvider>,
     );
 
     fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
     fireEvent.click(screen.getByRole('checkbox', { name: /美股/ }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('closes an open menu and blocks every option when disabled', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <UiLanguageProvider>
+        <MarketReviewRegionSelector value={['us']} onChange={onChange} />
+      </UiLanguageProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const cnCheckbox = screen.getByRole('checkbox', { name: /A 股/ });
+
+    rerender(
+      <UiLanguageProvider>
+        <MarketReviewRegionSelector value={['us']} disabled onChange={onChange} />
+      </UiLanguageProvider>,
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '选择大盘复盘市场' })).toBeDisabled();
+    fireEvent.click(cnCheckbox);
     expect(onChange).not.toHaveBeenCalled();
   });
 });

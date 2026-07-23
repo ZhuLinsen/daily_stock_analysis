@@ -32,6 +32,7 @@ import type {
   AnalyzeAsyncResponse,
   HistoryItem,
   MarketReviewPayload,
+  MarketReviewRegion,
   StockBarItem,
   TaskInfo,
 } from '../types/analysis';
@@ -186,7 +187,7 @@ const HomePage: React.FC = () => {
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
   const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
   const [marketReviewPayload, setMarketReviewPayload] = useState<MarketReviewPayload | null>(null);
-  const [marketReviewRegionOverride, setMarketReviewRegionOverride] = useState<string | undefined>();
+  const [marketReviewRegionOverride, setMarketReviewRegionOverride] = useState<MarketReviewRegion[] | undefined>();
   const [analysisSkills, setAnalysisSkills] = useState<SkillInfo[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
@@ -808,7 +809,9 @@ const HomePage: React.FC = () => {
             setMarketReviewNotice({
               variant: 'warning',
               title: t('home.marketReviewInProgress'),
-              message: t('home.taskStatus', { status: status.status, progress }),
+              message: status.region
+                ? t('home.taskStatusWithRegion', { status: status.status, progress, region: status.region })
+                : t('home.taskStatus', { status: status.status, progress }),
             });
             return true;
           }
@@ -901,12 +904,15 @@ const HomePage: React.FC = () => {
     try {
       const result = await analysisApi.triggerMarketReview({
         sendNotification: notify,
-        ...(marketReviewRegionOverride !== undefined && { region: marketReviewRegionOverride }),
+        regions: marketReviewRegionOverride,
       });
       setMarketReviewNotice({
         variant: 'success',
         title: t('home.marketReviewSubmitted'),
-        message: result.message,
+        message: t('home.marketReviewSubmittedWithRegion', {
+          message: result.message,
+          region: result.region,
+        }),
       });
       scrollMarketReviewFeedbackIntoView();
 

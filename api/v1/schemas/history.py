@@ -25,6 +25,10 @@ class HistoryItem(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report_type: Optional[str] = Field(None, description="报告类型")
+    region: Optional[str] = Field(
+        None,
+        description="大盘复盘实际执行的 canonical 市场范围",
+    )
     trend_prediction: Optional[str] = Field(None, description="趋势预测")
     analysis_summary: Optional[str] = Field(None, description="分析摘要")
     sentiment_score: Optional[int] = Field(
