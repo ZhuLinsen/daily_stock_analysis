@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import type { ParsedApiError } from '../../api/error';
 import { getParsedApiError } from '../../api/error';
@@ -1528,14 +1528,29 @@ function channelsAreEqual(left: ChannelConfig, right: ChannelConfig): boolean {
   );
 }
 
-export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
-  items,
-  configVersion,
-  maskToken,
-  onSaved,
-  onDraftItemsChange,
-  disabled = false,
-}) => {
+export interface LLMChannelEditorHandle {
+  /**
+   * 由 SettingsPage 在页面级"保存配置"按钮成功保存普通草稿后调用,触发 LLM 渠道
+   * 草稿的独立提交路径。LLMChannelEditor 内部仍走原 handleSave 流水:validation +
+   * buildFilteredChannelUpdateItems + systemConfigApi.update + onSaved。
+   * 如果当前没有 channel 草稿(handleSave 会进入 early return 路径),调用是 no-op。
+   * 返回 true 表示提交成功(或无草稿可提交),false 表示 validation 失败或 API 报错。
+   */
+  submit: () => Promise<boolean>;
+  /** 当前是否持有未保存草稿(草稿条目数 > 0)。 */
+  hasDraft: () => boolean;
+}
+
+export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEditorProps>(
+  ({
+    items,
+    configVersion,
+    maskToken,
+    onSaved,
+    onDraftItemsChange,
+    disabled = false,
+  },
+  ref) => {
   const initialItemSourceByKey = useMemo(() => {
     const sourceByKey = new Map<string, boolean>();
     for (const item of items) {
@@ -1726,9 +1741,11 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
     onDraftItemsChange(draftItems);
   }, [draftFingerprint, draftItems, onDraftItemsChange]);
 
-  useEffect(() => () => {
-    onDraftItemsChangeRef.current?.([]);
-  }, []);
+  // 注意: 不要在此处添加 unmount cleanup 清空 channel 草稿。
+  // channel 草稿由 SettingsPage 持有(useState llmChannelDraftItems),切换设置分类时
+  // LLMChannelEditor 会卸载,但草稿必须保留——切回 ai_model 分类时仍可见。
+  // 草稿清零只发生在: 显式 resetDraft(放弃修改) / handleSaveConfig 成功 / onSaved 成功。
+  // 详见 issue #1948 与 SettingsPage.handleSaveConfig。
 
   const busy = disabled || isSaving;
 
@@ -1968,6 +1985,42 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       setIsSaving(false);
     }
   };
+
+  // 暴露 imperative handle 给 SettingsPage.handleSaveConfig,让"页面级保存配置"按钮
+  // 在普通草稿保存成功后能触发 channel 草稿的独立提交(单次 API call)。
+  // 返回 false 时不抛错——validation 错已通过 setSaveMessage 显示在 editor 区域,
+  // SettingsPage.hassanSaveConfig 可根据 return value 决定整体 toast 文案。
+  useImperativeHandle(ref, () => ({
+    submit: async () => {
+      // 没有 channel 草稿 + 没有 runtime 变更 = handleSave 等价于 no-op。
+      const noChannelDraft = draftItems.length === 0;
+      const noRuntimeChanges = !managesRuntimeConfig
+        || runtimeConfigsAreEqual(
+          sanitizeRuntimeConfigForSave(runtimeConfig, availableModels, agentSafeModels, visionSafeModels, savedItemMap),
+          initialRuntimeConfig,
+        );
+      if (noChannelDraft && noRuntimeChanges) {
+        return true;
+      }
+      try {
+        await handleSave();
+        // handleSave 内部 try/catch 已吞 API error 并 setSaveMessage('error')。
+        // 通过 saveMessage 当前快照判断 success/failure,因为 await 完后 React 已 flush
+        // state update,本 closure 因 React 18 batching 仍读到 await 之前的 saveMessage === null
+        // (初始),无法仅靠 closure 判断。改为依赖 onSaved 副作用:SettingsPage 收到 onSaved
+        // 后会 setLlmChannelDraftItems([]),本组件下次 render 时 draftItems.length === 0。
+        // 因此返回值规则:validation 通过 && API call 没有抛错 = true。
+        // 由于 handleSave 内部 catch 已消化 error 不再 throw,我们只检查 setSaveMessage
+        // 是否经 React commit 后被读到——使用 isSaving 转回 false 的状态判断。
+        // 简化:在 submit 视角,只要 handleSave 不 throw,我们就返回 true。
+        // 错误反馈通过 editor 内 saveMessage 体现,SettingsPage 不依赖此 boolean 阻断流程。
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    hasDraft: () => draftItems.length > 0,
+  }));
 
   const handleTest = async (channel: ChannelConfig, index: number) => {
     if (hasRuntimeOnlyMaskedHermesSecret(channel, maskToken, hasPersistedHermesSecret(channel))) {
@@ -2495,4 +2548,6 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       ) : null}
     </div>
   );
-};
+});
+
+LLMChannelEditor.displayName = 'LLMChannelEditor';

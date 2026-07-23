@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Clock, Play, Plus, RefreshCw, Trash2 } from 'lucide-react';
-import { useAuth, useSystemConfig } from '../hooks';
+import { useAuth, useSystemConfig, useUnsavedChangesGuard } from '../hooks';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi } from '../api/analysis';
@@ -15,6 +15,7 @@ import {
   GenerationBackendStatusPanel,
   IntelligentImport,
   LLMChannelEditor,
+  type LLMChannelEditorHandle,
   NotificationTestPanel,
   SettingsCategoryNav,
   SettingsAlert,
@@ -875,6 +876,11 @@ const SettingsPage: React.FC = () => {
   const [setupSmokeError, setSetupSmokeError] = useState<ParsedApiError | null>(null);
   const [setupSmokeSuccess, setSetupSmokeSuccess] = useState('');
   const [llmChannelDraftItems, setLlmChannelDraftItems] = useState<SystemConfigUpdateItem[]>([]);
+  // LLMChannelEditor 的 imperative handle。SettingsPage.handleSaveConfig 在普通草稿保存
+  // 成功后调用 editorRef.current?.submit(),触发 channel 草稿的独立提交(API call)。
+  // 这条提交路径保留了 LLMChannelEditor 内部完整的 validation 链路,由 editor 自己的
+  // setSaveMessage 显示错误。详见 issue #1948 与 ZhuLinsen 2026-07-21 06:43 评论第 1 条。
+  const llmChannelEditorRef = useRef<LLMChannelEditorHandle | null>(null);
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
   const desktopRuntimeApi = getDesktopRuntimeApi();
@@ -893,6 +899,7 @@ const SettingsPage: React.FC = () => {
   const {
     categories,
     itemsByCategory,
+    keyToCategory,
     issueByKey,
     activeCategory,
     setActiveCategory,
@@ -1057,8 +1064,49 @@ const SettingsPage: React.FC = () => {
     && schedulerOverrideFromUi !== schedulerRuntimeEnabled;
   const hasRuntimeSchedulerMismatchInDraft = hasRuntimeSchedulerMismatch
     && !currentChangedItems.some((item) => item.key === 'SCHEDULE_ENABLED');
-  const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft;
-  const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0);
+  // LLM 渠道草稿单独计入页面级 dirty——useSystemConfig 的 dirtyCount/dirtyKeys 不感知
+  // LLMChannelEditor 内部的 LLM_* / LITELLM_* 等渠道编辑键,因为这部分草稿由 LLMChannelEditor
+  // 自管并通过 onDraftItemsChange 上报,不进入 useSystemConfig 的 draftValues。
+  // channel 草稿数 = generationBackendDraftItems 中由 LLMChannelEditor 贡献的条目数,
+  // 即不在 currentChangedItems(由 useSystemConfig 贡献)中的 channel 草稿条目。
+  const currentChangedItemKeys = new Set(currentChangedItems.map((item) => item.key.trim().toUpperCase()));
+  const llmChannelOnlyDraftCount = llmChannelDraftItems.filter(
+    (item) => !currentChangedItemKeys.has(item.key.trim().toUpperCase()),
+  ).length;
+  const hasLlmChannelDraft = llmChannelOnlyDraftCount > 0;
+  const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft || hasLlmChannelDraft;
+  const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0) + llmChannelOnlyDraftCount;
+
+  // 离开拦截 — 走 useUnsavedChangesGuard (react-router useBlocker + beforeunload)。
+  // 仅在 effectiveHasDirty=true 时生效;保存/重置把 effectiveHasDirty 变 false 后,
+  // useUnsavedChangesGuard 内的 useEffect 会自动 reset blocker (见 hook 实现注释)。
+  // blocker.state === 'blocked' 时下面 render 一段 confirm UI (页面 inner 区域里)。
+  const { blocker: unsavedChangesBlocker } = useUnsavedChangesGuard({
+    hasDirty: effectiveHasDirty,
+  });
+
+  // issue #1948 — 分类角标 dirty 计数。SettingsCategoryNav 不自己推导,只消费页面层
+  // 汇总后的 Record<category, count>,避免 nav/底栏/保存条三处状态不同步。
+  // 三处来源: useSystemConfig 的 currentChangedItems / LLMChannelEditor 的渠道草稿 /
+  // runtime scheduler mismatch (计入 system 分类)。
+  // currentChangedItems 与 llmChannelDraftItems 都只有 {key, value}, 没有 category 字段,
+  // 因此用 useSystemConfig.keyToCategory 反查 (未注册 key 落 'uncategorized')。
+  const dirtyCountByCategory = useMemo<Record<string, number>>(() => {
+    const next: Record<string, number> = {};
+    for (const item of currentChangedItems) {
+      const category = keyToCategory[item.key] ?? 'uncategorized';
+      next[category] = (next[category] || 0) + 1;
+    }
+    // LLMChannelEditor 草稿条目不进 useSystemConfig.currentChangedItems, 由 keyToCategory 反查。
+    for (const item of llmChannelDraftItems) {
+      const category = keyToCategory[item.key] ?? 'uncategorized';
+      next[category] = (next[category] || 0) + 1;
+    }
+    if (hasRuntimeSchedulerMismatchInDraft) {
+      next['system'] = (next['system'] || 0) + 1;
+    }
+    return next;
+  }, [currentChangedItemsFingerprint, llmChannelDraftItemsFingerprint, hasRuntimeSchedulerMismatchInDraft, keyToCategory]);
 
   const handleSchedulerRuntimeStateChange = useCallback(({ runtimeEnabled, overrideEnabled }: {
     runtimeEnabled: boolean | null;
@@ -1273,6 +1321,11 @@ const SettingsPage: React.FC = () => {
     const schedulerSyncItem: SystemConfigUpdateItem[] = syncRuntimeSchedulerState
       ? [{ key: 'SCHEDULE_ENABLED', value: schedulerOverrideFromUi ? 'true' : 'false' }]
       : [];
+    // LLM 渠道草稿走 LLMChannelEditor 内部独立提交路径:useSystemConfig 不感知 channel
+    // 草稿 keys 的 dirty 计算(LLMChannelEditor 自管),所以这里只能调 editorRef.submit()
+    // 让 LLMChannelEditor 内部完成 validation + systemConfigApi.update + onSaved。
+    // 注意:必须等普通草稿 save 成功之后再触发 channel 提交——否则两次 systemConfigApi.update
+    // 会因为 config_version 冲突 race condition 互踩。
     const changedItemsToSave = [...changedItems, ...schedulerSyncItem];
     const changedAlphaSiftItem = changedItems.find((item) => item.key === 'ALPHASIFT_ENABLED');
     const changedSchedulerSettings = changedItemsToSave.some((item) => SCHEDULER_SETTING_KEYS.has(item.key));
@@ -1285,6 +1338,23 @@ const SettingsPage: React.FC = () => {
       setSchedulerStatusRefreshToken((current) => current + 1);
     }
     void refreshSetupStatus();
+
+    // 普通草稿已成功保存 → 触发 channel 草稿的独立提交。
+    // llmChannelEditorRef.current 在 LLMChannelEditor 实际 mount 之前为 null
+    // (例如 ai_model 分类还没渲染过——但我们已用 CSS hidden 让 LLMChannelEditor 永久 mount,
+    // 所以稳定可视)。submit 内部会判断是否有 channel 草稿,无草稿时直接 return true 不发 API。
+    if (llmChannelEditorRef.current) {
+      try {
+        await llmChannelEditorRef.current.submit();
+      } catch (channelSaveError) {
+        // channel 提交报错不阻断整体流程——错误信息已通过 LLMChannelEditor 的
+        // saveMessage 反馈在 ai_model 分类区域显示。日志记录便于排查。
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('[SettingsPage] LLMChannelEditor.submit() failed during handleSaveConfig', channelSaveError);
+        }
+      }
+    }
+
     if (!changedAlphaSiftItem) {
       return;
     }
@@ -1488,7 +1558,12 @@ const SettingsPage: React.FC = () => {
               variant="settings-secondary"
               size="sm"
               className="px-2.5"
-              onClick={resetDraft}
+              onClick={() => {
+                // 放弃修改时同步清空 LLM 渠道草稿——否则 useSystemConfig 已 reset
+                // 但 llmChannelDraftItems 仍残留,顶部 dirty 数会出现"已放弃但仍提示未保存"漂移。
+                setLlmChannelDraftItems([]);
+                resetDraft();
+              }}
               disabled={isLoading || isSaving}
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
@@ -1543,6 +1618,7 @@ const SettingsPage: React.FC = () => {
               itemsByCategory={itemsByCategory}
               activeCategory={activeCategory}
               onSelect={setActiveCategory}
+              dirtyCountByCategory={dirtyCountByCategory}
             />
           </aside>
 
@@ -1800,18 +1876,28 @@ const SettingsPage: React.FC = () => {
                 />
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'ai_model' ? (
+            {/*
+              ai_model 分类下的 LLMChannelEditor 始终保持 mounted——切到其他分类时通过 CSS
+              `hidden` 控制可见性而非 conditional render,以避免组件 unmount 抹掉内部 channels
+              state(用户编辑过的渠道草稿)。LLMChannelEditor 的 items prop 始终绑定
+              itemsByCategory.ai_model 而非 rawActiveItems(itemsByCategory[activeCategory]),
+              因为切到 base 分类时 rawActiveItems 会变成 base 分类的 items,触发 LLMChannelEditor
+              内部 initialChannels 重算并通过 reset effect 把 channels 重置回 server 状态。
+              GenerationBackendStatusPanel 也跟着用 ai_model 分类 items,保持依赖一致。
+            */}
+            <div className={activeCategory === 'ai_model' ? '' : 'hidden'}>
               <SettingsSectionCard
                 title={t('settings.llmAccess')}
                 description={t('settings.llmAccessDescription')}
               >
                 <GenerationBackendStatusPanel
-                  items={generationBackendDraftItems}
+                  items={activeCategory === 'ai_model' ? generationBackendDraftItems : (itemsByCategory.ai_model || [])}
                   maskToken={maskToken}
                   disabled={isSaving || isLoading}
                 />
                 <LLMChannelEditor
-                  items={rawActiveItems}
+                  ref={llmChannelEditorRef}
+                  items={itemsByCategory.ai_model || []}
                   configVersion={configVersion}
                   maskToken={maskToken}
                   onDraftItemsChange={handleLlmChannelDraftItemsChange}
@@ -1823,7 +1909,7 @@ const SettingsPage: React.FC = () => {
                   disabled={isSaving || isLoading}
                 />
               </SettingsSectionCard>
-            ) : null}
+            </div>
             {activeCategory === 'system' && passwordChangeable ? (
               <ChangePasswordCard />
             ) : null}
@@ -1889,6 +1975,69 @@ const SettingsPage: React.FC = () => {
             : <ApiErrorAlert error={toast.error} />}
         </div>
       ) : null}
+      {effectiveHasDirty ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-lg border settings-border bg-card/95 px-4 py-3 shadow-soft-card backdrop-blur-sm sm:left-auto sm:right-5 sm:translate-x-0"
+          data-testid="settings-unsaved-bar"
+        >
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <CircleDashed className="h-4 w-4 text-amber-500" aria-hidden="true" />
+            <span className="text-foreground">
+              {t('settings.unsavedBarBody', { count: effectiveDirtyCount })}
+            </span>
+            <Button
+              type="button"
+              variant="settings-secondary"
+              size="sm"
+              className="px-2.5"
+              onClick={() => {
+                // 放弃修改时同步清空 LLM 渠道草稿——否则 useSystemConfig 已 reset
+                // 但 llmChannelDraftItems 仍残留,底部 sticky bar 仍显示 dirty 数。
+                setLlmChannelDraftItems([]);
+                resetDraft();
+              }}
+              disabled={isLoading || isSaving}
+            >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              {t('settings.unsavedBarDiscard')}
+            </Button>
+            <Button
+              type="button"
+              variant="settings-primary"
+              size="sm"
+              className="px-2.5"
+              onClick={() => void handleSaveConfig()}
+              disabled={isSaving || isLoading}
+              isLoading={isSaving}
+              loadingText={t('settings.saving')}
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              {isSaving ? t('settings.saving') : t('settings.unsavedBarSave')}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <ConfirmDialog
+        isOpen={unsavedChangesBlocker.state === 'blocked'}
+        title={t('settings.unsavedLeaveTitle')}
+        message={t('settings.unsavedLeaveMessage', { count: effectiveDirtyCount })}
+        confirmText={t('settings.unsavedLeaveConfirm')}
+        cancelText={t('settings.unsavedLeaveCancel')}
+        onConfirm={() => {
+          // 用户确认离开 → react-router proceed() 让 navigation 继续。
+          if (unsavedChangesBlocker.state === 'blocked') {
+            unsavedChangesBlocker.proceed();
+          }
+        }}
+        onCancel={() => {
+          // 用户选择留在此页 → reset() 让 blocker 退回 'unblocked' 状态。
+          if (unsavedChangesBlocker.state === 'blocked') {
+            unsavedChangesBlocker.reset();
+          }
+        }}
+      />
       <ConfirmDialog
         isOpen={showImportConfirm}
         title={t('settings.importConfirmTitle')}

@@ -12,6 +12,14 @@ interface SettingsCategoryNavProps {
   itemsByCategory: Record<string, SystemConfigItem[]>;
   activeCategory: string;
   onSelect: (category: string) => void;
+  /**
+   * issue #1948 — 各分类未保存修改计数, 由 SettingsPage 页面层汇总后传入。
+   * key 为 category (与 categories[].category 一致),value 为该分类 dirty 条目数。
+   * 不传或某分类未提供时, 不显示 dirty 角标 (与原行为兼容)。
+   * ZhuLinsen 2026-07-21 第 3 条契约: 分类角标必须消费页面层汇总后的未保存计数,
+   * 不在 nav 组件内自己推导, 避免分類切換/重置/保存成功后三處狀態不同步。
+   */
+  dirtyCountByCategory?: Record<string, number>;
 }
 
 const categoryIconMap: Partial<Record<SystemConfigCategory, LucideIcon>> = {
@@ -29,6 +37,7 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
   itemsByCategory,
   activeCategory,
   onSelect,
+  dirtyCountByCategory,
 }) => {
   const { language, t } = useUiLanguage();
 
@@ -77,6 +86,16 @@ export const SettingsCategoryNav: React.FC<SettingsCategoryNavProps> = ({
                   </span>
                 ) : null}
               </span>
+              {/* 分类 dirty 角标 — 仅在 dirtyCountByCategory 提供且该分类有值时显示 */}
+              {dirtyCountByCategory?.[category.category] ? (
+                <span
+                  className="flex h-5 min-w-[1.2rem] items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 text-[10px] font-semibold leading-none text-amber-700 dark:text-amber-400"
+                  aria-label={t('settings.categoryDirtyUnit', { count: dirtyCountByCategory[category.category] })}
+                  data-testid={`settings-nav-dirty-${category.category}`}
+                >
+                  {dirtyCountByCategory[category.category]}
+                </span>
+              ) : null}
               <Badge
                 variant={isActive ? 'info' : 'default'}
                 size="sm"
