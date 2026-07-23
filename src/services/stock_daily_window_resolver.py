@@ -24,33 +24,31 @@ def resolve_stock_daily_window(
     *,
     stock_repo: StockRepository,
     code_candidates: Sequence[str],
-    analysis_date: date,
+    expected_start_date: date,
     eval_window_days: int,
-    exact_start_required: bool = False,
 ) -> Optional[StockDailyWindow]:
-    """Choose the newest complete same-code window, with a deterministic fallback.
+    """Choose one coherent window anchored to the expected trading session.
 
-    Complete windows always outrank partial windows. Within either group, the
-    newest start bar wins; ties prefer more forward bars and then candidate order.
-    The start and forward bars are never combined across different code shapes.
+    Candidates whose nearest start bar does not exactly match the authoritative
+    expected date are rejected. Among valid candidates, complete windows outrank
+    partial ones; remaining ties prefer more forward bars and then candidate
+    order. Start and forward bars are never combined across code shapes.
     """
     best_window: Optional[StockDailyWindow] = None
-    best_key: Optional[Tuple[bool, date, int, int]] = None
-    required_bars = max(int(eval_window_days), 0)
+    best_key: Optional[Tuple[date, bool, int, int]] = None
+    if isinstance(eval_window_days, bool) or not isinstance(eval_window_days, int):
+        raise ValueError("eval_window_days must be a positive integer")
+    required_bars = eval_window_days
+    if required_bars <= 0:
+        raise ValueError("eval_window_days must be a positive integer")
 
     for rank, code in enumerate(dict.fromkeys(code_candidates)):
         if not code:
             continue
-        if exact_start_required:
-            start_bar = stock_repo.get_daily_on_date(
-                code=code,
-                target_date=analysis_date,
-            )
-        else:
-            start_bar = stock_repo.get_start_daily(
-                code=code,
-                analysis_date=analysis_date,
-            )
+        start_bar = stock_repo.get_daily_on_date(
+            code=code,
+            target_date=expected_start_date,
+        )
         if start_bar is None or start_bar.close is None:
             continue
 
@@ -60,8 +58,8 @@ def resolve_stock_daily_window(
             eval_window_days=required_bars,
         )
         key = (
-            len(forward_bars) >= required_bars,
             start_bar.date,
+            len(forward_bars) >= required_bars,
             len(forward_bars),
             -rank,
         )

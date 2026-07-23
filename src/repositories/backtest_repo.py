@@ -14,11 +14,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, delete, desc, func, or_, select
 
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE
-from src.services.stock_code_utils import (
-    build_hk_market_variants,
-    build_market_code_variants,
-    normalize_code as normalize_backtest_code,
-)
+from src.services.stock_code_utils import build_daily_code_candidates
 
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
@@ -519,25 +515,16 @@ class BacktestRepository:
         else:
             raw_code = raw_code.upper()
 
-        normalized_code = normalize_backtest_code(raw_code)
-
-        candidates = [raw_code]
-        if normalized_code and normalized_code != raw_code:
-            candidates.append(normalized_code)
-        candidates.extend(BacktestRepository._build_market_code_variants(raw_code, normalized_code))
+        candidates = (
+            [OVERALL_SENTINEL_CODE]
+            if raw_code == OVERALL_SENTINEL_CODE
+            else build_daily_code_candidates(raw_code)
+        )
+        if not candidates:
+            return [column.in_([])]
 
         if len(candidates) == 1:
             return [column == candidates[0]]
 
         unique = list(dict.fromkeys(candidates))
         return [or_(*[column == candidate for candidate in unique])]
-
-    @staticmethod
-    def _build_hk_market_variants(hk_digits: str) -> List[str]:
-        """Build normalized HK variants for padded/unpadded code shapes."""
-        return build_hk_market_variants(hk_digits)
-
-    @staticmethod
-    def _build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]:
-        """Return additional market-formatted variants for safe stock-code matching."""
-        return build_market_code_variants(raw_code, normalized_code)

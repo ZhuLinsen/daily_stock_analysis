@@ -9,7 +9,6 @@ import pytest
 from unittest.mock import patch
 
 from src.services.stock_code_utils import (
-    InvalidStockCodeError,
     build_daily_code_candidates,
     is_code_like,
     normalize_code,
@@ -18,17 +17,32 @@ from src.services.stock_code_utils import (
 
 
 class TestBuildDailyCodeCandidates:
-    @pytest.mark.parametrize("code", ["600519.SZ", "000001.SH"])
+    @pytest.mark.parametrize(
+        "code",
+        ["600519.SZ", "000001.SH", "920748.SH", "SH920748", "600519.HK"],
+    )
     def test_rejects_conflicting_explicit_exchange_before_any_candidate(self, code):
-        with pytest.raises(InvalidStockCodeError, match="explicit exchange conflicts"):
-            build_daily_code_candidates(code)
+        assert build_daily_code_candidates(code) == []
 
     @pytest.mark.parametrize(
         ("code", "required_candidates"),
         [
-            ("600519.SH", {"600519.SH", "600519"}),
+            (
+                "600519.SH",
+                {
+                    "600519.SH",
+                    "600519",
+                    "SH600519",
+                    "SH.600519",
+                    "SS600519",
+                },
+            ),
             ("600519", {"600519", "600519.SH"}),
             ("000001.SZ", {"000001.SZ", "000001"}),
+            ("920748", {"920748", "BJ920748", "920748.BJ"}),
+            ("1810.HK", {"1810.HK", "01810", "HK01810", "01810.HK"}),
+            ("AAPL", {"AAPL", "AAPL.US"}),
+            ("AAPL.US", {"AAPL.US", "AAPL"}),
         ],
     )
     def test_preserves_valid_explicit_and_legacy_bare_codes(

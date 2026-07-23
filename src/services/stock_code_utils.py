@@ -40,10 +40,6 @@ _SUFFIX_DIGIT_LENS: dict = {
 _PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
 
 
-class InvalidStockCodeError(ValueError):
-    """Raised when an explicit exchange conflicts with the stock-code market."""
-
-
 def _infer_cn_exchange(base: str) -> str:
     """Infer CN exchange from a 6-digit A/B-share code."""
     if not (base.isdigit() and len(base) == 6):
@@ -68,57 +64,38 @@ def _valid_exchange_code(exchange: str, base: str, digit_lens: tuple[int, ...]) 
     return True
 
 
-def _has_invalid_explicit_exchange(text: str) -> bool:
-    """Return whether a recognizable explicit exchange conflicts with its base code."""
-    for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
-        dotted_prefix = f"{prefix}."
-        if text.startswith(dotted_prefix):
-            return not _valid_exchange_code(
-                prefix,
-                text[len(dotted_prefix):],
-                digit_lens,
-            )
-        if text.startswith(prefix):
-            base = text[len(prefix):]
-            # Do not mistake US tickers such as SHOP/HKEX for exchange prefixes.
-            if base.isdigit():
-                return not _valid_exchange_code(prefix, base, digit_lens)
-
+def _split_explicit_exchange(
+    text: str,
+) -> Optional[tuple[str, str, tuple[int, ...]]]:
+    """Return one recognized explicit exchange and its unvalidated base."""
     for suffix, digit_lens in _SUFFIX_DIGIT_LENS.items():
         if text.endswith(suffix):
             base = text[: -len(suffix)].strip()
-            return not _valid_exchange_code(
-                suffix.lstrip("."),
-                base,
-                digit_lens,
-            )
-    return False
+            return suffix.lstrip("."), base, digit_lens
 
-
-def _strip_exchange_prefix(text: str) -> Optional[str]:
-    """Strip leading exchange prefix (SH/SZ/HK etc.) and return the bare digits, or None."""
     for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
         dotted_prefix = f"{prefix}."
         if text.startswith(dotted_prefix):
             base = text[len(dotted_prefix):]
-            if _valid_exchange_code(prefix, base, digit_lens):
-                return base.zfill(5) if prefix == "HK" else base
+            return prefix, base, digit_lens
         if text.startswith(prefix):
             base = text[len(prefix):]
-            if _valid_exchange_code(prefix, base, digit_lens):
-                return base.zfill(5) if prefix == "HK" else base
+            # Do not mistake US tickers such as SHOP/HKEX for exchange prefixes.
+            if base.isdigit():
+                return prefix, base, digit_lens
     return None
 
 
-def _strip_exchange_suffix(text: str) -> Optional[str]:
-    """Strip exchange suffix (.SH/.SZ/.SS/.HK) and return normalized bare digits, or None."""
-    for suffix, digit_lens in _SUFFIX_DIGIT_LENS.items():
-        if text.endswith(suffix):
-            base = text[: -len(suffix)].strip()
-            exchange = suffix.lstrip(".")
-            if _valid_exchange_code(exchange, base, digit_lens):
-                return base.zfill(5) if suffix == ".HK" else base
-    return None
+def _normalize_explicit_exchange_parts(
+    parts: Optional[tuple[str, str, tuple[int, ...]]],
+) -> Optional[str]:
+    """Return the normalized base from one previously parsed exchange."""
+    if parts is None:
+        return None
+    exchange, base, digit_lens = parts
+    if not _valid_exchange_code(exchange, base, digit_lens):
+        return None
+    return base.zfill(5) if exchange == "HK" else base
 
 
 def is_code_like(value: str) -> bool:
@@ -128,12 +105,10 @@ def is_code_like(value: str) -> bool:
         return False
     if text.isdigit() and len(text) in (5, 6):
         return True
-    if _strip_exchange_suffix(text) is not None:
-        return True
+    explicit_parts = _split_explicit_exchange(text)
+    if explicit_parts is not None:
+        return _normalize_explicit_exchange_parts(explicit_parts) is not None
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
-        return True
-    # Support exchange-prefixed codes: SH600519, SZ000001, BJ920493, HK00700
-    if _strip_exchange_prefix(text) is not None:
         return True
     return False
 
@@ -147,29 +122,35 @@ def normalize_code(raw: str) -> Optional[str]:
     - Prefix format: SH600519, SH.600519, SZ000001, BJ920493, HK00700 (case-insensitive)
     - US ticker symbols: AAPL, TSLA
     """
+    normalized, _ = _normalize_code_and_exchange(raw)
+    return normalized
+
+
+def _normalize_code_and_exchange(raw: str) -> tuple[Optional[str], str]:
+    """Normalize once and retain an explicit exchange for candidate expansion."""
     text = raw.strip().upper()
     if not text:
-        return None
+        return None, ""
     if text.isdigit() and len(text) in (5, 6):
-        return text
+        return text, ""
+    explicit_parts = _split_explicit_exchange(text)
+    explicit_exchange = explicit_parts[0] if explicit_parts is not None else ""
+    explicit_code = _normalize_explicit_exchange_parts(explicit_parts)
+    if explicit_parts is not None and explicit_code is None:
+        return None, explicit_exchange
     suffix_symbol = normalize_suffix_market_symbol(text)
     if suffix_symbol is not None:
-        return suffix_symbol
+        return suffix_symbol, explicit_exchange
     if any(text.endswith(suffix) for suffix in _PRESERVE_SUFFIXES):
-        return None
+        return None, explicit_exchange
     if re.match(r"^[A-Z]{1,5}(?:\.(?:US|[A-Z]))?$", text):
-        return text
-    stripped_suffix = _strip_exchange_suffix(text)
-    if stripped_suffix is not None:
-        return stripped_suffix
-    # Support exchange-prefixed codes: SH600519 -> 600519, BJ920493 -> 920493
-    stripped = _strip_exchange_prefix(text)
-    if stripped is not None:
-        return stripped
-    return None
+        return text, explicit_exchange
+    if explicit_code is not None:
+        return explicit_code, explicit_exchange
+    return None, explicit_exchange
 
 
-def build_hk_market_variants(hk_digits: str) -> List[str]:
+def _build_hk_market_variants(hk_digits: str) -> List[str]:
     """Build normalized HK variants for padded and legacy code shapes."""
     if not hk_digits.isdigit() or not hk_digits:
         return []
@@ -192,7 +173,11 @@ def build_hk_market_variants(hk_digits: str) -> List[str]:
     return variants
 
 
-def build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]:
+def _build_market_code_variants(
+    raw_code: str,
+    normalized_code: str,
+    explicit_exchange: str,
+) -> List[str]:
     """Return additional market-formatted variants for stored-code matching."""
     variants: List[str] = []
     if not raw_code:
@@ -200,8 +185,6 @@ def build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]
 
     raw_code_upper = raw_code.upper()
     normalized_upper = normalized_code.upper() if normalized_code else ""
-    if _has_invalid_explicit_exchange(raw_code_upper):
-        return []
 
     def _add_us_variants(code: str) -> None:
         if not code:
@@ -219,11 +202,11 @@ def build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]
         _add_us_variants(normalized_upper)
 
     if normalized_upper.isdigit() and len(normalized_upper) == 6:
-        if raw_code_upper.startswith(("SH", "SS")) or raw_code_upper.endswith((".SH", ".SS")):
+        if explicit_exchange in {"SH", "SS"}:
             exchange = "SH"
-        elif raw_code_upper.startswith("SZ") or raw_code_upper.endswith(".SZ"):
+        elif explicit_exchange == "SZ":
             exchange = "SZ"
-        elif raw_code_upper.startswith("BJ") or raw_code_upper.endswith(".BJ") or is_bse_code(normalized_upper):
+        elif explicit_exchange == "BJ" or is_bse_code(normalized_upper):
             exchange = "BJ"
         elif normalized_upper.startswith(("5", "6", "9")):
             exchange = "SH"
@@ -246,14 +229,12 @@ def build_market_code_variants(raw_code: str, normalized_code: str) -> List[str]
                 ]
             )
 
-    if normalized_upper.startswith("HK") and normalized_upper[2:].isdigit() and len(normalized_upper[2:]) <= 5:
-        variants.extend(build_hk_market_variants(normalized_upper[2:]))
-    if raw_code_upper.startswith("HK.") and raw_code_upper[3:].isdigit() and len(raw_code_upper[3:]) <= 5:
-        variants.extend(build_hk_market_variants(raw_code_upper[3:]))
-    if raw_code_upper.endswith(".HK") and raw_code_upper[:-3].isdigit() and 1 <= len(raw_code_upper[:-3]) <= 5:
-        variants.extend(build_hk_market_variants(raw_code_upper[:-3]))
+    if explicit_exchange == "HK" and normalized_upper.isdigit():
+        variants.extend(_build_hk_market_variants(normalized_upper))
+    elif normalized_upper.startswith("HK") and normalized_upper[2:].isdigit() and len(normalized_upper[2:]) <= 5:
+        variants.extend(_build_hk_market_variants(normalized_upper[2:]))
     if raw_code_upper.isdigit() and len(raw_code_upper) in (4, 5):
-        variants.extend(build_hk_market_variants(raw_code_upper))
+        variants.extend(_build_hk_market_variants(raw_code_upper))
 
     return variants
 
@@ -263,17 +244,22 @@ def build_daily_code_candidates(code: Optional[str]) -> List[str]:
     raw_code = str(code or "").strip().upper()
     if not raw_code:
         return []
-    if _has_invalid_explicit_exchange(raw_code):
-        raise InvalidStockCodeError(
-            f"explicit exchange conflicts with stock code: {raw_code}"
-        )
+    normalized_code, explicit_exchange = _normalize_code_and_exchange(raw_code)
+    if normalized_code is None:
+        return []
 
     candidates = [raw_code]
-    for candidate in (normalize_stock_code(raw_code), normalize_code(raw_code)):
+    for candidate in (normalize_stock_code(raw_code), normalized_code):
         if candidate and candidate != raw_code:
             candidates.append(candidate)
     for candidate in list(candidates):
-        candidates.extend(build_market_code_variants(raw_code, candidate))
+        candidates.extend(
+            _build_market_code_variants(
+                raw_code,
+                candidate,
+                explicit_exchange,
+            )
+        )
     return list(dict.fromkeys(candidate for candidate in candidates if candidate))
 
 
