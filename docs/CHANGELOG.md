@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] `.env.example` 与 `.github/workflows/00-daily-analysis.yml` 同步映射 `TUSHARE_HTTP_URL`，避免出现"配置项有但 workflow 漏映射"的半修状态
 - [修复] #2051 PR Review 的特权 `pull_request_target` 流程不再检出 fork PR head：敏感文件、标签、报告与 AI 审查统一通过 GitHub API 将 PR 元数据和 diff 作为数据读取，只执行主分支可信脚本；Python 语法、Flake8、确定性检查和离线测试继续由无 secrets 的 `pull_request` CI / `backend-gate` 执行，兼容 `actions/checkout` 新增的 fork checkout 安全保护。
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
-- [新功能] Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 字符串临时选择单个或多个复盘市场；一次性覆盖不修改全局配置，并在任务结构化结果与 History 中保留实际执行市场。
+- [新功能] Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 字符串临时选择单个或多个复盘市场；一次性覆盖不读取或修改全局配置，“服务器默认”由后端运行时解析，并在任务结构化结果与 History 中保留实际执行市场。
 
 ## [3.27.0] - 2026-07-19
 

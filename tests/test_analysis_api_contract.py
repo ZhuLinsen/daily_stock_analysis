@@ -334,6 +334,33 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(run_market_review.call_args.kwargs["override_region"], "jp,kr")
         self.assertEqual(config.market_review_region, "cn")
 
+    def test_market_review_background_uses_runtime_region_when_request_omits_override(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        runtime_config = SimpleNamespace(market_review_region="us")
+        with patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ), patch(
+            "src.core.market_review.run_market_review",
+            return_value="report",
+        ) as run_market_review, patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+        ):
+            analysis_endpoint_module._run_market_review_background(
+                send_notification=False,
+                override_region=None,
+                config=runtime_config,
+            )
+
+        call_kwargs = run_market_review.call_args.kwargs
+        self.assertIs(call_kwargs["config"], runtime_config)
+        self.assertIsNone(call_kwargs["override_region"])
+        self.assertEqual(call_kwargs["config"].market_review_region, "us")
+
     def test_trigger_market_review_rejects_duplicate_submission(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")

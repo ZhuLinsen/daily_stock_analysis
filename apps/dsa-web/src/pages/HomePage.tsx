@@ -187,7 +187,6 @@ const HomePage: React.FC = () => {
   const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
   const [marketReviewPayload, setMarketReviewPayload] = useState<MarketReviewPayload | null>(null);
   const [marketReviewRegionOverride, setMarketReviewRegionOverride] = useState<string | undefined>();
-  const [marketReviewDefaultRegion, setMarketReviewDefaultRegion] = useState<string | null>(null);
   const [analysisSkills, setAnalysisSkills] = useState<SkillInfo[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
@@ -332,27 +331,6 @@ const HomePage: React.FC = () => {
       .catch(() => {
         if (active) {
           setSetupStatus(null);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    systemConfigApi.getConfig(false)
-      .then((response) => {
-        if (!active) {
-          return;
-        }
-        const regionItem = response.items.find((item) => item.key === 'MARKET_REVIEW_REGION');
-        setMarketReviewDefaultRegion(regionItem?.value ?? null);
-      })
-      .catch(() => {
-        if (active) {
-          setMarketReviewDefaultRegion(null);
         }
       });
 
@@ -1377,7 +1355,6 @@ const HomePage: React.FC = () => {
             <div className="flex min-w-0 flex-wrap items-center gap-2.5">
               <MarketReviewRegionSelector
                 value={marketReviewRegionOverride}
-                serverDefaultRegion={marketReviewDefaultRegion}
                 disabled={isSubmittingMarketReview}
                 onChange={setMarketReviewRegionOverride}
               />

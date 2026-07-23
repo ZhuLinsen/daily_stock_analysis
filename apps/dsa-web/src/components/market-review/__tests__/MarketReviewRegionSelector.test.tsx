@@ -21,26 +21,25 @@ describe('MarketReviewRegionSelector', () => {
     expect(serializeMarketReviewRegions(['cn', 'hk', 'us', 'jp', 'kr'])).toBe('both');
   });
 
-  it('shows the server default and emits a canonical one-time override', () => {
+  it('keeps the runtime-resolved server default opaque and emits a canonical override', () => {
     const onChange = vi.fn();
     render(
       <UiLanguageProvider>
-        <MarketReviewRegionSelector
-          serverDefaultRegion="cn,us"
-          onChange={onChange}
-        />
+        <MarketReviewRegionSelector onChange={onChange} />
       </UiLanguageProvider>,
     );
 
     expect(screen.getByRole('button', { name: '选择大盘复盘市场' })).toHaveTextContent(
-      '服务器默认 · A 股 + 美股',
+      '服务器默认',
     );
+    expect(screen.getByRole('button', { name: '选择大盘复盘市场' })).not.toHaveTextContent('A 股');
     fireEvent.click(screen.getByRole('button', { name: '选择大盘复盘市场' }));
-    expect(screen.getByRole('checkbox', { name: /A 股/ })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /美股/ })).toBeChecked();
+    expect(screen.getByText('由服务器在提交时决定')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /A 股/ })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /美股/ })).not.toBeChecked();
 
     fireEvent.click(screen.getByRole('checkbox', { name: /日股/ }));
-    expect(onChange).toHaveBeenLastCalledWith('cn,us,jp');
+    expect(onChange).toHaveBeenLastCalledWith('jp');
   });
 
   it('supports all markets and restoring the server default', () => {
@@ -49,7 +48,6 @@ describe('MarketReviewRegionSelector', () => {
       <UiLanguageProvider>
         <MarketReviewRegionSelector
           value="us"
-          serverDefaultRegion="cn"
           onChange={onChange}
         />
       </UiLanguageProvider>,

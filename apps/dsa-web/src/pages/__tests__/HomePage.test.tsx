@@ -218,16 +218,6 @@ describe('HomePage', () => {
       tasks: [],
     });
     vi.mocked(systemConfigApi.getWatchlist).mockResolvedValue([]);
-    vi.mocked(systemConfigApi.getConfig).mockResolvedValue({
-      configVersion: 'v1',
-      maskToken: '******',
-      items: [{
-        key: 'MARKET_REVIEW_REGION',
-        value: 'cn',
-        rawValueExists: true,
-        isMasked: false,
-      }],
-    });
     vi.mocked(agentApi.getSkills).mockResolvedValue({ skills: [], default_skill_id: '' });
     vi.mocked(historyApi.getDiagnostics).mockResolvedValue({
       status: 'unknown',
@@ -1460,6 +1450,11 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    const regionSelector = await screen.findByRole('button', { name: '选择大盘复盘市场' });
+    expect(regionSelector).toHaveTextContent('服务器默认');
+    expect(regionSelector).not.toHaveTextContent('A 股');
+    expect(systemConfigApi.getConfig).not.toHaveBeenCalled();
+
     fireEvent.click(await screen.findByRole('button', { name: '大盘复盘' }));
 
     await waitFor(() => {
@@ -1471,16 +1466,6 @@ describe('HomePage', () => {
   });
 
   it('submits a one-time multi-market override without saving system config', async () => {
-    vi.mocked(systemConfigApi.getConfig).mockResolvedValue({
-      configVersion: 'v1',
-      maskToken: '******',
-      items: [{
-        key: 'MARKET_REVIEW_REGION',
-        value: 'cn',
-        rawValueExists: true,
-        isMasked: false,
-      }],
-    });
     vi.mocked(historyApi.getList).mockResolvedValue({
       total: 0,
       page: 1,
@@ -1507,6 +1492,7 @@ describe('HomePage', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: '选择大盘复盘市场' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /A 股/ }));
     fireEvent.click(screen.getByRole('checkbox', { name: /美股/ }));
     fireEvent.click(screen.getByRole('button', { name: '大盘复盘' }));
 
@@ -1516,7 +1502,7 @@ describe('HomePage', () => {
         region: 'cn,us',
       });
     });
-    expect(systemConfigApi.getConfig).toHaveBeenCalledWith(false);
+    expect(systemConfigApi.getConfig).not.toHaveBeenCalled();
   });
 
   it('keeps report language unset when only the UI language is English', async () => {
