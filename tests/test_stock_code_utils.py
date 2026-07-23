@@ -9,10 +9,34 @@ import pytest
 from unittest.mock import patch
 
 from src.services.stock_code_utils import (
+    InvalidStockCodeError,
+    build_daily_code_candidates,
     is_code_like,
     normalize_code,
     resolve_index_stock_code_for_analysis,
 )
+
+
+class TestBuildDailyCodeCandidates:
+    @pytest.mark.parametrize("code", ["600519.SZ", "000001.SH"])
+    def test_rejects_conflicting_explicit_exchange_before_any_candidate(self, code):
+        with pytest.raises(InvalidStockCodeError, match="explicit exchange conflicts"):
+            build_daily_code_candidates(code)
+
+    @pytest.mark.parametrize(
+        ("code", "required_candidates"),
+        [
+            ("600519.SH", {"600519.SH", "600519"}),
+            ("600519", {"600519", "600519.SH"}),
+            ("000001.SZ", {"000001.SZ", "000001"}),
+        ],
+    )
+    def test_preserves_valid_explicit_and_legacy_bare_codes(
+        self,
+        code,
+        required_candidates,
+    ):
+        assert set(build_daily_code_candidates(code)) >= required_candidates
 
 
 class TestIsCodeLike:
