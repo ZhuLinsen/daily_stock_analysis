@@ -42,7 +42,19 @@ def _add_signal(
     horizon: str = "3d",
     session_date: str = "2024-01-02",
     status: str = "active",
+    decision_profile: str | None = None,
+    profile_source: str | None = None,
+    metadata_data_quality: str | None = None,
+    data_quality_summary_json: str | None = '{"level": "good"}',
 ) -> int:
+    metadata = {
+        "market_phase_summary": {"session_date": session_date},
+        "holding_state": "holding",
+    }
+    if profile_source is not None:
+        metadata["profile_source"] = profile_source
+    if metadata_data_quality is not None:
+        metadata["data_quality_level"] = metadata_data_quality
     with db.session_scope() as session:
         row = DecisionSignalRecord(
             stock_code=code,
@@ -51,23 +63,84 @@ def _add_signal(
             source_type="analysis",
             source_report_id=1001,
             trace_id=f"trace-{market}-{code}-{action}-{horizon}-{session_date}",
+            decision_profile=decision_profile,
             market_phase="postmarket",
             trigger_source="api",
             action=action,
             action_label=action,
             horizon=horizon,
             reason="unit test",
-            data_quality_summary_json=json.dumps({"level": "good"}),
-            metadata_json=json.dumps({
-                "market_phase_summary": {"session_date": session_date},
-                "holding_state": "holding",
-            }),
+            data_quality_summary_json=data_quality_summary_json,
+            metadata_json=json.dumps(metadata),
             plan_quality="complete",
             status=status,
         )
         session.add(row)
         session.flush()
         return int(row.id)
+
+
+def _seed_calibration_outcomes(
+    db: DatabaseManager,
+    *,
+    count: int,
+    decision_profile: str | None,
+    action: str,
+    horizon: str,
+    market_phase: str,
+    data_quality_level: str,
+    profile_source: str | None,
+    outcomes: tuple[str, ...] = ("hit",),
+) -> None:
+    with db.session_scope() as session:
+        for index in range(count):
+            outcome_value = outcomes[index % len(outcomes)]
+            signal = DecisionSignalRecord(
+                stock_code=f"T{index:05d}",
+                stock_name="Calibration fixture",
+                market="cn",
+                source_type="analysis",
+                source_report_id=10_000 + index,
+                trace_id=f"calibration-{decision_profile}-{action}-{horizon}-{profile_source}-{index}",
+                decision_profile=decision_profile,
+                market_phase=market_phase,
+                trigger_source="api",
+                action=action,
+                action_label=action,
+                horizon=horizon,
+                reason="deterministic calibration boundary fixture",
+                data_quality_summary_json=json.dumps({"level": data_quality_level}),
+                metadata_json=json.dumps({"profile_source": profile_source}) if profile_source is not None else None,
+                plan_quality="complete",
+                status="active",
+            )
+            session.add(signal)
+            session.flush()
+            stock_return_pct = {"hit": 2.0, "miss": -2.0, "neutral": 0.0}[outcome_value]
+            session.add(DecisionSignalOutcomeRecord(
+                signal_id=signal.id,
+                horizon=horizon,
+                engine_version="decision-signal-v1",
+                eval_status="completed",
+                outcome=outcome_value,
+                direction_expected="not_up" if action in {"sell", "reduce", "avoid"} else "up",
+                direction_correct=outcome_value == "hit" if outcome_value != "neutral" else None,
+                anchor_date=date(2024, 1, 2),
+                eval_window_days=3,
+                start_price=100.0,
+                end_close=100.0 + stock_return_pct,
+                max_high=108.0,
+                min_low=94.0,
+                stock_return_pct=stock_return_pct,
+                action=action,
+                market="cn",
+                market_phase=market_phase,
+                source_type="analysis",
+                source_agent="fixture",
+                plan_quality="complete",
+                data_quality_level=data_quality_level,
+                holding_state="holding",
+            ))
 
 
 def _seed_bars(
@@ -132,6 +205,237 @@ def test_run_outcomes_evaluates_supported_horizons_and_stats(isolated_db) -> Non
     assert stats["hit"] == 4
     assert stats["breakdowns"]["action"][0]["value"] == "buy"
     assert stats["breakdowns"]["holding_state"][0]["value"] == "holding"
+
+
+def test_profile_calibration_groups_six_dimensions_and_gates_each_bucket(isolated_db) -> None:
+    _seed_calibration_outcomes(
+        isolated_db,
+        count=30,
+        decision_profile="balanced",
+        action="buy",
+        horizon="3d",
+        market_phase="postmarket",
+        data_quality_level="good",
+        profile_source="auto_default",
+        outcomes=("hit", "miss", "neutral"),
+    )
+    _seed_calibration_outcomes(
+        isolated_db,
+        count=29,
+        decision_profile="balanced",
+        action="sell",
+        horizon="10d",
+        market_phase="postmarket",
+        data_quality_level="good",
+        profile_source="user_selected",
+        outcomes=("hit", "miss"),
+    )
+    _seed_calibration_outcomes(
+        isolated_db,
+        count=1,
+        decision_profile=None,
+        action="hold",
+        horizon="5d",
+        market_phase="intraday",
+        data_quality_level="medium",
+        profile_source="legacy_unknown",
+    )
+
+    stats = DecisionSignalOutcomeService(db_manager=isolated_db).get_stats()
+    calibration = stats["profile_calibration"]
+    breakdowns = calibration["breakdowns"]
+
+    assert calibration["minimum_completed_sample_size"] == 30
+    assert stats["total"] == 60
+    assert stats["completed"] == 60
+    assert stats["breakdowns"]["action"][0]["value"] == "buy"
+    assert set(breakdowns) == {
+        "decision_profile",
+        "decision_profile_action",
+        "decision_profile_horizon",
+        "decision_profile_market_phase",
+        "decision_profile_data_quality_level",
+        "profile_source",
+    }
+
+    expected_dimension_keys = {
+        "decision_profile": {"decision_profile"},
+        "decision_profile_action": {"decision_profile", "action"},
+        "decision_profile_horizon": {"decision_profile", "horizon"},
+        "decision_profile_market_phase": {"decision_profile", "market_phase"},
+        "decision_profile_data_quality_level": {"decision_profile", "data_quality_level"},
+        "profile_source": {"profile_source"},
+    }
+    for name, buckets in breakdowns.items():
+        assert buckets
+        assert all(set(bucket["dimensions"]) == expected_dimension_keys[name] for bucket in buckets)
+
+    profile_buckets = {
+        bucket["dimensions"]["decision_profile"]: bucket
+        for bucket in breakdowns["decision_profile"]
+    }
+    assert profile_buckets["balanced"]["completed"] == 59
+    assert profile_buckets["balanced"]["sample_sufficient"] is True
+    assert profile_buckets["unknown"]["completed"] == 1
+    assert profile_buckets["unknown"]["sample_sufficient"] is False
+    assert profile_buckets["unknown"]["hit_rate_pct"] is None
+
+    action_buckets = {
+        (bucket["dimensions"]["decision_profile"], bucket["dimensions"]["action"]): bucket
+        for bucket in breakdowns["decision_profile_action"]
+    }
+    buy = action_buckets[("balanced", "buy")]
+    sell = action_buckets[("balanced", "sell")]
+    assert buy["completed"] == 30
+    assert buy["hit"] == 10
+    assert buy["miss"] == 10
+    assert buy["neutral"] == 10
+    assert buy["sample_sufficient"] is True
+    assert buy["hit_rate_pct"] == 50.0
+    assert buy["miss_rate_pct"] == 50.0
+    assert buy["unable_rate_pct"] == 0.0
+    assert buy["avg_stock_return_pct"] == 0.0
+    assert buy["max_adverse_excursion_pct"] == 6.0
+    assert sell["completed"] == 29
+    assert sell["sample_sufficient"] is False
+    for metric in (
+        "hit_rate_pct",
+        "avg_stock_return_pct",
+        "miss_rate_pct",
+        "unable_rate_pct",
+        "max_adverse_excursion_pct",
+    ):
+        assert sell[metric] is None
+
+    horizon_buckets = {
+        (bucket["dimensions"]["decision_profile"], bucket["dimensions"]["horizon"]): bucket
+        for bucket in breakdowns["decision_profile_horizon"]
+    }
+    assert horizon_buckets[("balanced", "3d")]["sample_sufficient"] is True
+    assert horizon_buckets[("balanced", "10d")]["sample_sufficient"] is False
+    source_buckets = {
+        bucket["dimensions"]["profile_source"]: bucket
+        for bucket in breakdowns["profile_source"]
+    }
+    assert source_buckets["auto_default"]["completed"] == 30
+    assert source_buckets["auto_default"]["sample_sufficient"] is True
+    assert source_buckets["user_selected"]["completed"] == 29
+    assert source_buckets["user_selected"]["sample_sufficient"] is False
+
+    filtered = DecisionSignalOutcomeService(db_manager=isolated_db).get_stats(horizons=["3d"])
+    filtered_horizons = filtered["profile_calibration"]["breakdowns"]["decision_profile_horizon"]
+    assert filtered["total"] == 30
+    assert [bucket["dimensions"] for bucket in filtered_horizons] == [
+        {"decision_profile": "balanced", "horizon": "3d"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("metadata_json", "expected"),
+    [
+        ('{"profile_source": "auto_default"}', "auto_default"),
+        ('{"profile_source": "backfill_defaulted"}', "backfill_defaulted"),
+        ('{"profile_source": "legacy_unknown"}', "legacy_unknown"),
+        ('{"profile_source": "user_selected"}', "user_selected"),
+        ('{"profile_source": "invalid"}', "unknown"),
+        ('{"profile_source": 1}', "unknown"),
+        ('["user_selected"]', "unknown"),
+        ('{"profile_source":', "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_profile_source_normalization(isolated_db, metadata_json, expected) -> None:
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    assert service._profile_source(metadata_json) == expected
+
+
+@pytest.mark.parametrize(
+    ("summary_json", "metadata_quality", "expected"),
+    [
+        ('{"level": "good"}', "poor", "good"),
+        ('{"level": "unknown"}', "high", "unknown"),
+        ('{"data_quality": {"level": "usable"}}', "poor", "usable"),
+        ('{}', "usable", "medium"),
+        (None, "good", "high"),
+        ('{"level":', "good", "unknown"),
+        (None, "invalid", "unknown"),
+    ],
+)
+def test_data_quality_snapshot_preserves_summary_and_narrowly_falls_back_to_metadata(
+    isolated_db,
+    summary_json,
+    metadata_quality,
+    expected,
+) -> None:
+    signal = DecisionSignalRecord(
+        data_quality_summary_json=summary_json,
+        metadata_json=json.dumps({"data_quality_level": metadata_quality}),
+    )
+
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    assert service._data_quality_level(signal) == expected
+
+
+def test_real_outcome_uses_metadata_quality_and_profile_source_without_summary(isolated_db) -> None:
+    signal_id = _add_signal(
+        isolated_db,
+        action="hold",
+        horizon="3d",
+        decision_profile="aggressive",
+        profile_source="user_selected",
+        metadata_data_quality="good",
+        data_quality_summary_json=None,
+    )
+    _seed_bars(isolated_db, closes=[99.0, 98.0, 101.0])
+    service = DecisionSignalOutcomeService(db_manager=isolated_db)
+
+    result = service.run_outcomes(signal_id=signal_id)
+    stats = service.get_stats()
+
+    assert result["items"][0]["eval_status"] == "completed"
+    assert result["items"][0]["data_quality_level"] == "high"
+    profile_bucket = stats["profile_calibration"]["breakdowns"]["decision_profile"][0]
+    quality_bucket = stats["profile_calibration"]["breakdowns"]["decision_profile_data_quality_level"][0]
+    source_bucket = stats["profile_calibration"]["breakdowns"]["profile_source"][0]
+    assert profile_bucket["dimensions"] == {"decision_profile": "aggressive"}
+    assert quality_bucket["dimensions"] == {
+        "decision_profile": "aggressive",
+        "data_quality_level": "high",
+    }
+    assert source_bucket["dimensions"] == {"profile_source": "user_selected"}
+    with isolated_db.session_scope() as session:
+        outcome = session.query(DecisionSignalOutcomeRecord).filter_by(signal_id=signal_id).one()
+        assert service._row_max_adverse_excursion_pct(outcome) == 3.0
+
+
+@pytest.mark.parametrize("action", ["buy", "add", "hold", "watch", "alert"])
+def test_long_side_max_adverse_excursion_formula(action) -> None:
+    row = DecisionSignalOutcomeRecord(action=action, start_price=100.0, min_low=91.5, max_high=110.0)
+
+    assert DecisionSignalOutcomeService._row_max_adverse_excursion_pct(row) == 8.5
+
+
+@pytest.mark.parametrize("action", ["sell", "reduce", "avoid"])
+def test_defensive_max_adverse_excursion_formula(action) -> None:
+    row = DecisionSignalOutcomeRecord(action=action, start_price=100.0, min_low=91.5, max_high=112.0)
+
+    assert DecisionSignalOutcomeService._row_max_adverse_excursion_pct(row) == 12.0
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        DecisionSignalOutcomeRecord(action="buy", start_price=None, min_low=90.0),
+        DecisionSignalOutcomeRecord(action="buy", start_price=0.0, min_low=90.0),
+        DecisionSignalOutcomeRecord(action="buy", start_price=100.0, min_low=float("nan")),
+        DecisionSignalOutcomeRecord(action="sell", start_price=100.0, max_high=float("inf")),
+        DecisionSignalOutcomeRecord(action="unknown", start_price=100.0, min_low=90.0, max_high=110.0),
+    ],
+)
+def test_max_adverse_excursion_returns_none_for_incomplete_or_invalid_rows(row) -> None:
+    assert DecisionSignalOutcomeService._row_max_adverse_excursion_pct(row) is None
 
 
 def test_stats_default_statuses_exclude_archived(isolated_db) -> None:
@@ -210,6 +514,47 @@ def test_unable_reasons_are_persisted_for_non_directional_and_unsupported_horizo
     assert watch_skipped["skipped"] == 1
     assert intraday_skipped["evaluated"] == 0
     assert intraday_skipped["skipped"] == 1
+
+
+def test_watch_and_alert_outcomes_remain_unable_without_market_reads(isolated_db) -> None:
+    class FailOnMarketRead:
+        def get_daily_on_date(self, **_kwargs):
+            raise AssertionError("watch/alert outcome must not read anchor prices")
+
+        def get_forward_bars(self, **_kwargs):
+            raise AssertionError("watch/alert outcome must not read forward bars")
+
+    watch_id = _add_signal(
+        isolated_db,
+        code="000101",
+        action="watch",
+        decision_profile="balanced",
+        profile_source="auto_default",
+    )
+    alert_id = _add_signal(
+        isolated_db,
+        code="000102",
+        action="alert",
+        decision_profile="balanced",
+        profile_source="auto_default",
+    )
+    service = DecisionSignalOutcomeService(
+        db_manager=isolated_db,
+        stock_repo=FailOnMarketRead(),
+    )
+
+    watch = service.run_outcomes(signal_id=watch_id)["items"][0]
+    alert = service.run_outcomes(signal_id=alert_id)["items"][0]
+    stats = service.get_stats()
+
+    assert watch["eval_status"] == "unable"
+    assert alert["eval_status"] == "unable"
+    assert watch["start_price"] is None
+    assert alert["start_price"] is None
+    profile_bucket = stats["profile_calibration"]["breakdowns"]["decision_profile"][0]
+    assert profile_bucket["completed"] == 0
+    assert profile_bucket["total"] == 2
+    assert profile_bucket["max_adverse_excursion_pct"] is None
 
 
 def test_missing_anchor_price_is_retried_after_data_arrives(isolated_db) -> None:

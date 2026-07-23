@@ -593,6 +593,33 @@ describe('decisionSignalsApi', () => {
             },
           ],
         },
+        profile_calibration: {
+          minimum_completed_sample_size: 30,
+          breakdowns: {
+            decision_profile: [
+              {
+                dimensions: { decision_profile: 'balanced' },
+                total: 30,
+                completed: 30,
+                unable: 0,
+                hit: 15,
+                miss: 15,
+                neutral: 0,
+                sample_sufficient: true,
+                hit_rate_pct: 50,
+                avg_stock_return_pct: 1.25,
+                miss_rate_pct: 50,
+                unable_rate_pct: 0,
+                max_adverse_excursion_pct: 4.5,
+              },
+            ],
+            decision_profile_action: null,
+            decision_profile_horizon: [],
+            decision_profile_market_phase: [],
+            decision_profile_data_quality_level: [],
+            profile_source: [],
+          },
+        },
       },
     });
 
@@ -618,6 +645,38 @@ describe('decisionSignalsApi', () => {
     expect(stats.hitRatePct).toBe(50);
     expect(stats.unableReasons).toEqual({ missing_anchor_price: 1 });
     expect(stats.breakdowns.action[0].unableReasons).toEqual({ missing_anchor_price: 1 });
+    expect(stats.profileCalibration?.minimumCompletedSampleSize).toBe(30);
+    expect(stats.profileCalibration?.breakdowns.decisionProfile[0]).toEqual(expect.objectContaining({
+      dimensions: { decisionProfile: 'balanced' },
+      sampleSufficient: true,
+      maxAdverseExcursionPct: 4.5,
+    }));
+    expect(stats.profileCalibration?.breakdowns.decisionProfileAction).toEqual([]);
+  });
+
+  it('keeps legacy outcome stats usable when profile calibration is absent', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        engine_version: 'decision-signal-v1',
+        statuses: ['active'],
+        total: 0,
+        completed: 0,
+        unable: 0,
+        hit: 0,
+        miss: 0,
+        neutral: 0,
+        hit_rate_pct: null,
+        avg_stock_return_pct: null,
+        unable_reasons: {},
+        breakdowns: {},
+      },
+    });
+
+    const stats = await decisionSignalsApi.getOutcomeStats();
+
+    expect(stats.profileCalibration).toBeUndefined();
+    expect(stats.breakdowns).toEqual({});
+    expect(stats.unableReasons).toEqual({});
   });
 
   it('gets per-signal outcomes and upserts feedback', async () => {

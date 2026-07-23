@@ -258,6 +258,36 @@ export interface DecisionSignalOutcomeStatsBucket {
   unableReasons: Record<string, number>;
 }
 
+export interface DecisionSignalProfileCalibrationBucket {
+  dimensions: Record<string, string>;
+  total: number;
+  completed: number;
+  unable: number;
+  hit: number;
+  miss: number;
+  neutral: number;
+  sampleSufficient: boolean;
+  hitRatePct: number | null;
+  avgStockReturnPct: number | null;
+  missRatePct: number | null;
+  unableRatePct: number | null;
+  maxAdverseExcursionPct: number | null;
+}
+
+export interface DecisionSignalProfileCalibrationBreakdowns {
+  decisionProfile: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileAction: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileHorizon: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileMarketPhase: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileDataQualityLevel: DecisionSignalProfileCalibrationBucket[];
+  profileSource: DecisionSignalProfileCalibrationBucket[];
+}
+
+export interface DecisionSignalProfileCalibration {
+  minimumCompletedSampleSize: number;
+  breakdowns: DecisionSignalProfileCalibrationBreakdowns;
+}
+
 export interface DecisionSignalOutcomeStatsResponse {
   engineVersion: string;
   horizons?: DecisionSignalHorizon[] | null;
@@ -272,6 +302,7 @@ export interface DecisionSignalOutcomeStatsResponse {
   avgStockReturnPct?: number | null;
   unableReasons: Record<string, number>;
   breakdowns: Record<string, DecisionSignalOutcomeStatsBucket[]>;
+  profileCalibration?: DecisionSignalProfileCalibration;
 }
 
 export interface DecisionSignalOutcomeStatsParams {
