@@ -512,6 +512,47 @@ jobs:
             echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
 
+          # ===== alphasift 多策略选股（5策略×Top3，去重取10）=====
+          echo "🔍 开始 alphasift 多策略选股..."
+          STRATEGIES="dual_low balanced_alpha momentum_quality quality_value oversold_reversal"
+          ALL_CODES=""
+          for STRATEGY in $STRATEGIES; do
+            echo "   跑策略: $STRATEGY (Top 3)"
+            alphasift screen "$STRATEGY" --no-llm --no-post-analysis --max-output 3 --json > "/tmp/sel_${STRATEGY}.json" 2>/dev/null || true
+            CODES=$(python -c "
+import json
+try:
+    d = json.load(open('/tmp/sel_${STRATEGY}.json'))
+    picks = d.get('picks', [])
+    print(','.join([p.get('code','') for p in picks if p.get('code')]))
+except:
+    print('')
+" 2>/dev/null)
+            if [ -n "$CODES" ]; then
+              ALL_CODES="${ALL_CODES},${CODES}"
+              echo "   ✅ $STRATEGY: $CODES"
+            else
+              echo "   ⚠️ $STRATEGY: 无候选"
+            fi
+          done
+          # 去重，取前 10 只
+          SELECTED=$(python -c "
+codes = '${ALL_CODES}'.strip(',').split(',')
+seen = []
+for c in codes:
+    c = c.strip()
+    if c and c not in seen:
+        seen.append(c)
+print(','.join(seen[:10]))
+" 2>/dev/null)
+          if [ -n "$SELECTED" ]; then
+            export STOCK_LIST="$SELECTED"
+            echo "✅ 多策略选股完成（去重后 Top 10）: $SELECTED"
+          else
+            echo "⚠️ 选股全部失败，使用默认 STOCK_LIST: $STOCK_LIST"
+          fi
+          # ===== 选股结束 =====
+
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
