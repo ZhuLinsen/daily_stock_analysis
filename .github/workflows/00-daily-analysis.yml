@@ -505,7 +505,7 @@ jobs:
           echo "=========================================="
           echo ""
           
-                    # 构建命令行参数
+          # 构建命令行参数
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
             FORCE_RUN_ARG="--force-run"
@@ -519,15 +519,7 @@ jobs:
           for STRATEGY in $STRATEGIES; do
             echo "   跑策略: $STRATEGY (Top 3)"
             alphasift screen "$STRATEGY" --no-llm --no-post-analysis --max-output 3 --json > "/tmp/sel_${STRATEGY}.json" 2>/dev/null || true
-            CODES=$(python -c "
-            import json
-            try:
-                d = json.load(open('/tmp/sel_${STRATEGY}.json'))
-                picks = d.get('picks', [])
-                print(','.join([p.get('code','') for p in picks if p.get('code')]))
-            except:
-                print('')
-            " 2>/dev/null)
+            CODES=$(python -c "import json; d=json.load(open('/tmp/sel_${STRATEGY}.json')); print(','.join([p.get('code','') for p in d.get('picks',[]) if p.get('code')]))" 2>/dev/null || echo "")
             if [ -n "$CODES" ]; then
               ALL_CODES="${ALL_CODES},${CODES}"
               echo "   ✅ $STRATEGY: $CODES"
@@ -535,15 +527,7 @@ jobs:
               echo "   ⚠️ $STRATEGY: 无候选"
             fi
           done
-          SELECTED=$(python -c "
-          codes = '${ALL_CODES}'.strip(',').split(',')
-          seen = []
-          for c in codes:
-              c = c.strip()
-              if c and c not in seen:
-                  seen.append(c)
-          print(','.join(seen[:10]))
-          " 2>/dev/null)
+          SELECTED=$(python -c "codes='${ALL_CODES}'.strip(',').split(','); seen=[]; [seen.append(c.strip()) for c in codes if c.strip() and c.strip() not in seen]; print(','.join(seen[:10]))" 2>/dev/null || echo "")
           if [ -n "$SELECTED" ]; then
             export STOCK_LIST="$SELECTED"
             echo "✅ 多策略选股完成（去重后 Top 10）: $SELECTED"
