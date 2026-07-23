@@ -386,3 +386,116 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
         self.assertEqual(result.trend_prediction, "Bullish")
         self.assertEqual(result.operation_advice, "Buy")
         self.assertEqual(result.confidence_level, "Low")
+
+    def test_parse_response_accepts_prose_around_explicit_json_fence(self) -> None:
+        """单个显式 ```` ```json ```` 围栏外的说明文字（markdown 报告）不应判为歧义。"""
+        analyzer = GeminiAnalyzer()
+        response = """## 凯盛新能（600876.SH）决策仪表盘
+
+### ⚠️ 数据情况说明
+- 当前为非交易日，基于上一完整交易日数据
+
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 28,
+  "trend_prediction": "看空",
+  "operation_advice": "观望",
+  "analysis_summary": "空头排列，观望"
+}
+```
+
+## 📋 决策要点速览
+
+| 检查项 | 状态 |
+|--------|------|
+| 多头排列 | ❌ |"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.sentiment_score, 28)
+
+    def test_parse_response_rejects_explicit_json_fence_with_extra_json_outside(self) -> None:
+        """显式 ```` ```json ```` 围栏外存在另一个裸 JSON 候选，必须继续报歧义并 fail closed。
+
+        防止两个候选给出不同评分/建议时被静默接受其中一个并持久化错误结果。
+        """
+        analyzer = GeminiAnalyzer()
+        response = """## 标题
+```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 28,
+  "trend_prediction": "看空",
+  "operation_advice": "观望",
+  "analysis_summary": "空头排列"
+}
+```
+说明文字里又漏出了一个独立 JSON：{"stock_name": "other", "sentiment_score": 99}
+"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertFalse(result.success)
+        self.assertIn("JSON", result.error_message)
+
+    def test_parse_response_rejects_explicit_json_fence_with_isolated_json_outside(self) -> None:
+        """围栏外恰好是单个裸 JSON 对象（周围无文本）也必须继续报歧义。
+
+        该场景会让现有的 ``_contains_embedded_json_object`` 返回 False，因此单独验证
+        ``_contains_json_object`` 守卫真正生效。
+        """
+        analyzer = GeminiAnalyzer()
+        response = """```json
+{
+  "stock_name": "凯盛新能",
+  "sentiment_score": 28,
+  "trend_prediction": "看空",
+  "operation_advice": "观望",
+  "analysis_summary": "空头排列"
+}
+```
+{"stock_name": "other", "sentiment_score": 99}"""
+
+        result = analyzer._parse_response(response, "600876", "股票600876")
+
+        self.assertFalse(result.success)
+        self.assertIn("JSON", result.error_message)
+
+    def test_validate_json_response_accepts_explicit_json_fence_with_prose_outside(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        analyzer._validate_json_response("""## 凯盛新能决策仪表盘
+
+```json
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 65,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "analysis_summary": "技术面向好"
+}
+```
+
+## 📋 决策要点速览
+""")
+
+    def test_validate_json_response_rejects_explicit_json_fence_with_extra_json_outside(self) -> None:
+        analyzer = GeminiAnalyzer.__new__(GeminiAnalyzer)
+        analyzer._config_override = SimpleNamespace(generation_backend="litellm")
+
+        with self.assertRaises(Exception) as context:
+            analyzer._validate_json_response("""说明：```json
+{
+  "stock_name": "贵州茅台",
+  "sentiment_score": 65,
+  "trend_prediction": "看多",
+  "operation_advice": "持有",
+  "analysis_summary": "技术面向好"
+}
+```
+补充：{"sentiment_score": 70}""")
+
+        self.assertEqual(getattr(context.exception, "details", {}).get("reason"), "ambiguous_json")

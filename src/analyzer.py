@@ -4384,12 +4384,20 @@ class GeminiAnalyzer:
             raise ValueError("ambiguous_json")
         if len(fenced_matches) == 1:
             match = fenced_matches[0]
-            outside = (text[:match.start()] + text[match.end():]).strip()
-            if outside:
-                raise ValueError("ambiguous_json")
             fence_lang = (match.group("lang") or "").strip().lower()
             if fence_lang not in {"", "json"}:
                 raise ValueError("ambiguous_json")
+            outside = (text[:match.start()] + text[match.end():]).strip()
+            if outside:
+                # 显式 ```` ```json ```` 围栏是模型明确标注的唯一答案，允许围栏外
+                # 存在纯说明文字（推理模型常在围栏前后附带 markdown 报告）；
+                # 但围栏外若还含另一个 JSON 候选，必须继续拒绝，否则两个候选
+                # 给出不同评分/建议时会被静默接受其中一个，导致错误结果被持久化。
+                # 未标注语言的围栏保持严格：外部有任何文本仍视为歧义。
+                if fence_lang != "json":
+                    raise ValueError("ambiguous_json")
+                if self._contains_json_object(outside):
+                    raise ValueError("ambiguous_json")
             json_str = match.group("body").strip()
             data = self._load_analysis_json_candidate(json_str)
             return json_str, data
@@ -4441,6 +4449,25 @@ class GeminiAnalyzer:
             after = text[index + end:].strip()
             if count > 1 or before or after:
                 return True
+        return False
+
+    @staticmethod
+    def _contains_json_object(text: str) -> bool:
+        """Return True if *text* contains any parseable JSON object.
+
+        不同于 :meth:`_contains_embedded_json_object`，本方法对“只有一个独立 JSON
+        对象、且周围没有任何文本”的场景也返回 True，用于显式 ```` ```json ````
+        围栏外严格拒绝额外 JSON 候选的场景。
+        """
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _obj, _end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            return True
         return False
 
     def _validate_analysis_minimal_contract(self, data: Dict[str, Any]) -> None:
