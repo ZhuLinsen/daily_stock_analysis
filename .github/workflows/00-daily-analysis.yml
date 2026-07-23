@@ -1,9 +1,11 @@
+
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 11:00 和 14:45
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 3 * * 1-5'      # 周一到周五，UTC 03:00 = 北京时间 11:00
+    - cron: '45 6 * * 1-5'     # 周一到周五，UTC 06:45 = 北京时间 14:45
   
   # 手动触发
   workflow_dispatch:
@@ -22,6 +24,8 @@ on:
         required: false
         default: false
         type: boolean
+
+
 
 # 并发控制：同一时间只运行一个分析任务
 concurrency:
