@@ -34,6 +34,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
+    CheckConstraint,
     Text,
     text,
     select,
@@ -1171,6 +1172,83 @@ class SkillOpinionSampleRecord(Base):
             'ix_skill_opinion_sample_stock_created',
             'stock_code',
             'created_at',
+        ),
+    )
+
+
+class SkillOpinionOutcomeRecord(Base):
+    """Forward outcome for one immutable skill opinion sample and horizon."""
+
+    __tablename__ = 'skill_opinion_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_opinion_sample_id = Column(
+        Integer,
+        ForeignKey('skill_opinion_samples.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    horizon = Column(String(16), nullable=False, index=True)
+    engine_version = Column(String(32), nullable=False, index=True)
+    eval_status = Column(String(24), nullable=False, default='pending', index=True)
+    outcome = Column(String(16), index=True)
+    direction_correct = Column(Boolean)
+    unable_reason = Column(String(64), index=True)
+    analysis_date = Column(Date, index=True)
+    start_trade_date = Column(Date, index=True)
+    end_trade_date = Column(Date, index=True)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    stock_return_pct = Column(Float)
+    directional_return_pct = Column(Float)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'skill_opinion_sample_id',
+            'horizon',
+            'engine_version',
+            name='uix_skill_opinion_outcome_key',
+        ),
+        CheckConstraint(
+            "horizon IN ('1d', '3d', '5d', '10d')",
+            name='ck_skill_opinion_outcome_horizon',
+        ),
+        CheckConstraint(
+            "eval_status IN ('pending', 'evaluated', 'observational', 'unable')",
+            name='ck_skill_opinion_outcome_eval_status',
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('hit', 'miss', 'observational')",
+            name='ck_skill_opinion_outcome_value',
+        ),
+        CheckConstraint(
+            "(eval_status IN ('pending', 'unable') "
+            "AND outcome IS NULL "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'observational' "
+            "AND outcome = 'observational' "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'evaluated' "
+            "AND outcome IN ('hit', 'miss') "
+            "AND direction_correct IS NOT NULL "
+            "AND directional_return_pct IS NOT NULL)",
+            name='ck_skill_opinion_outcome_state_fields',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_candidate',
+            'engine_version',
+            'eval_status',
+            'updated_at',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_horizon_status',
+            'engine_version',
+            'horizon',
+            'eval_status',
         ),
     )
 
@@ -2484,6 +2562,21 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             session.execute(
                 delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
+            linked_skill_sample_ids = sorted(
+                session.execute(
+                    select(SkillOpinionSampleRecord.id).where(
+                        SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)
+                    )
+                ).scalars().all()
+            )
+            if linked_skill_sample_ids:
+                session.execute(
+                    delete(SkillOpinionOutcomeRecord).where(
+                        SkillOpinionOutcomeRecord.skill_opinion_sample_id.in_(
+                            linked_skill_sample_ids
+                        )
+                    )
+                )
             session.execute(
                 delete(SkillOpinionSampleRecord).where(
                     SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)

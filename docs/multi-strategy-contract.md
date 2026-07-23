@@ -10,6 +10,18 @@
 
 当前 `sample_schema_version=skill-opinion-sample-v1`。`skill_version` 与 `horizon` 仅保留为空值兼容位：现有 Skill 定义和 SkillAgent 输出没有可信的版本与周期契约，因此本阶段不得从 LLM `raw_data` 猜测或伪造。PR1 不创建 outcome、不提供 skill 表现统计、不实现 `get_skill_summary()`，也不改变 `AgentMemory` / `SkillAggregator` 权重。
 
+## Skill Opinion Outcome 边界（Issue #1904 P2）
+
+`skill_opinion_outcomes` 表示一条不可变 `skill_opinion_sample` 在一个 `horizon`、一个 `engine_version` 下的独立后验结果，唯一键为 `(skill_opinion_sample_id, horizon, engine_version)`。初始 horizon 仅允许 `1d`、`3d`、`5d`、`10d`；每次运行的 `limit` 限制待处理的 `sample × horizon` outcome key 数量，不是 sample 数量。显式空 horizons、空白 skill/stock 筛选和越界 limit 必须 fail closed，不得退化为全量运行。
+
+每条 outcome 只使用 sample 自己的 canonical `signal`，不得读取最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；方向收益严格大于零才是 `hit`，零收益是 `miss`。`hold` 在价格窗口完整后保存为 `observational`，不产生方向正确性。
+
+分析日期优先使用持久化 `market_phase_summary.effective_daily_bar_date`；该来源要求完全相同日期的起始 bar。兼容来源才允许选择目标日期或此前最近一条本地日线。股票代码候选和窗口选择复用父 PR #2073 的共享 resolver：完整窗口优先于部分窗口，再选择最新起始 bar，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
+
+缺少起始 bar、未来本地日线不足等可恢复状态保存为可重试 `pending`；永久无效输入保存为 `unable`。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
+
+本次 stacked PR 只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+
 ## 术语与边界
 
 当前仓库里有多种名为 opinion / signal / consensus / synthesis 的数据面，Baseline 必须先消歧，避免把现有运行时结构误写成未来 phase。
