@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- [修复] #2070 PR Review 自动审查脚本 `.github/scripts/ai_review.py` 在 `GITHUB_EVENT_PATH` 缺失、文件不存在、读取失败、JSON 解析失败四类异常下不再静默返回 `{}`，分别向 stderr 输出异常类型与简短原因；`PR_NUMBER` 显式提供时坏的事件文件不再阻断 GitHub API 审查，`PR_NUMBER` 未提供且事件载荷失败时 `_pull_request_number` 抛错带 stderr 警告提示，便于排障定位；补齐 11 个回归测试覆盖四类失败场景与两条行为契约。
+- [修复] #2070 PR Review 自动审查脚本 `.github/scripts/ai_review.py` 在 `GITHUB_EVENT_PATH` 缺失、文件不存在、读取失败、JSON 解析失败四类异常下不再静默返回 `{}`，分别向 stderr 输出异常类型与简短原因；`PR_NUMBER` 显式提供时坏的事件文件不再阻断 GitHub API 审查，`PR_NUMBER` 未提供且事件载荷失败时 `_pull_request_number` 抛错带 stderr 警告提示，便于排障定位；同时 `_pull_request_number` 与 `get_pr_context` 对合法 JSON 但非 object（如 `[]`、`null`、字符串）以及 `pull_request` 字段非 object 的边界情况也通过 stderr 警告可定位，不再抛 AttributeError；补齐 18 个回归测试覆盖四类失败场景与两条行为契约。
 - [chore] 暂停 PR Review 的自动触发，仅保留 `workflow_dispatch` 手动入口，避免辅助评审重复运行及评论权限失败产生误导性红灯；正式 CI 检查保持不变。
 - [新功能] Multi-Agent specialist 运行在分析历史保存成功后，按独立 skill 持久化版本化、低敏且幂等的有效 opinion 样本，为后续后验评估提供真实数据；本阶段不计算 outcome、不统计表现、不调整权重。
 - [新功能] AI 建议页在既有后验统计中增加决策风格历史表现，按每个分组独立的 30 个已完成样本门槛展示命中、区间涨跌、无法评估和最大不利波动，并保持旧统计接口兼容。

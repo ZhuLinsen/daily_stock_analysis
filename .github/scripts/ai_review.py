@@ -102,7 +102,23 @@ def _pull_request_number(payload=None):
             ) from exc
 
     payload = payload if payload is not None else _event_payload()
+    # 防御: payload 合法 JSON 但不是 object(例如 `[]` / `null` / 字符串)时,
+    # 直接 .get('pull_request') 会 AttributeError/typeerror。issue #2070 review
+    # 非阻断建议: 把这种情况也纳入可定位 stderr 警告,避免真实调用链提前崩溃
+    # 而跌破"PR_NUMBER override 可绕过坏事件文件"契约。
+    if not isinstance(payload, dict):
+        _warn_event_payload(
+            f"event payload parsed but is not a JSON object "
+            f"({type(payload).__name__})"
+        )
+        payload = {}
     pull_request = payload.get('pull_request') or {}
+    if not isinstance(pull_request, dict):
+        _warn_event_payload(
+            f"event payload 'pull_request' field is not a JSON object "
+            f"({type(pull_request).__name__})"
+        )
+        pull_request = {}
     number = pull_request.get('number') or payload.get('number')
     if not number:
         # issue #2070 契约二:PR_NUMBER 未提供时,事件载荷路径上的任何失败都已
@@ -227,7 +243,22 @@ def get_changed_files():
 def get_pr_context():
     """Read PR title/body from GitHub event payload when available."""
     payload = _event_payload()
+    # 防御: payload 合法 JSON 但不是 object 时,直接 .get 会 AttributeError。
+    # 与 _pull_request_number 中的等价防御保持一致,异常统一通过 _warn_event_payload
+    # 降到 stderr,这里返回 ('', '') 让 fallback 链路接续。
+    if not isinstance(payload, dict):
+        _warn_event_payload(
+            f"event payload parsed but is not a JSON object "
+            f"({type(payload).__name__})"
+        )
+        payload = {}
     pr = payload.get('pull_request') or {}
+    if not isinstance(pr, dict):
+        _warn_event_payload(
+            f"event payload 'pull_request' field is not a JSON object "
+            f"({type(pr).__name__})"
+        )
+        pr = {}
     if not pr and os.environ.get('AI_REVIEW_SOURCE') == 'github_api':
         try:
             repository = _github_repository()

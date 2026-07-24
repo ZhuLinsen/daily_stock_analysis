@@ -269,3 +269,134 @@ def test_pull_request_number_handles_non_integer_payload_number(monkeypatch):
         assert "'oops'" in str(exc)
     else:
         raise AssertionError('expected RuntimeError for non-integer payload number')
+
+
+# issue #2070 review 非阻断建议: payload 合法 JSON 但不是 object 时
+# (例如 '[]' / 'null' / '"string"'），_pull_request_number / get_pr_context 不
+# 应抛 AttributeError, 而应通过 stderr 警告可定位, 并在 PR_NUMBER override
+# 或 AI_REVIEW_SOURCE=github_api 链路上不影响契约。
+
+def test_pull_request_number_handles_array_payload_with_pr_number_override(monkeypatch, capsys):
+    """契约一延伸: GITHUB_EVENT_PATH 解析成合法 JSON 但不是 object (例如 '[]')
+    时, PR_NUMBER override 必须仍然能绕过, 不应在 .get 上抛 AttributeError。"""
+    monkeypatch.setenv('PR_NUMBER', '2085')
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    number = ai_review._pull_request_number(payload=[])
+
+    assert number == 2085
+    # PR_NUMBER override 路径下根本没碰 payload,不应触发 _warn_event_payload。
+    captured = capsys.readouterr()
+    assert captured.err == ''
+
+
+def test_pull_request_number_warns_on_array_payload_without_pr_number(monkeypatch, capsys):
+    """契约二延伸: 无 PR_NUMBER 且 payload 是 array 时, _pull_request_number
+    应通过 _warn_event_payload 输出可定位 stderr 警告, 并仍以 RuntimeError
+    上抛(信息包含 stderr 提示)。"""
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    try:
+        ai_review._pull_request_number(payload=[])
+    except RuntimeError as exc:
+        assert 'PR number is unavailable' in str(exc)
+        assert 'check prior event payload warnings on stderr' in str(exc)
+    else:
+        raise AssertionError('expected RuntimeError for array payload without PR_NUMBER')
+
+    captured = capsys.readouterr()
+    assert 'event payload parsed but is not a JSON object' in captured.err
+    assert 'list' in captured.err
+
+
+def test_pull_request_number_warns_on_non_dict_pull_request_field(monkeypatch, capsys):
+    """payload 是 dict, 但 pull_request 字段是 list/string 等非 dict 类型时,
+    应记 stderr 警告(避免 pr.get 提前 AttributeError)。"""
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+
+    try:
+        ai_review._pull_request_number(
+            payload={'pull_request': ['not', 'a', 'dict']}
+        )
+    except RuntimeError as exc:
+        assert 'PR number is unavailable' in str(exc)
+        assert 'check prior event payload warnings on stderr' in str(exc)
+    else:
+        raise AssertionError('expected RuntimeError for non-dict pull_request field')
+
+    captured = capsys.readouterr()
+    assert "event payload 'pull_request' field is not a JSON object" in captured.err
+    assert 'list' in captured.err
+
+
+def test_pull_request_number_handles_none_payload_with_pr_number_override(monkeypatch):
+    """contract: payload=None (GITHUB_EVENT_PATH 缺失 → {}) + PR_NUMBER override 时
+    应跳过事件文件读取,直接返回 PR_NUMBER。"""
+    monkeypatch.setenv('PR_NUMBER', '2085')
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    # payload=None 触发 _event_payload 路径,但因为 PR_NUMBER 优先,函数提前 return。
+    number = ai_review._pull_request_number(payload=None)
+
+    assert number == 2085
+
+
+def test_get_pr_context_warns_on_array_payload(monkeypatch, capsys):
+    """get_pr_context 入口同样应防御非 dict payload, 通过 stderr 警告可定位,
+    而不是抛 AttributeError 让脚本崩溃。"""
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+    monkeypatch.delenv('AI_REVIEW_SOURCE', raising=False)
+
+    # 直接 monkeypatch _event_payload 返回 list,模拟合法 JSON 但不是 object。
+    monkeypatch.setattr(ai_review, '_event_payload', lambda: [])
+
+    title, body = ai_review.get_pr_context()
+
+    assert title == ''
+    assert body == ''
+    captured = capsys.readouterr()
+    assert 'event payload parsed but is not a JSON object' in captured.err
+    assert 'list' in captured.err
+
+
+def test_get_pr_context_warns_on_non_dict_pull_request_field(monkeypatch, capsys):
+    """get_pr_context 中 pr 字段不是 dict 时也应记 stderr 警告并降级返回 ('','')."""
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+    monkeypatch.delenv('AI_REVIEW_SOURCE', raising=False)
+    monkeypatch.setattr(
+        ai_review,
+        '_event_payload',
+        lambda: {'pull_request': 'not-a-dict'},
+    )
+
+    title, body = ai_review.get_pr_context()
+
+    assert title == ''
+    assert body == ''
+    captured = capsys.readouterr()
+    assert "event payload 'pull_request' field is not a JSON object" in captured.err
+    assert 'str' in captured.err
+
+
+def test_get_pr_context_goes_through_github_api_when_payload_is_array(monkeypatch, capsys):
+    """end-to-end: payload 是 array + AI_REVIEW_SOURCE=github_api + PR_NUMBER override
+    时, get_pr_context 应不抛 AttributeError, 而是走 GitHub API fallback 取回 title/body。"""
+    monkeypatch.setenv('AI_REVIEW_SOURCE', 'github_api')
+    monkeypatch.setenv('GITHUB_REPOSITORY', 'owner/repo')
+    monkeypatch.setenv('PR_NUMBER', '2085')
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+    monkeypatch.setattr(ai_review, '_event_payload', lambda: [])
+
+    monkeypatch.setattr(
+        ai_review,
+        '_github_api_json',
+        lambda path: {'title': 'Fix review', 'body': 'Closes #2085'}
+        if path == '/repos/owner/repo/pulls/2085'
+        else None,
+    )
+
+    title, body = ai_review.get_pr_context()
+
+    assert title == 'Fix review'
+    assert body == 'Closes #2085'
