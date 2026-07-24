@@ -920,6 +920,7 @@ const SettingsPage: React.FC = () => {
     getChangedItems,
     refreshAfterExternalSave,
     configVersion,
+    latestConfigVersionRef,
     maskToken,
   } = useSystemConfig();
 
@@ -1209,7 +1210,10 @@ const SettingsPage: React.FC = () => {
   const beginEnvBackupImport = () => {
     setEnvBackupActionError(null);
     setEnvBackupActionSuccess('');
-    if (hasDirty) {
+    // OR-COR-7bcf2ab7: 必须用 effectiveHasDirty(包含 useSystemConfig 的 hasDirty +
+    // LLM 渠道草稿 + scheduler mismatch),否则用户在 LLMChannelEditor 里改了 channel
+    // 但 useSystemConfig.hasDirty=false 时,导入 .env 不会被提示要丢失草稿。
+    if (effectiveHasDirty) {
       setShowImportConfirm(true);
       return;
     }
@@ -1343,9 +1347,17 @@ const SettingsPage: React.FC = () => {
     // llmChannelEditorRef.current 在 LLMChannelEditor 实际 mount 之前为 null
     // (例如 ai_model 分类还没渲染过——但我们已用 CSS hidden 让 LLMChannelEditor 永久 mount,
     // 所以稳定可视)。submit 内部会判断是否有 channel 草稿,无草稿时直接 return true 不发 API。
+    //
+    // OR-COR-d144d9cf: 传 configVersion override。save() 内部已通过 applyServerPayload
+    // 走 setConfigVersionSync,latestConfigVersionRef.current 同步保存了刷新后的版本;
+    // 但 React state 异步,LLMChannelEditor 收到的 configVersion prop 仍是旧值。submit 内部
+    // handleSave 会用 opts.configVersionOverride ?? configVersion,这里传入 ref.current
+    // 保证 channel 提交拿到新版本,避免 409 冲突。
     if (llmChannelEditorRef.current) {
       try {
-        await llmChannelEditorRef.current.submit();
+        await llmChannelEditorRef.current.submit({
+          configVersion: latestConfigVersionRef.current,
+        });
       } catch (channelSaveError) {
         // channel 提交报错不阻断整体流程——错误信息已通过 LLMChannelEditor 的
         // saveMessage 反馈在 ai_model 分类区域显示。日志记录便于排查。
@@ -1561,6 +1573,16 @@ const SettingsPage: React.FC = () => {
               onClick={() => {
                 // 放弃修改时同步清空 LLM 渠道草稿——否则 useSystemConfig 已 reset
                 // 但 llmChannelDraftItems 仍残留,顶部 dirty 数会出现"已放弃但仍提示未保存"漂移。
+                //
+                // OR-COR-3ad7163c: 仅调 setLlmChannelDraftItems([]) + resetDraft() 不够。
+                // resetDraft 只重置 useSystemConfig 的 draftValues(LLMChannelEditor 不感知),
+                // serverItems 不变 → LLMChannelEditor 收到的 items prop 用 mergedItems,
+                // initialChannels 重算 fingerprint 与 saved 一致 → LLMChannelEditor 内部
+                // useEffect 不触发 → 内部 channels state 仍保留用户改的草稿 →
+                // draftItems 仍非空 → onDraftItemsChange 把草稿回传父层,造成"已放弃但
+                // 仍提示未保存"漂移。先调 llmChannelEditorRef.current.reset() 强制把 LLM 渠道
+                // editor 内部 state 回滚到 saved 快照,再清父层镜像,双保险。
+                llmChannelEditorRef.current?.reset();
                 setLlmChannelDraftItems([]);
                 resetDraft();
               }}
@@ -1995,6 +2017,12 @@ const SettingsPage: React.FC = () => {
               onClick={() => {
                 // 放弃修改时同步清空 LLM 渠道草稿——否则 useSystemConfig 已 reset
                 // 但 llmChannelDraftItems 仍残留,底部 sticky bar 仍显示 dirty 数。
+                //
+                // OR-COR-3ad7163c: 见上方相同按钮注释——必须先调 reset() 强制把
+                // LLMChannelEditor 内部 channels/runtime state 回滚到 saved 快照,
+                // 否则 useEffect 不触发,channels state 仍保留用户改的草稿,draftItems
+                // 通过 onDraftItemsChange 回传父层,造成"已放弃但仍提示未保存"漂移。
+                llmChannelEditorRef.current?.reset();
                 setLlmChannelDraftItems([]);
                 resetDraft();
               }}
