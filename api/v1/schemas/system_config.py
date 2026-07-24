@@ -157,6 +157,44 @@ class GenerationBackendStatusResponse(BaseModel):
     backends: List[GenerationBackendStatus] = Field(default_factory=list)
 
 
+class DataSourceCircuitState(BaseModel):
+    """One non-closed daily-data circuit breaker entry for a data source."""
+
+    market: str
+    state: str
+
+
+class DataSourceStatus(BaseModel):
+    """Config-derived integration status for one external data source."""
+
+    source_id: str
+    name: str
+    kind: Literal["market_data", "search"]
+    status: Literal["active", "not_configured"]
+    requires_credentials: bool
+    markets: List[str] = Field(default_factory=list)
+    config_keys: List[str] = Field(default_factory=list)
+    detail: Optional[str] = None
+    circuit: List[DataSourceCircuitState] = Field(default_factory=list)
+
+
+class DataSourceStatusSummary(BaseModel):
+    """Aggregate counts for the data source status payload."""
+
+    market_data_active: int
+    market_data_total: int
+    search_active: int
+    search_total: int
+
+
+class DataSourceStatusResponse(BaseModel):
+    """External data source integration status payload."""
+
+    market_data: List[DataSourceStatus]
+    search: List[DataSourceStatus]
+    summary: DataSourceStatusSummary
+
+
 class ExportSystemConfigResponse(BaseModel):
     """Export payload for raw `.env` backups."""
 

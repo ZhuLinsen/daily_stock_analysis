@@ -2,6 +2,7 @@ import apiClient from './index';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from './error';
 import { toCamelCase } from './utils';
 import type {
+  DataSourceStatusResponse,
   DiscoverLLMChannelModelsRequest,
   DiscoverLLMChannelModelsResponse,
   ExportSystemConfigResponse,
@@ -190,6 +191,11 @@ export const systemConfigApi = {
   async getSetupStatus(): Promise<SetupStatusResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config/setup/status');
     return toCamelCase<SetupStatusResponse>(response.data);
+  },
+
+  async getDataSourceStatus(): Promise<DataSourceStatusResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/data-sources/status');
+    return toCamelCase<DataSourceStatusResponse>(response.data);
   },
 
   async getGenerationBackendStatus(): Promise<GenerationBackendStatusResponse> {

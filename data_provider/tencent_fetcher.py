@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Tencent direct daily K-line fetcher for A-share fallback routing."""
+"""Tencent direct daily K-line fetcher for A-share fallback routing.
+
+港股（hkXXXXX）同样受支持，但腾讯该接口对港股只返回不复权数据（qfq 参数
+无效），与 akshare/yfinance 的前复权口径不同；因此港股日线路由中
+TencentFetcher 被降级为末位兜底（见 DataFetcherManager
+``_DAILY_MARKET_FETCHER_DEMOTED``）。
+"""
 
 from __future__ import annotations
 
@@ -66,6 +72,7 @@ class TencentFetcher(BaseFetcher):
             start_date=start_date,
             lookback=lookback,
             returned_rows=len(rows),
+            calendar_name="XHKG" if symbol.startswith("hk") else "XSHG",
         ):
             logger.info(
                 "TencentFetcher incomplete capped daily history for %s: first_date=%s requested_start=%s",
@@ -99,6 +106,9 @@ class TencentFetcher(BaseFetcher):
 
 def _to_tencent_symbol(stock_code: str) -> str:
     code = normalize_stock_code(stock_code)
+    # 港股：normalize 后为 HK+5 位数字（如 HK00700 -> hk00700）
+    if code.startswith("HK") and code[2:].isdigit() and len(code) == 7:
+        return f"hk{code[2:]}"
     if not code or not code.isdigit() or len(code) != 6:
         return ""
     if is_bse_code(code):
@@ -138,6 +148,7 @@ def _is_capped_history_incomplete(
     start_date: str,
     lookback: int,
     returned_rows: int,
+    calendar_name: str = "XSHG",
 ) -> bool:
     hit_cap = lookback >= _MAX_KLINE_BARS and returned_rows >= _MAX_KLINE_BARS
     if not hit_cap:
@@ -147,13 +158,13 @@ def _is_capped_history_incomplete(
         requested_start = datetime.strptime(start_date, "%Y-%m-%d")
     except ValueError:
         return False
-    return first > _first_trading_date_on_or_after(requested_start)
+    return first > _first_trading_date_on_or_after(requested_start, calendar_name=calendar_name)
 
 
-def _first_trading_date_on_or_after(start_date: datetime) -> datetime:
+def _first_trading_date_on_or_after(start_date: datetime, *, calendar_name: str = "XSHG") -> datetime:
     if xcals is not None:
         try:
-            cal = xcals.get_calendar("XSHG")
+            cal = xcals.get_calendar(calendar_name)
             session = cal.date_to_session(start_date.date(), direction="next")
             return datetime.combine(session.date(), datetime.min.time())
         except Exception:
@@ -185,11 +196,15 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
     if not isinstance(item, dict):
         return []
     rows = item.get("qfqday") or item.get("day") or []
+    # 港股：成交量已是股数；行尾第 7 元素可能是分红/回购事件 dict 而非成交额
+    is_hk = symbol.startswith("hk")
     result: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, list) or len(row) < 6:
             continue
         amount: Optional[Any] = row[6] if len(row) > 6 else None
+        if isinstance(amount, (dict, list)):
+            amount = None
         result.append(
             {
                 "date": str(row[0]),
@@ -197,7 +212,7 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
                 "close": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": row[5] if is_hk else _lots_to_shares(row[5]),
                 "amount": amount,
             }
         )

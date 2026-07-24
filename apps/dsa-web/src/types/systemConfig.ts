@@ -131,6 +131,39 @@ export interface GenerationBackendStatusResponse {
   backends: GenerationBackendStatus[];
 }
 
+export type DataSourceKind = 'market_data' | 'search';
+export type DataSourceIntegrationStatus = 'active' | 'not_configured';
+
+export interface DataSourceCircuitState {
+  market: string;
+  state: string;
+}
+
+export interface DataSourceStatus {
+  sourceId: string;
+  name: string;
+  kind: DataSourceKind;
+  status: DataSourceIntegrationStatus;
+  requiresCredentials: boolean;
+  markets: string[];
+  configKeys: string[];
+  detail?: string | null;
+  circuit: DataSourceCircuitState[];
+}
+
+export interface DataSourceStatusSummary {
+  marketDataActive: number;
+  marketDataTotal: number;
+  searchActive: number;
+  searchTotal: number;
+}
+
+export interface DataSourceStatusResponse {
+  marketData: DataSourceStatus[];
+  search: DataSourceStatus[];
+  summary: DataSourceStatusSummary;
+}
+
 export interface ExportSystemConfigResponse {
   content: string;
   configVersion: string;

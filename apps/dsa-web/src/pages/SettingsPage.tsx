@@ -11,6 +11,7 @@ import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/
 import {
   AuthSettingsCard,
   ChangePasswordCard,
+  DataSourceStatusPanel,
   GenerationBackendStatusPanel,
   IntelligentImport,
   LLMChannelEditor,
@@ -1749,6 +1750,14 @@ const SettingsPage: React.FC = () => {
                   }}
                   disabled={isSaving || isLoading}
                 />
+              </SettingsSectionCard>
+            ) : null}
+            {activeCategory === 'data_source' ? (
+              <SettingsSectionCard
+                title={t('settings.dataSourceAccess')}
+                description={t('settings.dataSourceAccessDescription')}
+              >
+                <DataSourceStatusPanel disabled={isSaving || isLoading} />
               </SettingsSectionCard>
             ) : null}
             {activeCategory === 'ai_model' ? (

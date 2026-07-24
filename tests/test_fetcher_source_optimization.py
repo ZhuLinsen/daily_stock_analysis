@@ -343,13 +343,16 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         mock_get_config.return_value = SimpleNamespace()
         DataFetcherManager.reset_daily_source_health()
         try:
+            # 使用非真实数据源名称，避免被 A 股市场提升表
+            # （_DAILY_MARKET_FETCHER_PROMOTED["cn"]）按名称匹配重排，
+            # 从而保持本用例对 priority 顺序的直接控制。
             primary = MagicMock()
-            primary.name = "EfinanceFetcher"
+            primary.name = "PrimaryFetcher"
             primary.priority = 0
             primary.get_daily_data.return_value = pd.DataFrame()
 
             backup = MagicMock()
-            backup.name = "TencentFetcher"
+            backup.name = "BackupFetcher"
             backup.priority = 1
             backup.get_daily_data.return_value = _make_daily_df()
 
@@ -358,7 +361,7 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             for _ in range(3):
                 df, source = manager.get_daily_data("000001", start_date="2026-05-01", end_date="2026-05-08")
                 self.assertFalse(df.empty)
-                self.assertEqual(source, "TencentFetcher")
+                self.assertEqual(source, "BackupFetcher")
 
             primary.get_daily_data.reset_mock()
             primary.get_daily_data.return_value = _make_daily_df()
@@ -366,7 +369,7 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             df, source = manager.get_daily_data("000001", start_date="2026-05-01", end_date="2026-05-08")
 
             self.assertFalse(df.empty)
-            self.assertEqual(source, "EfinanceFetcher")
+            self.assertEqual(source, "PrimaryFetcher")
             primary.get_daily_data.assert_called_once()
         finally:
             DataFetcherManager.reset_daily_source_health()
@@ -376,13 +379,14 @@ class TestFetcherSourceOptimization(unittest.TestCase):
         mock_get_config.return_value = SimpleNamespace()
         DataFetcherManager.reset_daily_source_health()
         try:
+            # 同上：使用非真实数据源名称，避免触发 A 股市场提升表。
             primary = MagicMock()
-            primary.name = "EfinanceFetcher"
+            primary.name = "PrimaryFetcher"
             primary.priority = 0
             primary.get_daily_data.return_value = _make_daily_df()
 
             backup = MagicMock()
-            backup.name = "TencentFetcher"
+            backup.name = "BackupFetcher"
             backup.priority = 1
             backup.get_daily_data.return_value = _make_daily_df()
 
@@ -397,7 +401,7 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             df, source = manager.get_daily_data("000001", start_date="2026-05-01", end_date="2026-05-08")
 
             self.assertFalse(df.empty)
-            self.assertEqual(source, "EfinanceFetcher")
+            self.assertEqual(source, "PrimaryFetcher")
             backup.get_daily_data.assert_not_called()
 
             primary.get_daily_data.reset_mock()
@@ -406,7 +410,7 @@ class TestFetcherSourceOptimization(unittest.TestCase):
             df, source = manager.get_daily_data("000001", start_date="2026-05-01", end_date="2026-05-08")
 
             self.assertFalse(df.empty)
-            self.assertEqual(source, "TencentFetcher")
+            self.assertEqual(source, "BackupFetcher")
             backup.get_daily_data.assert_called_once()
         finally:
             DataFetcherManager.reset_daily_source_health()

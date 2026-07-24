@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from api.deps import get_runtime_scheduler_service, get_system_config_service
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.system_config import (
+    DataSourceStatusResponse,
     DiscoverLLMChannelModelsRequest,
     DiscoverLLMChannelModelsResponse,
     ExportSystemConfigResponse,
@@ -184,6 +185,39 @@ def get_setup_status(
             detail={
                 "error": "internal_error",
                 "message": "Failed to load setup status",
+            },
+        )
+
+
+@router.get(
+    "/data-sources/status",
+    response_model=DataSourceStatusResponse,
+    responses={
+        200: {"description": "Data source status loaded"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get external data source integration status",
+    description=(
+        "Read a side-effect-free integration status for external market data "
+        "and news search sources, derived from runtime configuration. This "
+        "endpoint does not instantiate fetchers and does not make network "
+        "requests; circuit breaker states are a best-effort in-process snapshot."
+    ),
+)
+def get_data_source_status() -> DataSourceStatusResponse:
+    """Return config-derived external data source integration status."""
+    try:
+        from src.services.data_source_status_service import DataSourceStatusService
+
+        payload = DataSourceStatusService().get_status()
+        return DataSourceStatusResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load data source status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load data source status",
             },
         )
 

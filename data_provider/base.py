@@ -614,7 +614,7 @@ class DataFetcherManager:
 
     _DAILY_MARKET_FETCHER_SUPPORT = {
         "EfinanceFetcher": {"cn"},
-        "TencentFetcher": {"cn"},
+        "TencentFetcher": {"cn", "hk"},
         "AkshareFetcher": {"cn", "hk"},
         "TushareFetcher": {"cn", "hk"},
         "TickFlowFetcher": {"cn"},
@@ -624,6 +624,17 @@ class DataFetcherManager:
         "LongbridgeFetcher": {"hk", "us"},
         "FinnhubFetcher": {"us"},
         "AlphaVantageFetcher": {"us"},
+    }
+    # 按市场降级到末位的兜底源：腾讯港股日线仅提供不复权数据，
+    # 与 akshare/yfinance 的前复权口径不同，只在其他源全部失败时使用
+    _DAILY_MARKET_FETCHER_DEMOTED = {
+        "hk": ("TencentFetcher",),
+    }
+    # 按市场提升到最前的优先源：A 股场景下腾讯/Akshare(含新浪兜底)/Baostock
+    # 均为稳定免费源，排在 Efinance/Pytdx/YFinance 及 Tushare 等付费/受限源之前；
+    # 其余源仍保留在候选列表中作为兜底，不做删除
+    _DAILY_MARKET_FETCHER_PROMOTED = {
+        "cn": ("TencentFetcher", "AkshareFetcher", "BaostockFetcher"),
     }
     _daily_source_health = CircuitBreaker(failure_threshold=3, cooldown_seconds=300.0)
     _CONCEPT_RANKINGS_CACHE_TTL_SECONDS = 300.0
@@ -767,6 +778,19 @@ class DataFetcherManager:
                 market,
                 ", ".join(skipped),
             )
+        demoted = cls._DAILY_MARKET_FETCHER_DEMOTED.get(market, ())
+        promoted = cls._DAILY_MARKET_FETCHER_PROMOTED.get(market, ())
+        if demoted or promoted:
+            # 稳定排序：提升源按声明顺序置于最前，降级源移到末位，
+            # 其余源保持原有相对优先级顺序（含 Tushare 等动态提权源）
+            def _rank(fetcher: BaseFetcher) -> tuple:
+                if fetcher.name in promoted:
+                    return (0, promoted.index(fetcher.name))
+                if fetcher.name in demoted:
+                    return (2, 0)
+                return (1, 0)
+
+            kept.sort(key=_rank)
         return kept
 
     @classmethod
@@ -797,6 +821,16 @@ class DataFetcherManager:
     @classmethod
     def _daily_health_key(cls, fetcher: BaseFetcher, market: str) -> str:
         return f"daily_data:{market}:{fetcher.name}"
+
+    @classmethod
+    def get_daily_source_health_status(cls) -> Dict[str, str]:
+        """公开只读的日线熔断状态快照。
+
+        Returns:
+            {"daily_data:{market}:{fetcher_name}": state}，
+            state 取值 closed / open / half_open。
+        """
+        return cls._daily_source_health.get_status()
 
     @classmethod
     def _is_daily_source_available(
@@ -1144,12 +1178,16 @@ class DataFetcherManager:
         - 如果配置了 TUSHARE_TOKEN：实例化 TushareFetcher，并按其内部逻辑提升优先级
         - 如果配置了 Longbridge OAuth 或 Legacy 凭据：实例化 LongbridgeFetcher 作为美股/港股兜底
         - 未配置的可选数据源不实例化，避免在批量拉取时反复探测无效源
-        - 默认优先级：
+        - 默认优先级（原始 priority 数值，跨市场共享）：
           0. EfinanceFetcher (Priority 0) - 最高优先级
           1. AkshareFetcher (Priority 1)
           2. PytdxFetcher (Priority 2) - 通达信
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)
+        - A 股日线实际尝试顺序另受 `_DAILY_MARKET_FETCHER_PROMOTED["cn"]` 影响：
+          TencentFetcher / AkshareFetcher / BaostockFetcher 会被提升到最前，
+          Efinance/Pytdx/YFinance/Tushare 等源保持原有相对顺序作为兜底，
+          详见 `_filter_daily_fetchers_for_market`。
         """
         from src.config import get_config
         from .efinance_fetcher import EfinanceFetcher
@@ -1288,8 +1326,9 @@ class DataFetcherManager:
         is_kr = (not is_us) and (not is_hk) and _is_kr_market(stock_code)
         is_tw = (not is_us) and (not is_hk) and _is_tw_market(stock_code)
         market = "us" if is_us else "hk" if is_hk else "jp" if is_jp else "kr" if is_kr else "tw" if is_tw else "cn"
-        if market != "cn":
-            fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
+        # market=="us" 走下方专用美股路由（不依赖此处过滤/排序结果）；
+        # 其余市场（含 cn）统一应用市场支持过滤 + 提升/降级排序
+        fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
         total_fetchers = len(fetchers)
 

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 设置页「数据源」分类新增外部数据接入状态面板，并提供 `GET /api/v1/system/data-sources/status` 只读接口，展示行情/搜索数据源的接入状态、缺失配置项与日线熔断快照。
+- [新功能] 港股日线新增腾讯行情末位兜底：akshare/Tushare/yfinance/Longbridge 等前复权源全部失败时回退腾讯不复权日线，降低港股对单一免费源的依赖。
+- [改进] A 股日线优先级调整：腾讯行情 / Akshare（含新浪兜底）/ Baostock 三个免费源提升到最前，排在 Efinance、Pytdx、YFinance 及 Tushare 之前；其余源仍保留作为兜底，不影响非 A 股市场路由。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
 - [改进] 个股报告不再单独展示“题材主线与个股位置”卡片，相关市场结构数据仍保留在分析上下文、模型 Prompt 与决策信号提取链路中。
 - [改进] 通知推送与完整 Markdown/微信报告不再重复附加“AI 决策信号”摘要，DecisionSignal 的存储、告警和 Web AI 建议页保持不变。
