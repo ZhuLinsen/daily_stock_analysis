@@ -43,6 +43,26 @@ def _make_mock_yf(hist_df: pd.DataFrame):
     return mock_yf
 
 
+class TestHkStockCodeConversion(unittest.TestCase):
+    """验证裸港股代码能正确转换为 Yahoo Finance 符号。"""
+
+    def test_bare_hk_codes_use_hk_suffix(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+
+        fetcher = YfinanceFetcher()
+
+        self.assertEqual(fetcher._convert_stock_code('00700'), '0700.HK')
+        self.assertEqual(fetcher._convert_stock_code('02513'), '2513.HK')
+
+    def test_six_digit_a_share_codes_keep_their_market(self):
+        from data_provider.yfinance_fetcher import YfinanceFetcher
+
+        fetcher = YfinanceFetcher()
+
+        self.assertEqual(fetcher._convert_stock_code('600519'), '600519.SS')
+        self.assertEqual(fetcher._convert_stock_code('000001'), '000001.SZ')
+
+
 class TestHkIndexSymbolMapping(unittest.TestCase):
     """验证港股指数 Yahoo Finance 符号映射的正确性"""
 

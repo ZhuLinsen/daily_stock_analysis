@@ -143,6 +143,12 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"转换港股代码: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
+        # 裸 4-5 位数字代码是港股；A 股代码固定为 6 位。
+        if code.isdigit() and 4 <= len(code) <= 5:
+            hk_code = (code.lstrip('0') or '0').zfill(4)
+            logger.debug(f"转换裸港股代码: {stock_code} -> {hk_code}.HK")
+            return f"{hk_code}.HK"
+
         # 已经包含后缀的情况
         if '.SS' in code or '.SZ' in code or '.HK' in code or '.BJ' in code:
             return code
