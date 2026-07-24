@@ -106,3 +106,166 @@ def test_delegated_ci_context_does_not_claim_success(monkeypatch):
 
     assert 'backend-gate' in context
     assert '不假设并行 CI 已通过' in context
+
+
+# issue #2070 regression tests: _event_payload 之前在 4 类异常下统一静默
+# 返回 {},排障只能看到 'PR number is unavailable for GitHub API review',
+# 无法区分 GITHUB_EVENT_PATH 未注入 / 文件不存在 / 读取失败 / JSON 非法。
+
+def test_event_payload_warns_when_env_var_missing(monkeypatch, capsys):
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    result = ai_review._event_payload()
+
+    assert result == {}
+    captured = capsys.readouterr()
+    assert 'event payload unavailable' in captured.err
+    assert 'GITHUB_EVENT_PATH env var is not set' in captured.err
+    # 确保没有 payload 内容泄漏到日志
+    assert 'pull_request' not in captured.err
+
+
+def test_event_payload_warns_when_file_does_not_exist(monkeypatch, capsys, tmp_path):
+    missing_path = tmp_path / 'does-not-exist.json'
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(missing_path))
+
+    result = ai_review._event_payload()
+
+    assert result == {}
+    captured = capsys.readouterr()
+    assert 'event payload unavailable' in captured.err
+    assert 'file does not exist' in captured.err
+    assert str(missing_path) in captured.err
+
+
+def test_event_payload_warns_on_oserror(monkeypatch, capsys, tmp_path):
+    # 创建一个目录作为 GITHUB_EVENT_PATH —— open() 会因为 IsADirectoryError 失败
+    # (OSError 子类,多数平台 errno=21 EISDIR)。
+    bad_path = tmp_path / 'is-a-dir'
+    bad_path.mkdir()
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad_path))
+
+    result = ai_review._event_payload()
+
+    assert result == {}
+    captured = capsys.readouterr()
+    assert 'event payload unavailable' in captured.err
+    assert 'failed to read GITHUB_EVENT_PATH' in captured.err
+    assert 'OSError' in captured.err or 'IsADirectoryError' in captured.err
+    # 异常对象本身不应包含 payload 内容
+    assert 'pull_request' not in captured.err
+
+
+def test_event_payload_warns_on_invalid_json(monkeypatch, capsys, tmp_path):
+    bad_json_path = tmp_path / 'invalid.json'
+    bad_json_path.write_text('{ this is not json ', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad_json_path))
+
+    result = ai_review._event_payload()
+
+    assert result == {}
+    captured = capsys.readouterr()
+    assert 'event payload unavailable' in captured.err
+    assert 'failed to parse GITHUB_EVENT_PATH as JSON' in captured.err
+    # JSONDecodeError 是 ValueError 子类
+    assert 'json' in captured.err.lower() or 'JSONDecodeError' in captured.err
+    assert 'pull_request' not in captured.err
+
+
+def test_event_payload_returns_dict_on_valid_json(monkeypatch, capsys, tmp_path):
+    payload_path = tmp_path / 'event.json'
+    payload_path.write_text(
+        '{"pull_request": {"number": 42}, "action": "opened"}',
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(payload_path))
+
+    result = ai_review._event_payload()
+
+    assert result == {'pull_request': {'number': 42}, 'action': 'opened'}
+    captured = capsys.readouterr()
+    assert captured.err == ''  # 成功路径不应有警告
+
+
+# 契约一: PR_NUMBER 已显式提供时,坏的事件文件不应阻断 GitHub API 审查流程。
+
+def test_pull_request_number_env_override_skips_broken_event_path(monkeypatch, capsys, tmp_path):
+    bad_json_path = tmp_path / 'invalid.json'
+    bad_json_path.write_text('not json', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad_json_path))
+    monkeypatch.setenv('PR_NUMBER', '2070')
+
+    number = ai_review._pull_request_number()
+
+    assert number == 2070
+
+
+def test_pull_request_number_env_override_handles_non_integer(monkeypatch):
+    monkeypatch.setenv('PR_NUMBER', 'not-a-number')
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    try:
+        ai_review._pull_request_number()
+    except RuntimeError as exc:
+        assert 'PR_NUMBER env var is not a valid integer' in str(exc)
+        assert 'not-a-number' in str(exc)
+    else:
+        raise AssertionError('expected RuntimeError for non-integer PR_NUMBER')
+
+
+# 契约二: PR_NUMBER 未提供时,事件载荷路径上的失败应通过 stderr 警告可定位,
+# 而 _pull_request_number 抛出的 RuntimeError 也要提示去看 stderr 警告。
+
+def test_pull_request_number_from_payload_raises_with_stderr_hint(monkeypatch, capsys):
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+
+    try:
+        ai_review._pull_request_number()
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert 'PR number is unavailable' in msg
+        assert 'check prior event payload warnings on stderr' in msg
+    else:
+        raise AssertionError('expected RuntimeError when PR number unavailable')
+
+    captured = capsys.readouterr()
+    assert 'event payload unavailable' in captured.err
+    assert 'GITHUB_EVENT_PATH env var is not set' in captured.err
+
+
+def test_pull_request_number_extracts_from_payload_pull_request_key(monkeypatch):
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+    monkeypatch.setenv(
+        'GITHUB_EVENT_PATH',
+        '',  # 直接传入 payload 参数,跳过 _event_payload 重新读取
+    )
+
+    number = ai_review._pull_request_number(
+        payload={'pull_request': {'number': 1234}}
+    )
+
+    assert number == 1234
+
+
+def test_pull_request_number_extracts_from_payload_top_level_number(monkeypatch):
+    # issue_comment 事件没有 pull_request 键,但 number 在顶层(指向 issue/PR 编号)。
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+
+    number = ai_review._pull_request_number(payload={'number': 5678})
+
+    assert number == 5678
+
+
+def test_pull_request_number_handles_non_integer_payload_number(monkeypatch):
+    """防御性测试:如果 payload 里 number 不是整数(比如被篡改成字符串 'oops'),
+    _pull_request_number 应明确报错而不是让 int() 抛 TypeError/ValueError 一路冒泡。"""
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+
+    try:
+        ai_review._pull_request_number(payload={'number': 'oops'})
+    except RuntimeError as exc:
+        assert 'PR number from event payload is not a valid integer' in str(exc)
+        assert "'oops'" in str(exc)
+    else:
+        raise AssertionError('expected RuntimeError for non-integer payload number')

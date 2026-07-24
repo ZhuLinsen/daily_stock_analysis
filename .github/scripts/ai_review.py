@@ -46,28 +46,78 @@ def run_git(args):
     return result.stdout.strip()
 
 
+def _warn_event_payload(reason: str) -> None:
+    """向 stderr 输出事件载荷异常警告。
+
+    issue #2070: 之前 _event_payload 在 GITHUB_EVENT_PATH 缺失/文件不存在/读取失败/JSON
+    非法四种场景下统一静默返回 {},后续 _pull_request_number 只能 raise
+    'PR number is unavailable for GitHub API review',无法区分根因,排障困难。
+
+    本函数只输出异常类型与简短原因,不输出 payload 内容(payload 在 PR review 场景
+    可能包含未脱敏的 commit message / PR body,落入 CI 日志有泄漏风险)。
+    """
+    import sys
+    print(f"⚠️ event payload unavailable: {reason}", file=sys.stderr)
+
+
 def _event_payload():
     event_path = os.environ.get('GITHUB_EVENT_PATH')
-    if not event_path or not os.path.exists(event_path):
+    if not event_path:
+        # runner 未注入 GITHUB_EVENT_PATH(例如本地手跑脚本)。
+        _warn_event_payload("GITHUB_EVENT_PATH env var is not set")
+        return {}
+    if not os.path.exists(event_path):
+        _warn_event_payload(f"GITHUB_EVENT_PATH file does not exist: {event_path}")
         return {}
     try:
         with open(event_path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except OSError as exc:
+        # 文件存在但不可读(权限/IO 错误)。仅记异常类型 + errno,不展开 payload。
+        _warn_event_payload(
+            f"failed to read GITHUB_EVENT_PATH ({type(exc).__name__}, "
+            f"errno={getattr(exc, 'errno', '?')}, path={event_path})"
+        )
+        return {}
+    except ValueError as exc:
+        # json.JSONDecodeError 是 ValueError 子类,统揽覆盖。
+        _warn_event_payload(
+            f"failed to parse GITHUB_EVENT_PATH as JSON ({type(exc).__name__}, "
+            f"path={event_path})"
+        )
         return {}
 
 
 def _pull_request_number(payload=None):
     configured = os.environ.get('PR_NUMBER', '').strip()
     if configured:
-        return int(configured)
+        # 显式 PR_NUMBER 优先级最高,用于 AI_REVIEW_SOURCE=github_api 场景下绕过
+        # 破损的事件文件。issue #2070 契约一:PR_NUMBER 已提供时,坏的事件文件
+        # 不应阻断 GitHub API 流程。
+        try:
+            return int(configured)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"PR_NUMBER env var is not a valid integer: {configured!r} ({exc})"
+            ) from exc
 
     payload = payload if payload is not None else _event_payload()
     pull_request = payload.get('pull_request') or {}
     number = pull_request.get('number') or payload.get('number')
     if not number:
-        raise RuntimeError('PR number is unavailable for GitHub API review')
-    return int(number)
+        # issue #2070 契约二:PR_NUMBER 未提供时,事件载荷路径上的任何失败都已
+        # 通过 _warn_event_payload 输出到 stderr,这里仅携带"PR 编号不可用"上抛,
+        # 排障者结合 stderr 警告即可定位是文件缺失/不可读/JSON 非法/真为空哪一种。
+        raise RuntimeError(
+            'PR number is unavailable for GitHub API review '
+            '(check prior event payload warnings on stderr for root cause)'
+        )
+    try:
+        return int(number)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f'PR number from event payload is not a valid integer: {number!r} ({exc})'
+        ) from exc
 
 
 def _github_api_json(path):
