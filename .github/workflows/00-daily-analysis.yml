@@ -1,11 +1,12 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 10:00
-  # 定时触发 - 每天北京时间 18:00
+  # 定时触发 - 每天北京时间 10:05 和 18:05
+  # 注：避开整点（GitHub Actions 高峰期），减少调度延迟
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
+    - cron: '5 2 * * 1-5'      # 周一到周五，UTC 02:05 = 北京时间 10:05
+    - cron: '5 10 * * 1-5'     # 周一到周五，UTC 10:05 = 北京时间 18:05
+
   # 手动触发
   workflow_dispatch:
     inputs:
@@ -32,16 +33,10 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
-    # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
-    environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
     
     steps:
-      - name: 随机延迟（避免固定时间访问）
-        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
-      
       - name: 检出代码
         uses: actions/checkout@v5
       
@@ -51,13 +46,9 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       
-      - name: 安装依赖
+      - name: 安装依赖并创建目录
         run: |
-          pip install --upgrade pip
           pip install -r requirements.txt
-      
-      - name: 创建必要目录
-        run: |
           mkdir -p data logs reports
       
       - name: 执行股票分析
@@ -329,7 +320,7 @@ jobs:
           GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
           GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
           
-          # 方式六：PushPlus ⬅️ 新增！
+          # 方式六：PushPlus
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ vars.PUSHPLUS_TOPIC || secrets.PUSHPLUS_TOPIC }}
           
@@ -379,13 +370,12 @@ jobs:
           # ==========================================
           # 自选股配置
           # ==========================================
-          # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
           # ==========================================
-          # 运行配置 ⬅️ 新增！
+          # 运行配置
           # ==========================================
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           REPORT_LANGUAGE: ${{ vars.REPORT_LANGUAGE || secrets.REPORT_LANGUAGE || '' }}
@@ -408,10 +398,7 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 解析自选股配置：
-          # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
-          # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
-          # 3. 最小默认值
+          # 解析自选股配置
           if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
             export STOCK_LIST="$STOCK_LIST_CONFIG"
           elif [ -z "${STOCK_LIST:-}" ]; then
@@ -420,91 +407,18 @@ jobs:
 
           # 处理 LITELLM YAML 配置文件
           if [ -n "$LITELLM_CONFIG_YAML" ] && [ -n "$LITELLM_CONFIG" ]; then
-            echo "📝 使用 GitHub Actions Secrets/Variables 中的 LITELLM_CONFIG_YAML 配置"
-            # 确保目录存在
             mkdir -p "$(dirname "$LITELLM_CONFIG")"
-            # 写入配置文件（覆盖已有文件）
             echo "$LITELLM_CONFIG_YAML" > "$LITELLM_CONFIG"
-            echo "✅ LITELLM 配置文件已写入: $LITELLM_CONFIG"
           fi
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
-          
-          echo "=========================================="
-          echo "🚀 A股自选股智能分析系统"
-          echo "=========================================="
-          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
-          echo "🎯 运行模式: $MODE"
-          echo "📊 自选股: $STOCK_LIST"
-          echo "📝 报告类型: $REPORT_TYPE"
-          echo ""
-          echo "=========================================="
-          echo "📋 配置检查"
-          echo "=========================================="
-          echo "【AI 配置】"
-          if [ -n "$LITELLM_CONFIG" ] || [ -n "$LITELLM_API_KEY" ] || [ -n "$LITELLM_MODEL" ] || [ -n "$ANSPIRE_API_KEYS" ]; then
-            echo "  LiteLLM: ✅ 已配置"
-          else
-            echo "  LiteLLM: ❌ 未配置"
-          fi
-          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
-          echo "  DeepSeek Key:   $([ -n "$DEEPSEEK_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Anspire Key:    $([ -n "$ANSPIRE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AIHubMix Key:   $([ -n "$AIHUBMIX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Anthropic Key:  $([ -n "$ANTHROPIC_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo ""
-          echo "【数据源】"
-          echo "  Tushare Token: $([ -n "$TUSHARE_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  TickFlow:      $([ -n "$TICKFLOW_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          if [ -n "$LONGBRIDGE_APP_KEY" ] && [ -n "$LONGBRIDGE_APP_SECRET" ] && [ -n "$LONGBRIDGE_ACCESS_TOKEN" ]; then
-            echo "  Longbridge: ✅ 已配置（Legacy API Key）"
-          elif [ -n "$LONGBRIDGE_OAUTH_CLIENT_ID" ] || { [ -n "$LONGBRIDGE_APP_KEY" ] && [ -z "$LONGBRIDGE_ACCESS_TOKEN" ]; }; then
-            echo "  Longbridge: $([ -n "$LONGBRIDGE_OAUTH_TOKEN_CACHE_B64" ] && echo '✅ 已配置（OAuth token cache）' || echo '🟡 已配置 OAuth client，缺少 token cache')"
-          else
-            echo "  Longbridge: ⚪ 未配置（仅 YFinance 等，无长桥调用）"
-          fi
-          echo ""
-          echo "【搜索引擎】"
-          echo "  Bocha API Keys: $([ -n "$BOCHA_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Tavily API Keys: $([ -n "$TAVILY_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  SerpAPI Keys: $([ -n "$SERPAPI_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  MiniMax API Keys: $([ -n "$MINIMAX_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Brave API Keys: $([ -n "$BRAVE_API_KEYS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  SearXNG Base URLs: $([ -n "$SEARXNG_BASE_URLS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          case "${SEARXNG_PUBLIC_INSTANCES_ENABLED,,}" in
-            0|false|no|off)
-              echo "  SearXNG Public Instances: ❌ 已禁用"
-              ;;
-            "")
-              echo "  SearXNG Public Instances: ✅ 默认开启"
-              ;;
-            *)
-              echo "  SearXNG Public Instances: ✅ 已启用"
-              ;;
-          esac
-          echo ""
-          echo "【通知渠道】"
-          echo "  PushPlus: $([ -n "$PUSHPLUS_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  ntfy: $([ -n "$NTFY_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Gotify: $([ -n "$GOTIFY_URL" ] && [ -n "$GOTIFY_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  企业微信: $([ -n "$WECHAT_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  钉钉: $( [ -n "$DINGTALK_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置' )"
-          echo "  飞书: $( ([ -n "$FEISHU_WEBHOOK_URL" ] || ([ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && [ -n "$FEISHU_CHAT_ID" ]) ) && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Telegram: $([ -n "$TELEGRAM_BOT_TOKEN" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Discord: $([ -n "$DISCORD_WEBHOOK_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  AstrBot: $([ -n "$ASTRBOT_URL" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "  Slack: $(([ -n "$SLACK_WEBHOOK_URL" ] || ([ -n "$SLACK_BOT_TOKEN" ] && [ -n "$SLACK_CHANNEL_ID" ])) && echo '✅ 已配置' || echo '⚪ 未配置')"
-          echo "=========================================="
-          echo ""
-          
-          # 构建命令行参数
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
             FORCE_RUN_ARG="--force-run"
-            echo "⚡ 已启用强制运行模式（跳过交易日检查）"
           fi
+
+          echo "🚀 A股自选股分析 | $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 模式: $MODE | 自选股: $STOCK_LIST"
 
           # 执行分析
           if [ "$MODE" = "market-only" ]; then
@@ -524,22 +438,3 @@ jobs:
             reports/
             logs/
           retention-days: 30
-      
-      - name: 显示运行结果
-        if: always()
-        run: |
-          echo ""
-          echo "=========================================="
-          echo "📊 分析完成"
-          echo "=========================================="
-          if [ -d "reports" ] && [ "$(ls -A reports 2>/dev/null)" ]; then
-            echo "生成的报告:"
-            ls -la reports/
-          else
-            echo "⚠️ 未生成报告文件"
-          fi
-          echo ""
-          if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
-            echo "📜 最近日志（最后 30 行）:"
-            tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
-          fi
