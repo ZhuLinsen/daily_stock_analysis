@@ -187,7 +187,7 @@ To get started quickly, you need at minimum:
 
 ### 5. Done!
 
-Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
+The default GitHub Actions schedule keeps the full analysis at **18:00 (Beijing Time)** on weekdays and adds a US after-hours price email run at **01:30 UTC (09:30 Beijing Time)**. The added run fetches extended-hours prices only for US tickers from `STOCK_LIST`, sends the digest through email, skips full analysis and market review, and exits when no US ticker is configured.
 
 ---
 
@@ -673,7 +673,10 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 schedule:
   # UTC time, Beijing time = UTC + 8
   - cron: '0 10 * * 1-5'   # Monday to Friday 18:00 (Beijing Time)
+  - cron: '30 1 * * 2-6'   # After US extended trading ends; 09:30 Beijing time
 ```
+
+The second trigger reuses the same `STOCK_LIST`, keeps only US tickers, and directly runs `scripts/send_us_postmarket_prices.py`. The script reads the real `postMarketPrice`, includes regular close only as a comparison, and routes the digest to `email`, so the existing 18:00 full analysis and other notification channels keep their current behavior. At 01:30 UTC the task starts 30 minutes after extended trading ends during US standard time and 90 minutes after it ends during daylight saving time, avoiding a separate DST switch.
 
 Common time reference:
 

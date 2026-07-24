@@ -148,7 +148,7 @@ Open the `Actions` tab and click `I understand my workflows, go ahead and enable
 
 #### Done
 
-By default, the workflow runs every weekday at 18:00 Beijing time and skips non-trading days. Forced runs, trading-day checks, and resume rules are covered in the [Full Guide](./full-guide_EN.md#scheduled-task-configuration).
+By default, the workflow keeps the existing full run at 18:00 Beijing time and adds a US after-hours price email run at 01:30 UTC (09:30 Beijing time). The added run fetches extended-hours prices only for US tickers in `STOCK_LIST`, routes the digest to email, skips full analysis and market review, and exits cleanly when no US ticker is configured. Non-trading days are skipped. Trading-day checks and execution details are covered in the [Full Guide](./full-guide_EN.md#scheduled-task-configuration).
 
 ### Option 2: Local / Docker Deployment
 

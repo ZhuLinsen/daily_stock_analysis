@@ -1,9 +1,9 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
     - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '30 1 * * 2-6'     # 周二到周六，UTC 01:30 = 北京时间 09:30；全年均晚于美股延长交易结束
   
   # 手动触发
   workflow_dispatch:
@@ -420,6 +420,18 @@ jobs:
             export STOCK_LIST="600519"
           fi
 
+          IS_US_POSTMARKET_RUN="false"
+          if [ "${{ github.event.schedule }}" = "30 1 * * 2-6" ]; then
+            US_STOCK_LIST="$(python -c 'import os; from data_provider.us_index_mapping import is_us_stock_code; from src.services.stock_list_parser import split_stock_list; print(",".join(code for code in split_stock_list(os.environ.get("STOCK_LIST", "")) if is_us_stock_code(code)))')"
+            if [ -z "$US_STOCK_LIST" ]; then
+              echo "ℹ️ 当前 STOCK_LIST 中没有美股，跳过美股盘后价邮件任务"
+              exit 0
+            fi
+            export STOCK_LIST="$US_STOCK_LIST"
+            export NOTIFICATION_REPORT_CHANNELS="email"
+            IS_US_POSTMARKET_RUN="true"
+          fi
+
           # 处理 LITELLM YAML 配置文件
           if [ -n "$LITELLM_CONFIG_YAML" ] && [ -n "$LITELLM_CONFIG" ]; then
             echo "📝 使用 GitHub Actions Secrets/Variables 中的 LITELLM_CONFIG_YAML 配置"
@@ -432,6 +444,9 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+          if [ "$IS_US_POSTMARKET_RUN" = "true" ]; then
+            MODE="us-postmarket"
+          fi
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
@@ -509,7 +524,9 @@ jobs:
           fi
 
           # 执行分析
-          if [ "$MODE" = "market-only" ]; then
+          if [ "$IS_US_POSTMARKET_RUN" = "true" ]; then
+            python scripts/send_us_postmarket_prices.py
+          elif [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
             python main.py --no-market-review $FORCE_RUN_ARG
