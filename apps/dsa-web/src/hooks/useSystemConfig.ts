@@ -71,6 +71,17 @@ function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] |
 export function useSystemConfig() {
   // Server state
   const [configVersion, setConfigVersion] = useState<string>('');
+  // issue #1948 (OR-COR-d144d9cf): 同步镜像最新 configVersion 到 ref。
+  // 联合保存路径(SettingsPage.handleSaveConfig)在普通草稿 save() 成功后立即触发
+  // LLMChannelEditor.submit()。React state 异步更新,await save() 返回时 closure 中的
+  // configVersion 仍是旧值,LLMChannelEditor 内 systemConfigApi.update 会拿到旧 version
+  // 触发 409 冲突。SettingsPage 通过 latestConfigVersionRef.current 读取刷新后版本传给
+  // LLMChannelEditor.submit({ configVersion }) 绕过这个问题。
+  const latestConfigVersionRef = useRef<string>('');
+  const setConfigVersionSync = useCallback((version: string) => {
+    latestConfigVersionRef.current = version;
+    setConfigVersion(version);
+  }, []);
   const [maskToken, setMaskToken] = useState<string>('******');
   const [serverItems, setServerItems] = useState<SystemConfigItem[]>([]);
 
@@ -196,7 +207,7 @@ export function useSystemConfig() {
       const preserveDirty = options?.preserveDirty ?? false;
 
       setServerItems(sorted);
-      setConfigVersion(version);
+      setConfigVersionSync(version);
       setMaskToken(token || '******');
 
       setDraftValues((prevDraft) => {
@@ -227,7 +238,7 @@ export function useSystemConfig() {
       });
       setValidationIssues([]);
     },
-    [],
+    [setConfigVersionSync],
   );
 
   const load = useCallback(async (): Promise<boolean> => {
@@ -403,6 +414,7 @@ export function useSystemConfig() {
   return {
     // Server state
     configVersion,
+    latestConfigVersionRef,
     maskToken,
     serverItems,
     categories,

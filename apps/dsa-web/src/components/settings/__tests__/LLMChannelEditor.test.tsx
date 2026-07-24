@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LLMChannelEditor } from '../LLMChannelEditor';
 
@@ -2109,6 +2109,80 @@ describe('LLMChannelEditor', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('模型（逗号分隔）')).toHaveValue('qwen-old');
       expect(screen.queryByLabelText('stale-openai')).not.toBeInTheDocument();
+    });
+  });
+
+  // OR-COR-3ad7163c: 验证 useImperativeHandle 暴露的 reset() 把 LLMChannelEditor 内部
+  // state 回滚到 saved 快照,且 draftItems 通过 onDraftItemsChange 回传父层变 []。
+  // 这里测试只在 channels state 被用户改动 + reset() 后,draftItems 变空、discovery/visible
+  // state 被清。确保 SettingsPage discard 按钮调用 reset() 之后 editor 内部不再保留草稿。
+  it('OR-COR-3ad7163c: reset() rolls internal state back to saved snapshot', async () => {
+    const onDraftItemsChange = vi.fn();
+    const editorRef = { current: null as null | { reset: () => void } };
+    const refCallback = (instance: unknown) => { editorRef.current = instance as { reset: () => void }; };
+    const { rerender } = render(
+      <LLMChannelEditor
+        ref={refCallback}
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />,
+    );
+
+    // 等初始 fingerprint 通知回父层(空草稿)
+    await waitFor(() => {
+      expect(onDraftItemsChange).toHaveBeenCalled();
+    });
+    onDraftItemsChange.mockClear();
+
+    // 点开 OpenAI 官方 tab 让 Base URL 等字段渲染出来(默认不渲染)
+    fireEvent.click(screen.getByRole('button', { name: /OpenAI 官方/i }));
+
+    // 用户改 base URL 触发 draftItems
+    const baseUrlInput = await screen.findByLabelText('Base URL') as HTMLInputElement;
+    fireEvent.change(baseUrlInput, {
+      target: { value: 'https://openai.example.com/v2' },
+    });
+
+    await waitFor(() => {
+      expect(onDraftItemsChange).toHaveBeenCalled();
+      const draft = onDraftItemsChange.mock.calls[0][0];
+      expect(draft.length).toBeGreaterThan(0);
+    });
+
+    // 模拟 SettingsPage discard 按钮调用 reset()
+    expect(editorRef.current).not.toBeNull();
+    expect(typeof editorRef.current!.reset).toBe('function');
+    await act(() => {
+      editorRef.current!.reset();
+    });
+
+    // 内部 channels state 回到 saved 快照 → draftItems 重算得 [] → onDraftItemsChange([]) 被触发
+    await waitFor(() => {
+      const lastCall = onDraftItemsChange.mock.calls[onDraftItemsChange.mock.calls.length - 1]?.[0];
+      expect(lastCall).toEqual([]);
+    });
+
+    // UI 上 baseUrlInput 回到 saved 值(setChannels 是 async batched,需 waitFor)
+    await waitFor(() => {
+      expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe('https://api.openai.com/v1');
+    });
+
+    // rerender 仍是 saved items 时,draftItems 应保持 []
+    rerender(
+      <LLMChannelEditor
+        ref={refCallback}
+        items={openAiItems}
+        configVersion="v1"
+        maskToken="******"
+        onSaved={() => {}}
+        onDraftItemsChange={onDraftItemsChange}
+      />,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe('https://api.openai.com/v1');
     });
   });
 });

@@ -1528,6 +1528,17 @@ function channelsAreEqual(left: ChannelConfig, right: ChannelConfig): boolean {
   );
 }
 
+export interface LLMChannelEditorSubmitOptions {
+  /**
+   * issue #1948 (OR-COR-d144d9cf): SettingsPage.handleSaveConfig 在普通草稿
+   * save() 成功后立即触发 LLMChannelEditor.submit()。React state 异步更新,
+   * 此时 LLMChannelEditor 收到的 configVersion prop 仍是旧版本——直接调
+   * systemConfigApi.update 会触发 409 冲突。SettingsPage 通过 latestConfigVersionRef
+   * 读取刷新后版本并通过此 override 传入,绕过 prop 传播时序问题。
+   */
+  configVersion?: string;
+}
+
 export interface LLMChannelEditorHandle {
   /**
    * 由 SettingsPage 在页面级"保存配置"按钮成功保存普通草稿后调用,触发 LLM 渠道
@@ -1535,10 +1546,26 @@ export interface LLMChannelEditorHandle {
    * buildFilteredChannelUpdateItems + systemConfigApi.update + onSaved。
    * 如果当前没有 channel 草稿(handleSave 会进入 early return 路径),调用是 no-op。
    * 返回 true 表示提交成功(或无草稿可提交),false 表示 validation 失败或 API 报错。
+   *
+   * opts.configVersion 可选——传入时覆盖 LLMChannelEditor 收到的 configVersion prop,
+   * 用于解决联合保存路径中 prop 异步更新滞后导致的版本冲突(OR-COR-d144d9cf)。
    */
-  submit: () => Promise<boolean>;
+  submit: (opts?: LLMChannelEditorSubmitOptions) => Promise<boolean>;
   /** 当前是否持有未保存草稿(草稿条目数 > 0)。 */
   hasDraft: () => boolean;
+  /**
+   * 由 SettingsPage 在"放弃修改"按钮按下时调用,把 LLMChannelEditor 内部
+   * channels/runtimeConfig/visibleKeys/testStates/... 状态强制重置回
+   * 当前 props 对应的 saved 快照。
+   *
+   * 解决 OR-COR-3ad7163c:discard 路径之前只调 setLlmChannelDraftItems([])
+   * + useSystemConfig.resetDraft()——前者只清父层镜像,后者只重置
+   * draftValues,serverItems 不变 → initialChannels 重算 fingerprint 不变 →
+   * LLMChannelEditor 内部 useEffect 不触发 → channels state 保留用户改的草稿,
+   * draftItems 仍非空 → onDraftItemsChange 把草稿回传父层,造成"已放弃但仍提示
+   * 未保存"漂移。通过 reset() 显式强制 reset 修复。
+   */
+  reset: () => void;
 }
 
 export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEditorProps>(
@@ -1879,7 +1906,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
     setIsCollapsed(false);
   };
 
-  const handleSave = async () => {
+  const handleSave = async (opts?: { configVersionOverride?: string }) => {
     const hasEmptyName = channels.some((channel) => !channel.name.trim());
     if (hasEmptyName) {
       setSaveMessage({ type: 'local-error', text: '渠道名称不能为空，且只能包含字母、数字或下划线。' });
@@ -1965,7 +1992,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
         managesRuntimeConfig,
       });
       const response = await systemConfigApi.update({
-        configVersion,
+        configVersion: opts?.configVersionOverride ?? configVersion,
         maskToken,
         reloadNow: true,
         items: updateItems,
@@ -1991,7 +2018,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
   // 返回 false 时不抛错——validation 错已通过 setSaveMessage 显示在 editor 区域,
   // SettingsPage.hassanSaveConfig 可根据 return value 决定整体 toast 文案。
   useImperativeHandle(ref, () => ({
-    submit: async () => {
+    submit: async (opts?: LLMChannelEditorSubmitOptions) => {
       // 没有 channel 草稿 + 没有 runtime 变更 = handleSave 等价于 no-op。
       const noChannelDraft = draftItems.length === 0;
       const noRuntimeChanges = !managesRuntimeConfig
@@ -2003,7 +2030,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
         return true;
       }
       try {
-        await handleSave();
+        await handleSave({ configVersionOverride: opts?.configVersion });
         // handleSave 内部 try/catch 已吞 API error 并 setSaveMessage('error')。
         // 通过 saveMessage 当前快照判断 success/failure,因为 await 完后 React 已 flush
         // state update,本 closure 因 React 18 batching 仍读到 await 之前的 saveMessage === null
@@ -2020,6 +2047,37 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       }
     },
     hasDraft: () => draftItems.length > 0,
+    reset: () => {
+      // OR-COR-3ad7163c: 复用 items prop 变化触发的 useEffect 重置逻辑(L1624-1648 那段),
+      // 但运行时机由 SettingsPage discard 按钮显式触发而非依赖 fingerprint 变化。
+      // 注意:此函数运行时 initialChannels / initialRuntimeConfig 是本次 render 的 closure,
+      // 与 props 同步,因此 setChannels(initialChannels) 会回到 saved 快照。
+      //
+      // 关键:initialChannels 是 useMemo([items]) 派生的引用稳定数组。直接
+      // setChannels(initialChannels) 时 React useState 用 Object.is bailout 比较,
+      // 因引用未变会跳过 re-render → state 实际没回滚(draftItems input value 也不变)。
+      // 必须传 deep-cloned 副本让引用变化触发 re-render。
+      //
+      // 不清 lastDraftFingerprintRef:reset 后 channels → initialChannels,draftItems 重算
+      // 得 [],fingerprint 从 'X' 变 '[]',L1736 useEffect 检测到变化会触发
+      // onDraftItemsChange([]),父层 llmChannelDraftItems 自然清空——双保险,
+      // SettingsPage discard 按钮本身也会显式 setLlmChannelDraftItems([])。
+      setChannels(initialChannels.map((channel) => ({ ...channel })));
+      setRuntimeConfig({ ...initialRuntimeConfig });
+      setVisibleKeys({});
+      setTestStates({});
+      setDiscoveryStates({});
+      setCapabilityStates({});
+      // 不清 setExpandedRows({}):discard 后用户的视线焦点要在原 channel row 上,
+      // 折叠会让 Base URL 等字段从 DOM 消失,造成"reset 把 channel 也收起来了"的错觉。
+      // saved state 视图也保留展开,因为 channels prop 变化触发的 useEffect(L1624)清 expandedRows
+      // 是为了 saved 重新加载时的全新视图,而 reset 是同视图内状态回滚,场景不同。
+      setIsCollapsed(false);
+      setSaveMessage(null);
+      setSaveWarnings([]);
+      discoveryNonceRef.current = {};
+      capabilityNonceRef.current = {};
+    },
   }));
 
   const handleTest = async (channel: ChannelConfig, index: number) => {
