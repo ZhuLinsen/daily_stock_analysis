@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, delete, desc, func, or_, select
 
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE
-from src.services.stock_code_utils import build_daily_code_candidates
+from src.services.stock_code_utils import resolve_daily_stock_identity
 
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
@@ -515,11 +515,11 @@ class BacktestRepository:
         else:
             raw_code = raw_code.upper()
 
-        candidates = (
-            [OVERALL_SENTINEL_CODE]
-            if raw_code == OVERALL_SENTINEL_CODE
-            else build_daily_code_candidates(raw_code)
-        )
+        if raw_code == OVERALL_SENTINEL_CODE:
+            candidates = [OVERALL_SENTINEL_CODE]
+        else:
+            identity = resolve_daily_stock_identity(raw_code)
+            candidates = list(identity.code_candidates) if identity is not None else []
         if not candidates:
             return [column.in_([])]
 

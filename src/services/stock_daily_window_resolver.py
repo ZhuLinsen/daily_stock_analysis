@@ -29,13 +29,13 @@ def resolve_stock_daily_window(
 ) -> Optional[StockDailyWindow]:
     """Choose one coherent window anchored to the expected trading session.
 
-    Candidates whose nearest start bar does not exactly match the authoritative
-    expected date are rejected. Among valid candidates, complete windows outrank
-    partial ones; remaining ties prefer more forward bars and then candidate
-    order. Start and forward bars are never combined across code shapes.
+    Only candidates with a bar on the authoritative expected date are eligible.
+    Complete windows outrank partial ones; remaining ties prefer more forward
+    bars and then candidate order. Start and forward bars are never combined
+    across code shapes.
     """
     best_window: Optional[StockDailyWindow] = None
-    best_key: Optional[Tuple[date, bool, int, int]] = None
+    best_key: Optional[Tuple[bool, int, int]] = None
     if isinstance(eval_window_days, bool) or not isinstance(eval_window_days, int):
         raise ValueError("eval_window_days must be a positive integer")
     required_bars = eval_window_days
@@ -58,7 +58,6 @@ def resolve_stock_daily_window(
             eval_window_days=required_bars,
         )
         key = (
-            start_bar.date,
             len(forward_bars) >= required_bars,
             len(forward_bars),
             -rank,

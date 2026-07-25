@@ -12,6 +12,7 @@ from src.services.stock_code_utils import (
     build_daily_code_candidates,
     is_code_like,
     normalize_code,
+    resolve_daily_stock_identity,
     resolve_index_stock_code_for_analysis,
 )
 
@@ -40,7 +41,9 @@ class TestBuildDailyCodeCandidates:
             ("600519", {"600519", "600519.SH"}),
             ("000001.SZ", {"000001.SZ", "000001"}),
             ("920748", {"920748", "BJ920748", "920748.BJ"}),
+            ("1810", {"1810", "01810", "HK01810", "01810.HK"}),
             ("1810.HK", {"1810.HK", "01810", "HK01810", "01810.HK"}),
+            ("HK.01810", {"HK.01810", "01810", "HK01810", "01810.HK"}),
             ("AAPL", {"AAPL", "AAPL.US"}),
             ("AAPL.US", {"AAPL.US", "AAPL"}),
         ],
@@ -51,6 +54,33 @@ class TestBuildDailyCodeCandidates:
         required_candidates,
     ):
         assert set(build_daily_code_candidates(code)) >= required_candidates
+
+    @pytest.mark.parametrize(
+        ("code", "normalized_code", "market", "refill_code"),
+        [
+            ("600519.SH", "600519", "cn", "600519"),
+            ("1810", "01810", "hk", "HK01810"),
+            ("HK.01810", "01810", "hk", "HK01810"),
+            ("AAPL.US", "AAPL", "us", "AAPL"),
+            ("BRK.B", "BRK.B", "us", "BRK.B"),
+            ("7203.T", "7203.T", "jp", "7203.T"),
+        ],
+    )
+    def test_one_identity_drives_candidates_market_and_refill(
+        self,
+        code,
+        normalized_code,
+        market,
+        refill_code,
+    ):
+        identity = resolve_daily_stock_identity(code)
+
+        assert identity is not None
+        assert identity.normalized_code == normalized_code
+        assert identity.market == market
+        assert identity.refill_code == refill_code
+        assert code in identity.code_candidates
+        assert refill_code in identity.code_candidates
 
 
 class TestIsCodeLike:

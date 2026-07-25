@@ -6,10 +6,14 @@ Shared stock code utilities.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import List, Optional
 
-from data_provider.base import canonical_stock_code, is_bse_code, normalize_stock_code
-from src.services.market_symbol_utils import normalize_suffix_market_symbol
+from data_provider.base import canonical_stock_code, is_bse_code
+from src.services.market_symbol_utils import (
+    get_suffix_market,
+    normalize_suffix_market_symbol,
+)
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
@@ -38,6 +42,16 @@ _SUFFIX_DIGIT_LENS: dict = {
 }
 
 _PRESERVE_SUFFIXES = {".T", ".KS", ".KQ", ".TW", ".TWO"}
+
+
+@dataclass(frozen=True)
+class DailyStockIdentity:
+    """One parsed identity shared by daily-bar lookup, calendar, and refill."""
+
+    normalized_code: str
+    market: str
+    refill_code: str
+    code_candidates: tuple[str, ...]
 
 
 def _infer_cn_exchange(base: str) -> str:
@@ -239,19 +253,54 @@ def _build_market_code_variants(
     return variants
 
 
-def build_daily_code_candidates(code: Optional[str]) -> List[str]:
-    """Build ordered code variants used to locate locally stored daily bars."""
+def resolve_daily_stock_identity(code: Optional[str]) -> Optional[DailyStockIdentity]:
+    """Parse one stock identity for every local daily-bar consumer.
+
+    Four-digit bare numbers keep the historical daily-data compatibility rule
+    and are interpreted as Hong Kong codes. Other public normalization behavior
+    remains unchanged.
+    """
     raw_code = str(code or "").strip().upper()
     if not raw_code:
-        return []
-    normalized_code, explicit_exchange = _normalize_code_and_exchange(raw_code)
-    if normalized_code is None:
-        return []
+        return None
 
-    candidates = [raw_code]
-    for candidate in (normalize_stock_code(raw_code), normalized_code):
-        if candidate and candidate != raw_code:
-            candidates.append(candidate)
+    if raw_code.isdigit() and len(raw_code) == 4:
+        normalized_code, explicit_exchange = raw_code.zfill(5), "HK"
+    else:
+        normalized_code, explicit_exchange = _normalize_code_and_exchange(raw_code)
+    if normalized_code is None:
+        return None
+
+    suffix_market = get_suffix_market(normalized_code)
+    if explicit_exchange in {"SH", "SS", "SZ", "BJ"}:
+        market = "cn"
+    elif explicit_exchange == "HK":
+        market = "hk"
+    elif suffix_market:
+        market = suffix_market
+    elif re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", normalized_code):
+        market = "us"
+    elif normalized_code.isdigit() and len(normalized_code) == 6:
+        market = "cn"
+    elif normalized_code.isdigit() and len(normalized_code) == 5:
+        market = "hk"
+    else:
+        return None
+
+    if market == "hk":
+        normalized_code = normalized_code.zfill(5)
+        refill_code = f"HK{normalized_code}"
+    elif market == "us":
+        normalized_code = normalized_code.removesuffix(".US")
+        refill_code = normalized_code
+    else:
+        refill_code = normalized_code
+
+    if market == "hk":
+        candidates = [raw_code]
+        candidates.extend(_build_hk_market_variants(normalized_code))
+    else:
+        candidates = [raw_code, normalized_code, refill_code]
     for candidate in list(candidates):
         candidates.extend(
             _build_market_code_variants(
@@ -260,7 +309,21 @@ def build_daily_code_candidates(code: Optional[str]) -> List[str]:
                 explicit_exchange,
             )
         )
-    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+    unique_candidates = tuple(
+        dict.fromkeys(candidate for candidate in candidates if candidate)
+    )
+    return DailyStockIdentity(
+        normalized_code=normalized_code,
+        market=market,
+        refill_code=refill_code,
+        code_candidates=unique_candidates,
+    )
+
+
+def build_daily_code_candidates(code: Optional[str]) -> List[str]:
+    """Build ordered code variants used to locate locally stored daily bars."""
+    identity = resolve_daily_stock_identity(code)
+    return list(identity.code_candidates) if identity is not None else []
 
 
 def resolve_index_stock_code_for_analysis(raw: str) -> str:
