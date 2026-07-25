@@ -1,13 +1,120 @@
-import { readFileSync } from 'node:fs'
-import { defineConfig } from 'vite'
+import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+const frontendDir = __dirname
+const repoRoot = path.resolve(frontendDir, '../..')
 const packageJson = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
 ) as { version?: string }
 const buildTime = new Date().toISOString()
+const placeholderVersion = '0.0.0'
+
+const buildInputFiles = [
+  'package.json',
+  'package-lock.json',
+  'vite.config.ts',
+  'tsconfig.json',
+  'tsconfig.app.json',
+  'tsconfig.node.json',
+  'eslint.config.js',
+  'postcss.config.js',
+  'tailwind.config.js',
+  'index.html',
+]
+const buildInputDirectories = ['src', 'public']
+
+const collectFiles = (root: string): string[] => {
+  if (!existsSync(root)) {
+    return []
+  }
+
+  return readdirSync(root, { withFileTypes: true })
+    .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+    .flatMap((entry) => {
+      const entryPath = path.join(root, entry.name)
+      return entry.isDirectory() ? collectFiles(entryPath) : [entryPath]
+    })
+}
+
+const createSourceFingerprint = () => {
+  const inputPaths = [
+    ...buildInputFiles.map((fileName) => path.join(frontendDir, fileName)),
+    ...buildInputDirectories.flatMap((directoryName) => collectFiles(path.join(frontendDir, directoryName))),
+  ]
+    .filter((inputPath) => existsSync(inputPath))
+    .sort((left, right) => {
+      const leftRelative = path.relative(frontendDir, left).replace(/\\/g, '/')
+      const rightRelative = path.relative(frontendDir, right).replace(/\\/g, '/')
+      return leftRelative < rightRelative ? -1 : leftRelative > rightRelative ? 1 : 0
+    })
+
+  const hash = createHash('sha256')
+  inputPaths.forEach((inputPath) => {
+    hash.update(path.relative(frontendDir, inputPath).replace(/\\/g, '/'))
+    hash.update('\0')
+    hash.update(readFileSync(inputPath))
+    hash.update('\0')
+  })
+  return hash.digest('hex')
+}
+
+const runGit = (args: string[]) => {
+  try {
+    return execFileSync('git', args, {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+const normalizeVersion = (value?: string) => {
+  const normalized = value?.trim() ?? ''
+  return normalized.replace(/^v(?=\d)/, '')
+}
+
+const releaseVersion = normalizeVersion(
+  process.env.DSA_WEB_VERSION
+  || process.env.RELEASE_TAG
+  || (process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : ''),
+)
+const packageVersion = normalizeVersion(packageJson.version)
+const gitDescription = normalizeVersion(runGit(['describe', '--tags', '--always', '--dirty']))
+const appVersion = releaseVersion
+  || (packageVersion !== placeholderVersion ? packageVersion : '')
+  || gitDescription
+  || placeholderVersion
+const appRevision = (
+  process.env.DSA_WEB_REVISION
+  || process.env.GITHUB_SHA
+  || runGit(['rev-parse', '--short=12', 'HEAD'])
+  || 'unknown'
+).trim()
+const sourceFingerprint = createSourceFingerprint()
+
+const buildMetadataPlugin = (): Plugin => ({
+  name: 'dsa-build-metadata',
+  generateBundle() {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'build-info.json',
+      source: `${JSON.stringify({
+        schemaVersion: 1,
+        version: appVersion,
+        revision: appRevision,
+        buildTime,
+        sourceFingerprint,
+      }, null, 2)}\n`,
+    })
+  },
+})
 
 const vendorChunkByPackage: Record<string, string> = {
   react: 'vendor-react',
@@ -93,10 +200,12 @@ const getVendorChunkName = (id: string): string | undefined => {
 // https://vite.dev/config/
 export default defineConfig({
   define: {
-    __APP_PACKAGE_VERSION__: JSON.stringify(packageJson.version ?? '0.0.0'),
+    __APP_PACKAGE_VERSION__: JSON.stringify(appVersion),
+    __APP_REVISION__: JSON.stringify(appRevision),
     __APP_BUILD_TIME__: JSON.stringify(buildTime),
   },
   plugins: [
+    buildMetadataPlugin(),
     tailwindcss(),
     react({
       babel: {

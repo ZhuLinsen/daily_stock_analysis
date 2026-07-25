@@ -69,6 +69,7 @@ const {
   webBuildInfoMock: {
     version: '3.11.0',
     rawVersion: '3.11.0',
+    revision: 'abc123def456',
     buildId: 'build-20260329-021530Z',
     buildTime: '2026-03-29T02:15:30.000Z',
     isFallbackVersion: false,
@@ -509,6 +510,7 @@ describe('SettingsPage', () => {
     Object.assign(webBuildInfoMock, {
       version: '3.11.0',
       rawVersion: '3.11.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: false,
@@ -874,7 +876,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('3.11.0')).toBeInTheDocument();
-    expect(screen.getByText('build-20260329-021530Z')).toBeInTheDocument();
+    expect(screen.getByText('abc123def456')).toBeInTheDocument();
     expect(screen.getByText('2026-03-29T02:15:30.000Z')).toBeInTheDocument();
   });
 
@@ -936,13 +938,15 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('发现新版本')).not.toBeInTheDocument();
   });
 
-  it('falls back to build identifier when package version is still placeholder', () => {
+  it('uses an explicit development label instead of presenting a build ID as the version', () => {
     expect(resolveWebBuildInfo({
       packageVersion: '0.0.0',
+      revision: 'abc123def456',
       buildTimestamp: '2026-03-29T02:15:30.000Z',
     })).toEqual({
-      version: 'build-20260329-021530Z',
+      version: 'development',
       rawVersion: '0.0.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: true,
@@ -951,8 +955,9 @@ describe('SettingsPage', () => {
 
   it('renders fallback version hint when package version is placeholder', async () => {
     Object.assign(webBuildInfoMock, {
-      version: 'build-20260329-021530Z',
+      version: 'development',
       rawVersion: '0.0.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: true,
@@ -961,8 +966,9 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
-    expect(screen.getByText(/当前 package\.json 仍为占位版本 0\.0\.0/)).toBeInTheDocument();
-    expect(screen.getAllByText('build-20260329-021530Z')).toHaveLength(2);
+    expect(screen.getByText(/当前构建未提供发布版本/)).toBeInTheDocument();
+    expect(screen.getByText('development')).toBeInTheDocument();
+    expect(screen.getByText('abc123def456')).toBeInTheDocument();
   });
 
   it('resets local drafts from the page header button', () => {

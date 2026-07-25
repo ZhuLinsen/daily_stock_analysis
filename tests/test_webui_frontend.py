@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 
 import src.webui_frontend as webui_frontend
 
@@ -21,6 +23,22 @@ def _create_full_static(repo_root):
     (assets_dir / "index-abc123.js").write_text("/* js */", encoding="utf-8")
     (assets_dir / "index-abc123.css").write_text("/* css */", encoding="utf-8")
     return static_dir
+
+
+def _create_frontend_source(repo_root):
+    frontend_dir = repo_root / "apps" / "dsa-web"
+    source_dir = frontend_dir / "src"
+    source_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text('{"version":"0.0.0"}', encoding="utf-8")
+    (source_dir / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    return frontend_dir
+
+
+def _write_build_metadata(static_dir, source_fingerprint):
+    (static_dir / "build-info.json").write_text(
+        json.dumps({"schemaVersion": 1, "sourceFingerprint": source_fingerprint}),
+        encoding="utf-8",
+    )
 
 
 def test_prepare_webui_frontend_assets_reuses_prebuilt_static_without_source(tmp_path, monkeypatch, caplog):
@@ -88,6 +106,34 @@ def test_prepare_webui_frontend_assets_auto_build_disabled_warns_when_assets_mis
 
     assert result is True  # index.html present, still returns True
     assert "目录不存在或无 CSS/JS 文件" in caplog.text
+
+
+def test_needs_frontend_build_uses_content_fingerprint_when_mtime_is_preserved(tmp_path):
+    repo_root = tmp_path / "repo"
+    frontend_dir = _create_frontend_source(repo_root)
+    static_dir = _create_full_static(repo_root)
+    source_file = frontend_dir / "src" / "main.ts"
+    source_fingerprint = webui_frontend._calculate_source_fingerprint(frontend_dir)
+    _write_build_metadata(static_dir, source_fingerprint)
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is False
+
+    source_file.write_text("export const value = 2;\n", encoding="utf-8")
+    # Simulate rsync -a preserving a timestamp older than the existing bundle.
+    os.utime(source_file, (1, 1))
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is True
+
+
+def test_needs_frontend_build_rebuilds_legacy_artifact_once(tmp_path):
+    repo_root = tmp_path / "repo"
+    frontend_dir = _create_frontend_source(repo_root)
+    _create_full_static(repo_root)
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+
+    assert needs_build is True
 
 
 def test_has_static_assets_returns_false_for_missing_dir(tmp_path):

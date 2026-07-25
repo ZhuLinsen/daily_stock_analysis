@@ -8,6 +8,8 @@ Set WEBUI_AUTO_BUILD=false to disable auto build and only verify artifacts.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -31,6 +33,7 @@ _BUILD_INPUT_FILES = (
     "index.html",
 )
 _BUILD_INPUT_DIRS = ("src", "public")
+_BUILD_METADATA_FILE = "build-info.json"
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -96,11 +99,70 @@ def _collect_build_inputs_latest_mtime(frontend_dir: Path) -> float:
     return latest
 
 
+def _collect_build_input_files(frontend_dir: Path) -> list[Path]:
+    input_files = [
+        frontend_dir / filename
+        for filename in _BUILD_INPUT_FILES
+        if (frontend_dir / filename).is_file()
+    ]
+    for dirname in _BUILD_INPUT_DIRS:
+        root = frontend_dir / dirname
+        if root.exists():
+            input_files.extend(path for path in root.rglob("*") if path.is_file())
+    return sorted(input_files, key=lambda path: path.relative_to(frontend_dir).as_posix())
+
+
+def _calculate_source_fingerprint(frontend_dir: Path) -> str | None:
+    input_files = _collect_build_input_files(frontend_dir)
+    if not input_files:
+        return None
+
+    digest = hashlib.sha256()
+    try:
+        for input_path in input_files:
+            relative_path = input_path.relative_to(frontend_dir).as_posix()
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(input_path.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        logger.warning("读取 WebUI 构建输入失败，将回退到文件时间检查: %s", exc)
+        return None
+    return digest.hexdigest()
+
+
+def _read_artifact_source_fingerprint(artifact_index: Path) -> str | None:
+    metadata_path = artifact_index.parent / _BUILD_METADATA_FILE
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+    fingerprint = payload.get("sourceFingerprint") if isinstance(payload, dict) else None
+    return fingerprint.strip() if isinstance(fingerprint, str) and fingerprint.strip() else None
+
+
 def _needs_frontend_build(frontend_dir: Path, force_build: bool) -> tuple[bool, Path]:
     artifact_index = _resolve_artifact_index(frontend_dir)
+    if force_build or not artifact_index.exists():
+        return True, artifact_index
+
+    # Prebuilt Docker/desktop artifacts do not include the frontend source tree.
+    # In that runtime layout there is nothing local to compare, so reuse the
+    # artifact and trust the build-time validation.
+    if not (frontend_dir / "package.json").exists():
+        return False, artifact_index
+
+    source_fingerprint = _calculate_source_fingerprint(frontend_dir)
+    artifact_fingerprint = _read_artifact_source_fingerprint(artifact_index)
+    if source_fingerprint is not None:
+        # Old builds have no metadata and are rebuilt once. Unlike mtime, the
+        # fingerprint remains correct when rsync preserves historical timestamps.
+        return source_fingerprint != artifact_fingerprint, artifact_index
+
     inputs_latest_mtime = _collect_build_inputs_latest_mtime(frontend_dir)
     artifact_mtime = _safe_mtime(artifact_index)
-    needs_build = force_build or (not artifact_index.exists()) or (artifact_mtime < inputs_latest_mtime)
+    needs_build = artifact_mtime < inputs_latest_mtime
     return needs_build, artifact_index
 
 
@@ -185,6 +247,10 @@ def prepare_webui_frontend_assets() -> bool:
         if artifact_index.exists():
             logger.info("WEBUI_AUTO_BUILD=false，检测到前端静态产物: %s", artifact_index)
             _warn_if_assets_missing(artifact_index, frontend_dir)
+            needs_build, _ = _needs_frontend_build(frontend_dir=frontend_dir, force_build=False)
+            if needs_build:
+                logger.warning("检测到 WebUI 源码与现有静态产物不一致，但自动构建已关闭")
+                logger.warning("请重新构建前端: %s", _manual_build_command(frontend_dir))
             return True
         logger.warning("未检测到 WebUI 前端静态产物: %s", artifact_index)
         logger.warning("当前配置 WEBUI_AUTO_BUILD=false，不会在后端启动时自动编译前端")
