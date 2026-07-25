@@ -42,10 +42,13 @@ class TestBuildDailyCodeCandidates:
             ("000001.SZ", {"000001.SZ", "000001"}),
             ("920748", {"920748", "BJ920748", "920748.BJ"}),
             ("1810", {"1810", "01810", "HK01810", "01810.HK"}),
-            ("1810.HK", {"1810.HK", "01810", "HK01810", "01810.HK"}),
-            ("HK.01810", {"HK.01810", "01810", "HK01810", "01810.HK"}),
+            ("01810", {"1810", "01810", "HK01810", "01810.HK"}),
+            ("1810.HK", {"1810", "1810.HK", "01810", "HK01810", "01810.HK"}),
+            ("HK.01810", {"1810", "HK.01810", "01810", "HK01810", "01810.HK"}),
             ("AAPL", {"AAPL", "AAPL.US"}),
             ("AAPL.US", {"AAPL.US", "AAPL"}),
+            ("NASDAQ", {"NASDAQ"}),
+            ("^GSPC", {"^GSPC"}),
         ],
     )
     def test_preserves_valid_explicit_and_legacy_bare_codes(
@@ -63,6 +66,8 @@ class TestBuildDailyCodeCandidates:
             ("HK.01810", "01810", "hk", "HK01810"),
             ("AAPL.US", "AAPL", "us", "AAPL"),
             ("BRK.B", "BRK.B", "us", "BRK.B"),
+            ("NASDAQ", "NASDAQ", "us", "NASDAQ"),
+            ("^GSPC", "^GSPC", "us", "^GSPC"),
             ("7203.T", "7203.T", "jp", "7203.T"),
         ],
     )

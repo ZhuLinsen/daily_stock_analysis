@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from data_provider.base import canonical_stock_code, is_bse_code
+from data_provider.us_index_mapping import is_us_index_code
 from src.services.market_symbol_utils import (
     get_suffix_market,
     normalize_suffix_market_symbol,
@@ -182,7 +183,7 @@ def _build_hk_market_variants(hk_digits: str) -> List[str]:
     if unpadded == padded:
         variants.pop(3)
         variants.pop(3)
-    if len(unpadded) <= 3 and unpadded != padded:
+    if len(unpadded) <= 4 and unpadded != padded:
         variants.extend([unpadded, f"HK.{unpadded}"])
     return variants
 
@@ -264,7 +265,9 @@ def resolve_daily_stock_identity(code: Optional[str]) -> Optional[DailyStockIden
     if not raw_code:
         return None
 
-    if raw_code.isdigit() and len(raw_code) == 4:
+    if is_us_index_code(raw_code):
+        normalized_code, explicit_exchange = raw_code, ""
+    elif raw_code.isdigit() and len(raw_code) == 4:
         normalized_code, explicit_exchange = raw_code.zfill(5), "HK"
     else:
         normalized_code, explicit_exchange = _normalize_code_and_exchange(raw_code)
@@ -278,6 +281,8 @@ def resolve_daily_stock_identity(code: Optional[str]) -> Optional[DailyStockIden
         market = "hk"
     elif suffix_market:
         market = suffix_market
+    elif is_us_index_code(normalized_code):
+        market = "us"
     elif re.fullmatch(r"[A-Z]{1,5}(?:\.(?:US|[A-Z]))?", normalized_code):
         market = "us"
     elif normalized_code.isdigit() and len(normalized_code) == 6:

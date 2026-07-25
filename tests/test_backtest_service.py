@@ -132,6 +132,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         start_close: float,
         forward_bars: list[StockDaily],
         phase: str = "intraday",
+        market: str = "cn",
     ) -> None:
         with self.db.get_session() as session:
             session.add(
@@ -150,7 +151,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                     context_snapshot=_phase_snapshot(
                         analysis_date,
                         phase=phase,
-                        market="cn",
+                        market=market,
                         effective_date=analysis_date,
                         trigger_source="api",
                     ),
@@ -927,6 +928,32 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(result.start_price, 100.0)
             self.assertEqual(result.end_close, 105.0)
 
+    def test_expected_start_rejects_effective_date_from_mismatched_market(self) -> None:
+        analysis = type(
+            "Analysis",
+            (),
+            {
+                "context_snapshot": _phase_snapshot(
+                    date(2024, 1, 8),
+                    phase="postmarket",
+                    market="cn",
+                    effective_date=date(2024, 1, 8),
+                )
+            },
+        )()
+
+        with patch(
+            "src.services.backtest_service.resolve_historical_daily_bar_date",
+            side_effect=AssertionError("mismatched snapshot must fail closed"),
+        ):
+            expected_start_date = BacktestService._resolve_expected_start_date(
+                analysis=analysis,
+                analysis_date=date(2024, 1, 8),
+                market="jp",
+            )
+
+        self.assertIsNone(expected_start_date)
+
     def test_run_backtest_refills_from_authoritative_start_date(self) -> None:
         requested = []
 
@@ -1141,6 +1168,50 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(data["items"][0]["code"], "AAPL.US")
         self.assertEqual(data["items"][0]["analysis_date"], "2024-01-03")
 
+    def test_run_backtest_preserves_supported_us_index_identity(self) -> None:
+        self._seed_analysis(
+            query_id="q_nasdaq",
+            code="NASDAQ",
+            analysis_date=date(2024, 1, 5),
+            created_at=datetime(2024, 1, 5, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(
+                    code="NASDAQ",
+                    date=date(2024, 1, 8),
+                    high=103.0,
+                    low=99.0,
+                    close=102.0,
+                ),
+            ],
+            phase="postmarket",
+            market="us",
+        )
+
+        service = BacktestService(self.db)
+        stats = service.run_backtest(
+            code="NASDAQ",
+            force=False,
+            eval_window_days=1,
+            min_age_days=0,
+            analysis_date_from=date(2024, 1, 5),
+            analysis_date_to=date(2024, 1, 5),
+            limit=10,
+        )
+
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["completed"], 1)
+        data = service.get_recent_evaluations(
+            code="NASDAQ",
+            eval_window_days=1,
+            limit=10,
+            page=1,
+        )
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["items"][0]["code"], "NASDAQ")
+
     def test_run_backtest_us_suffix_query_matches_bare_history_and_summary(self) -> None:
         self._seed_analysis(
             query_id="q_aapl_bare_history",
@@ -1350,12 +1421,12 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(bare_summary["code"], "AAPL")
         self.assertEqual(bare_summary["total_evaluations"], 1)
 
-    def test_run_backtest_matches_hk_different_code_shapes_in_analysis_history_and_daily(self) -> None:
+    def test_run_backtest_reaches_legacy_bare_hk_rows_from_supported_aliases(self) -> None:
         with self.db.get_session() as session:
             session.add(
                 AnalysisHistory(
                     query_id="q_hk_history_dot",
-                    code="01810.HK",
+                    code="1810",
                     name="恒生指数成份股",
                     report_type="simple",
                     sentiment_score=60,
@@ -1375,7 +1446,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             )
             session.add(
                 StockDaily(
-                    code="HK01810",
+                    code="1810",
                     date=date(2024, 1, 1),
                     open=100.0,
                     high=100.0,
@@ -1385,7 +1456,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             )
             session.add(
                 StockDaily(
-                    code="HK01810",
+                    code="1810",
                     date=date(2024, 1, 2),
                     high=102.0,
                     low=95.0,
@@ -1396,7 +1467,7 @@ class BacktestServiceTestCase(unittest.TestCase):
 
         service = BacktestService(self.db)
         stats = service.run_backtest(
-            code="1810.HK",
+            code="01810",
             force=False,
             eval_window_days=1,
             min_age_days=0,
@@ -1409,11 +1480,24 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(stats["saved"], 1)
         self.assertEqual(stats["completed"], 1)
 
-        data = service.get_recent_evaluations(code="1810.HK", eval_window_days=1, limit=10, page=1)
-        self.assertEqual(data["total"], 1)
+        for alias in ("1810", "01810", "1810.HK", "HK.01810"):
+            data = service.get_recent_evaluations(
+                code=alias,
+                eval_window_days=1,
+                limit=10,
+                page=1,
+            )
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(data["items"][0]["code"], "1810")
 
-        query_by_bare = service.get_recent_evaluations(code="01810", eval_window_days=1, limit=10, page=1)
-        self.assertEqual(query_by_bare["total"], 1)
+            summary = service.get_summary(
+                scope="stock",
+                code=alias,
+                eval_window_days=1,
+            )
+            self.assertIsNotNone(summary)
+            assert summary is not None
+            self.assertEqual(summary["completed_count"], 1)
 
     def test_run_backtest_matches_hk_daily_shape_variants_for_prefixed_history(self) -> None:
         with self.db.get_session() as session:

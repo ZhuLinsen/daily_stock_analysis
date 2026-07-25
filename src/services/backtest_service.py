@@ -421,10 +421,10 @@ class BacktestService:
         if not code:
             return None
 
-        normalized = normalize_backtest_code(str(code).strip())
-        if normalized is None:
+        identity = resolve_daily_stock_identity(str(code).strip())
+        if identity is None:
             raise ValueError(f"非法股票代码格式: {code}")
-        return normalized
+        return identity.normalized_code
 
     @staticmethod
     def _normalize_summary_code(code: Optional[str]) -> Optional[str]:
@@ -439,13 +439,7 @@ class BacktestService:
 
     @staticmethod
     def _normalize_code_for_display(code: Optional[str]) -> Optional[str]:
-        if not code:
-            return None
-
-        normalized = normalize_backtest_code(str(code).strip())
-        if normalized is None:
-            raise ValueError(f"非法股票代码格式: {code}")
-        return normalized
+        return BacktestService._normalize_code(code)
 
     @staticmethod
     def _build_run_diagnostics(
@@ -839,6 +833,14 @@ class BacktestService:
         market: Optional[str],
     ) -> Optional[date]:
         phase_summary = extract_market_phase_summary(analysis.context_snapshot)
+        snapshot_market = (
+            str(phase_summary.get("market") or "").strip().lower()
+            if isinstance(phase_summary, dict)
+            else ""
+        )
+        if not market or snapshot_market != market:
+            return None
+
         effective_date_value = (
             phase_summary.get("effective_daily_bar_date")
             if isinstance(phase_summary, dict)
@@ -856,13 +858,6 @@ class BacktestService:
                 return effective_date
             return None
 
-        snapshot_market = (
-            str(phase_summary.get("market") or "").strip().lower()
-            if isinstance(phase_summary, dict)
-            else ""
-        )
-        if not market or snapshot_market != market:
-            return None
         phase = (
             phase_summary.get("phase")
             if isinstance(phase_summary, dict)
