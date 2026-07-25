@@ -108,9 +108,34 @@ def _split_prefix(token: str) -> Tuple[Optional[str], str]:
     US tickers like ``AAPL`` or ``TSLA`` — return ``(None, token)`` so the
     bare-code path can classify them. Tokens with no alphabetic leader (e.g.
     ``"600519"``) also return ``(None, token)``.
+
+    Guard against US ticker prefix collisions (review blocker
+    ``OR-COR-d24a4e9a``): a token like ``SHOP`` / ``HKD`` / ``BJRI`` / ``USM``
+    / ``SHAK`` / ``USFD`` is a legitimate 1-5 letter US ticker (the same
+    shape ``src/services/stock_code_utils.is_code_like`` already treats as a
+    bare US code via ``^[A-Z]{1,5}$``). It must NOT be split into
+    ``(sh, OP)`` / ``(hk, D)`` / ``(bj, RI)`` / ``(us, M)`` / ``(sh, AK)`` /
+    ``(us, FD)``. We therefore short-circuit when the whole token is 1-5
+    ASCII uppercase letters — preserving it as a bare US ticker so
+    :func:`_classify_bare_code` routes it through the US branch.
+
+    The ``isupper()`` predicate is the key disambiguator: uppercase-only
+    tokens are stock symbols (``USFD``, ``SHAK``, ``AAPL``), never the
+    canonical lowercase exchange prefixes used elsewhere in the codebase
+    (``sh000300``, ``sz399001``, ``usAAPL``). Mixing case — e.g. ``usAAPL``
+    — bypasses the short-circuit and still runs through the prefix splitter
+    so contract #3's "prefix supplied → degrade to stock" semantics remain
+    intact for explicitly-prefixed codes.
     """
     if not token:
         return None, ""
+    # Short-circuit bare US tickers (1-5 ASCII uppercase letters) before
+    # scanning _KNOWN_PREFIXES so prefix collisions don't get mis-split.
+    # Exchange codes (``sh000300``, ``sz399001``) contain digits; explicitly
+    # prefixed US codes (``usAAPL``) are mixed-case — neither matches this
+    # guard, so both still flow through the prefix splitter.
+    if 1 <= len(token) <= 5 and token.isalpha() and token.isascii() and token.isupper():
+        return None, token
     lower = token.lower()
     for p in _KNOWN_PREFIXES_SORTED:
         if lower.startswith(p):
@@ -301,6 +326,23 @@ def _classify_bare_code(bare: str) -> Tuple[str, str]:
                 return "SZ", ParseStatus.STOCK
             if bare.startswith(("4", "8", "9")):
                 return "BJ", ParseStatus.STOCK
+            # A-share ETF prefixes mirror the routing already living in
+            # ``data_provider/baostock_fetcher.py`` and
+            # ``data_provider/yfinance_fetcher.py`` (and the
+            # ``ETF_PREFIXES`` tuple in ``data_provider/base.py``):
+            #   51/52/56/58 -> sh (Shanghai ETF)
+            #   15/16/18    -> sz (Shenzhen ETF)
+            # Routing them through ``CN`` was a review blocker
+            # (``OR-COR-1b643ee6``) because ``_canonicalize_for_stock``
+            # would subsequently synthesise ``cn510300`` / ``cn159915``,
+            # which the upstream fetchers don't accept on input. Keeping
+            # the routing here in lock-step with the fetchers ensures the
+            # canonical_id this PR produces round-trips into ``BaseFetcher``
+            # lookups unchanged.
+            if bare.startswith(("51", "52", "56", "58")):
+                return "SH", ParseStatus.STOCK
+            if bare.startswith(("15", "16", "18")):
+                return "SZ", ParseStatus.STOCK
             return "CN", ParseStatus.STOCK
         if len(bare) == 5:
             # Five-digit numeric — HK stock or legacy B-share.
@@ -396,7 +438,14 @@ def parse_analysis_target(
             unsupported_reason="empty input",
         )
 
-    registry = registry or default_index_registry()
+    # Note: we deliberately use ``is None`` rather than ``or`` so that an
+    # explicitly-injected empty :class:`IndexRegistry` (``IndexRegistry([])``)
+    # is honoured as a legitimate "no indices whitelisted" configuration.
+    # Using ``or`` would silently replace it with the default registry and
+    # re-elevate ``sh000300`` to ``index`` even though the caller asked for
+    # a blank white-list — review blocker ``OR-COR-403bd018``.
+    if registry is None:
+        registry = default_index_registry()
     prefix, bare = _split_prefix(raw)
 
     # Contract #1: prefixed index white-list.
