@@ -371,3 +371,186 @@ def test_analysis_target_with_index_entry_is_hashable() -> None:
     target = parse_analysis_target("000300")
     assert target.matched_index is not None
     hash(target)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Review-blocker regressions — covers the three correctness blockers raised
+# by maintainer on PR #2094 (issue #2063 phase 1):
+#   OR-COR-d24a4e9a: 1-5 letter US tickers colliding with sh/sz/bj/hk/us
+#                    prefixes were mis-split (SHOP -> shOP, HKD -> hkD, ...)
+#   OR-COR-1b643ee6: bare A-share ETF codes (510300 etc.) were canonicalised
+#                    to ``cn510300`` which no upstream fetcher accepts.
+#   OR-COR-403bd018: passing ``IndexRegistry([])`` was silently replaced by
+#                    the default registry, hiding the empty-white-list config.
+# These tests pin the fixes so the same regressions can't land unnoticed.
+# ---------------------------------------------------------------------------
+class TestReviewBlockerRegressions:
+    """Maintainer-specified regression inputs (issue #2063 phase 1 review)."""
+
+    # ---- OR-COR-d24a4e9a: US ticker prefix collisions ---------------------
+
+    @pytest.mark.parametrize(
+        "ticker",
+        ["SHOP", "HKD", "BJRI", "USM", "SHAK", "USFD", "BJDX", "SZKMY",
+         "AAPL", "TSLA", "BRK", "A", "Z"],
+    )
+    def test_us_ticker_prefix_collision_is_not_split(self, ticker: str) -> None:
+        """1-5 letter US tickers must round-trip as US stock, not be split
+        into ``(sh, OP)`` / ``(hk, D)`` / ... by the prefix scanner.
+        """
+        target = parse_analysis_target(ticker)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "US"
+        assert target.canonical_id == ticker
+        assert target.display_code == ticker
+        assert target.normalized_prefix is None
+        assert target.normalized_code == ticker
+        assert target.matched_index is None
+
+    @pytest.mark.parametrize(
+        "ticker,expected_prefix,expected_bare",
+        [
+            ("usAAPL", "us", "AAPL"),
+            ("usBRK", "us", "BRK"),
+            ("hk00700", "hk", "00700"),
+            ("sh000300", "sh", "000300"),
+            ("sz399001", "sz", "399001"),
+            ("bj920001", "bj", "920001"),
+        ],
+    )
+    def test_explicit_prefixed_codes_still_split(
+        self, ticker: str, expected_prefix: str, expected_bare: str
+    ) -> None:
+        """Codes with explicit sh/sz/bj/hk/us prefixes that *also* contain
+        digits must still be split into ``(prefix, bare)``. The US-ticker
+        short-circuit only triggers for 1-5 letter alphabetic tokens.
+        """
+        target = parse_analysis_target(ticker)
+        assert target.normalized_prefix == expected_prefix
+        assert target.normalized_code == expected_bare
+
+    # ---- OR-COR-1b643ee6: bare A-share ETF routing ------------------------
+
+    @pytest.mark.parametrize(
+        "bare_code,expected_exchange,expected_canonical",
+        [
+            # Shanghai ETF prefixes 51/52/56/58
+            ("510300", "SH", "sh510300"),
+            ("510050", "SH", "sh510050"),
+            ("520000", "SH", "sh520000"),
+            ("562000", "SH", "sh562000"),
+            ("588000", "SH", "sh588000"),
+            # Shenzhen ETF prefixes 15/16/18
+            ("159915", "SZ", "sz159915"),
+            ("159919", "SZ", "sz159919"),
+            ("160000", "SZ", "sz160000"),
+            ("164000", "SZ", "sz164000"),
+            ("184000", "SZ", "sz184000"),
+        ],
+    )
+    def test_bare_a_share_etf_routes_to_sh_or_sz(
+        self,
+        bare_code: str,
+        expected_exchange: str,
+        expected_canonical: str,
+    ) -> None:
+        """Bare 6-digit ETF codes must canonicalise through the same sh/sz
+        prefixes already used by ``data_provider/{baostock,yfinance}_fetcher,
+        py`` and the ``ETF_PREFIXES`` tuple in ``data_provider/base.py`` —
+        never through the ``cn`` prefix that no upstream fetcher accepts.
+        """
+        target = parse_analysis_target(bare_code)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == expected_exchange
+        assert target.canonical_id == expected_canonical
+        assert target.display_code == bare_code
+        assert target.matched_index is None
+
+    def test_bare_etf_canonical_id_round_trips_into_baostock_fetcher(
+        self,
+    ) -> None:
+        """End-to-end round-trip: the canonical_id produced by
+        ``parse_analysis_target`` for a bare A-share ETF must be accepted
+        verbatim by ``BaostockFetcher._convert_stock_code`` and yield the
+        same ``sh.<code>`` / ``sz.<code>`` form the fetcher already produces
+        for the same bare code. Failures here mean future formatter drift
+        between ``stock_list_parser`` and the upstream fetcher would break
+        STOCK_LIST ingestion.
+        """
+        from data_provider.baostock_fetcher import BaostockFetcher
+
+        fetcher = BaostockFetcher()
+        for bare in ("510300", "159915", "510050", "588000"):
+            target = parse_analysis_target(bare)
+            assert target.canonical_id == fetcher._convert_stock_code(
+                target.canonical_id
+            ).replace(".", "")
+
+    # ---- OR-COR-403bd018: explicit empty IndexRegistry -------------------
+
+    def test_empty_registry_disables_index_elevation_for_sh000300(
+        self,
+    ) -> None:
+        """An explicitly-injected ``IndexRegistry([])`` must be honoured as
+        a "no indices whitelisted" configuration: ``sh000300`` then degrades
+        to a SH stock per contract #3 instead of being elevated to an index.
+        """
+        target = parse_analysis_target("sh000300", registry=IndexRegistry([]))
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "SH"
+        assert target.canonical_id == "sh000300"
+        assert target.normalized_prefix == "sh"
+        assert target.normalized_code == "000300"
+        assert target.matched_index is None
+
+    def test_empty_registry_disables_index_elevation_for_sz399001(
+        self,
+    ) -> None:
+        """Same guard for the SZ side — ``sz399001`` (CSI 100 default index)
+        must also degrade to stock under an empty registry.
+        """
+        target = parse_analysis_target("sz399001", registry=IndexRegistry([]))
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "SZ"
+        assert target.canonical_id == "sz399001"
+        assert target.matched_index is None
+
+    def test_default_registry_still_elevates_sh000300_after_empty_path(
+        self,
+    ) -> None:
+        """Reading the inverse: with no registry argument the default
+        registry still elevates ``sh000300`` to an index. This guards against
+        accidentally flipping the empty-registry patch into a global override
+        that swallows the default registry too.
+        """
+        target = parse_analysis_target("sh000300")
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "sh000300"
+        assert target.matched_index is not None
+
+    def test_custom_registry_with_subset_entries_only_matches_subset(
+        self,
+    ) -> None:
+        """A non-empty custom registry only honours the indices it carries;
+        other ``sh``/``sz`` codes (even ones in the default registry) fall
+        through to stock. This is the contract #1 semantics that the
+        ``is None`` change must preserve.
+        """
+        custom = IndexRegistry((
+            IndexEntry(
+                bare_code="000999",
+                exchange="SH",
+                canonical_id="sh000999",
+                display_name="custom-only",
+            ),
+        ))
+        # Custom registry knows sh000999 -> index
+        target = parse_analysis_target("sh000999", registry=custom)
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.matched_index is not None
+
+        # Custom registry does NOT know sh000300 -> degrade to stock
+        target = parse_analysis_target("sh000300", registry=custom)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "SH"
+        assert target.matched_index is None
