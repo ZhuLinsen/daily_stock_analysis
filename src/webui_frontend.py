@@ -135,7 +135,7 @@ def _read_artifact_source_fingerprint(artifact_index: Path) -> str | None:
     metadata_path = artifact_index.parent / _BUILD_METADATA_FILE
     try:
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
         return None
 
     fingerprint = payload.get("sourceFingerprint") if isinstance(payload, dict) else None

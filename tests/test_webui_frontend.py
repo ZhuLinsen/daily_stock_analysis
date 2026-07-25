@@ -136,6 +136,22 @@ def test_needs_frontend_build_rebuilds_legacy_artifact_once(tmp_path):
     assert needs_build is True
 
 
+def test_undecodable_build_metadata_is_treated_as_stale(tmp_path, monkeypatch, caplog):
+    repo_root = _prepare_fake_repo(tmp_path, monkeypatch)
+    frontend_dir = _create_frontend_source(repo_root)
+    static_dir = _create_full_static(repo_root)
+    (static_dir / "build-info.json").write_bytes(b"\xff\xfe\x00broken")
+
+    needs_build, _ = webui_frontend._needs_frontend_build(frontend_dir, force_build=False)
+    assert needs_build is True
+
+    monkeypatch.setenv("WEBUI_AUTO_BUILD", "false")
+    with caplog.at_level(logging.WARNING):
+        assert webui_frontend.prepare_webui_frontend_assets() is True
+
+    assert "源码与现有静态产物不一致" in caplog.text
+
+
 def test_has_static_assets_returns_false_for_missing_dir(tmp_path):
     assert webui_frontend._has_static_assets(tmp_path / "nonexistent") is False
 

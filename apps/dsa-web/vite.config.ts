@@ -80,6 +80,21 @@ const normalizeVersion = (value?: string) => {
   return normalized.replace(/^v(?=\d)/, '')
 }
 
+export const resolveAppRevision = ({
+  explicitRevision,
+  checkedOutRevision,
+  workflowRevision,
+}: {
+  explicitRevision?: string
+  checkedOutRevision?: string
+  workflowRevision?: string
+}) => (
+  explicitRevision?.trim()
+  || checkedOutRevision?.trim()
+  || workflowRevision?.trim()
+  || 'unknown'
+)
+
 const releaseVersion = normalizeVersion(
   process.env.DSA_WEB_VERSION
   || process.env.RELEASE_TAG
@@ -91,12 +106,11 @@ const appVersion = releaseVersion
   || (packageVersion !== placeholderVersion ? packageVersion : '')
   || gitDescription
   || placeholderVersion
-const appRevision = (
-  process.env.DSA_WEB_REVISION
-  || process.env.GITHUB_SHA
-  || runGit(['rev-parse', '--short=12', 'HEAD'])
-  || 'unknown'
-).trim()
+const appRevision = resolveAppRevision({
+  explicitRevision: process.env.DSA_WEB_REVISION,
+  checkedOutRevision: runGit(['rev-parse', '--short=12', 'HEAD']),
+  workflowRevision: process.env.GITHUB_SHA,
+})
 const sourceFingerprint = createSourceFingerprint()
 
 const buildMetadataPlugin = (): Plugin => ({
