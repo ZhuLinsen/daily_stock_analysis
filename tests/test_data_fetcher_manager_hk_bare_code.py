@@ -217,3 +217,136 @@ class TestManagerStillRoutesSixDigitToCn:
         # The CN-only fetcher that won the route was actually called
         cn_capable_calls = efinance.calls + tencent.calls + baostock.calls
         assert cn_capable_calls == ["600519"]
+
+
+class TestAkshareFetcherIsHkCodeContract:
+    """``AkshareFetcher._is_hk_code`` must agree with manager-level
+    ``_is_hk_market`` for 4-digit bare HK codes.
+
+    Review blocker OR-COR-ea09dfe8 (PR #2097): the previous round only
+    patched ``_is_hk_market`` at the routing layer, leaving
+    ``AkshareFetcher._is_hk_code`` to still require 5 digits. The
+    ``_FakeFetcher`` stubs above prove the manager fans 4-digit bare
+    codes to the HK chain, but they don't exercise the real
+    ``AkshareFetcher`` internal branch. These tests directly assert the
+    provider-level contract so a future tightening of
+    ``AkshareFetcher._is_hk_code`` cannot silently reintroduce the
+    manager-vs-provider mismatch that originally kept issue #2091 open.
+    """
+
+    def test_four_digit_bare_hk_accepted(self) -> None:
+        from data_provider.akshare_fetcher import _is_hk_code
+
+        # 长和 0001 / 中国移动 0941 — issue #2091 core 4-digit examples
+        assert _is_hk_code("0001") is True
+        assert _is_hk_code("0941") is True
+
+    def test_five_digit_bare_hk_unchanged(self) -> None:
+        from data_provider.akshare_fetcher import _is_hk_code
+
+        assert _is_hk_code("00700") is True
+        assert _is_hk_code("02513") is True
+
+    def test_six_digit_bare_remains_cn(self) -> None:
+        from data_provider.akshare_fetcher import _is_hk_code
+
+        # 6 位裸数字是 A 股 / BSE，绝不能被 akshare 误判为港股
+        assert _is_hk_code("600519") is False
+        assert _is_hk_code("000001") is False
+
+    def test_prefixed_and_suffixed_four_digit_hk(self) -> None:
+        from data_provider.akshare_fetcher import _is_hk_code
+
+        assert _is_hk_code("HK0001") is True
+        assert _is_hk_code("hk0001") is True
+        assert _is_hk_code("0001.HK") is True
+        assert _is_hk_code("0001.hk") is True
+
+
+class TestAkshareFetcherRoutingCallsHkBranch:
+    """``AkshareFetcher._fetch_raw_data`` must dispatch 4-digit bare HK
+    codes to ``_fetch_hk_data`` rather than the A-share
+    ``_fetch_stock_data`` path.
+
+    Review blocker OR-COR-ea09dfe8 (PR #2097): the manager-level fanout
+    test above only proves the manager routes to ``AkshareFetcher``; it
+    does not prove the fetcher itself honors the HK contract for 4-digit
+    bare codes. This test patches ``_fetch_hk_data`` and
+    ``_fetch_stock_data`` to capture which branch actually fires, then
+    drives ``_fetch_raw_data`` directly with a 4-digit bare HK code. It
+    fails fast if ``_is_hk_code`` is ever re-tightened to 5 digits only
+    (or if the dispatch order in ``_fetch_raw_data`` is reordered so CN
+    branches take precedence).
+    """
+
+    def test_four_digit_bare_hk_routes_to_hk_branch(self) -> None:
+        from data_provider.akshare_fetcher import AkshareFetcher
+
+        fetcher = AkshareFetcher()
+        calls: list[tuple[str, str, str]] = []
+
+        def fake_hk(stock_code, start_date, end_date):
+            calls.append(("hk", stock_code, start_date, end_date))
+            return pd.DataFrame(
+                {
+                    "date": [pd.Timestamp("2026-07-25")],
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [0],
+                }
+            )
+
+        def fake_stock(stock_code, start_date, end_date):
+            calls.append(("cn", stock_code, start_date, end_date))
+            return pd.DataFrame()
+
+        with (
+            patch.object(fetcher, "_fetch_hk_data", side_effect=fake_hk),
+            patch.object(fetcher, "_fetch_stock_data", side_effect=fake_stock),
+        ):
+            fetcher._fetch_raw_data("0001", "2026-01-01", "2026-07-25")
+
+        assert calls, "AkshareFetcher._fetch_raw_data did not dispatch to any branch"
+        branch = calls[0][0]
+        assert branch == "hk", (
+            f"4-digit bare HK code '0001' dispatched to {branch!r} branch "
+            "instead of _fetch_hk_data — issue #2091 not closed at provider layer"
+        )
+
+    def test_six_digit_bare_remains_cn_branch(self) -> None:
+        from data_provider.akshare_fetcher import AkshareFetcher
+
+        fetcher = AkshareFetcher()
+        calls: list[tuple[str, str]] = []
+
+        def fake_hk(stock_code, start_date, end_date):
+            calls.append(("hk", stock_code))
+            return pd.DataFrame()
+
+        def fake_stock(stock_code, start_date, end_date):
+            calls.append(("cn", stock_code))
+            return pd.DataFrame(
+                {
+                    "date": [pd.Timestamp("2026-07-25")],
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [0],
+                }
+            )
+
+        with (
+            patch.object(fetcher, "_fetch_hk_data", side_effect=fake_hk),
+            patch.object(fetcher, "_fetch_stock_data", side_effect=fake_stock),
+        ):
+            fetcher._fetch_raw_data("600519", "2026-01-01", "2026-07-25")
+
+        assert calls, "AkshareFetcher._fetch_raw_data did not dispatch to any branch"
+        branch = calls[0][0]
+        assert branch == "cn", (
+            f"6-digit A-share code '600519' dispatched to {branch!r} branch "
+            "instead of _fetch_stock_data — A-share routing regressed"
+        )
