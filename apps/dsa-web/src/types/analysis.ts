@@ -8,6 +8,7 @@
 export type StockReportType = 'simple' | 'detailed' | 'full' | 'brief';
 export type ReportType = StockReportType | 'market_review';
 export type AnalysisPhase = 'auto' | 'premarket' | 'intraday' | 'postmarket';
+export type MarketReviewRegion = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
 
 export interface AnalysisRequest {
   stockCode?: string;
@@ -27,12 +28,14 @@ export interface AnalysisRequest {
 export interface MarketReviewRequest {
   sendNotification?: boolean;
   reportLanguage?: ReportLanguage;
+  regions?: readonly MarketReviewRegion[];
 }
 
 export interface MarketReviewAccepted {
   status: 'accepted';
   message: string;
   sendNotification: boolean;
+  region: string;
   traceId?: string;
   taskId?: string;
 }
@@ -459,6 +462,7 @@ export interface TaskStatus {
   result?: AnalysisResult;
   marketReviewReport?: string;
   marketReviewPayload?: MarketReviewPayload;
+  region?: string;
   error?: string;
   stockName?: string;
   originalQuery?: string;
@@ -485,6 +489,7 @@ export interface TaskInfo {
   selectionSource?: string;
   analysisPhase?: AnalysisPhase;
   skills?: string[];
+  region?: string;
 }
 
 /** Task list response */
@@ -512,6 +517,7 @@ export interface HistoryItem {
   stockCode: string;
   stockName?: string;
   reportType?: ReportType;
+  region?: string;
   trendPrediction?: string;
   analysisSummary?: string;
   sentimentScore?: number;

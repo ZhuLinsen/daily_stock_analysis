@@ -194,6 +194,7 @@ def get_history_list(
                 stock_code=item.get("stock_code", ""),
                 stock_name=item.get("stock_name"),
                 report_type=item.get("report_type"),
+                region=item.get("region"),
                 trend_prediction=item.get("trend_prediction"),
                 analysis_summary=item.get("analysis_summary"),
                 sentiment_score=item.get("sentiment_score"),

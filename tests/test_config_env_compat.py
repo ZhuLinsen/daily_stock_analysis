@@ -85,6 +85,10 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.market_review_region, "cn,us,kr")
 
+    def test_market_review_region_keeps_legacy_mixed_both_and_empty_token_compatibility(self) -> None:
+        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr")
+        self.assertEqual(Config._parse_market_review_region("cn,,us"), "cn,us")
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_market_review_region_falls_back_to_cn_when_no_supported_tokens(

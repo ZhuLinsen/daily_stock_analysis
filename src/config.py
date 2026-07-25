@@ -71,6 +71,7 @@ from src.llm.hermes import (
     route_has_hermes,
 )
 from src.scheduler import normalize_schedule_times
+from src.utils.market_review_region import normalize_market_review_region_lenient
 
 logger = logging.getLogger(__name__)
 
@@ -2602,23 +2603,9 @@ class Config:
     @classmethod
     def _parse_market_review_region(cls, value: str) -> str:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
-        import logging
-        v = (value or 'cn').strip().lower()
-        supported_regions = ('cn', 'hk', 'us', 'jp', 'kr', 'both')
-        ordered_regions = ('cn', 'hk', 'us', 'jp', 'kr')
-
-        if v in supported_regions:
-            if v == 'both':
-                return ','.join(ordered_regions)
-            return v
-
-        if ',' in v:
-            requested = {item.strip() for item in v.split(',') if item.strip()}
-            normalized = [region for region in ordered_regions if region in requested]
-            if 'both' in requested:
-                normalized = list(ordered_regions)
-            if normalized:
-                return ','.join(normalized)
+        normalized = normalize_market_review_region_lenient(value)
+        if normalized is not None:
+            return normalized
 
         logging.getLogger(__name__).warning(
             f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / jp / kr / both；支持逗号分隔有效值）"

@@ -1644,10 +1644,10 @@ const SettingsPage: React.FC = () => {
                   </div>
                   <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
-                      {t('settings.versionBuildId')}
+                      {t('settings.versionRevision')}
                     </p>
                     <p className="mt-2 break-all font-mono text-sm text-foreground">
-                      {WEB_BUILD_INFO.buildId}
+                      {WEB_BUILD_INFO.revision}
                     </p>
                   </div>
                   <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">

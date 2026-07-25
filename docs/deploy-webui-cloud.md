@@ -163,12 +163,15 @@ http://your-domain.com:8000
 WebUI 现在会在“系统设置”页展示只读的“版本信息”卡片，包含：
 
 - `WebUI 版本`
-- `构建标识`
+- `代码版本`
 - `构建时间`
 
-如果 `apps/dsa-web/package.json` 里的版本号仍是占位值 `0.0.0`，页面会自动回退展示本次前端构建生成的 `构建标识`，避免你误把占位版本当成真实发布版本。
+正式 Docker / Desktop 发布会把 release tag 注入为 `WebUI 版本`，并把对应 commit
+显示为 `代码版本`。直接从 Git clone 构建时，WebUI 会使用 `git describe` 和当前
+commit；如果构建环境既没有发布信息也没有 Git 元数据，版本会明确显示为
+`development`，不会再用构建时间冒充发布版本。
 
-当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，优先确认“构建时间”是否已经变化；若变化，通常就说明当前加载的静态资源已经切换到最新构建。
+当你重新执行 `docker-compose -f ./docker/docker-compose.yml up -d --build`，或者单独重新执行前端 `npm run build` 后，可以刷新浏览器并进入“系统设置”，确认“代码版本”和“构建时间”是否已经变化；两者能共同确认浏览器当前加载的静态资源来自哪次代码和构建。
 
 如果你想确认“我现在到底部署的是哪个正式版本”，优先用下面这些方式：
 
@@ -193,7 +196,10 @@ npm run lint
 npm run build
 ```
 
-其中 `build` 成功后，`static` 下生成的 `index.html`/JS/CSS 资源会包含本次构建时间与构建版本信息；刷新后在“版本信息”卡片中应能见到变化。
+其中 `build` 成功后，`static` 下生成的 `index.html`/JS/CSS 资源会包含本次版本、
+commit、构建时间，并生成 `build-info.json`。启动时会比较该文件中的源码摘要，
+因此即使 `rsync -a` 保留了旧时间戳，也能识别源码与静态产物不一致并重新构建。
+刷新后在“版本信息”卡片中应能见到变化。
 
 ---
 
