@@ -34,6 +34,8 @@ _BUILD_INPUT_FILES = (
 )
 _BUILD_INPUT_DIRS = ("src", "public")
 _BUILD_METADATA_FILE = "build-info.json"
+_DEPENDENCY_INPUT_FILES = ("package.json", "package-lock.json")
+_DEPENDENCY_FINGERPRINT_FILE = ".dsa-dependency-fingerprint"
 
 
 def _is_truthy_env(var_name: str, default: str = "true") -> bool:
@@ -84,12 +86,60 @@ def _resolve_artifact_index(frontend_dir: Path) -> Path:
     return max(fallback_candidates, key=_safe_mtime)
 
 
+def _calculate_dependency_fingerprint(frontend_dir: Path) -> str | None:
+    digest = hashlib.sha256()
+    found_input = False
+    try:
+        for filename in _DEPENDENCY_INPUT_FILES:
+            input_path = frontend_dir / filename
+            if not input_path.is_file():
+                continue
+            found_input = True
+            digest.update(filename.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(input_path.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        logger.warning("读取 WebUI 依赖输入失败，将回退到文件时间检查: %s", exc)
+        return None
+    return digest.hexdigest() if found_input else None
+
+
+def _read_installed_dependency_fingerprint(frontend_dir: Path) -> str | None:
+    marker_path = frontend_dir / "node_modules" / _DEPENDENCY_FINGERPRINT_FILE
+    try:
+        fingerprint = marker_path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return fingerprint or None
+
+
+def _write_installed_dependency_fingerprint(frontend_dir: Path) -> None:
+    fingerprint = _calculate_dependency_fingerprint(frontend_dir)
+    if fingerprint is None:
+        return
+
+    marker_path = frontend_dir / "node_modules" / _DEPENDENCY_FINGERPRINT_FILE
+    try:
+        marker_path.write_text(f"{fingerprint}\n", encoding="ascii")
+    except OSError as exc:
+        logger.warning("无法记录 WebUI 依赖摘要，下次构建将重新安装依赖: %s", exc)
+
+
 def _needs_dependency_install(frontend_dir: Path, package_json: Path, lock_file: Path, force_build: bool) -> bool:
     node_modules_dir = frontend_dir / "node_modules"
+    if force_build or not node_modules_dir.exists():
+        return True
+
+    dependency_fingerprint = _calculate_dependency_fingerprint(frontend_dir)
+    if dependency_fingerprint is not None:
+        installed_fingerprint = _read_installed_dependency_fingerprint(frontend_dir)
+        return dependency_fingerprint != installed_fingerprint
+
     install_marker = node_modules_dir / ".package-lock.json"
     deps_marker_mtime = _safe_mtime(install_marker) if install_marker.exists() else _safe_mtime(node_modules_dir)
     deps_input_mtime = _max_mtime((package_json, lock_file))
-    return force_build or (not node_modules_dir.exists()) or (deps_marker_mtime < deps_input_mtime)
+    return deps_marker_mtime < deps_input_mtime
 
 
 def _collect_build_inputs_latest_mtime(frontend_dir: Path) -> float:
@@ -113,12 +163,11 @@ def _collect_build_input_files(frontend_dir: Path) -> list[Path]:
 
 
 def _calculate_source_fingerprint(frontend_dir: Path) -> str | None:
-    input_files = _collect_build_input_files(frontend_dir)
-    if not input_files:
-        return None
-
     digest = hashlib.sha256()
     try:
+        input_files = _collect_build_input_files(frontend_dir)
+        if not input_files:
+            return None
         for input_path in input_files:
             relative_path = input_path.relative_to(frontend_dir).as_posix()
             digest.update(relative_path.encode("utf-8"))
@@ -299,4 +348,7 @@ def prepare_webui_frontend_assets() -> bool:
         needs_build,
         artifact_index,
     )
-    return _run_frontend_commands(commands=commands, frontend_dir=frontend_dir)
+    succeeded = _run_frontend_commands(commands=commands, frontend_dir=frontend_dir)
+    if succeeded and needs_install:
+        _write_installed_dependency_fingerprint(frontend_dir)
+    return succeeded
