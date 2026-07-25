@@ -65,6 +65,12 @@ def _event_payload():
     try:
         with open(event_path, 'r', encoding='utf-8') as f:
             return json.load(f)
+    except UnicodeDecodeError as exc:
+        # 文件可读但字节序列不是合法 UTF-8(open 默认会抛 UnicodeDecodeError,
+        # 它是 ValueError 子类但既不是 OSError 也不是 json.JSONDecodeError,
+        # 旧 (OSError, ValueError) 接口接住了它,新分支需显式补充避免回归)。
+        print(f"⚠️ 事件载荷非 UTF-8 ({type(exc).__name__}): {event_path}，降级为空对象")
+        return {}
     except OSError as exc:
         print(f"⚠️ 事件载荷读取失败 ({type(exc).__name__}): {event_path}，降级为空对象")
         return {}

@@ -182,6 +182,31 @@ def test_event_payload_valid_json_returns_payload_no_warning(monkeypatch, tmp_pa
     assert captured.out == ''
 
 
+def test_event_payload_non_utf8_logs_unicode_error(monkeypatch, tmp_path, capsys):
+    """When the event payload file is readable but contains non-UTF-8 bytes,
+    _event_payload() preserves the empty-payload degradation and logs the
+    UnicodeDecodeError-derived exception class plus the source path.
+
+    Regression for the codex P2 review point on PR #2096: the previous
+    `except (OSError, ValueError)` bucket implicitly caught UnicodeDecodeError
+    (a ValueError subclass); splitting the handler into OSError + JSONDecodeError
+    left UnicodeDecodeError uncaught, which would terminate the review instead
+    of degrading. The dedicated UnicodeDecodeError branch restores parity.
+    """
+    bad = tmp_path / 'event.json'
+    # 写入非法 UTF-8 字节序列 (0xff 0xfe 不构成合法 UTF-8 起始)
+    bad.write_bytes(b'\xff\xfe\x00\x00not-utf8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad))
+
+    payload = ai_review._event_payload()
+
+    assert payload == {}
+    captured = capsys.readouterr()
+    assert '事件载荷非 UTF-8' in captured.out
+    assert 'UnicodeDecodeError' in captured.out
+    assert str(bad) in captured.out
+
+
 def test_pull_request_number_failure_after_bad_event_payload(monkeypatch, tmp_path, capsys):
     """When PR_NUMBER is unset and the event payload is unreadable, the
     chain must surface a clearly-named RuntimeError instead of silently
