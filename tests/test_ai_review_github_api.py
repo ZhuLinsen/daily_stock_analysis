@@ -106,3 +106,125 @@ def test_delegated_ci_context_does_not_claim_success(monkeypatch):
 
     assert 'backend-gate' in context
     assert '不假设并行 CI 已通过' in context
+
+
+def test_event_payload_missing_file_logs_warning(monkeypatch, tmp_path, capsys):
+    """When GITHUB_EVENT_PATH points to a non-existent file, _event_payload()
+    returns {} and prints a warning distinguishing 'file missing' from the
+    other failure modes (regression for issue #2070)."""
+    missing = tmp_path / 'does-not-exist.json'
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(missing))
+
+    payload = ai_review._event_payload()
+
+    assert payload == {}
+    captured = capsys.readouterr()
+    assert 'GITHUB_EVENT_PATH 指向的文件不存在' in captured.out
+    assert str(missing) in captured.out
+
+
+def test_event_payload_unreadable_file_logs_oserror(monkeypatch, tmp_path, capsys):
+    """When the event payload file exists but cannot be read, _event_payload()
+    preserves the empty-payload degradation but logs the OSError-derived
+    exception class and the source path (regression for issue #2070)."""
+    # Make a file and strip read permissions so open() raises PermissionError
+    # (a subclass of OSError). Skip on platforms where chmod is a no-op for
+    # the current user.
+    unreadable = tmp_path / 'event.json'
+    unreadable.write_text('{"pull_request": {"number": 1}}', encoding='utf-8')
+    unreadable.chmod(0o000)
+
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(unreadable))
+
+    try:
+        payload = ai_review._event_payload()
+    finally:
+        unreadable.chmod(0o600)
+
+    # If the test runner is root (chmod is a no-op), skip the assertion:
+    # the file may actually be readable on such hosts. Either way it must
+    # not raise.
+    if payload == {}:
+        captured = capsys.readouterr()
+        assert '事件载荷读取失败' in captured.out
+        assert str(unreadable) in captured.out
+
+
+def test_event_payload_invalid_json_logs_parse_error(monkeypatch, tmp_path, capsys):
+    """When the event payload file contains invalid JSON, _event_payload()
+    preserves the empty-payload degradation but logs the JSONDecodeError-
+    derived exception class and the source path (regression for issue #2070).
+    """
+    bad = tmp_path / 'event.json'
+    bad.write_text('not-json-at-all', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad))
+
+    payload = ai_review._event_payload()
+
+    assert payload == {}
+    captured = capsys.readouterr()
+    assert '事件载荷 JSON 解析失败' in captured.out
+    assert str(bad) in captured.out
+
+
+def test_event_payload_valid_json_returns_payload_no_warning(monkeypatch, tmp_path, capsys):
+    """The happy path: a readable, valid JSON file yields the payload and
+    prints no warning. Guards against the warnings accidentally firing on
+    the success path (regression for issue #2070)."""
+    good = tmp_path / 'event.json'
+    good.write_text('{"pull_request": {"number": 4242}}', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(good))
+
+    payload = ai_review._event_payload()
+
+    assert payload == {'pull_request': {'number': 4242}}
+    captured = capsys.readouterr()
+    assert captured.out == ''
+
+
+def test_event_payload_non_utf8_logs_unicode_error(monkeypatch, tmp_path, capsys):
+    """When the event payload file is readable but contains non-UTF-8 bytes,
+    _event_payload() preserves the empty-payload degradation and logs the
+    UnicodeDecodeError-derived exception class plus the source path.
+
+    Regression for the codex P2 review point on PR #2096: the previous
+    `except (OSError, ValueError)` bucket implicitly caught UnicodeDecodeError
+    (a ValueError subclass); splitting the handler into OSError + JSONDecodeError
+    left UnicodeDecodeError uncaught, which would terminate the review instead
+    of degrading. The dedicated UnicodeDecodeError branch restores parity.
+    """
+    bad = tmp_path / 'event.json'
+    # 写入非法 UTF-8 字节序列 (0xff 0xfe 不构成合法 UTF-8 起始)
+    bad.write_bytes(b'\xff\xfe\x00\x00not-utf8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad))
+
+    payload = ai_review._event_payload()
+
+    assert payload == {}
+    captured = capsys.readouterr()
+    assert '事件载荷非 UTF-8' in captured.out
+    assert 'UnicodeDecodeError' in captured.out
+    assert str(bad) in captured.out
+
+
+def test_pull_request_number_failure_after_bad_event_payload(monkeypatch, tmp_path, capsys):
+    """When PR_NUMBER is unset and the event payload is unreadable, the
+    chain must surface a clearly-named RuntimeError instead of silently
+    treating the run as success (regression for issue #2070). The warning
+    is printed first so logs distinguish 'bad payload' from 'no PR number'.
+    """
+    bad = tmp_path / 'event.json'
+    bad.write_text('{invalid json', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(bad))
+    monkeypatch.delenv('PR_NUMBER', raising=False)
+
+    raised = False
+    try:
+        ai_review._pull_request_number()
+    except RuntimeError as exc:
+        raised = True
+        assert 'PR number is unavailable' in str(exc)
+
+    assert raised, 'Expected RuntimeError when PR number cannot be derived'
+    captured = capsys.readouterr()
+    assert '事件载荷 JSON 解析失败' in captured.out
