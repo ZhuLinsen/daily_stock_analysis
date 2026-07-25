@@ -258,6 +258,18 @@ LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
+### 示例：Atlas Cloud 渠道模式（OpenAI-compatible）
+```env
+LLM_CHANNELS=atlas_cloud
+LLM_ATLAS_CLOUD_PROTOCOL=openai
+LLM_ATLAS_CLOUD_BASE_URL=https://api.atlascloud.ai/v1
+LLM_ATLAS_CLOUD_API_KEY=sk-xxx
+LLM_ATLAS_CLOUD_MODELS=deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash
+LITELLM_MODEL=openai/deepseek-ai/deepseek-v4-pro
+```
+
+`atlas_cloud`、`atlascloud` 与 `atlas` 渠道名都会使用 OpenAI-compatible 协议默认值；未手动设置模型时默认使用 `deepseek-ai/deepseek-v4-pro`。API Key 优先读取 `LLM_<CHANNEL>_API_KEY(S)`，也兼容 `ATLAS_CLOUD_API_KEY(S)` / `ATLASCLOUD_API_KEY(S)`，不会影响未启用 `LLM_CHANNELS` 的 legacy provider 配置。
+
 ### 示例：Hermes 本地 HTTP Generation（Phase 3）
 ```env
 LLM_CHANNELS=hermes

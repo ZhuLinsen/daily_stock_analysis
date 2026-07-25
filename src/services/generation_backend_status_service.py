@@ -12,8 +12,11 @@ from src.analyzer import GeminiAnalyzer
 from src.config import (
     ANSPIRE_LLM_BASE_URL_DEFAULT,
     ANSPIRE_LLM_MODEL_DEFAULT,
+    ATLAS_CLOUD_LLM_BASE_URL_DEFAULT,
+    ATLAS_CLOUD_LLM_MODEL_DEFAULT,
     Config,
     _get_litellm_provider,
+    _is_atlas_cloud_channel_name,
     _uses_direct_env_provider,
     channel_allows_empty_api_key,
     get_configured_llm_models,
@@ -831,7 +834,8 @@ class GenerationBackendStatusService:
             if not name:
                 continue
             lower = name.lower()
-            prefix = f"LLM_{name.upper()}"
+            prefix = f"LLM_{lower.replace('-', '_').upper()}"
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(name)
             enabled_raw = effective_map.get(f"{prefix}_ENABLED")
             if lower == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
@@ -841,8 +845,23 @@ class GenerationBackendStatusService:
             base_url = (effective_map.get(f"{prefix}_BASE_URL") or "").strip() or None
             if lower == "anspire" and not base_url:
                 base_url = (effective_map.get("ANSPIRE_LLM_BASE_URL") or ANSPIRE_LLM_BASE_URL_DEFAULT).strip() or None
+            if is_atlas_cloud_channel and not base_url:
+                base_url = (
+                    cls._first_config_value(
+                        effective_map,
+                        (
+                            "ATLAS_CLOUD_BASE_URL",
+                            "ATLASCLOUD_BASE_URL",
+                            "ATLAS_CLOUD_LLM_BASE_URL",
+                            "ATLASCLOUD_LLM_BASE_URL",
+                        ),
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             protocol_raw = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if lower == "anspire" and not protocol_raw:
+                protocol_raw = "openai"
+            if is_atlas_cloud_channel and not protocol_raw:
                 protocol_raw = "openai"
 
             api_keys = cls._split_csv(effective_map.get(f"{prefix}_API_KEYS") or "")
@@ -851,10 +870,36 @@ class GenerationBackendStatusService:
                 api_keys = [single_key]
             if lower == "anspire" and not api_keys:
                 api_keys = cls._split_csv(effective_map.get("ANSPIRE_API_KEYS") or "")
+            if is_atlas_cloud_channel and not api_keys:
+                atlas_keys = cls._first_config_value(
+                    effective_map,
+                    (
+                        "ATLAS_CLOUD_API_KEYS",
+                        "ATLASCLOUD_API_KEYS",
+                        "ATLAS_CLOUD_API_KEY",
+                        "ATLASCLOUD_API_KEY",
+                    ),
+                )
+                api_keys = cls._split_csv(atlas_keys)
 
             raw_models = cls._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
             if lower == "anspire" and not raw_models:
                 raw_models = [(effective_map.get("ANSPIRE_LLM_MODEL") or ANSPIRE_LLM_MODEL_DEFAULT).strip()]
+            if is_atlas_cloud_channel and not raw_models:
+                raw_models = [
+                    (
+                        cls._first_config_value(
+                            effective_map,
+                            (
+                                "ATLAS_CLOUD_MODEL",
+                                "ATLASCLOUD_MODEL",
+                                "ATLAS_CLOUD_LLM_MODEL",
+                                "ATLASCLOUD_LLM_MODEL",
+                            ),
+                        )
+                        or ATLAS_CLOUD_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
 
             if is_reserved_hermes_name(name):
                 result = parse_hermes_channel(
@@ -890,6 +935,14 @@ class GenerationBackendStatusService:
                 }
             )
         return channels
+
+    @staticmethod
+    def _first_config_value(effective_map: Dict[str, str], keys: Iterable[str]) -> str:
+        for key in keys:
+            value = (effective_map.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _parse_json_object(value: str) -> Optional[Dict[str, Any]]:

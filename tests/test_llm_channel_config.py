@@ -12,6 +12,8 @@ ensure_litellm_stub()
 from src.config import (
     ANSPIRE_LLM_BASE_URL_DEFAULT,
     ANSPIRE_LLM_MODEL_DEFAULT,
+    ATLAS_CLOUD_LLM_BASE_URL_DEFAULT,
+    ATLAS_CLOUD_LLM_MODEL_DEFAULT,
     Config,
     get_configured_llm_models,
     get_effective_agent_models_to_try,
@@ -122,6 +124,71 @@ class LLMChannelConfigTestCase(unittest.TestCase):
         self.assertEqual(config.openai_api_keys, [])
         self.assertEqual(config.llm_channels, [])
         self.assertEqual(config.llm_model_list, [])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_atlas_cloud_channel_uses_openai_compatible_defaults(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "atlas_cloud",
+            "LLM_ATLAS_CLOUD_API_KEY": "sk-atlas-test-value",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        route_model = f"openai/{ATLAS_CLOUD_LLM_MODEL_DEFAULT}"
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["name"], "atlas_cloud")
+        self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+        self.assertEqual(config.llm_channels[0]["base_url"], ATLAS_CLOUD_LLM_BASE_URL_DEFAULT)
+        self.assertEqual(config.llm_channels[0]["api_keys"], ["sk-atlas-test-value"])
+        self.assertEqual(config.llm_channels[0]["models"], [route_model])
+        self.assertEqual(config.litellm_model, route_model)
+        params = config.llm_model_list[0]["litellm_params"]
+        self.assertEqual(params["model"], route_model)
+        self.assertEqual(params["api_base"], ATLAS_CLOUD_LLM_BASE_URL_DEFAULT)
+        self.assertEqual(params["api_key"], "sk-atlas-test-value")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_atlascloud_channel_alias_uses_global_key_alias(self, _mock_parse_yaml, _mock_setup_env) -> None:
+        env = {
+            "LLM_CHANNELS": "atlascloud",
+            "ATLASCLOUD_API_KEY": "sk-atlas-alias-value",
+            "LLM_ATLASCLOUD_MODELS": "qwen/qwen3.5-flash",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_models_source, "llm_channels")
+        self.assertEqual(config.llm_channels[0]["name"], "atlascloud")
+        self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+        self.assertEqual(config.llm_channels[0]["base_url"], ATLAS_CLOUD_LLM_BASE_URL_DEFAULT)
+        self.assertEqual(config.llm_channels[0]["api_keys"], ["sk-atlas-alias-value"])
+        self.assertEqual(config.llm_channels[0]["models"], ["openai/qwen/qwen3.5-flash"])
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_atlas_channel_keeps_explicit_base_url_model_and_protocol_alias(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        env = {
+            "LLM_CHANNELS": "atlas",
+            "LLM_ATLAS_PROTOCOL": "atlas-cloud",
+            "LLM_ATLAS_API_KEY": "sk-atlas-test-value",
+            "LLM_ATLAS_BASE_URL": "https://atlas.example/v1",
+            "LLM_ATLAS_MODELS": "custom-model",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.llm_channels[0]["protocol"], "openai")
+        self.assertEqual(config.llm_channels[0]["base_url"], "https://atlas.example/v1")
+        self.assertEqual(config.llm_channels[0]["models"], ["openai/custom-model"])
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

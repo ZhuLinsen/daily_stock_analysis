@@ -16,6 +16,7 @@ ENV_EXAMPLE_PATH = ROOT_DIR / ".env.example"
 
 EXPECTED_TEMPLATE_CHANNELS = {
     "aihubmix",
+    "atlas_cloud",
     "deepseek",
     "dashscope",
     "zhipu",

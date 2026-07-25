@@ -13,6 +13,7 @@ describe('llmProviderTemplates', () => {
     expect(LLM_PROVIDER_TEMPLATES.map((template) => template.channelId)).toEqual([
       'aihubmix',
       'anspire',
+      'atlas_cloud',
       'deepseek',
       'dashscope',
       'zhipu',
@@ -79,6 +80,7 @@ describe('llmProviderTemplates', () => {
 
   it('keeps focused config hints on providers with common setup pitfalls', () => {
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.ollama.configHint).toContain('Ollama 服务');
+    expect(LLM_PROVIDER_TEMPLATE_BY_ID.atlas_cloud.configHint).toContain('/v1');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.siliconflow.configHint).toContain('API Key');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.openrouter.configHint).toContain('API Key');
     expect(LLM_PROVIDER_TEMPLATE_BY_ID.openai.configHint).toBeUndefined();

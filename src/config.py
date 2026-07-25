@@ -109,6 +109,21 @@ TICKFLOW_KLINE_ADJUST_VALUES = {"none", "forward", "backward", "forward_additive
 # These are compatibility examples; actual availability should be validated by Anspire console/model entitlement.
 ANSPIRE_LLM_BASE_URL_DEFAULT = "https://open-gateway.anspire.cn/v6"
 ANSPIRE_LLM_MODEL_DEFAULT = "Doubao-Seed-2.0-lite"
+ATLAS_CLOUD_LLM_BASE_URL_DEFAULT = "https://api.atlascloud.ai/v1"
+ATLAS_CLOUD_LLM_MODEL_DEFAULT = "deepseek-ai/deepseek-v4-pro"
+_ATLAS_CLOUD_CHANNEL_NAMES = {"atlas", "atlas_cloud", "atlascloud"}
+
+
+def _first_non_empty_env(*names: str) -> Optional[str]:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _is_atlas_cloud_channel_name(value: Optional[str]) -> bool:
+    return (value or "").strip().lower().replace("-", "_") in _ATLAS_CLOUD_CHANNEL_NAMES
 
 
 def _has_ntfy_topic_endpoint(value: Optional[str]) -> bool:
@@ -378,6 +393,9 @@ def canonicalize_llm_channel_protocol(value: Optional[str]) -> str:
     aliases = {
         "openai_compatible": "openai",
         "openai_compat": "openai",
+        "atlas": "openai",
+        "atlascloud": "openai",
+        "atlas_cloud": "openai",
         "claude": "anthropic",
         "google": "gemini",
         "vertex": "vertex_ai",
@@ -2182,15 +2200,28 @@ class Config:
             if not ch_name:
                 continue
             ch_lower = ch_name.lower()
-            ch_upper = ch_name.upper()
+            ch_upper = ch_lower.replace("-", "_").upper()
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(ch_name)
 
             base_url = os.getenv(f'LLM_{ch_upper}_BASE_URL', '').strip() or None
             if ch_lower == "anspire" and not base_url:
                 base_url = (
                     os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip() or None
+            if is_atlas_cloud_channel and not base_url:
+                base_url = (
+                    _first_non_empty_env(
+                        'ATLAS_CLOUD_BASE_URL',
+                        'ATLASCLOUD_BASE_URL',
+                        'ATLAS_CLOUD_LLM_BASE_URL',
+                        'ATLASCLOUD_LLM_BASE_URL',
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             protocol_raw = os.getenv(f'LLM_{ch_upper}_PROTOCOL', '').strip()
             if ch_lower == "anspire" and not protocol_raw:
+                protocol_raw = "openai"
+            if is_atlas_cloud_channel and not protocol_raw:
                 protocol_raw = "openai"
             enabled_raw = os.getenv(f'LLM_{ch_upper}_ENABLED')
             if ch_lower == "anspire" and (enabled_raw is None or not enabled_raw.strip()):
@@ -2207,6 +2238,13 @@ class Config:
             if not api_keys and ch_lower == "anspire":
                 anspire_keys_raw = os.getenv('ANSPIRE_API_KEYS', '')
                 api_keys = [k.strip() for k in anspire_keys_raw.split(',') if k.strip()]
+            if not api_keys and is_atlas_cloud_channel:
+                atlas_keys_raw = _first_non_empty_env('ATLAS_CLOUD_API_KEYS', 'ATLASCLOUD_API_KEYS') or ''
+                api_keys = [k.strip() for k in atlas_keys_raw.split(',') if k.strip()]
+            if not api_keys and is_atlas_cloud_channel:
+                atlas_single_key = _first_non_empty_env('ATLAS_CLOUD_API_KEY', 'ATLASCLOUD_API_KEY')
+                if atlas_single_key:
+                    api_keys = [atlas_single_key]
 
             # Models
             models_raw = os.getenv(f'LLM_{ch_upper}_MODELS', '')
@@ -2217,6 +2255,18 @@ class Config:
                 ).strip()
                 if anspire_model:
                     raw_models = [anspire_model]
+            if not raw_models and is_atlas_cloud_channel:
+                atlas_model = (
+                    _first_non_empty_env(
+                        'ATLAS_CLOUD_MODEL',
+                        'ATLASCLOUD_MODEL',
+                        'ATLAS_CLOUD_LLM_MODEL',
+                        'ATLASCLOUD_LLM_MODEL',
+                    )
+                    or ATLAS_CLOUD_LLM_MODEL_DEFAULT
+                )
+                if atlas_model:
+                    raw_models = [atlas_model]
 
             if is_reserved_hermes_name(ch_name):
                 if not raw_models:

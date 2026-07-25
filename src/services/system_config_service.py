@@ -20,9 +20,12 @@ import requests
 from src.config import (
     ANSPIRE_LLM_BASE_URL_DEFAULT,
     ANSPIRE_LLM_MODEL_DEFAULT,
+    ATLAS_CLOUD_LLM_BASE_URL_DEFAULT,
+    ATLAS_CLOUD_LLM_MODEL_DEFAULT,
     SUPPORTED_LLM_CHANNEL_PROTOCOLS,
     Config,
     _get_litellm_provider,
+    _is_atlas_cloud_channel_name,
     _uses_direct_env_provider,
     canonicalize_llm_channel_protocol,
     channel_allows_empty_api_key,
@@ -3348,6 +3351,18 @@ class SystemConfigService:
         return any((effective_map.get(key) or "").strip() for key in keys)
 
     @staticmethod
+    def _first_config_value(effective_map: Dict[str, str], keys: Sequence[str]) -> str:
+        for key in keys:
+            value = (effective_map.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _llm_channel_prefix(channel_name: str) -> str:
+        return f"LLM_{channel_name.strip().lower().replace('-', '_').upper()}"
+
+    @staticmethod
     def _has_valid_ntfy_endpoint(effective_map: Dict[str, str]) -> bool:
         ntfy_server_url, ntfy_topic = resolve_ntfy_endpoint(effective_map.get("NTFY_URL"))
         return bool(ntfy_server_url and ntfy_topic)
@@ -3416,7 +3431,8 @@ class SystemConfigService:
             name = raw_name.strip()
             if not name:
                 continue
-            prefix = f"LLM_{name.upper()}"
+            prefix = cls._llm_channel_prefix(name)
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(name)
             enabled_raw = effective_map.get(f"{prefix}_ENABLED")
             if name.lower() == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
@@ -3430,8 +3446,23 @@ class SystemConfigService:
                     effective_map.get("ANSPIRE_LLM_BASE_URL")
                     or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip()
+            if is_atlas_cloud_channel and not base_url:
+                base_url = (
+                    cls._first_config_value(
+                        effective_map,
+                        (
+                            "ATLAS_CLOUD_BASE_URL",
+                            "ATLASCLOUD_BASE_URL",
+                            "ATLAS_CLOUD_LLM_BASE_URL",
+                            "ATLASCLOUD_LLM_BASE_URL",
+                        ),
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             protocol = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol:
+                protocol = "openai"
+            if is_atlas_cloud_channel and not protocol:
                 protocol = "openai"
             api_key = (
                 (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
@@ -3439,12 +3470,37 @@ class SystemConfigService:
             )
             if name.lower() == "anspire" and not api_key:
                 api_key = (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
+            if is_atlas_cloud_channel and not api_key:
+                api_key = cls._first_config_value(
+                    effective_map,
+                    (
+                        "ATLAS_CLOUD_API_KEYS",
+                        "ATLASCLOUD_API_KEYS",
+                        "ATLAS_CLOUD_API_KEY",
+                        "ATLASCLOUD_API_KEY",
+                    ),
+                )
             raw_models = cls._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
             if name.lower() == "anspire" and not raw_models:
                 raw_models = [
                     (
                         effective_map.get("ANSPIRE_LLM_MODEL")
                         or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            if is_atlas_cloud_channel and not raw_models:
+                raw_models = [
+                    (
+                        cls._first_config_value(
+                            effective_map,
+                            (
+                                "ATLAS_CLOUD_MODEL",
+                                "ATLASCLOUD_MODEL",
+                                "ATLAS_CLOUD_LLM_MODEL",
+                                "ATLASCLOUD_LLM_MODEL",
+                            ),
+                        )
+                        or ATLAS_CLOUD_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
             if is_reserved_hermes_name(name):
@@ -4623,9 +4679,12 @@ class SystemConfigService:
             normalized_names.append(name)
 
         for name in normalized_names:
-            prefix = f"LLM_{name.upper()}"
+            prefix = SystemConfigService._llm_channel_prefix(name)
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(name)
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
+            if is_atlas_cloud_channel and not protocol_value:
                 protocol_value = "openai"
             base_url_value = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
             if name.lower() == "anspire" and not base_url_value:
@@ -4633,12 +4692,35 @@ class SystemConfigService:
                     effective_map.get("ANSPIRE_LLM_BASE_URL")
                     or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip()
+            if is_atlas_cloud_channel and not base_url_value:
+                base_url_value = (
+                    SystemConfigService._first_config_value(
+                        effective_map,
+                        (
+                            "ATLAS_CLOUD_BASE_URL",
+                            "ATLASCLOUD_BASE_URL",
+                            "ATLAS_CLOUD_LLM_BASE_URL",
+                            "ATLASCLOUD_LLM_BASE_URL",
+                        ),
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             api_key_value = (
                 (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
                 or (effective_map.get(f"{prefix}_API_KEY") or "").strip()
             )
             if name.lower() == "anspire" and not api_key_value:
                 api_key_value = (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
+            if is_atlas_cloud_channel and not api_key_value:
+                api_key_value = SystemConfigService._first_config_value(
+                    effective_map,
+                    (
+                        "ATLAS_CLOUD_API_KEYS",
+                        "ATLASCLOUD_API_KEYS",
+                        "ATLAS_CLOUD_API_KEY",
+                        "ATLASCLOUD_API_KEY",
+                    ),
+                )
             models_value = [
                 model.strip()
                 for model in (effective_map.get(f"{prefix}_MODELS") or "").split(",")
@@ -4649,6 +4731,21 @@ class SystemConfigService:
                     (
                         effective_map.get("ANSPIRE_LLM_MODEL")
                         or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            if is_atlas_cloud_channel and not models_value:
+                models_value = [
+                    (
+                        SystemConfigService._first_config_value(
+                            effective_map,
+                            (
+                                "ATLAS_CLOUD_MODEL",
+                                "ATLASCLOUD_MODEL",
+                                "ATLAS_CLOUD_LLM_MODEL",
+                                "ATLASCLOUD_LLM_MODEL",
+                            ),
+                        )
+                        or ATLAS_CLOUD_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
             enabled_raw = effective_map.get(f"{prefix}_ENABLED")
@@ -4706,7 +4803,8 @@ class SystemConfigService:
             if not name:
                 continue
 
-            prefix = f"LLM_{name.upper()}"
+            prefix = SystemConfigService._llm_channel_prefix(name)
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(name)
             enabled_raw = effective_map.get(f"{prefix}_ENABLED")
             if name.lower() == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
@@ -4720,8 +4818,23 @@ class SystemConfigService:
                     effective_map.get("ANSPIRE_LLM_BASE_URL")
                     or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip()
+            if is_atlas_cloud_channel and not base_url_value:
+                base_url_value = (
+                    SystemConfigService._first_config_value(
+                        effective_map,
+                        (
+                            "ATLAS_CLOUD_BASE_URL",
+                            "ATLASCLOUD_BASE_URL",
+                            "ATLAS_CLOUD_LLM_BASE_URL",
+                            "ATLASCLOUD_LLM_BASE_URL",
+                        ),
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
+            if is_atlas_cloud_channel and not protocol_value:
                 protocol_value = "openai"
             raw_models = [
                 model.strip()
@@ -4733,6 +4846,21 @@ class SystemConfigService:
                     (
                         effective_map.get("ANSPIRE_LLM_MODEL")
                         or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            if is_atlas_cloud_channel and not raw_models:
+                raw_models = [
+                    (
+                        SystemConfigService._first_config_value(
+                            effective_map,
+                            (
+                                "ATLAS_CLOUD_MODEL",
+                                "ATLASCLOUD_MODEL",
+                                "ATLAS_CLOUD_LLM_MODEL",
+                                "ATLASCLOUD_LLM_MODEL",
+                            ),
+                        )
+                        or ATLAS_CLOUD_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
             if is_reserved_hermes_name(name):
@@ -4775,7 +4903,7 @@ class SystemConfigService:
             if not is_reserved_hermes_name(name):
                 continue
 
-            prefix = f"LLM_{name.upper()}"
+            prefix = SystemConfigService._llm_channel_prefix(name)
             enabled = parse_env_bool(effective_map.get(f"{prefix}_ENABLED"), default=True)
             if not enabled:
                 continue
@@ -4809,7 +4937,8 @@ class SystemConfigService:
             name = raw_name.strip()
             if not name or is_reserved_hermes_name(name):
                 continue
-            prefix = f"LLM_{name.upper()}"
+            prefix = SystemConfigService._llm_channel_prefix(name)
+            is_atlas_cloud_channel = _is_atlas_cloud_channel_name(name)
             enabled_raw = effective_map.get(f"{prefix}_ENABLED")
             if name.lower() == "anspire" and not (enabled_raw or "").strip():
                 enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
@@ -4821,8 +4950,23 @@ class SystemConfigService:
                     effective_map.get("ANSPIRE_LLM_BASE_URL")
                     or ANSPIRE_LLM_BASE_URL_DEFAULT
                 ).strip()
+            if is_atlas_cloud_channel and not base_url_value:
+                base_url_value = (
+                    SystemConfigService._first_config_value(
+                        effective_map,
+                        (
+                            "ATLAS_CLOUD_BASE_URL",
+                            "ATLASCLOUD_BASE_URL",
+                            "ATLAS_CLOUD_LLM_BASE_URL",
+                            "ATLASCLOUD_LLM_BASE_URL",
+                        ),
+                    )
+                    or ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+                )
             protocol_value = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
             if name.lower() == "anspire" and not protocol_value:
+                protocol_value = "openai"
+            if is_atlas_cloud_channel and not protocol_value:
                 protocol_value = "openai"
             raw_models = SystemConfigService._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
             if name.lower() == "anspire" and not raw_models:
@@ -4830,6 +4974,21 @@ class SystemConfigService:
                     (
                         effective_map.get("ANSPIRE_LLM_MODEL")
                         or ANSPIRE_LLM_MODEL_DEFAULT
+                    ).strip()
+                ]
+            if is_atlas_cloud_channel and not raw_models:
+                raw_models = [
+                    (
+                        SystemConfigService._first_config_value(
+                            effective_map,
+                            (
+                                "ATLAS_CLOUD_MODEL",
+                                "ATLASCLOUD_MODEL",
+                                "ATLAS_CLOUD_LLM_MODEL",
+                                "ATLASCLOUD_LLM_MODEL",
+                            ),
+                        )
+                        or ATLAS_CLOUD_LLM_MODEL_DEFAULT
                     ).strip()
                 ]
             resolved_protocol = resolve_llm_channel_protocol(

@@ -9,6 +9,7 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
+from src.config import ATLAS_CLOUD_LLM_BASE_URL_DEFAULT, ATLAS_CLOUD_LLM_MODEL_DEFAULT
 from src.llm.generation_backend import GenerationError, GenerationErrorCode
 from src.services.generation_backend_status_service import GenerationBackendStatusService
 
@@ -303,6 +304,28 @@ def test_litellm_legacy_key_infers_runtime_model_for_smoke_config() -> None:
 
     assert payload["success"] is True
     assert _CapturingAnalyzer.configs[-1].litellm_model == "gemini/gemini-3.1-pro-preview"
+
+
+def test_litellm_smoke_uses_atlas_cloud_channel_defaults() -> None:
+    _CapturingAnalyzer.configs = []
+    service = GenerationBackendStatusService(
+        effective_map={
+            "GENERATION_BACKEND": "litellm",
+            "LLM_CHANNELS": "atlas_cloud",
+            "ATLAS_CLOUD_API_KEY": "sk-atlas-test-value",
+        },
+        analyzer_factory=lambda config: _CapturingAnalyzer(config),
+    )
+
+    payload = service.smoke_test(mode="json")
+
+    route_model = f"openai/{ATLAS_CLOUD_LLM_MODEL_DEFAULT}"
+    config = _CapturingAnalyzer.configs[-1]
+    assert payload["success"] is True
+    assert config.litellm_model == route_model
+    assert config.llm_model_list[0]["model_name"] == route_model
+    assert config.llm_model_list[0]["litellm_params"]["api_base"] == ATLAS_CLOUD_LLM_BASE_URL_DEFAULT
+    assert config.llm_model_list[0]["litellm_params"]["api_key"] == "sk-atlas-test-value"
 
 
 def test_litellm_validation_issues_are_not_available() -> None:

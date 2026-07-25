@@ -423,6 +423,7 @@ describe('LLMChannelEditor', () => {
   });
 
   it.each([
+    ['atlas_cloud', /Atlas Cloud/i, 'https://api.atlascloud.ai/v1', 'deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash'],
     ['minimax', /MiniMax 官方/i, 'https://api.minimax.io/v1', 'MiniMax-M3,MiniMax-M2.7,MiniMax-M2.7-highspeed'],
     ['volcengine', /火山方舟/i, 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-1-6-251015,doubao-seed-1-6-thinking-251015'],
   ])('uses %s OpenAI-compatible defaults when adding the official preset', async (preset, buttonName, baseUrl, models) => {

@@ -251,6 +251,18 @@ LLM_OLLAMA_MODELS=qwen3:8b,llama3.2
 LITELLM_MODEL=ollama/qwen3:8b
 ```
 
+### Example: Atlas Cloud Channel Mode (OpenAI-compatible)
+```env
+LLM_CHANNELS=atlas_cloud
+LLM_ATLAS_CLOUD_PROTOCOL=openai
+LLM_ATLAS_CLOUD_BASE_URL=https://api.atlascloud.ai/v1
+LLM_ATLAS_CLOUD_API_KEY=sk-xxx
+LLM_ATLAS_CLOUD_MODELS=deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash
+LITELLM_MODEL=openai/deepseek-ai/deepseek-v4-pro
+```
+
+The `atlas_cloud`, `atlascloud`, and `atlas` channel names all use the OpenAI-compatible defaults. If no model list is provided, the runtime defaults to `deepseek-ai/deepseek-v4-pro`. API keys are read first from `LLM_<CHANNEL>_API_KEY(S)`, with `ATLAS_CLOUD_API_KEY(S)` / `ATLASCLOUD_API_KEY(S)` aliases accepted for migration from existing deployments. This only applies when `LLM_CHANNELS` explicitly enables an Atlas Cloud channel and does not change legacy provider fallback behavior.
+
 ### Example: Hermes Local HTTP Generation (Phase 3)
 ```env
 LLM_CHANNELS=hermes

@@ -76,6 +76,22 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'atlas_cloud',
+    label: 'Atlas Cloud',
+    protocol: 'openai',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    placeholderModels: 'deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表和模型可见性依赖账号权限与 API Key；OpenAI-compatible Base URL 只填到 /v1。',
+    officialSources: [
+      { label: 'Atlas Cloud API Keys', url: 'https://www.atlascloud.ai/console/api-keys' },
+      {
+        label: 'LiteLLM OpenAI-compatible',
+        url: 'https://docs.litellm.ai/docs/providers/openai_compatible',
+      },
+    ],
+  },
+  {
     channelId: 'deepseek',
     label: 'DeepSeek 官方',
     protocol: 'deepseek',

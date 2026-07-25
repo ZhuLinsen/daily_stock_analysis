@@ -18,7 +18,12 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
-from src.config import ANSPIRE_LLM_MODEL_DEFAULT, DEFAULT_ALPHASIFT_INSTALL_SPEC, Config
+from src.config import (
+    ANSPIRE_LLM_MODEL_DEFAULT,
+    ATLAS_CLOUD_LLM_MODEL_DEFAULT,
+    DEFAULT_ALPHASIFT_INSTALL_SPEC,
+    Config,
+)
 from src.core.config_manager import ConfigManager
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
@@ -1449,6 +1454,21 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(checks["llm_primary"]["status"], "configured")
         self.assertIn("openai/Doubao-Seed-2.0-lite", checks["llm_primary"]["message"])
 
+    def test_get_setup_status_accepts_atlas_cloud_channel_with_key_alias(self) -> None:
+        self._rewrite_env(
+            "LLM_CHANNELS=atlas_cloud",
+            "ATLASCLOUD_API_KEY=sk-atlas-test-value",
+            "STOCK_LIST=600519",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status()
+
+        checks = {check["key"]: check for check in status["checks"]}
+        self.assertTrue(status["is_complete"], status["checks"])
+        self.assertEqual(checks["llm_primary"]["status"], "configured")
+        self.assertIn(f"openai/{ATLAS_CLOUD_LLM_MODEL_DEFAULT}", checks["llm_primary"]["message"])
+
     def test_get_setup_status_treats_blank_anspire_channel_enabled_as_shared_disable(self) -> None:
         self._rewrite_env(
             "LLM_CHANNELS=anspire",
@@ -2768,6 +2788,17 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         self.assertTrue(validation["valid"])
+        self.assertEqual(validation["issues"], [])
+
+    def test_validate_allows_atlas_cloud_channel_with_defaults_and_key_alias(self) -> None:
+        validation = self.service.validate(
+            items=[
+                {"key": "LLM_CHANNELS", "value": "atlas_cloud"},
+                {"key": "ATLAS_CLOUD_API_KEY", "value": "sk-atlas-test-value"},
+            ]
+        )
+
+        self.assertTrue(validation["valid"], validation["issues"])
         self.assertEqual(validation["issues"], [])
 
     def test_validate_treats_blank_anspire_channel_enabled_as_shared_disable(self) -> None:

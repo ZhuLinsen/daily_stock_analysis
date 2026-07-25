@@ -84,12 +84,26 @@ LLM_MY_PROXY_MODELS=gpt-5.5,claude-sonnet-4-6
 OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/chat/completions`。本地 `.env`、Docker 和自托管脚本可以直接使用自定义 channel；GitHub Actions 需要 workflow 显式透传同名 `LLM_MY_PROXY_*` 变量。
 小米 MiMo 示例同理：适用于本地 `.env`、Docker 或自托管脚本；若在 GitHub Actions 使用 `LLM_CHANNELS=mimo`，需要在 workflow 中手动补齐 `LLM_MIMO_*` 映射后方可生效。
 
+### Atlas Cloud 渠道模式
+
+```env
+LLM_CHANNELS=atlas_cloud
+LLM_ATLAS_CLOUD_PROTOCOL=openai
+LLM_ATLAS_CLOUD_BASE_URL=https://api.atlascloud.ai/v1
+LLM_ATLAS_CLOUD_API_KEY=sk-xxx
+LLM_ATLAS_CLOUD_MODELS=deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash
+LITELLM_MODEL=openai/deepseek-ai/deepseek-v4-pro
+```
+
+`atlas_cloud` 是 OpenAI-compatible channel preset。未显式配置 `LLM_ATLAS_CLOUD_PROTOCOL` / `LLM_ATLAS_CLOUD_BASE_URL` / `LLM_ATLAS_CLOUD_MODELS` 时，运行时分别默认使用 `openai`、`https://api.atlascloud.ai/v1` 和 `deepseek-ai/deepseek-v4-pro`；`LLM_CHANNELS=atlascloud` 或 `atlas` 也会走同一套 OpenAI-compatible 默认值。API Key 优先读取 `LLM_<CHANNEL>_API_KEY(S)`，也兼容 `ATLAS_CLOUD_API_KEY(S)` / `ATLASCLOUD_API_KEY(S)`，便于从已有部署环境迁移。
+
 ## 常用服务商预设
 
 | 服务商 | 渠道名 | 协议 | Base URL | 模型示例 |
 | --- | --- | --- | --- | --- |
 | AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-5.5,claude-sonnet-4-6,gemini-3.1-pro-preview` |
 | Anspire Open | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash,MiniMax-M2.7`（示例） |
+| Atlas Cloud | `atlas_cloud` | `openai` | `https://api.atlascloud.ai/v1` | `deepseek-ai/deepseek-v4-pro,qwen/qwen3.5-flash` |
 | OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-5.5,gpt-5.4-mini` |
 | DeepSeek | `deepseek` | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash,deepseek-v4-pro` |
 | Gemini | `gemini` | `gemini` | 留空 | `gemini-3.1-pro-preview,gemini-3-flash-preview` |
@@ -109,6 +123,7 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | 服务商 | 官方来源 | 兼容说明 |
 | --- | --- | --- |
 | Anspire Open | [Anspire Open](https://open.anspire.cn/?share_code=QFBC0FYC) | `ANSPIRE_API_KEYS` 在未配置更高优先级 OpenAI-compatible 来源时可用于大模型网关与搜索；页面与 `.env` 默认示例为 `openai/Doubao-Seed-2.0-lite` + `https://open-gateway.anspire.cn/v6`，是否可用以控制台与模型权限为准。 |
+| Atlas Cloud | Atlas Cloud OpenAI-compatible API | Base URL 填 `https://api.atlascloud.ai/v1`，不要额外拼接 `/chat/completions`；模型通过 LiteLLM `openai/<model>` 路由访问，实际可见模型以账号权限为准。 |
 | OpenAI | [模型列表](https://platform.openai.com/docs/models) | 官方模型页建议从 `gpt-5.5` 开始，低延迟/低成本场景使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。 |
 | DeepSeek | [快速开始](https://api-docs.deepseek.com/) | 官方 OpenAI Base URL 为 `https://api.deepseek.com`；`deepseek-chat` / `deepseek-reasoner` 将于 2026-07-24 弃用，当前模板直接使用 `deepseek-v4-flash` / `deepseek-v4-pro`。 |
 | Gemini | [模型列表](https://ai.google.dev/gemini-api/docs/models) | Gemini 3.1 Pro / Gemini 3 Flash 仍为 preview；如需生产稳定性，可在控制台改回 2.5 稳定模型。 |
@@ -151,7 +166,7 @@ OpenAI-compatible Base URL 只填到服务商兼容入口，不额外拼接 `/ch
 | `LLM_USAGE_HMAC_SECRET` | Secrets | 可选；只有需要跨部署比较 usage message HMAC 时才配置同一个高熵随机密钥，例如 `openssl rand -hex 32`；不要放 Variables 或提交到版本控制。 |
 | `LLM_USAGE_HMAC_KEY_VERSION` | Variables 或 Secrets | 可选；轮换 `LLM_USAGE_HMAC_SECRET` 时同步更新版本标签，避免误比较不同密钥生成的 HMAC。 |
 
-默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
+默认 workflow 已显式映射 `primary`、`secondary`、`aihubmix`、`anspire`、`atlas_cloud`、`deepseek`、`dashscope`、`zhipu`、`moonshot`、`minimax`、`volcengine`、`siliconflow`、`openrouter`、`gemini`、`anthropic`、`openai`、`ollama`、`hermes`；`mimo` 未在默认 workflow 中映射。若使用 `mimo`（或任何未列渠道名），除了在 Variables/Secrets 配置同名 `LLM_<CHANNEL>_*` 外，还需在 workflow 中同步补齐对应 env 映射；本地 `.env`、Docker 和自托管脚本不受这个限制。
 
 回滚 HMAC 遥测显式配置时，可移除 `LLM_USAGE_HMAC_SECRET` 并恢复或删除 `LLM_USAGE_HMAC_KEY_VERSION`；留空后系统会回到本地生成 `.llm_usage_hmac_secret` 的默认行为。
 
