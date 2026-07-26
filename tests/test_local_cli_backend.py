@@ -1372,13 +1372,17 @@ def test_env_allowlist_and_denylist(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
     monkeypatch.setenv("LC_MESSAGES", "C")
     monkeypatch.setenv("UNRELATED_VALUE", "leak")
+    monkeypatch.setenv("AIHUBMIX_KEY", "aihubmix-secret")
     monkeypatch.setenv("CODEX_CLI_TOKEN", "codex-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/claude")
+    monkeypatch.setenv("LONGBRIDGE_APP_KEY", "longbridge-secret")
     monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", "{}")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    monkeypatch.setenv("PUSHOVER_USER_KEY", "pushover-secret")
     monkeypatch.setenv("WEBHOOK_TOKEN", "token")
+    monkeypatch.setenv("WECOM_ENCODING_AES_KEY", "wecom-secret")
     monkeypatch.setenv("AUTHORIZATION", "Bearer token")
 
     child_env = build_local_cli_env()
@@ -1388,13 +1392,17 @@ def test_env_allowlist_and_denylist(monkeypatch) -> None:
     assert child_env["CODEX_HOME"] == "/tmp/codex-home"
     assert child_env["LC_MESSAGES"] == "C"
     assert "UNRELATED_VALUE" not in child_env
+    assert "AIHUBMIX_KEY" not in child_env
     assert "CODEX_CLI_TOKEN" not in child_env
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "ANTHROPIC_MODEL" not in child_env
     assert "CLAUDE_CONFIG_DIR" not in child_env
+    assert "LONGBRIDGE_APP_KEY" not in child_env
     assert "OPENCODE_CONFIG_CONTENT" not in child_env
     assert "OPENAI_API_KEY" not in child_env
+    assert "PUSHOVER_USER_KEY" not in child_env
     assert "WEBHOOK_TOKEN" not in child_env
+    assert "WECOM_ENCODING_AES_KEY" not in child_env
     assert "AUTHORIZATION" not in child_env
 
 
@@ -1622,11 +1630,15 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
     ("text", "secret"),
     [
         ("FEISHU_APP_SECRET=xxy12345abcdef", "xxy12345abcdef"),
+        ("AIHUBMIX_KEY=short", "short"),
         ("CUSTOM_API_KEY=abc123xyz789short", "abc123xyz789short"),
+        ("LONGBRIDGE_APP_KEY=short", "short"),
+        ("NTFY_URL=https://ntfy.sh/private-topic", "https://ntfy.sh/private-topic"),
         ("API_KEYS=short", "short"),
         ("OPENAI_API_KEYS=short", "short"),
         ("MYOPENAIKEY=short", "short"),
         ("OPENAI_V2_API_KEY=short", "short"),
+        ("PUSHOVER_USER_KEY=short", "short"),
         ("R2_SECRET_ACCESS_KEY=short", "short"),
         ("My_Api_Key=myvalue", "myvalue"),
         ("PASSWORD='abc def ghi' next", "abc def ghi"),
@@ -1766,6 +1778,35 @@ def test_diagnostics_redacts_parameterized_oauth_authorization_values() -> None:
     assert "Authorization: <redacted> session_id=abc123" in redacted
 
 
+@pytest.mark.parametrize(
+    ("text", "secret", "preserved"),
+    [
+        (
+            "Authorization: AWS4-HMAC-SHA256 Credential=AKIA/test/aws4_request, "
+            "SignedHeaders=host;x-amz-date, Signature=tiny-secret session_id=aws123",
+            "tiny-secret",
+            "session_id=aws123",
+        ),
+        (
+            'Authorization: Signature keyId="client",algorithm="hmac-sha256",signature="tiny-secret" '
+            "token_budget=1000",
+            "tiny-secret",
+            "token_budget=1000",
+        ),
+    ],
+)
+def test_diagnostics_redacts_parameterized_authorization_values_for_any_scheme(
+    text: str,
+    secret: str,
+    preserved: str,
+) -> None:
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert secret not in redacted
+    assert preserved in redacted
+    assert "Authorization: <redacted>" in redacted
+
+
 def test_diagnostics_redacts_unclosed_quoted_sensitive_scalar() -> None:
     redacted = redact_diagnostic_text('password: "correct horse battery staple', limit=1000)
 
@@ -1782,6 +1823,17 @@ def test_diagnostics_redacts_multiline_quoted_sensitive_scalar() -> None:
     assert "correct horse" not in redacted
     assert "battery staple" not in redacted
     assert redacted == "password: <redacted>\nsession_id=abc123\n"
+
+
+def test_diagnostics_redacts_pretty_printed_json_value_on_following_line() -> None:
+    redacted = redact_diagnostic_text(
+        '{\n  "api_key":\n    "tiny-secret",\n  "session_id": "json123"\n}',
+        limit=1000,
+    )
+
+    assert "tiny-secret" not in redacted
+    assert '"api_key":\n    "<redacted>"' in redacted
+    assert '"session_id": "json123"' in redacted
 
 
 @pytest.mark.parametrize(
@@ -1975,6 +2027,51 @@ raise SystemExit(2)
     assert "tiny-secret" not in stderr_preview
     assert "api_keys: <redacted> token_budget: 1000" in stdout_preview
     assert '{"credentials":<redacted>,"session_id":"nested123"}' in stderr_preview
+
+
+def test_nonzero_exit_diagnostic_previews_redact_repo_env_json_and_parameterized_auth(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print("AIHUBMIX_KEY=stdout-short session_id=stdout123")
+print("LONGBRIDGE_APP_KEY=stderr-short session_id=bridge123", file=sys.stderr)
+print("NTFY_URL=https://ntfy.sh/private-topic session_id=ntfy123", file=sys.stderr)
+print("PUSHOVER_USER_KEY=notify-short session_id=push123", file=sys.stderr)
+print('{', file=sys.stderr)
+print('  "api_key":', file=sys.stderr)
+print('    "json-short",', file=sys.stderr)
+print('  "session_id": "json123"', file=sys.stderr)
+print('}', file=sys.stderr)
+print("Authorization: AWS4-HMAC-SHA256 Credential=AKIA/20240101/test/aws4_request, SignedHeaders=host;x-amz-date, Signature=tiny-secret session_id=aws123", file=sys.stderr)
+print('Authorization: Signature keyId="client",algorithm="hmac-sha256",signature="sig-short" token_budget=1000', file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stdout_preview = exc_info.value.details["stdout_preview"]
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "stdout-short" not in stdout_preview
+    assert "stderr-short" not in stderr_preview
+    assert "https://ntfy.sh/private-topic" not in stderr_preview
+    assert "notify-short" not in stderr_preview
+    assert "json-short" not in stderr_preview
+    assert "tiny-secret" not in stderr_preview
+    assert "sig-short" not in stderr_preview
+    assert "AIHUBMIX_KEY=<redacted> session_id=stdout123" in stdout_preview
+    assert "LONGBRIDGE_APP_KEY=<redacted> session_id=bridge123" in stderr_preview
+    assert "NTFY_URL=<redacted> session_id=ntfy123" in stderr_preview
+    assert "PUSHOVER_USER_KEY=<redacted> session_id=push123" in stderr_preview
+    assert '"api_key":\n    "<redacted>"' in stderr_preview
+    assert '"session_id": "json123"' in stderr_preview
+    assert "Authorization: <redacted> session_id=aws123" in stderr_preview
+    assert "Authorization: <redacted> token_budget=1000" in stderr_preview
 
 
 def test_preview_diagnostics_from_files_redacts_truncated_quoted_sensitive_scalar(

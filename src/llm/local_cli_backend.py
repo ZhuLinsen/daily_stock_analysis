@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from contextlib import ExitStack, contextmanager
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -146,6 +147,13 @@ _SENSITIVE_ENV_PATTERNS = (
     "VERTEX_",
     "WEBHOOK",
 )
+_SENSITIVE_ENV_EXACT_NAMES = frozenset({
+    "AIHUBMIX_KEY",
+    "DINGTALK_APP_KEY",
+    "LONGBRIDGE_APP_KEY",
+    "PUSHOVER_USER_KEY",
+    "WECOM_ENCODING_AES_KEY",
+})
 _SENSITIVE_DIAGNOSTIC_FIELDS = frozenset({
     "access_token",
     "access_key",
@@ -258,7 +266,7 @@ _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN = re.compile(
     (?P<key_quote>["'])
     (?P<name>[A-Za-z][A-Za-z0-9_-]*)
     (?P=key_quote)
-    (?P<separator>[ \t]*:[ \t]*)
+    (?P<separator>[ \t\r\n]*:[ \t\r\n]*)
     {_DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN}
     """,
     re.VERBOSE,
@@ -709,7 +717,12 @@ def _diagnostic_quote_close_index(value: str, quote: str, *, start: int) -> Opti
     return None
 
 
-def _consume_diagnostic_scalar(value: str, start: int) -> int:
+def _consume_diagnostic_scalar(
+    value: str,
+    start: int,
+    *,
+    stop_chars: str = " \t,;",
+) -> int:
     if start >= len(value):
         return start
     quote = value[start]
@@ -729,7 +742,7 @@ def _consume_diagnostic_scalar(value: str, start: int) -> int:
         return len(value)
 
     index = start
-    while index < len(value) and value[index] not in " \t,;":
+    while index < len(value) and value[index] not in stop_chars:
         index += 1
     return index
 
@@ -765,19 +778,13 @@ def _authorization_value_end(value: str) -> int:
     if scheme_match is None:
         return len(value)
 
-    scheme = scheme_match.group(0).lower()
     index = scheme_match.end()
     while index < len(value) and value[index].isspace():
         index += 1
 
-    if scheme in {"digest", "oauth"}:
-        auth_end = _consume_authorization_param_list(
-            value,
-            index,
-            allowed_names=_DIGEST_AUTH_PARAM_NAMES if scheme == "digest" else None,
-        )
-        if auth_end > index:
-            return auth_end
+    auth_end = _consume_authorization_param_list(value, index)
+    if auth_end > index:
+        return auth_end
 
     simple_value_end = _consume_diagnostic_scalar(value, index)
     return simple_value_end if simple_value_end > index else len(value)
@@ -814,9 +821,13 @@ def _consume_authorization_param_list(
         if index >= len(value) or value[index] != "=":
             break
         index += 1
+        saw_whitespace_after_equals = False
         while index < len(value) and value[index].isspace():
+            saw_whitespace_after_equals = True
             index += 1
-        scalar_end = _consume_diagnostic_scalar(value, index)
+        if saw_whitespace_after_equals and re.match(r"[A-Za-z][A-Za-z0-9_-]*\s*=", value[index:]):
+            break
+        scalar_end = _consume_diagnostic_scalar(value, index, stop_chars=" \t,")
         if scalar_end <= index:
             break
         consumed_any = True
@@ -1998,8 +2009,29 @@ def _is_command_not_executable_error(exc: OSError) -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
+def _registered_sensitive_env_exact_names() -> frozenset[str]:
+    """Reuse the config registry's secret-field contract without creating an import cycle."""
+
+    try:
+        from src.core.config_registry import _FIELD_DEFINITIONS
+    except Exception:
+        return frozenset()
+
+    return frozenset(
+        str(name).upper()
+        for name, metadata in _FIELD_DEFINITIONS.items()
+        if isinstance(metadata, Mapping) and metadata.get("is_sensitive")
+    )
+
+
 def _is_sensitive_env_name(upper_name: str) -> bool:
-    return any(pattern in upper_name for pattern in _SENSITIVE_ENV_PATTERNS)
+    return (
+        upper_name in _SENSITIVE_ENV_EXACT_NAMES
+        or upper_name in _registered_sensitive_env_exact_names()
+    ) or any(
+        pattern in upper_name for pattern in _SENSITIVE_ENV_PATTERNS
+    )
 
 
 def _first_unsafe_token(tokens: Sequence[str]) -> str:
