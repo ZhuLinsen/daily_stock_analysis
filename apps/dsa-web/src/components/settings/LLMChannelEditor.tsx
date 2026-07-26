@@ -1906,7 +1906,18 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
     setIsCollapsed(false);
   };
 
-  const handleSave = async (opts?: { configVersionOverride?: string }) => {
+  const handleSave = async (opts?: {
+    configVersionOverride?: string;
+    /**
+     * issue #1948 (OR-COR-b1b25240): 当 SettingsPage.handleSaveConfig 在页面级
+     * "保存配置"路径调用 submit()→handleSave() 时,需要把 API 失败传递回父层做
+     * 整体失败判定。早期 handleSave 内部 catch 把所有 API error 吞成 saveMessage,
+     * 导致 submit() 总返回 true、SettingsPage 无法感知 channel 段失败。新增此参数:
+     * throwOnError=true 时不再吞 API error,直接 rethrow;validation/local-error
+     * 路径仍走 setSaveMessage + 提前 return(false),不抛错以保留 UI 反馈契约。
+     */
+    throwOnError?: boolean;
+  }) => {
     const hasEmptyName = channels.some((channel) => !channel.name.trim());
     if (hasEmptyName) {
       setSaveMessage({ type: 'local-error', text: '渠道名称不能为空，且只能包含字母、数字或下划线。' });
@@ -2008,6 +2019,15 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
     } catch (error: unknown) {
       setSaveWarnings([]);
       setSaveMessage({ type: 'error', error: getParsedApiError(error) });
+      // OR-COR-b1b25240: 页面级联合保存路径需要把 channel 段 API 失败传回
+      // SettingsPage.handleSaveConfig 做整体失败判定与回滚反馈; 否则父层只看到
+      // submit() 返回 true, 误判整体保存成功, 留下"普通设置已落库但 channel 草稿
+      // 没存"的部分提交裂缝。本地保存按钮(throwOnError 未传)仍保留旧的吞错 +
+      // setSaveMessage 反馈契约不变。validation/local-error 路径上文已提前 return,
+      // 不进入此 catch, 因此 throwOnError 只对真实 API 异常生效, 行为可预测。
+      if (opts?.throwOnError) {
+        throw error;
+      }
     } finally {
       setIsSaving(false);
     }
@@ -2029,22 +2049,17 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       if (noChannelDraft && noRuntimeChanges) {
         return true;
       }
-      try {
-        await handleSave({ configVersionOverride: opts?.configVersion });
-        // handleSave 内部 try/catch 已吞 API error 并 setSaveMessage('error')。
-        // 通过 saveMessage 当前快照判断 success/failure,因为 await 完后 React 已 flush
-        // state update,本 closure 因 React 18 batching 仍读到 await 之前的 saveMessage === null
-        // (初始),无法仅靠 closure 判断。改为依赖 onSaved 副作用:SettingsPage 收到 onSaved
-        // 后会 setLlmChannelDraftItems([]),本组件下次 render 时 draftItems.length === 0。
-        // 因此返回值规则:validation 通过 && API call 没有抛错 = true。
-        // 由于 handleSave 内部 catch 已消化 error 不再 throw,我们只检查 setSaveMessage
-        // 是否经 React commit 后被读到——使用 isSaving 转回 false 的状态判断。
-        // 简化:在 submit 视角,只要 handleSave 不 throw,我们就返回 true。
-        // 错误反馈通过 editor 内 saveMessage 体现,SettingsPage 不依赖此 boolean 阻断流程。
-        return true;
-      } catch {
-        return false;
-      }
+      // OR-COR-b1b25240: 页面级联合保存必须能感知 channel 段 API 失败, 让
+      // SettingsPage.handleSaveConfig 做整体失败判定与 toast 反馈。早期实现把
+      // handleSave 的 API error 吞成 saveMessage 后无条件 return true, 父层无法
+      // 区分成功/失败。现统一改为 throwOnError=true + rethrow, 父层 try/catch
+      // 内 capture 错误并回滚 UI 状态。本地保存按钮仍走 handleSave({throwOnError:false})
+      // 路径, 不抛错, UI 反馈走 editor 内 saveMessage, 与既有契约一致。
+      await handleSave({
+        configVersionOverride: opts?.configVersion,
+        throwOnError: true,
+      });
+      return true;
     },
     hasDraft: () => draftItems.length > 0,
     reset: () => {

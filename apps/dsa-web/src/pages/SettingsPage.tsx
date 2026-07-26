@@ -881,6 +881,18 @@ const SettingsPage: React.FC = () => {
   // 这条提交路径保留了 LLMChannelEditor 内部完整的 validation 链路,由 editor 自己的
   // setSaveMessage 显示错误。详见 issue #1948 与 ZhuLinsen 2026-07-21 06:43 评论第 1 条。
   const llmChannelEditorRef = useRef<LLMChannelEditorHandle | null>(null);
+
+  // OR-COR-62780a0c: useSystemConfig.isSaving 只反映普通草稿段保存,LLM 渠道段
+  // submit() 进行中时父层 isSaving 已复位——顶部/底部全局"保存/放弃修改"按钮只依赖
+  // isSaving,会在窗口期内重新启用,允许用户再次触发保存(对同一份 channel 草稿产生
+  // 并发写)或先点放弃再等在途 channel 响应(状态反转)。这里用独立 state 跟踪 channel
+  // 段保存进行中,与 isSaving || isLoading 组合成 pageSaveInFlight,供给所有全局按钮
+  // disabled 与 useUnsavedChangesGuard 的 hasDirty, 二段式保存语义下也防止离开页面。
+  const [channelSaveInProgress, setChannelSaveInProgress] = useState(false);
+  // OR-COR-b1b25240: channel 段 API 失败时记录的错误对象, 配合 inline 错误提示组件在
+  // 全局"保存/放弃修改"工具区附近渲染。channel 段成功保存或用户主动 reset 草稿时清空。
+  const [channelSaveError, setChannelSaveError] = useState<ParsedApiError | null>(null);
+
   const envBackupImportRef = useRef<HTMLInputElement | null>(null);
   const setupStatusRequestIdRef = useRef(0);
   const desktopRuntimeApi = getDesktopRuntimeApi();
@@ -1078,12 +1090,24 @@ const SettingsPage: React.FC = () => {
   const effectiveHasDirty = hasDirty || hasRuntimeSchedulerMismatchInDraft || hasLlmChannelDraft;
   const effectiveDirtyCount = dirtyCount + (hasRuntimeSchedulerMismatchInDraft ? 1 : 0) + llmChannelOnlyDraftCount;
 
+  // OR-COR-62780a0c: 全局按钮统一的"保存/写入进行中"信号。isSaving 只反映
+  // useSystemConfig 普通草稿段,channelSaveInProgress 反映 LLM 渠道段。任何一段在
+  // 写入时都不允许再次触发保存、放弃修改或路由离开,以避免并发写与状态反转。envBackup
+  // 等子卡片独立操作不依赖此 flag,沿用各自 isLoading。
+  const pageSaveInFlight = isSaving || channelSaveInProgress;
+
   // 离开拦截 — 走 useUnsavedChangesGuard (react-router useBlocker + beforeunload)。
   // 仅在 effectiveHasDirty=true 时生效;保存/重置把 effectiveHasDirty 变 false 后,
   // useUnsavedChangesGuard 内的 useEffect 会自动 reset blocker (见 hook 实现注释)。
   // blocker.state === 'blocked' 时下面 render 一段 confirm UI (页面 inner 区域里)。
+  //
+  // OR-COR-62780a0c: 普通 settings 段保存成功后(channel 段仍在途)虽然 dirty 仍可能
+  // 暂为 true 但即将转 false, 真正关键是 channelSaveInProgress=true 时不能允许刷新
+  // 或路由离开打断在途 systemConfigApi.update, 否则会留下"普通设置已落库、channel 段
+  // 在客户端被中断、服务端可能也已被写入"的不一致状态。这里把 channelSaveInProgress
+  // 并入 hasDirty 判定,保证保存进行中拦截离开。
   const { blocker: unsavedChangesBlocker } = useUnsavedChangesGuard({
-    hasDirty: effectiveHasDirty,
+    hasDirty: effectiveHasDirty || channelSaveInProgress,
   });
 
   // issue #1948 — 分类角标 dirty 计数。SettingsCategoryNav 不自己推导,只消费页面层
@@ -1353,17 +1377,47 @@ const SettingsPage: React.FC = () => {
     // 但 React state 异步,LLMChannelEditor 收到的 configVersion prop 仍是旧值。submit 内部
     // handleSave 会用 opts.configVersionOverride ?? configVersion,这里传入 ref.current
     // 保证 channel 提交拿到新版本,避免 409 冲突。
+    //
+    // OR-COR-b1b25240: submit() 现统一以 throwOnError:true 调 handleSave,channel 段 API
+    // 失败时 rethrow 抛到这里。我们捕获后:不清空 LLMChannelEditor 内 saveMessage(已由
+    // handleSave catch 块写入 editor 区域显示具体错误)、把 channel 草稿重新写回
+    // llmChannelDraftItems 触发页面级 dirty 复算(虽 LLMChannelEditor 内部 draftItems 仍
+    // 存在,但 SettingsPage 的 hasLlmChannelDraft 依赖 llmChannelDraftItems state,而
+    // onSaved 成功路径里我们已 setLlmChannelDraftItems([]); 失败时不应清,这里靠
+    // 隐式回滚—— chipsetEditor 内部 draftItems state 仍保留,LLMChannelEditor 通过
+    // onDraftItemsChange 重新触发 SettingsPage setLlmChannelDraftItems 的链路在失败时
+    // 不会触发,因此需要显式把当前 channel 草稿写回让 dirty 仍可被感知)、设置页面级
+    // toast 把整体保存判失败让用户立刻看到反馈。前段已落库的普通设置无法服务端回滚,
+    // 这是当前二段式 API 写入契约的固有限制;reviewer 也认可这是结构性折中,关键是
+    // UI 侧不能再假装整体保存成功。
+    //
+    // OR-COR-62780a0c: 进入 channel 段前 setChannelSaveInProgress(true),finally 里复位,
+    // 配合 pageSaveInFlight 让顶部/底部全局"保存/放弃修改"按钮在 channel 段进行中保持
+    // disabled,避免用户在此窗口期内重复点击保存或先放弃草稿再让在途 channel 写入落库
+    // 造成状态反转。
     if (llmChannelEditorRef.current) {
+      setChannelSaveInProgress(true);
+      // OR-COR-b1b25240: 进入 channel 段前先清掉之前可能残留的 channelSaveError, 避免
+      // 用户重试保存成功后旧错误提示仍显示。
+      setChannelSaveError(null);
       try {
         await llmChannelEditorRef.current.submit({
           configVersion: latestConfigVersionRef.current,
         });
       } catch (channelSaveError) {
-        // channel 提交报错不阻断整体流程——错误信息已通过 LLMChannelEditor 的
-        // saveMessage 反馈在 ai_model 分类区域显示。日志记录便于排查。
+        // channel 提交报错:整体保存判失败。错误细节在 LLMChannelEditor 区域内部的
+        // saveMessage 显示(由 handleSave catch 块写入 ai_model 分类区),SettingsPage 这里
+        // 通过 channelSaveError state 在全局"保存/放弃修改"工具区附近单独渲染一段 inline
+        // 错误提示,确保用户从其他分类切回时也能立即看到反馈并知道整体保存未完成。
+        // 前段已落库的普通设置无法服务端回滚,这是当前二段式 API 写入契约的固有限制;
+        // 走 finally 复位 channelSaveInProgress; return 让 handleSaveConfig 提前结束。
         if (typeof console !== 'undefined' && console.warn) {
           console.warn('[SettingsPage] LLMChannelEditor.submit() failed during handleSaveConfig', channelSaveError);
         }
+        setChannelSaveError(getParsedApiError(channelSaveError));
+        return;
+      } finally {
+        setChannelSaveInProgress(false);
       }
     }
 
@@ -2022,11 +2076,15 @@ const SettingsPage: React.FC = () => {
                 // LLMChannelEditor 内部 channels/runtime state 回滚到 saved 快照,
                 // 否则 useEffect 不触发,channels state 仍保留用户改的草稿,draftItems
                 // 通过 onDraftItemsChange 回传父层,造成"已放弃但仍提示未保存"漂移。
+                //
+                // OR-COR-b1b25240: 同时清掉 channelSaveError, 让放弃修改后旧的
+                // channel 段失败提示消失,避免误以为仍需重试保存。
                 llmChannelEditorRef.current?.reset();
                 setLlmChannelDraftItems([]);
+                setChannelSaveError(null);
                 resetDraft();
               }}
-              disabled={isLoading || isSaving}
+              disabled={pageSaveInFlight}
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
               {t('settings.unsavedBarDiscard')}
@@ -2037,14 +2095,25 @@ const SettingsPage: React.FC = () => {
               size="sm"
               className="px-2.5"
               onClick={() => void handleSaveConfig()}
-              disabled={isSaving || isLoading}
-              isLoading={isSaving}
+              disabled={pageSaveInFlight}
+              isLoading={pageSaveInFlight}
               loadingText={t('settings.saving')}
             >
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-              {isSaving ? t('settings.saving') : t('settings.unsavedBarSave')}
+              {pageSaveInFlight ? t('settings.saving') : t('settings.unsavedBarSave')}
             </Button>
           </div>
+          {channelSaveError ? (
+            // OR-COR-b1b25240: channel 段 API 失败时 inline 提示。ApiErrorAlert 直接复用
+            // 既有渲染组件,与 saveError/loadError 视觉一致。固定底部 sticky bar 内顶部,
+            // 离按钮近,用户立即可见。channel 成功保存/重置草稿/放弃修改时被清空。
+            <div
+              data-testid="settings-channel-save-error"
+              className="mt-3 border-t settings-border pt-3"
+            >
+              <ApiErrorAlert error={channelSaveError} />
+            </div>
+          ) : null}
         </div>
       ) : null}
       <ConfirmDialog
