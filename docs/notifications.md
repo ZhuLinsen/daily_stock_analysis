@@ -6,7 +6,7 @@
 
 | 渠道 | 类型 | Minimal key | Advanced key | 说明 |
 | --- | --- | --- | --- | --- |
-| 钉钉 Webhook | 静态配置 | `DINGTALK_WEBHOOK_URL` | `DINGTALK_SECRET` | 支持加签安全方式。当前仅限环境变量配置，暂未接入 Web UI 设置页。 |
+| 钉钉 Webhook | 静态配置 | `DINGTALK_WEBHOOK_URL` | `DINGTALK_SECRET` | 支持加签安全方式，已接入 Web UI 设置页与单渠道测试。 |
 | 企业微信 | 静态配置 | `WECHAT_WEBHOOK_URL` | `WECHAT_MSG_TYPE` | 配置后参与批量通知发送 |
 | 飞书 Webhook / App Bot | 静态配置 | `FEISHU_WEBHOOK_URL` 或 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_CHAT_ID` | `FEISHU_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_KEYWORD`, `FEISHU_RECEIVE_ID_TYPE`, `FEISHU_DOMAIN` | Webhook URL 优先；未配置 Webhook 时，App Bot 三元组可主动向指定群/用户推送。`FEISHU_STREAM_ENABLED` 仅代表事件订阅 / Stream Bot，不参与主动通知配置完成判断 |
 | Telegram | 静态配置 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | `TELEGRAM_MESSAGE_THREAD_ID` | token 与 chat id 必须同时存在 |
@@ -130,7 +130,7 @@ python main.py --check-notify
 
 Web 设置页的“通知渠道”分类提供单渠道测试入口。测试会使用当前页面草稿值合成临时配置，发送一条真实测试通知，但不会保存 `.env`，也不会修改运行时全局配置。
 
-- 测试范围：13 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
+- 测试范围：14 个静态通知渠道，不包含 `UNKNOWN` 和运行时上下文渠道。
 - 普通渠道：返回单次发送结果、耗时和通用错误码。
 - 自定义 Webhook：按 URL 顺序返回 attempts，展示每个 URL 的成功/失败、HTTP 状态、耗时和错误码；多个 URL 部分成功时，顶层 message 会标出成功数 / 总数。
 - 返回结果会脱敏 token、secret、password、Bearer、完整 webhook query 和疑似 path token。
@@ -214,7 +214,7 @@ P3 新增三类通知路由配置：
 | `alert` | `NOTIFICATION_ALERT_CHANNELS` | EventMonitor 触发通知 |
 | `system_error` | `NOTIFICATION_SYSTEM_ERROR_CHANNELS` | 预留能力；当前不新增自动系统错误生产者 |
 
-配置值为逗号分隔渠道枚举：`wechat,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
+配置值为逗号分隔渠道枚举：`wechat,dingtalk,feishu,telegram,email,pushover,ntfy,gotify,pushplus,serverchan3,custom,discord,slack,astrbot`。
 
 - 留空或未配置：保持旧行为，发送到所有已配置静态渠道。
 - 非空：只发送到路由列表与已配置渠道的交集；交集为空时不会 fallback 到全渠道。

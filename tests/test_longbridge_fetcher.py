@@ -55,6 +55,18 @@ class TestSymbolConversion(unittest.TestCase):
         self.assertEqual(_to_longbridge_symbol("00700"), "0700.HK")
         self.assertEqual(_to_longbridge_symbol("09988"), "9988.HK")
 
+    def test_hk_stock_4digit_bare_code_issue_2091(self):
+        """4 位裸港股码 (0001 长和 / 0941 中国移动) 必须路由到 .HK 后缀。
+
+        与 ``data_provider.base._is_hk_market`` 的 4-5 位裸港股契约一致,
+        Longbridge 作为 HK-capable provider 也必须接受同一输入,避免
+        上游路由判 HK、下游 provider 静默跳过的部分调用链失败。
+        """
+        self.assertTrue(_is_hk_code("0001"))
+        self.assertTrue(_is_hk_code("0941"))
+        self.assertEqual(_to_longbridge_symbol("0001"), "0001.HK")
+        self.assertEqual(_to_longbridge_symbol("0941"), "0941.HK")
+
     def test_hk_stock_already_suffixed(self):
         self.assertEqual(_to_longbridge_symbol("0700.HK"), "0700.HK")
 

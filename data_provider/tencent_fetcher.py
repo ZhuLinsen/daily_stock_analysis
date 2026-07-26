@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -26,11 +27,17 @@ class TencentFetcher(BaseFetcher):
     """Fetch qfq daily K-line data from Tencent's direct quote endpoint."""
 
     name = "TencentFetcher"
-    priority = 0
+    # This direct endpoint is the last-resort A-share daily fallback. Keeping
+    # it at priority 0 made a single Efinance failure skip the richer built-in
+    # fallback chain and try Tencent before AkShare/PyTDX/Baostock/YFinance.
+    priority = 5
     allow_empty_daily_data = True
 
     _KLINE_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
     _HTTP_TIMEOUT_SECONDS = 8
+
+    def __init__(self) -> None:
+        self.priority = _read_tencent_priority()
 
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         code = normalize_stock_code(stock_code)
@@ -106,6 +113,18 @@ def _to_tencent_symbol(stock_code: str) -> str:
     if code.startswith(("6", "5", "9")):
         return f"sh{code}"
     return f"sz{code}"
+
+
+def _read_tencent_priority() -> int:
+    raw_value = os.getenv("TENCENT_PRIORITY", "5")
+    try:
+        return int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "TENCENT_PRIORITY=%r is not a valid integer; falling back to 5",
+            raw_value,
+        )
+        return 5
 
 
 def _estimate_lookback_days(*, start_date: str, end_date: str) -> int:

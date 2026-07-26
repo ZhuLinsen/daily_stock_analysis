@@ -128,9 +128,12 @@ popd >/dev/null
 
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
 
-log "Verifying packaged runtime imports..."
 packaged_root="${ROOT_DIR}/dist/backend/stock_analysis"
 
+log "Removing invalid signatures before the packaged backend is executed..."
+bash "${SCRIPT_DIR}/macos-signature-audit.sh" normalize "${packaged_root}"
+
+log "Verifying packaged runtime imports..."
 packaged_entry="${packaged_root}/stock_analysis"
 if [[ ! -x "${packaged_entry}" ]]; then
   echo "ERROR: packaged backend entrypoint not found or not executable: ${packaged_entry}."
