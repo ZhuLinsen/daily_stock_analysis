@@ -250,6 +250,17 @@ _DIAGNOSTIC_LINE_FIELD_PATTERN = re.compile(
     """,
     re.VERBOSE,
 )
+_AUTHORIZATION_FIELD_PATTERN = re.compile(
+    r"""
+    (?<![A-Za-z0-9_-])
+    (?P<prefix>authorization[ \t]*(?:=|:)[ \t]*)
+    (?:
+        [A-Za-z][A-Za-z0-9_-]*[ \t]+
+    )?
+    [^\s,;}\]]+
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 _YAML_BLOCK_SCALAR_PATTERN = re.compile(r"^[|>][0-9+-]*[ \t]*(?:#.*)?$")
 _CLAUDE_CODE_STATIC_INSTRUCTION = (
     "Generate the requested DSA analysis output from stdin. "
@@ -599,7 +610,7 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
         redacted = redacted.replace(home_path, "~")
     redacted = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@", r"\1<redacted>@", redacted)
     redacted = _URL_PATTERN.sub(_redact_sensitive_diagnostic_url, redacted)
-    redacted = re.sub(r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s]+", r"\1<redacted>", redacted)
+    redacted = _AUTHORIZATION_FIELD_PATTERN.sub(r"\g<prefix><redacted>", redacted)
     redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^\n\r]+", r"\1<redacted>", redacted)
     redacted = _redact_sensitive_diagnostic_assignments(redacted)
     redacted = re.sub(r"(?i)(session[_-]?secret\s*[:=]\s*)[^\s]+", r"\1<redacted>", redacted)

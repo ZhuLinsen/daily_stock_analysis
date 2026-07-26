@@ -1671,6 +1671,38 @@ def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
 @pytest.mark.parametrize(
     ("text", "secret", "preserved"),
     [
+        (
+            "Authorization: Basic dGlueTpzZWNyZXQ= session_id=abc123",
+            "dGlueTpzZWNyZXQ=",
+            "session_id=abc123",
+        ),
+        (
+            "Authorization: Token tiny-secret token_budget=1000",
+            "tiny-secret",
+            "token_budget=1000",
+        ),
+        (
+            "authorization=Negotiate abc.def.ghi token_budget=1000",
+            "abc.def.ghi",
+            "token_budget=1000",
+        ),
+    ],
+)
+def test_diagnostics_redacts_non_bearer_authorization_values(
+    text: str,
+    secret: str,
+    preserved: str,
+) -> None:
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert secret not in redacted
+    assert preserved in redacted
+    assert "Authorization: <redacted>" in redacted or "authorization=<redacted>" in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "preserved"),
+    [
         ("password: abc,def session_id=abc123", "abc,def", "session_id=abc123"),
         ("bot_token=tiny]} token_budget: 1000", "tiny]}", "token_budget: 1000"),
     ],
@@ -1730,9 +1762,12 @@ import sys
 print("CUSTOM_API_KEY=stdout-short session_id=abc123")
 print("password: correct horse battery staple")
 print("bot_token: tiny,trail token_budget: 1000")
+print("Authorization: Basic dGlueTpzZWNyZXQ= session_id=auth123")
 print('"api_keys": "stderr-short" token_budget: 1000', file=sys.stderr)
 print("private_key: |\\n  tiny-secret", file=sys.stderr)
 print("telegram_bot_token=tiny]} session_id=stderr123", file=sys.stderr)
+print("authorization=Token tiny-secret token_budget=1000", file=sys.stderr)
+print("authorization=Negotiate abc.def.ghi token_budget=2000", file=sys.stderr)
 raise SystemExit(2)
 """,
     )
@@ -1749,15 +1784,22 @@ raise SystemExit(2)
     assert "tiny-secret" not in stderr_preview
     assert "tiny,trail" not in stdout_preview
     assert "tiny]}" not in stderr_preview
+    assert "dGlueTpzZWNyZXQ=" not in stdout_preview
+    assert "abc.def.ghi" not in stderr_preview
     assert "CUSTOM_API_KEY=<redacted>" in stdout_preview
     assert "password: <redacted>" in stdout_preview
     assert "bot_token: <redacted>" in stdout_preview
+    assert "Authorization: <redacted>" in stdout_preview
     assert '"api_keys": "<redacted>"' in stderr_preview
     assert "private_key: <redacted>" in stderr_preview
     assert "telegram_bot_token=<redacted>" in stderr_preview
+    assert "authorization=<redacted>" in stderr_preview
     assert "session_id=abc123" in stdout_preview
+    assert "session_id=auth123" in stdout_preview
     assert "session_id=stderr123" in stderr_preview
     assert "token_budget: 1000" in stderr_preview
+    assert "token_budget=1000" in stderr_preview
+    assert "token_budget=2000" in stderr_preview
 
 
 def test_effective_local_cli_concurrency_uses_minimum() -> None:
