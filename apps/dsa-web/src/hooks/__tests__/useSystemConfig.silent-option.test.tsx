@@ -94,7 +94,7 @@ describe('useSystemConfig save silent option (OR-COR-62780a0c)', () => {
     expect(saveResult.success).toBe(true);
     expect(result.current.toast).not.toBeNull();
     expect(result.current.toast?.type).toBe('success');
-    expect(result.current.toast?.message).toContain('配置已更新');
+    expect(result.current.toast?.type === 'success' ? result.current.toast.message : '').toContain('配置已更新');
   });
 
   it('suppresses success toast when save() called with silent:true', async () => {
@@ -207,7 +207,7 @@ describe('useSystemConfig save silent option (OR-COR-62780a0c)', () => {
 
     expect(result.current.toast).not.toBeNull();
     expect(result.current.toast?.type).toBe('success');
-    expect(result.current.toast?.message).toBe('配置已更新');
+    expect(result.current.toast?.type === 'success' ? result.current.toast.message : '').toBe('配置已更新');
   });
 
   it('showErrorToast writes error toast for caller-driven unified failure feedback', async () => {
