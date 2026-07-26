@@ -133,6 +133,107 @@ _SENSITIVE_ENV_PATTERNS = (
     "VERTEX_",
     "WEBHOOK",
 )
+_SENSITIVE_DIAGNOSTIC_FIELDS = frozenset({
+    "access_token",
+    "access_key",
+    "access_key_id",
+    "api_key",
+    "api_keys",
+    "apikey",
+    "api_secret",
+    "app_secret",
+    "auth_token",
+    "authorization",
+    "client_secret",
+    "cookie",
+    "credential",
+    "credentials",
+    "csrf_token",
+    "database_url",
+    "db_url",
+    "github_token",
+    "id_token",
+    "encryption_key",
+    "password",
+    "passwd",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "secret_access_key",
+    "secret_key",
+    "sendkey",
+    "session_secret",
+    "signing_key",
+    "token",
+    "tushare_token",
+    "verification_token",
+    "webhook",
+    "webhook_url",
+})
+_SENSITIVE_DIAGNOSTIC_FIELD_SUFFIXES = (
+    "_access_key",
+    "_access_key_id",
+    "_access_token",
+    "_api_key",
+    "_api_keys",
+    "_api_secret",
+    "_app_secret",
+    "_auth_token",
+    "_client_secret",
+    "_credential",
+    "_credentials",
+    "_database_url",
+    "_db_url",
+    "_encryption_key",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_secret_access_key",
+    "_secret_key",
+    "_sendkey",
+    "_session_secret",
+    "_signing_key",
+    "_webhook",
+    "_webhook_url",
+)
+_DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN = r"""
+    (?P<value>
+        "(?:\\.|[^"\\])*"
+        |
+        '(?:\\.|[^'\\])*'
+        |
+        [^\s,;}\]]+
+    )
+"""
+_DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN = re.compile(
+    rf"""
+    (?<![A-Za-z0-9_])
+    (?P<prefix>(?:export[ \t]+)?)
+    (?P<name>[A-Z][A-Z0-9_]*)
+    (?P<separator>[ \t]*=[ \t]*)
+    {_DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN}
+    """,
+    re.VERBOSE,
+)
+_DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN = re.compile(
+    rf"""
+    (?<![A-Za-z0-9_-])
+    (?P<name>[A-Za-z][A-Za-z0-9_-]*)
+    (?P<separator>[ \t]*(?:=|:)[ \t]*)
+    {_DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN}
+    """,
+    re.VERBOSE,
+)
+_DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN = re.compile(
+    rf"""
+    (?P<key_quote>["'])
+    (?P<name>[A-Za-z][A-Za-z0-9_-]*)
+    (?P=key_quote)
+    (?P<separator>[ \t]*:[ \t]*)
+    {_DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN}
+    """,
+    re.VERBOSE,
+)
 _CLAUDE_CODE_STATIC_INSTRUCTION = (
     "Generate the requested DSA analysis output from stdin. "
     "Return only the final response content. Do not call tools, read files, "
@@ -350,8 +451,54 @@ def _popen_session_kwargs() -> Dict[str, Any]:
     return {"start_new_session": True}
 
 
+def _redact_assignment_value(match: re.Match[str]) -> str:
+    """Replace one parsed assignment value while preserving its surrounding syntax."""
+
+    original = match.group(0)
+    value = match.group("value")
+    replacement = "<redacted>"
+    if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+        replacement = f"{value[0]}<redacted>{value[0]}"
+    value_start = match.start("value") - match.start()
+    value_end = match.end("value") - match.start()
+    return f"{original[:value_start]}{replacement}{original[value_end:]}"
+
+
+def _is_sensitive_diagnostic_field_name(name: str) -> bool:
+    normalized = str(name or "").lower().replace("-", "_")
+    return (
+        normalized in _SENSITIVE_DIAGNOSTIC_FIELDS
+        or any(normalized.endswith(suffix) for suffix in _SENSITIVE_DIAGNOSTIC_FIELD_SUFFIXES)
+    )
+
+
+def _redact_sensitive_diagnostic_assignments(text: str) -> str:
+    """Redact parsed env and structured-field assignments under separate contracts."""
+
+    def redact_env(match: re.Match[str]) -> str:
+        name = match.group("name")
+        return _redact_assignment_value(match) if _is_sensitive_env_name(name) else match.group(0)
+
+    def redact_structured_field(match: re.Match[str]) -> str:
+        return (
+            _redact_assignment_value(match)
+            if _is_sensitive_diagnostic_field_name(match.group("name"))
+            else match.group(0)
+        )
+
+    redacted = _DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN.sub(redact_env, text)
+    redacted = _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
+    return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
+
+
 def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int = _PREVIEW_LIMIT) -> str:
-    """Redact sensitive diagnostics and return a bounded preview."""
+    """Redact sensitive diagnostics and return a bounded preview.
+
+    Uppercase environment assignments intentionally reuse the fail-closed child
+    environment contract. Scalar YAML/JSON/log fields use a narrower allowlist
+    so ordinary fields such as ``token_budget`` and ``session_id`` remain useful
+    for troubleshooting.
+    """
 
     redacted = text or ""
     home_path = home or os.path.expanduser("~")
@@ -361,6 +508,7 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     redacted = _URL_PATTERN.sub(_redact_sensitive_diagnostic_url, redacted)
     redacted = re.sub(r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?[^\s]+", r"\1<redacted>", redacted)
     redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^\n\r]+", r"\1<redacted>", redacted)
+    redacted = _redact_sensitive_diagnostic_assignments(redacted)
     redacted = re.sub(r"(?i)(session[_-]?secret\s*[:=]\s*)[^\s]+", r"\1<redacted>", redacted)
     redacted = re.sub(r"\b(sk-[A-Za-z0-9_-]{12,})\b", "<redacted-api-key>", redacted)
     redacted = re.sub(r"\b(AIza[A-Za-z0-9_-]{16,})\b", "<redacted-api-key>", redacted)

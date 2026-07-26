@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Web 设置页和通知测试入口补齐普通钉钉群机器人配置，支持安全遮罩地保存 `DINGTALK_WEBHOOK_URL` / `DINGTALK_SECRET`、查看专属帮助并发送钉钉测试通知（refs #1957）。
 - [修复] Agent Chat 普通与流式接口在请求未指定 `report_language` 时继承全局 `REPORT_LANGUAGE`，显式请求值仍保持优先，避免回复语言与报告配置不一致。
 - [修复] AkShare 港股实时行情增加 20 分钟全市场数据缓存与并发冷启动 single-flight，热缓存命中不再执行网络限速等待；主接口返回结构异常时仍保持新浪备用接口降级，避免多港股组合快照重复拉取全市场数据而长时间阻塞（refs #1852）。
+- [修复] 本地 CLI 的 `stdout_preview` / `stderr_preview` 按环境变量、JSON、YAML/日志标量与 URL 的独立契约脱敏短凭证，避免小于 32 字符的 API key、secret 或 token 进入诊断，同时保留 `token_budget`、`session_id`、`sort_key` 等普通排障字段（refs #1784）。
 
 ## [3.27.0] - 2026-07-19
 

@@ -1618,6 +1618,94 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
     assert "https://example.com/public/docs?foo=bar" in redacted
 
 
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("FEISHU_APP_SECRET=xxy12345abcdef", "xxy12345abcdef"),
+        ("CUSTOM_API_KEY=abc123xyz789short", "abc123xyz789short"),
+        ("API_KEYS=short", "short"),
+        ("OPENAI_API_KEYS=short", "short"),
+        ("MYOPENAIKEY=short", "short"),
+        ("OPENAI_V2_API_KEY=short", "short"),
+        ("R2_SECRET_ACCESS_KEY=short", "short"),
+        ("My_Api_Key=myvalue", "myvalue"),
+        ("PASSWORD='abc def ghi' next", "abc def ghi"),
+        ("SESSION_SECRET='abc def ghi' next", "abc def ghi"),
+        ("Authorization: Bearer tiny", "tiny"),
+        ('"api_key": "short123"', "short123"),
+        ("api_keys: short123", "short123"),
+        ("client_secret: tiny", "tiny"),
+        ("database_url: sqlite-short", "sqlite-short"),
+        ("aws_secret_access_key: tiny", "tiny"),
+    ],
+)
+def test_diagnostics_redacts_short_credential_assignments(text: str, secret: str) -> None:
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert secret not in redacted
+    assert "<redacted>" in redacted
+
+
+@pytest.mark.parametrize(
+    "sensitive_pattern",
+    local_cli_backend_module._SENSITIVE_ENV_PATTERNS,
+)
+def test_uppercase_diagnostic_assignment_tracks_child_env_sensitive_contract(
+    sensitive_pattern: str,
+) -> None:
+    name_segment = sensitive_pattern.strip("_")
+    text = f"DSA_{name_segment}_VALUE=tiny-value"
+
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert "tiny-value" not in redacted
+    assert "<redacted>" in redacted
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MONKEY=banana next",
+        "KEYBOARD_LAYOUT=us next",
+        "retry: 3 token_budget: 1000",
+        "docs=https://example.com/public/docs?monkey=banana&foo=bar",
+        "analysis_key_factor=valuation next",
+        "sort_key=price primary_key=id cache_key=reports",
+        "session_id=abc123 user_session: abc123",
+        'message: "normal diagnostic value"',
+    ],
+)
+def test_diagnostics_preserves_noncredential_assignments(text: str) -> None:
+    assert redact_diagnostic_text(text, limit=1000) == text
+
+
+def test_nonzero_exit_diagnostic_previews_redact_short_credentials(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print("CUSTOM_API_KEY=stdout-short session_id=abc123")
+print('"api_keys": "stderr-short" token_budget: 1000', file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stdout_preview = exc_info.value.details["stdout_preview"]
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "stdout-short" not in stdout_preview
+    assert "stderr-short" not in stderr_preview
+    assert "CUSTOM_API_KEY=<redacted>" in stdout_preview
+    assert '"api_keys": "<redacted>"' in stderr_preview
+    assert "session_id=abc123" in stdout_preview
+    assert "token_budget: 1000" in stderr_preview
+
+
 def test_effective_local_cli_concurrency_uses_minimum() -> None:
     assert effective_local_cli_concurrency(_config()) == 1
     assert effective_local_cli_concurrency(
