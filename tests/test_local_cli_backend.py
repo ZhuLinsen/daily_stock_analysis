@@ -1645,6 +1645,8 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
         ("SESSION_SECRET='abc def ghi' next", "abc def ghi"),
         ("Authorization: Bearer tiny", "tiny"),
         ('"api_key": "short123"', "short123"),
+        ('{"authorization":"Bearer tiny-secret","session_id":"abc123"}', "tiny-secret"),
+        ('{"cookie":"session=tiny-secret","session_id":"abc123"}', "tiny-secret"),
         ('{"accessToken":"short123"}', "short123"),
         ("api_keys: short123", "short123"),
         ("bot_token: tiny", "tiny"),
@@ -1834,6 +1836,39 @@ def test_diagnostics_redacts_pretty_printed_json_value_on_following_line() -> No
     assert "tiny-secret" not in redacted
     assert '"api_key":\n    "<redacted>"' in redacted
     assert '"session_id": "json123"' in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "preserved"),
+    [
+        (
+            "password: correct horse=staple session_id=abc123",
+            "session_id=abc123",
+        ),
+        (
+            "password: correct horse=staple token_budget=1000",
+            "token_budget=1000",
+        ),
+        (
+            "password: tiny, retry: 3",
+            "retry: 3",
+        ),
+        (
+            "password: tiny; next=value",
+            "next=value",
+        ),
+    ],
+)
+def test_diagnostics_redacts_unquoted_sensitive_scalar_with_embedded_assignment_fragment(
+    text: str,
+    preserved: str,
+) -> None:
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert "correct horse=staple" not in redacted
+    assert "horse=staple" not in redacted
+    assert "password: <redacted>" in redacted
+    assert preserved in redacted
 
 
 @pytest.mark.parametrize(
@@ -2072,6 +2107,56 @@ raise SystemExit(2)
     assert '"session_id": "json123"' in stderr_preview
     assert "Authorization: <redacted> session_id=aws123" in stderr_preview
     assert "Authorization: <redacted> token_budget=1000" in stderr_preview
+
+
+def test_nonzero_exit_diagnostic_previews_redact_json_auth_cookie_and_embedded_assignment_secret(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print('{"authorization":"Bearer tiny-secret","session_id":"stdout123"}')
+print('{"cookie":"session=tiny-secret","session_id":"stderr123"}', file=sys.stderr)
+print("password: correct horse=staple token_budget=1000", file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stdout_preview = exc_info.value.details["stdout_preview"]
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "tiny-secret" not in stdout_preview
+    assert "tiny-secret" not in stderr_preview
+    assert "horse=staple" not in stderr_preview
+    assert '{"authorization":"<redacted>","session_id":"stdout123"}' in stdout_preview
+    assert '{"cookie":"<redacted>","session_id":"stderr123"}' in stderr_preview
+    assert "password: <redacted> token_budget=1000" in stderr_preview
+
+
+def test_nonzero_exit_diagnostic_previews_preserve_punctuation_delimited_plain_fields(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print("password: tiny, retry: 3", file=sys.stderr)
+print("password: tiny; next=value", file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "password: <redacted>, retry: 3" in stderr_preview
+    assert "password: <redacted>; next=value" in stderr_preview
 
 
 def test_preview_diagnostics_from_files_redacts_truncated_quoted_sensitive_scalar(

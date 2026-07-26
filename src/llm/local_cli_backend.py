@@ -533,6 +533,10 @@ def _is_field_specific_sensitive_redaction_target(name: str) -> bool:
     )
 
 
+def _is_json_specific_sensitive_redaction_target(name: str) -> bool:
+    return _is_sensitive_diagnostic_field_name(name)
+
+
 def _normalize_diagnostic_field_name(name: str) -> str:
     normalized = str(name or "").replace("-", "_")
     normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", normalized)
@@ -552,8 +556,37 @@ def _leading_space_count(text: str) -> int:
     return len(text) - len(text.lstrip(" "))
 
 
+def _line_content_end(text: str) -> int:
+    return len(text.rstrip("\r\n"))
+
+
 def _is_yaml_block_scalar(value: str) -> bool:
     return bool(_YAML_BLOCK_SCALAR_PATTERN.match(value.strip()))
+
+
+def _is_structured_diagnostic_boundary_name(name: str) -> bool:
+    normalized = _normalize_diagnostic_field_name(name)
+    original = str(name or "")
+    return (
+        _is_sensitive_diagnostic_field_name(name)
+        or "_" in normalized
+        or "-" in original
+        or any(char.isupper() for char in original[1:])
+    )
+
+
+def _has_explicit_field_delimiter(line: str, field_start: int) -> bool:
+    index = field_start - 1
+    while index >= 0 and line[index] in {" ", "\t"}:
+        index -= 1
+    return index >= 0 and line[index] in {",", ";"}
+
+
+def _field_delimiter_start(line: str, field_start: int) -> int:
+    index = field_start - 1
+    while index >= 0 and line[index] in {" ", "\t"}:
+        index -= 1
+    return index if index >= 0 and line[index] in {",", ";"} else field_start
 
 
 def _replace_spans(text: str, replacements: Sequence[Tuple[int, int, str]]) -> str:
@@ -588,7 +621,7 @@ def _redact_sensitive_collection_assignments(text: str) -> str:
     redacted = replace_matches(
         redacted,
         _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN,
-        _is_field_specific_sensitive_redaction_target,
+        _is_json_specific_sensitive_redaction_target,
     )
     return replace_matches(
         redacted,
@@ -617,7 +650,8 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
         replacements = []
         block_match: Optional[re.Match[str]] = None
         multiline_quote: Optional[str] = None
-        for match in matches:
+        content_end = _line_content_end(line)
+        for match_index, match in enumerate(matches):
             if not _is_field_specific_sensitive_redaction_target(match.group("name")):
                 continue
 
@@ -637,7 +671,18 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
                 continue
 
             if stripped_value and stripped_value[0] not in {"'", '"', "{", "["}:
-                replacements.append((match.start("value"), match.end("value"), "<redacted>"))
+                value_end = content_end
+                for candidate in matches[match_index + 1 :]:
+                    if _has_explicit_field_delimiter(line, candidate.start()):
+                        value_end = _field_delimiter_start(line, candidate.start())
+                    elif _is_structured_diagnostic_boundary_name(candidate.group("name")):
+                        value_end = candidate.start()
+                    else:
+                        continue
+                    while value_end > match.start("value") and line[value_end - 1].isspace():
+                        value_end -= 1
+                    break
+                replacements.append((match.start("value"), value_end, "<redacted>"))
 
         if not replacements:
             redacted_lines.append(line)
@@ -683,7 +728,14 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
         name = match.group("name")
         return _redact_assignment_value(match) if _is_sensitive_env_name(name) else match.group(0)
 
-    def redact_structured_field(match: re.Match[str]) -> str:
+    def redact_json_field(match: re.Match[str]) -> str:
+        return (
+            _redact_assignment_value(match)
+            if _is_json_specific_sensitive_redaction_target(match.group("name"))
+            else match.group(0)
+        )
+
+    def redact_field(match: re.Match[str]) -> str:
         return (
             _redact_assignment_value(match)
             if _is_field_specific_sensitive_redaction_target(match.group("name"))
@@ -693,8 +745,8 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
     redacted = _DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN.sub(redact_env, text)
     redacted = _redact_sensitive_collection_assignments(redacted)
     redacted = _redact_multiline_sensitive_fields(redacted)
-    redacted = _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
-    return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
+    redacted = _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN.sub(redact_json_field, redacted)
+    return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_field, redacted)
 
 
 def _has_closed_diagnostic_quote(value: str, quote: str) -> bool:
