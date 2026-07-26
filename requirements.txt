@@ -7,7 +7,7 @@ python-dotenv>=1.0.0        # Environment variable configuration
 tenacity>=9.1.4             # Retry support with exponential backoff
 sqlalchemy>=2.0.51           # ORM database access
 schedule>=1.2.2             # Scheduled task runner
-exchange-calendars>=4.13.0   # Trading calendars; 4.5.x is incompatible with pandas 3 Timedelta "T"
+exchange-calendars>=4.13.2   # Trading calendars; 4.5.x is incompatible with pandas 3 Timedelta "T"
 
 # Data source dependencies, ordered by fallback priority
 efinance>=0.5.8             # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
