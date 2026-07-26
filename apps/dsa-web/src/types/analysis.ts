@@ -353,10 +353,134 @@ export interface AnalysisContextPackOverview {
   metadata: AnalysisContextPackOverviewMetadata;
 }
 
+export type StrategySignal = 'strong_buy' | 'buy' | 'hold' | 'sell' | 'strong_sell';
+export type StrategyConsensusLevel = 'high' | 'medium' | 'low' | 'insufficient';
+export type StrategyConflictSeverity = 'none' | 'low' | 'medium' | 'high';
+
+export interface StrategyOpinionItem {
+  skillId: string;
+  agentName: string;
+  signal: StrategySignal;
+  confidence: number;
+  appliedWeight?: number | null;
+  reasoning?: string;
+  scoreAdjustment?: number;
+  conditionsMet?: string[];
+  invalidSignal?: boolean;
+}
+
+export interface StrategySignalDistributionBucket {
+  count: number;
+  weightShare?: number | null;
+}
+
+export interface StrategySignalDistribution {
+  bullish: StrategySignalDistributionBucket;
+  neutral: StrategySignalDistributionBucket;
+  bearish: StrategySignalDistributionBucket;
+}
+
+export interface StrategyConflictItem {
+  conflictType: string;
+  severity: StrategyConflictSeverity;
+  descriptionKey?: string;
+  participants: string[];
+}
+
+export interface StrategySynthesisSummaryParams {
+  opinionCount: number;
+  totalOpinionCount: number;
+  invalidOpinionCount: number;
+  finalSignal: StrategySignal;
+  consensusLevel: StrategyConsensusLevel;
+  conflictSeverity: StrategyConflictSeverity;
+  conflictCount: number;
+}
+
+export interface StrategyDeliberationAgendaItem {
+  agendaId: string;
+  conflictType: string;
+  severity: StrategyConflictSeverity;
+  participants: string[];
+  questionKey?: string;
+}
+
+export interface StrategyDeliberationResponseItem {
+  agendaId: string;
+  skillId: string;
+  stance: 'defend' | 'challenge';
+  revision: 'unchanged' | 'softened';
+  originalSignal: StrategySignal;
+  revisedSignal: StrategySignal;
+  originalConfidence: number;
+  revisedConfidence: number;
+  critiqueKey?: string;
+}
+
+export interface StrategyDeliberation {
+  status: string;
+  mode: string;
+  rounds: number;
+  agenda: StrategyDeliberationAgendaItem[];
+  responses: StrategyDeliberationResponseItem[];
+  summary: {
+    resolutionStatus: 'unresolved' | 'partially_resolved';
+    resolvedConflictCount: number;
+    unresolvedConflictCount: number;
+    minorityViewPreserved: boolean;
+    confidenceAdjustment: number;
+    confidenceAdjustmentReasonKey?: string;
+  };
+  roundHistory?: Array<{
+    round: number;
+    sourceMode: string;
+    status: string;
+    changedResponseCount: number;
+    confidenceAdjustment: number;
+  }>;
+}
+
+export interface StrategyRevisionProjection {
+  status: 'computed';
+  mode: 'preview_only';
+  sourceMode: string;
+  projectedSignal: StrategySignal;
+  projectedWeightedScore: number;
+  projectedConfidence: number;
+  projectedOriginalConfidence: number;
+  projectedConflictCount: number;
+  projectedConflictSeverity: StrategyConflictSeverity;
+  projectedConsensusLevel: StrategyConsensusLevel;
+  changedSkillCount: number;
+  changedSkills: string[];
+  finalSignalOverridden: false;
+}
+
+export interface StrategySynthesis {
+  schemaVersion: 'strategy-synthesis-v1';
+  finalSignal: StrategySignal;
+  weightedScore: number;
+  confidence: number;
+  originalConfidence: number;
+  conflictCount: number;
+  conflictSeverity: StrategyConflictSeverity;
+  conflicts: StrategyConflictItem[];
+  supportingSkills: StrategyOpinionItem[];
+  opposingSkills: StrategyOpinionItem[];
+  signalDistribution: StrategySignalDistribution;
+  primaryDissent?: StrategyOpinionItem | null;
+  consensusLevel: StrategyConsensusLevel;
+  summaryKey: string;
+  summaryParams: StrategySynthesisSummaryParams;
+  deliberation?: StrategyDeliberation | null;
+  revisionProjection?: StrategyRevisionProjection | null;
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
   rawResult?: Record<string, unknown>;
+  strategySynthesis?: StrategySynthesis | null;
   contextSnapshot?: Record<string, unknown> & { marketReviewPayload?: MarketReviewPayload };
   analysisContextPackOverview?: AnalysisContextPackOverview | null;
   financialReport?: Record<string, unknown>;

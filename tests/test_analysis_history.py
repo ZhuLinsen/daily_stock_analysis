@@ -120,6 +120,38 @@ def _market_phase_summary() -> dict:
     }
 
 
+def _strategy_synthesis_payload() -> dict:
+    return {
+        "schema_version": "strategy-synthesis-v1",
+        "final_signal": "hold",
+        "weighted_score": 3.0,
+        "confidence": 0.0,
+        "original_confidence": 0.0,
+        "conflict_count": 0,
+        "conflict_severity": "none",
+        "conflicts": [],
+        "supporting_skills": [],
+        "opposing_skills": [],
+        "signal_distribution": {
+            "bullish": {"count": 0, "weight_share": None},
+            "neutral": {"count": 0, "weight_share": None},
+            "bearish": {"count": 0, "weight_share": None},
+        },
+        "primary_dissent": None,
+        "consensus_level": "insufficient",
+        "summary_key": "strategy_synthesis.no_conflicts",
+        "summary_params": {
+            "opinion_count": 0,
+            "total_opinion_count": 0,
+            "invalid_opinion_count": 0,
+            "final_signal": "hold",
+            "consensus_level": "insufficient",
+            "conflict_severity": "none",
+            "conflict_count": 0,
+        },
+    }
+
+
 class AnalysisHistoryTestCase(unittest.TestCase):
     """分析历史存储测试"""
 
@@ -1227,6 +1259,34 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsNotNone(detail)
         self.assertIsInstance(detail.get("raw_result"), dict)
         self.assertIsNone(detail.get("model_used"))
+
+    def test_history_detail_projects_strategy_synthesis(self) -> None:
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        result.dashboard = {"strategy_synthesis": _strategy_synthesis_payload()}
+        record_id = self.db.save_analysis_history(
+            result=result,
+            query_id="query_strategy_synthesis_2071",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+
+        self.assertIsNotNone(report.details)
+        self.assertIsNotNone(report.details.strategy_synthesis)
+        self.assertEqual(
+            report.details.strategy_synthesis.schema_version,
+            "strategy-synthesis-v1",
+        )
+        self.assertEqual(
+            report.details.raw_result["dashboard"]["strategy_synthesis"]["final_signal"],
+            "hold",
+        )
 
     def test_history_detail_prefers_raw_sniper_strings(self) -> None:
         """History detail should display the original sniper point strings from raw_result."""

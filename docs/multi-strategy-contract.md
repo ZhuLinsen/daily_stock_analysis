@@ -1,6 +1,6 @@
 # 多策略投资建议契约：Baseline 语义、Phase 1 收敛、Phase 2/3/4 边界
 
-本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
+本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 在 Phase 2 之上增加稳定展示字段、类型化 Report API 以及 Web/Desktop 多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
 
 ## Skill opinion 样本边界（Issue #1904 P2 PR1）
 
@@ -115,6 +115,7 @@ Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分�
 
 ```json
 {
+  "schema_version": "strategy-synthesis-v1", // 稳定展示与 API 投影版本
   "final_signal": "hold",                 // canonical signal
   "weighted_score": 3.0,                  // 保留 4 位小数
   "confidence": 0.72,                     // 折减后的置信度
@@ -124,6 +125,12 @@ Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分�
   "conflicts": [ /* ConflictDetector 输出的 dict 列表 */ ],
   "supporting_skills": [ /* opinion item */ ],
   "opposing_skills":   [ /* opinion item */ ],
+  "signal_distribution": {                // 只统计 valid opinion，使用 Aggregator 实际权重
+    "bullish": {"count": 1, "weight_share": 0.4},
+    "neutral": {"count": 1, "weight_share": 0.2},
+    "bearish": {"count": 1, "weight_share": 0.4}
+  },
+  "primary_dissent": { /* opinion item 或 null；只从 opposing_skills 选择 */ },
   "consensus_level": "high",              // high | medium | low | insufficient
   "summary_key": "strategy_synthesis.no_conflicts",   // 动态 i18n 摘要键名，随共识和冲突状态确定
   "summary_params": {
@@ -192,6 +199,7 @@ Opinion Item 结构（`supporting_skills` / `opposing_skills` 每个元素）：
   "agent_name": "skill_trend_v1",
   "signal": "hold",              // canonical
   "confidence": 0.80,            // 保留 4 位小数
+  "applied_weight": 0.80,        // Aggregator 本次实际使用权重，保留 4 位小数
   "reasoning": "...",
   "score_adjustment": 0,
   "conditions_met": []
@@ -349,14 +357,17 @@ Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调
 - Phase 2 不改变 renderer 展示逻辑；scheduler timeout/error/no-opinion 与 signal 校验失败统一进入 StrategyEngine 的 authoritative Diagnostics，`invalid_opinion_count` / `total_opinion_count` 覆盖这些失败 skill。
 - `ctx.meta["skill_scheduler"]` 仅作为运行时诊断，记录调度模式、并发数、单 skill timeout、调度数量、完成数量和 invalid 数量；不得参与综合评分。
 
-## Phase 3 前端多语言完整展示（本 PR 不做）
+## Phase 3 类型化 API 与前端多语言完整展示
 
-Phase 3 只在 Phase 2 之上补前端（`apps/dsa-web/`、`apps/dsa-desktop/`）对 `strategy_synthesis` 的完整多语言展示：
+Phase 3 在 Phase 2 之上补稳定展示投影和前端（`apps/dsa-web/`、`apps/dsa-desktop/`）对 `strategy_synthesis` 的完整多语言展示：
 
-- Web 报告详情页展示 `final_signal` / `consensus_level` / `supporting_skills` / `opposing_skills` / `conflicts` / `invalid_opinion_count`。
+- 顶层 `schema_version` 固定为 `strategy-synthesis-v1`。`signal_distribution` 只统计 valid opinion，并使用 Aggregator 本次实际应用的权重；有效总权重大于 0 时三桶占比约等于 1，否则三桶 `weight_share` 均为 `null`。
+- `primary_dissent` 只从 `opposing_skills` 选择，排序依次为实际权重降序、置信度降序、`skill_id` 升序；它只用于解释，不参与或覆盖 `final_signal`。
+- `report.details.strategy_synthesis` 是正式、可选、低敏的 Pydantic/OpenAPI 投影，覆盖同步结果、内存异步完成、数据库回退完成和历史详情；`details.raw_result` 保持兼容。所有 candidate 必须先在统一投影边界完成列表逐项过滤和完整类型校验，再按 typed → raw 的既定优先级选择；非法 opinion/conflict 只丢弃自身，非法 `primary_dissent` 降级为 `null`，非法可选 deliberation/revision 子树只丢弃对应子树。required 顶层字段非法时继续查找后续合法 candidate，禁止坏 typed candidate 遮蔽合法 raw candidate。旧版本、所有 candidate 均坏和 single-agent 结果投影为 `null`，不得导致 500。
+- Web 报告详情页展示权威最终信号、共识度、有效/无效计数、三桶分布、支持/反方观点、主要异议、三语冲突说明，以及可选 deliberation / revision projection。deliberation 必须展示解决状态、已解决/未解决冲突数、少数派观点保留状态和置信度调整；内部 mode 只能作为次要追踪信息。所有非空 reasoning 默认折叠并提供稳定展开入口，不得用字符数代替真实布局溢出判断。
 - 桌面端复用 Web 展示逻辑。
-- 多语言 label 表复用 `src/report_language.py` 已有的 zh/en/ko 三语；前端只做投影，不重新定义。
-- Phase 3 不改变 Baseline 契约、不新增 payload 字段、不新增 API 端点。
+- Web 使用 zh/en/ko 三语 label；revision projection 必须明确标记为“预览/非权威”，不得让用户误解为最终建议。
+- Phase 3 不新增 API 端点、数据库字段或历史回填，不在前端重算权威分布或异议排序。
 
 ## Phase 4 权重回测反馈闭环（本 PR 不做）
 
@@ -416,7 +427,7 @@ DecisionAgent 输出的 dashboard JSON 不得覆盖 `dashboard.strategy_synthesi
 
 空列表占位符必须通过 `labels.none_label`（按 `report_language` 查表）输出。四条 renderer 展示的最终文本必须与 payload 完全一致，不得出现"共识度：高 + 支持策略：无"这类内部矛盾。
 
-历史记录和外部调用方可能保留契约落地前的宽松 shape。四条 renderer 必须先通过 `normalize_strategy_synthesis_payload()` 把非 dict 顶层值视为缺失，并过滤非 dict 的策略/冲突列表项；`strategy_invalid_opinion_count()` 统一读取诊断计数，只对纯十进制正整数字符串做窄转换，其余坏值降级为 0。禁止在 History、Notification 或模板中保留平行的手写读取逻辑。
+历史记录和外部调用方可能保留契约落地前的宽松 shape。四条 renderer 和正式 API 投影必须复用 `normalize_strategy_synthesis_payload()`：非 dict 顶层值视为缺失，策略/冲突列表逐项执行字段级类型校验，非法 `primary_dissent` 降级为 `null`；过滤后必须以 surviving opinion/conflict 为唯一输入，统一重算 `conflict_count`、冲突强度、共识度、摘要键、`summary_params` 与信号分布，保证所有用户可见明细和派生统计一致。`extract_strategy_synthesis_payload()` 是 candidate 发现、优先级、逐项过滤和完整 Pydantic 校验的唯一边界；调用方一次传入按优先级排列的 typed/raw candidate，当前 candidate 失败时由该边界继续遍历后续 candidate。`strategy_invalid_opinion_count()` 统一读取诊断计数，只对纯十进制正整数字符串做窄转换，其余坏值降级为 0。禁止在 endpoint、History、Notification 或模板中保留平行的手写读取和 fallback 逻辑。
 
 ### Diagnostics
 

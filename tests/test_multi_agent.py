@@ -746,6 +746,98 @@ class TestStrategyAggregator(unittest.TestCase):
         self.assertTrue(all("description" not in conflict for conflict in synthesis["conflicts"]))
         self.assertIn("description_key", synthesis["conflicts"][0])
 
+    def test_strategy_synthesis_distribution_uses_applied_weights_and_excludes_invalid(self):
+        from src.agent.skills.synthesis import StrategySynthesizer
+
+        opinions = [
+            StrategyOpinion(skill_id="bull", signal="buy", confidence=0.9),
+            StrategyOpinion(skill_id="beta", signal="sell", confidence=0.7),
+            StrategyOpinion(skill_id="alpha", signal="strong_sell", confidence=0.7),
+            StrategyOpinion(skill_id="invalid", signal="hold", confidence=1.0, invalid_signal=True),
+        ]
+
+        synthesis = StrategySynthesizer().synthesize(
+            opinions,
+            weighted_score=3.2,
+            final_signal="buy",
+            weighted_confidence=0.75,
+            conflicts=[],
+            weights=[0.2, 0.4, 0.4, 9.0],
+        )
+
+        self.assertEqual(synthesis["schema_version"], "strategy-synthesis-v1")
+        self.assertEqual(
+            synthesis["signal_distribution"],
+            {
+                "bullish": {"count": 1, "weight_share": 0.2},
+                "neutral": {"count": 0, "weight_share": 0.0},
+                "bearish": {"count": 2, "weight_share": 0.8},
+            },
+        )
+        self.assertEqual(synthesis["primary_dissent"]["skill_id"], "alpha")
+        self.assertEqual(synthesis["primary_dissent"]["applied_weight"], 0.4)
+
+    def test_strategy_synthesis_zero_weights_have_null_shares(self):
+        from src.agent.skills.synthesis import StrategySynthesizer
+
+        opinions = [
+            StrategyOpinion(skill_id="one", signal="hold", confidence=0.0),
+            StrategyOpinion(skill_id="two", signal="buy", confidence=0.0),
+        ]
+        synthesis = StrategySynthesizer().synthesize(
+            opinions,
+            weighted_score=3.0,
+            final_signal="hold",
+            weighted_confidence=0.0,
+            conflicts=[],
+            insufficient_evidence=True,
+            weights=[0.0, 0.0],
+        )
+
+        self.assertTrue(
+            all(
+                bucket["weight_share"] is None
+                for bucket in synthesis["signal_distribution"].values()
+            )
+        )
+
+    def test_strategy_synthesis_has_no_primary_dissent_without_opposition(self):
+        from src.agent.skills.synthesis import StrategySynthesizer
+
+        opinions = [
+            StrategyOpinion(skill_id="one", signal="buy", confidence=0.8),
+            StrategyOpinion(skill_id="two", signal="strong_buy", confidence=0.7),
+        ]
+        synthesis = StrategySynthesizer().synthesize(
+            opinions,
+            weighted_score=4.4,
+            final_signal="buy",
+            weighted_confidence=0.75,
+            conflicts=[],
+            weights=[0.8, 0.7],
+        )
+
+        self.assertIsNone(synthesis["primary_dissent"])
+
+    def test_primary_dissent_uses_unrounded_applied_weight(self):
+        from src.agent.skills.synthesis import StrategySynthesizer
+
+        opinions = [
+            StrategyOpinion(skill_id="beta", signal="sell", confidence=0.7),
+            StrategyOpinion(skill_id="alpha", signal="sell", confidence=0.7),
+        ]
+        synthesis = StrategySynthesizer().synthesize(
+            opinions,
+            weighted_score=4.0,
+            final_signal="buy",
+            weighted_confidence=0.7,
+            conflicts=[],
+            weights=[0.40004, 0.40003],
+        )
+
+        self.assertEqual(synthesis["primary_dissent"]["skill_id"], "beta")
+        self.assertEqual(synthesis["primary_dissent"]["applied_weight"], 0.4)
+
     def test_skill_aggregator_raw_data_contains_strategy_synthesis(self):
         from src.agent.strategies.aggregator import StrategyAggregator
 

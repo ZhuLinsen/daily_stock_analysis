@@ -162,6 +162,80 @@ def _market_phase_summary() -> dict:
     }
 
 
+def _strategy_synthesis_payload() -> dict:
+    return {
+        "schema_version": "strategy-synthesis-v1",
+        "final_signal": "hold",
+        "weighted_score": 3.0,
+        "confidence": 0.62,
+        "original_confidence": 0.8,
+        "conflict_count": 1,
+        "conflict_severity": "high",
+        "conflicts": [
+            {
+                "conflict_type": "directional_opposition",
+                "severity": "high",
+                "description_key": "strategy_conflict.directional_opposition",
+                "participants": ["bull", "bear"],
+                "metadata": {},
+            }
+        ],
+        "supporting_skills": [
+            {
+                "skill_id": "bull",
+                "agent_name": "skill_bull",
+                "signal": "buy",
+                "confidence": 0.8,
+                "applied_weight": 0.4,
+                "reasoning": "bull case",
+                "score_adjustment": 0,
+                "conditions_met": [],
+                "invalid_signal": False,
+            }
+        ],
+        "opposing_skills": [
+            {
+                "skill_id": "bear",
+                "agent_name": "skill_bear",
+                "signal": "sell",
+                "confidence": 0.8,
+                "applied_weight": 0.4,
+                "reasoning": "bear case",
+                "score_adjustment": 0,
+                "conditions_met": [],
+                "invalid_signal": False,
+            }
+        ],
+        "signal_distribution": {
+            "bullish": {"count": 1, "weight_share": 0.5},
+            "neutral": {"count": 0, "weight_share": 0.0},
+            "bearish": {"count": 1, "weight_share": 0.5},
+        },
+        "primary_dissent": {
+            "skill_id": "bear",
+            "agent_name": "skill_bear",
+            "signal": "sell",
+            "confidence": 0.8,
+            "applied_weight": 0.4,
+            "reasoning": "bear case",
+            "score_adjustment": 0,
+            "conditions_met": [],
+            "invalid_signal": False,
+        },
+        "consensus_level": "low",
+        "summary_key": "strategy_synthesis.with_conflicts",
+        "summary_params": {
+            "opinion_count": 2,
+            "total_opinion_count": 2,
+            "invalid_opinion_count": 0,
+            "final_signal": "hold",
+            "consensus_level": "low",
+            "conflict_severity": "high",
+            "conflict_count": 1,
+        },
+    }
+
+
 class AnalysisApiContractTestCase(unittest.TestCase):
     def test_market_review_region_is_authoritative_across_active_task_lifecycle(self) -> None:
         if (
@@ -272,6 +346,404 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                         self.assertEqual(payload["region"], expected_region)
         finally:
             AnalysisTaskQueue._instance = original_queue_instance
+
+    def test_in_memory_report_projection_reads_top_level_dashboard(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = analysis_endpoint_module._ensure_report_action_fields(
+            {
+                "meta": {},
+                "summary": {},
+                "dashboard": {"strategy_synthesis": _strategy_synthesis_payload()},
+            }
+        )
+
+        self.assertEqual(
+            report["details"]["strategy_synthesis"]["schema_version"],
+            "strategy-synthesis-v1",
+        )
+        self.assertNotIn(
+            "metadata",
+            report["details"]["strategy_synthesis"]["conflicts"][0],
+        )
+
+    def test_build_analysis_report_projects_strategy_synthesis(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        synthesis = _strategy_synthesis_payload()
+        report = _build_analysis_report(
+            {"meta": {}, "summary": {}, "details": {}},
+            "query-2071",
+            "600519",
+            fallback_raw_result_payload={"dashboard": {"strategy_synthesis": synthesis}},
+        )
+
+        self.assertIsNotNone(report.details)
+        self.assertEqual(report.details.strategy_synthesis.schema_version, "strategy-synthesis-v1")
+        self.assertEqual(report.details.strategy_synthesis.primary_dissent.skill_id, "bear")
+        self.assertEqual(report.details.raw_result["dashboard"]["strategy_synthesis"], synthesis)
+
+    def test_report_details_drops_legacy_or_malformed_strategy_projection(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        legacy = ReportDetails(raw_result={"dashboard": {"strategy_synthesis": {"final_signal": "buy"}}})
+        malformed = ReportDetails(
+            raw_result={
+                "dashboard": {
+                    "strategy_synthesis": {
+                        **_strategy_synthesis_payload(),
+                        "signal_distribution": "bad-shape",
+                    }
+                }
+            }
+        )
+        non_finite = ReportDetails(
+            raw_result={
+                "dashboard": {
+                    "strategy_synthesis": {
+                        **_strategy_synthesis_payload(),
+                        "confidence": "nan",
+                    }
+                }
+            }
+        )
+
+        self.assertIsNone(legacy.strategy_synthesis)
+        self.assertIsNone(malformed.strategy_synthesis)
+        self.assertIsNone(non_finite.strategy_synthesis)
+        json.dumps(non_finite.model_dump(), allow_nan=False)
+
+    def test_report_details_filters_invalid_strategy_list_items_independently(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        valid_supporting = {
+            **synthesis["opposing_skills"][0],
+            "skill_id": "bull",
+            "signal": "buy",
+            "reasoning": "bull case",
+        }
+        synthesis["supporting_skills"] = [
+            valid_supporting,
+            {**valid_supporting, "skill_id": "bad-support", "signal": "invalid"},
+        ]
+        synthesis["opposing_skills"] = [
+            synthesis["opposing_skills"][0],
+            {"skill_id": "bad-oppose", "signal": "invalid"},
+        ]
+        synthesis["conflicts"] = [
+            synthesis["conflicts"][0],
+            {"conflict_type": "bad-conflict", "severity": "critical"},
+        ]
+        synthesis["primary_dissent"] = {
+            "skill_id": "bad-primary",
+            "signal": "invalid",
+        }
+        synthesis["conflict_count"] = 2
+        synthesis["summary_params"].update(
+            {
+                "opinion_count": 4,
+                "total_opinion_count": 6,
+                "invalid_opinion_count": 2,
+                "conflict_count": 2,
+            }
+        )
+        synthesis["signal_distribution"] = {
+            "bullish": {"count": 2, "weight_share": 0.5},
+            "neutral": {"count": 0, "weight_share": 0.0},
+            "bearish": {"count": 2, "weight_share": 0.5},
+        }
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertEqual(
+            [item.skill_id for item in details.strategy_synthesis.supporting_skills],
+            ["bull"],
+        )
+        self.assertEqual(
+            [item.skill_id for item in details.strategy_synthesis.opposing_skills],
+            ["bear"],
+        )
+        self.assertEqual(
+            [item.conflict_type for item in details.strategy_synthesis.conflicts],
+            ["directional_opposition"],
+        )
+        self.assertIsNone(details.strategy_synthesis.primary_dissent)
+        self.assertEqual(details.strategy_synthesis.conflict_count, 1)
+        self.assertEqual(details.strategy_synthesis.conflict_severity, "high")
+        self.assertEqual(details.strategy_synthesis.consensus_level, "low")
+        self.assertEqual(
+            details.strategy_synthesis.signal_distribution.model_dump(),
+            {
+                "bullish": {"count": 1, "weight_share": 0.5},
+                "neutral": {"count": 0, "weight_share": 0.0},
+                "bearish": {"count": 1, "weight_share": 0.5},
+            },
+        )
+        self.assertEqual(details.strategy_synthesis.summary_params.opinion_count, 2)
+        self.assertEqual(details.strategy_synthesis.summary_params.total_opinion_count, 4)
+        self.assertEqual(details.strategy_synthesis.summary_params.invalid_opinion_count, 2)
+        self.assertEqual(details.strategy_synthesis.summary_params.conflict_count, 1)
+
+    def test_projection_reconciles_all_derived_fields_after_child_filtering(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        synthesis["supporting_skills"] = [
+            {**synthesis["supporting_skills"][0], "signal": "invalid"},
+        ]
+        synthesis["conflicts"] = [
+            {"conflict_type": "bad-conflict", "severity": "critical"},
+        ]
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertEqual(details.strategy_synthesis.supporting_skills, [])
+        self.assertEqual(
+            [item.skill_id for item in details.strategy_synthesis.opposing_skills],
+            ["bear"],
+        )
+        self.assertEqual(details.strategy_synthesis.conflicts, [])
+        self.assertEqual(details.strategy_synthesis.conflict_count, 0)
+        self.assertEqual(details.strategy_synthesis.conflict_severity, "none")
+        self.assertEqual(details.strategy_synthesis.consensus_level, "insufficient")
+        self.assertEqual(
+            details.strategy_synthesis.summary_key,
+            "strategy_synthesis.no_conflicts",
+        )
+        self.assertEqual(
+            details.strategy_synthesis.signal_distribution.model_dump(),
+            {
+                "bullish": {"count": 0, "weight_share": 0.0},
+                "neutral": {"count": 0, "weight_share": 0.0},
+                "bearish": {"count": 1, "weight_share": 1.0},
+            },
+        )
+        self.assertEqual(details.strategy_synthesis.summary_params.opinion_count, 1)
+        self.assertEqual(details.strategy_synthesis.summary_params.total_opinion_count, 1)
+        self.assertEqual(details.strategy_synthesis.summary_params.conflict_count, 0)
+        self.assertEqual(details.strategy_synthesis.summary_params.conflict_severity, "none")
+        self.assertEqual(details.strategy_synthesis.summary_params.consensus_level, "insufficient")
+        self.assertIsNotNone(details.strategy_synthesis.primary_dissent)
+
+    def test_projection_uses_null_distribution_shares_when_surviving_weight_is_missing(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        synthesis["supporting_skills"][0]["applied_weight"] = None
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertEqual(
+            [
+                bucket.weight_share
+                for bucket in (
+                    details.strategy_synthesis.signal_distribution.bullish,
+                    details.strategy_synthesis.signal_distribution.neutral,
+                    details.strategy_synthesis.signal_distribution.bearish,
+                )
+            ],
+            [None, None, None],
+        )
+
+    def test_projection_keeps_zero_weight_consensus_insufficient(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        synthesis["supporting_skills"][0]["signal"] = "hold"
+        synthesis["supporting_skills"][0]["applied_weight"] = 0.0
+        synthesis["opposing_skills"][0]["signal"] = "hold"
+        synthesis["opposing_skills"][0]["applied_weight"] = 0.0
+        synthesis["conflicts"] = []
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertEqual(details.strategy_synthesis.consensus_level, "insufficient")
+        self.assertTrue(
+            all(
+                bucket.weight_share is None
+                for bucket in (
+                    details.strategy_synthesis.signal_distribution.bullish,
+                    details.strategy_synthesis.signal_distribution.neutral,
+                    details.strategy_synthesis.signal_distribution.bearish,
+                )
+            )
+        )
+
+    def test_projection_drops_primary_dissent_outside_surviving_opposition(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        unrelated = {
+            **synthesis["opposing_skills"][0],
+            "skill_id": "not-in-opposition",
+            "applied_weight": 0.2,
+        }
+        synthesis["primary_dissent"] = unrelated
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertIsNone(details.strategy_synthesis.primary_dissent)
+
+    def test_malformed_typed_collection_falls_back_to_valid_raw_candidate(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        valid = _strategy_synthesis_payload()
+        invalid_typed = {**valid, "opposing_skills": "bad-shape"}
+
+        details = ReportDetails(
+            strategy_synthesis=invalid_typed,
+            raw_result={"dashboard": {"strategy_synthesis": valid}},
+        )
+
+        self.assertEqual(
+            [item.skill_id for item in details.strategy_synthesis.opposing_skills],
+            ["bear"],
+        )
+
+    def test_repairable_typed_candidate_is_reconciled_before_raw_precedence(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        typed = _strategy_synthesis_payload()
+        typed["opposing_skills"].append(
+            {"skill_id": "bad-oppose", "signal": "invalid"}
+        )
+        typed["conflicts"].append(
+            {"conflict_type": "bad-conflict", "severity": "critical"}
+        )
+        typed["conflict_count"] = 2
+        typed["summary_params"]["opinion_count"] = 3
+        typed["summary_params"]["conflict_count"] = 2
+        typed["signal_distribution"]["bearish"]["count"] = 2
+
+        raw = _strategy_synthesis_payload()
+        raw["final_signal"] = "buy"
+        raw["summary_params"]["final_signal"] = "buy"
+
+        details = ReportDetails(
+            strategy_synthesis=typed,
+            raw_result={"dashboard": {"strategy_synthesis": raw}},
+        )
+
+        self.assertEqual(details.strategy_synthesis.final_signal, "hold")
+        self.assertEqual(details.strategy_synthesis.conflict_count, 1)
+        self.assertEqual(details.strategy_synthesis.summary_params.opinion_count, 2)
+        self.assertEqual(details.strategy_synthesis.summary_params.conflict_count, 1)
+        self.assertEqual(
+            details.strategy_synthesis.signal_distribution.bearish.count,
+            1,
+        )
+
+    def test_projection_preserves_upstream_dissent_selected_with_unrounded_weights(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        synthesis = _strategy_synthesis_payload()
+        beta = {
+            **synthesis["opposing_skills"][0],
+            "skill_id": "beta",
+            "applied_weight": 0.4,
+        }
+        alpha = {**beta, "skill_id": "alpha"}
+        synthesis["opposing_skills"] = [beta, alpha]
+        synthesis["primary_dissent"] = beta
+
+        details = ReportDetails(strategy_synthesis=synthesis)
+
+        self.assertEqual(details.strategy_synthesis.primary_dissent.skill_id, "beta")
+
+    def test_invalid_typed_strategy_candidate_falls_back_to_valid_raw_candidate(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        valid = _strategy_synthesis_payload()
+        invalid_typed = {**valid, "final_signal": "invalid"}
+
+        details = ReportDetails(
+            strategy_synthesis=invalid_typed,
+            raw_result={"dashboard": {"strategy_synthesis": valid}},
+        )
+
+        self.assertIsNotNone(details.strategy_synthesis)
+        self.assertEqual(details.strategy_synthesis.final_signal, "hold")
+        self.assertEqual(details.strategy_synthesis.primary_dissent.skill_id, "bear")
+
+    def test_invalid_required_derived_field_is_not_repaired_over_raw_fallback(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        invalid_variants = (
+            ("consensus_level", "invalid"),
+            ("conflict_severity", "critical"),
+            ("conflict_count", "one"),
+            ("conflict_count", -1),
+            ("summary_key", None),
+        )
+        for key, invalid_value in invalid_variants:
+            with self.subTest(key=key, invalid_value=invalid_value):
+                valid = _strategy_synthesis_payload()
+                invalid_typed = _strategy_synthesis_payload()
+                invalid_typed["final_signal"] = "buy"
+                invalid_typed["summary_params"]["final_signal"] = "buy"
+                invalid_typed[key] = invalid_value
+                details = ReportDetails(
+                    strategy_synthesis=invalid_typed,
+                    raw_result={"dashboard": {"strategy_synthesis": valid}},
+                )
+
+                self.assertEqual(details.strategy_synthesis.final_signal, "hold")
+                self.assertEqual(details.strategy_synthesis.conflict_count, 1)
+                self.assertEqual(details.strategy_synthesis.conflict_severity, "high")
+
+    def test_invalid_required_summary_field_is_not_repaired_over_raw_fallback(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        invalid_variants = (
+            ("consensus_level", "invalid"),
+            ("invalid_opinion_count", -1),
+        )
+        for key, invalid_value in invalid_variants:
+            with self.subTest(key=key):
+                valid = _strategy_synthesis_payload()
+                invalid_typed = _strategy_synthesis_payload()
+                invalid_typed["summary_params"][key] = invalid_value
+                invalid_typed["final_signal"] = "buy"
+
+                details = ReportDetails(
+                    strategy_synthesis=invalid_typed,
+                    raw_result={"dashboard": {"strategy_synthesis": valid}},
+                )
+
+                self.assertEqual(details.strategy_synthesis.final_signal, "hold")
+
+    def test_report_enrichment_does_not_let_invalid_typed_candidate_shadow_raw(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        valid = _strategy_synthesis_payload()
+        report = analysis_endpoint_module._ensure_report_action_fields(
+            {
+                "meta": {},
+                "summary": {},
+                "details": {
+                    "strategy_synthesis": {**valid, "final_signal": "invalid"},
+                    "raw_result": {"dashboard": {"strategy_synthesis": valid}},
+                },
+            }
+        )
+
+        self.assertEqual(report["details"]["strategy_synthesis"]["final_signal"], "hold")
+        self.assertEqual(
+            report["details"]["strategy_synthesis"]["primary_dissent"]["skill_id"],
+            "bear",
+        )
+
+    def test_report_details_openapi_schema_exposes_typed_strategy_synthesis(self) -> None:
+        from api.v1.schemas.history import ReportDetails
+
+        schema = ReportDetails.model_json_schema()
+
+        self.assertIn("strategy_synthesis", schema["properties"])
+        self.assertIn("StrategySynthesis", json.dumps(schema, ensure_ascii=False))
 
     def test_trigger_market_review_accepts_background_task(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:

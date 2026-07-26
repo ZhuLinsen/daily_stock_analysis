@@ -14,7 +14,9 @@ from typing import Optional, List, Any, Dict, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from api.v1.schemas.market_phase import MarketPhaseSummary
+from src.report_language import extract_strategy_synthesis_payload
 from src.schemas.decision_action import DecisionAction
+from src.schemas.strategy_synthesis import StrategySynthesis
 
 
 class HistoryItem(BaseModel):
@@ -255,6 +257,10 @@ class ReportDetails(BaseModel):
     
     news_content: Optional[str] = Field(None, description="新闻摘要")
     raw_result: Optional[Any] = Field(None, description="原始分析结果（JSON）")
+    strategy_synthesis: Optional[StrategySynthesis] = Field(
+        None,
+        description="多策略综合结果的稳定、低敏类型化投影",
+    )
     context_snapshot: Optional[Any] = Field(None, description="分析时上下文快照（JSON）")
     analysis_context_pack_overview: Optional[AnalysisContextPackOverview] = Field(
         None,
@@ -266,6 +272,25 @@ class ReportDetails(BaseModel):
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
     concept_rankings: Optional[Any] = Field(None, description="概念板块涨跌榜（结构 {top, bottom}）")
     market_structure: Optional[Any] = Field(None, description="市场结构上下文（题材层 + 个股位置层）")
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_strategy_synthesis(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        populated = dict(value)
+        current = populated.get("strategy_synthesis")
+        if isinstance(current, StrategySynthesis):
+            return populated
+        synthesis = extract_strategy_synthesis_payload(
+            current,
+            populated.get("raw_result"),
+        )
+        if not synthesis:
+            populated["strategy_synthesis"] = None
+            return populated
+        populated["strategy_synthesis"] = synthesis
+        return populated
 
     @model_validator(mode="after")
     def populate_context_derived_details(self) -> "ReportDetails":

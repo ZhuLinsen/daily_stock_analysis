@@ -36,6 +36,7 @@ from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.run_flow import RunFlowSnapshot
 from src.storage import DatabaseManager
 from src.report_language import (
+    extract_strategy_synthesis_payload,
     get_sentiment_label,
     get_localized_stock_name,
     localize_operation_advice,
@@ -580,6 +581,7 @@ def get_history_detail(
             sector_rankings=extracted_boards.get("sector_rankings"),
             concept_rankings=extracted_boards.get("concept_rankings"),
             market_structure=market_structure,
+            strategy_synthesis=extract_strategy_synthesis_payload(result.get("raw_result")) or None,
         )
         
         return AnalysisReport(

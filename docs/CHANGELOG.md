@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 多策略综合结果新增 `strategy-synthesis-v1` 展示契约、有效观点权重分布与主要异议，并通过类型化 Report API 在 Web/Desktop 报告页提供中英韩三语的共识、冲突、协同推理及非权威修订预览展示（#2071）。
+- [修复] 多策略综合类型化投影改为在统一边界逐项过滤非法观点、冲突和主要异议，并按 surviving 明细重算计数、分布、冲突与共识派生字段，在坏 typed candidate 后继续合法 raw fallback；Web/Desktop 为所有非空策略理由提供稳定展开入口，补齐协同推理摘要和中英韩冲突说明。
+- [chore] 暂停 PR Review 的自动触发，仅保留 `workflow_dispatch` 手动入口，避免辅助评审重复运行及评论权限失败产生误导性红灯；正式 CI 检查保持不变。
+- [新功能] Multi-Agent specialist 运行在分析历史保存成功后，按独立 skill 持久化版本化、低敏且幂等的有效 opinion 样本，为后续后验评估提供真实数据；本阶段不计算 outcome、不统计表现、不调整权重。
+- [新功能] Multi-Agent 报告按八态用户 action 追踪 Pipeline 最终调整，排除非法 Agent 意见；仅在 canonical action 可唯一解析时生成 explanation 与 DecisionSignal，并以同一个 `final_action` 统一最终动作契约。
+- [新功能] 新增 `--portfolio futu`，只读导入 Futu OpenD 真实账户的沪深 A 股、港股、美股 LONG 正股持仓作为分析列表。
+- [新功能] 多策略综合新增受控 deliberation v0、可注入 mediator/self-review v1-v2、只读 revision projection v3 与 multi-round v4；所有增强层相对上一层 baseline 只能保持或继续 softened，不覆盖权威最终信号。
+- [新功能] `specialist` 模式最多选择 4 个策略专家，并通过 `AGENT_SKILL_CONCURRENCY` 控制 1–4 个 worker 并发；worker 继承主管线冻结的 target date 等 `ContextVar` 状态，失败 skill 进入权威 Diagnostics 计数且不阻断其它策略或最终决策。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 

@@ -72,6 +72,7 @@ class SkillAggregator:
             conflicts=aggregation.conflicts,
             insufficient_evidence=aggregation.insufficient_evidence,
             invalid_count=invalid_count,
+            weights=aggregation.weights,
         )
         return self.build_consensus_opinion(aggregation, synthesis)
 

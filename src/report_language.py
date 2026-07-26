@@ -3,10 +3,18 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, Optional
 
 from src.schemas.decision_scale import signal_key_for_score
+from src.schemas.strategy_synthesis import (
+    StrategyConflictItem,
+    StrategyDeliberation,
+    StrategyOpinionItem,
+    StrategyRevisionProjection,
+    StrategySynthesis,
+)
 
 SUPPORTED_REPORT_LANGUAGES = ("zh", "en", "ko")
 
@@ -1116,15 +1124,246 @@ def normalize_strategy_synthesis_payload(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return {}
 
+    def validated_item(model_type: Any, item: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(item, dict):
+            return None
+        try:
+            normalized_item = model_type.model_validate(item).model_dump()
+        except (TypeError, ValueError):
+            return None
+
+        if model_type is StrategyOpinionItem:
+            confidence = normalized_item.get("confidence")
+            applied_weight = normalized_item.get("applied_weight")
+            if (
+                normalized_item.get("invalid_signal") is True
+                or not isinstance(confidence, (int, float))
+                or not 0.0 <= float(confidence) <= 1.0
+                or (
+                    applied_weight is not None
+                    and (
+                        not isinstance(applied_weight, (int, float))
+                        or float(applied_weight) < 0.0
+                    )
+                )
+            ):
+                return None
+        return normalized_item
+
     payload = dict(value)
-    for key in ("supporting_skills", "opposing_skills", "conflicts"):
+    collection_shapes_valid = True
+    for key, model_type in (
+        ("supporting_skills", StrategyOpinionItem),
+        ("opposing_skills", StrategyOpinionItem),
+        ("conflicts", StrategyConflictItem),
+    ):
         items = payload.get(key)
+        if not isinstance(items, list):
+            collection_shapes_valid = False
         payload[key] = (
-            [item for item in items if isinstance(item, dict)]
+            [
+                normalized_item
+                for item in items
+                if (normalized_item := validated_item(model_type, item)) is not None
+            ]
             if isinstance(items, list)
             else []
         )
+    primary_dissent = payload.get("primary_dissent")
+    payload["primary_dissent"] = validated_item(
+        StrategyOpinionItem,
+        primary_dissent,
+    )
+
+    for key, model_type in (
+        ("deliberation", StrategyDeliberation),
+        ("revision_projection", StrategyRevisionProjection),
+    ):
+        if key in payload:
+            payload[key] = validated_item(model_type, payload.get(key))
+
+    distribution = payload.get("signal_distribution")
+    distribution_shape_valid = False
+    if isinstance(distribution, dict):
+        normalized_distribution: Dict[str, Dict[str, Any]] = {}
+        for bucket_name in ("bullish", "neutral", "bearish"):
+            bucket = distribution.get(bucket_name)
+            if not isinstance(bucket, dict):
+                normalized_distribution = {}
+                break
+            count = bucket.get("count")
+            share = bucket.get("weight_share")
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                normalized_distribution = {}
+                break
+            if share is not None:
+                if isinstance(share, bool) or not isinstance(share, (int, float)):
+                    normalized_distribution = {}
+                    break
+                share = float(share)
+                if not math.isfinite(share) or not 0.0 <= share <= 1.0:
+                    normalized_distribution = {}
+                    break
+            normalized_distribution[bucket_name] = {
+                "count": count,
+                "weight_share": share,
+            }
+        distribution_shape_valid = set(normalized_distribution) == {
+            "bullish",
+            "neutral",
+            "bearish",
+        }
+        payload["signal_distribution"] = normalized_distribution
+    else:
+        payload["signal_distribution"] = {}
+
+    if not collection_shapes_valid or not distribution_shape_valid:
+        # Keep the renderer-safe child collections, but make the required
+        # distribution fail the final typed-candidate validation so a malformed
+        # preferred candidate cannot shadow a later valid raw candidate.
+        payload["signal_distribution"] = {}
+        return payload
+
+    try:
+        payload = StrategySynthesis.model_validate(payload).model_dump()
+    except (TypeError, ValueError):
+        payload["signal_distribution"] = {}
+        return payload
+
+    opinions = [*payload["supporting_skills"], *payload["opposing_skills"]]
+    conflicts = payload["conflicts"]
+    final_signal = payload["final_signal"]
+    summary_params = payload["summary_params"]
+    invalid_opinion_count = summary_params["invalid_opinion_count"]
+    if payload["conflict_count"] < 0 or any(
+        summary_params[key] < 0
+        for key in (
+            "opinion_count",
+            "total_opinion_count",
+            "invalid_opinion_count",
+            "conflict_count",
+        )
+    ):
+        payload["signal_distribution"] = {}
+        return payload
+    severity_rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    reconciled_conflict_severity = (
+        max(
+            (conflict["severity"] for conflict in conflicts),
+            key=lambda severity: severity_rank[severity],
+        )
+        if conflicts
+        else "none"
+    )
+    from src.agent.protocols import StrategyConflict, StrategyOpinion
+    from src.agent.skills.synthesis import (
+        build_strategy_signal_distribution,
+        derive_strategy_consensus_level,
+    )
+
+    strategy_opinions = [
+        StrategyOpinion(
+            skill_id=opinion["skill_id"],
+            signal=opinion["signal"],
+            confidence=opinion["confidence"],
+        )
+        for opinion in opinions
+    ]
+    strategy_conflicts = [
+        StrategyConflict(
+            conflict_type=conflict["conflict_type"],
+            severity=conflict["severity"],
+        )
+        for conflict in conflicts
+    ]
+    applied_weights = [
+        opinion.get("applied_weight")
+        for opinion in opinions
+    ]
+    has_complete_weights = all(weight is not None for weight in applied_weights)
+    numeric_weights = [float(weight or 0.0) for weight in applied_weights]
+    reconciled_consensus_level = derive_strategy_consensus_level(
+        strategy_opinions,
+        strategy_conflicts,
+        final_signal,
+        insufficient_evidence=(
+            has_complete_weights and sum(numeric_weights) <= 0.0
+        ),
+    )
+    opinion_count = len(opinions)
+    conflict_count = len(conflicts)
+
+    payload["conflict_count"] = conflict_count
+    payload["conflict_severity"] = reconciled_conflict_severity
+    payload["consensus_level"] = reconciled_consensus_level
+    payload["summary_key"] = (
+        "strategy_synthesis.with_conflicts"
+        if conflicts
+        else "strategy_synthesis.no_conflicts"
+    )
+    payload["signal_distribution"] = build_strategy_signal_distribution(
+        strategy_opinions,
+        numeric_weights,
+    )
+    if not has_complete_weights:
+        for bucket in payload["signal_distribution"].values():
+            bucket["weight_share"] = None
+    payload["summary_params"] = {
+        **summary_params,
+        "opinion_count": opinion_count,
+        "total_opinion_count": opinion_count + invalid_opinion_count,
+        "invalid_opinion_count": invalid_opinion_count,
+        "final_signal": final_signal,
+        "consensus_level": reconciled_consensus_level,
+        "conflict_severity": reconciled_conflict_severity,
+        "conflict_count": conflict_count,
+    }
+
+    primary_dissent = payload["primary_dissent"]
+    if primary_dissent is not None and primary_dissent not in payload["opposing_skills"]:
+        # Selection uses the generator's unrounded applied weights. The public
+        # projection only carries rounded weights, so membership is the
+        # strongest invariant this boundary can verify without changing a
+        # legitimate upstream tie-break result.
+        payload["primary_dissent"] = None
     return payload
+
+
+def extract_strategy_synthesis_payload(
+    value: Any,
+    *fallback_values: Any,
+) -> Dict[str, Any]:
+    """Extract the canonical v1 synthesis projection from nested report data.
+
+    Legacy and malformed payloads remain available through ``raw_result`` but
+    are intentionally absent from the typed API projection.
+    """
+    candidates = []
+    queue = [
+        candidate
+        for candidate in (value, *fallback_values)
+        if isinstance(candidate, dict)
+    ]
+    seen: set[int] = set()
+    while queue:
+        candidate = queue.pop(0)
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        candidates.append(candidate)
+        for key in ("strategy_synthesis", "dashboard", "raw_result", "details", "report"):
+            nested = candidate.get(key)
+            if isinstance(nested, dict):
+                queue.append(nested)
+
+    for candidate in candidates:
+        normalized = normalize_strategy_synthesis_payload(candidate)
+        try:
+            return StrategySynthesis.model_validate(normalized).model_dump()
+        except (TypeError, ValueError):
+            continue
+    return {}
 
 
 def strategy_invalid_opinion_count(strategy_synthesis: Any) -> int:

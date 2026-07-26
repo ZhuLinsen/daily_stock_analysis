@@ -6,6 +6,7 @@ Strategy synthesis helpers for skill-agent consensus.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import math
 from typing import Any, Dict, Iterable, List, Optional
 
 from src.agent.protocols import (
@@ -26,6 +27,87 @@ _SCORE_TO_SIGNAL = [
     (1.5, "sell"),
     (0.0, "strong_sell"),
 ]
+
+
+def build_strategy_signal_distribution(
+    opinions: List[StrategyOpinion],
+    weights: List[float],
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """Build the canonical three-bucket projection from valid opinions."""
+    buckets: Dict[str, Dict[str, Any]] = {
+        "bullish": {"count": 0, "weight": 0.0},
+        "neutral": {"count": 0, "weight": 0.0},
+        "bearish": {"count": 0, "weight": 0.0},
+    }
+    for opinion, weight in zip(opinions, weights):
+        if opinion.invalid_signal:
+            continue
+        if opinion.signal in {"buy", "strong_buy"}:
+            bucket = "bullish"
+        elif opinion.signal in {"sell", "strong_sell"}:
+            bucket = "bearish"
+        else:
+            bucket = "neutral"
+        buckets[bucket]["count"] += 1
+        buckets[bucket]["weight"] += weight
+
+    total_weight = sum(bucket["weight"] for bucket in buckets.values())
+    return {
+        name: {
+            "count": bucket["count"],
+            "weight_share": (
+                round(bucket["weight"] / total_weight, 4)
+                if total_weight > 0
+                else None
+            ),
+        }
+        for name, bucket in buckets.items()
+    }
+
+
+def derive_strategy_consensus_level(
+    opinions: List[StrategyOpinion],
+    conflicts: List[StrategyConflict],
+    final_signal: str,
+    *,
+    insufficient_evidence: bool = False,
+) -> str:
+    """Derive consensus using the contract's authoritative threshold order."""
+    if insufficient_evidence:
+        return "insufficient"
+
+    valid_opinions = [op for op in opinions if not op.invalid_signal]
+    if len(valid_opinions) <= 1:
+        return "insufficient"
+    if sum(op.confidence for op in valid_opinions) == 0:
+        return "insufficient"
+
+    conflict_severity = _highest_severity(conflicts)
+    if conflict_severity == "high":
+        return "low"
+
+    final_score = strategy_signal_score(final_signal)
+    aligned = sum(
+        1
+        for op in valid_opinions
+        if (
+            strategy_signal_score(op.signal) == final_score
+            or (
+                abs(strategy_signal_score(op.signal) - final_score) <= 1.0
+                and (
+                    (strategy_signal_score(op.signal) > 3.0 and final_score > 3.0)
+                    or (strategy_signal_score(op.signal) < 3.0 and final_score < 3.0)
+                )
+            )
+        )
+    )
+    aligned_ratio = aligned / len(valid_opinions)
+
+    if not conflicts and aligned_ratio >= 2 / 3:
+        return "high"
+    if conflict_severity == "medium" and aligned_ratio < 0.5:
+        return "low"
+    return "medium"
 
 
 def strategy_opinion_from_agent_opinion(opinion: AgentOpinion) -> StrategyOpinion:
@@ -219,6 +301,7 @@ class StrategySynthesizer:
         conflicts: List[StrategyConflict],
         insufficient_evidence: bool = False,
         invalid_count: int = 0,
+        weights: Optional[List[float]] = None,
     ) -> Dict[str, Any]:
         conflict_severity = _highest_severity(conflicts)
         adjusted_confidence = self.adjust_confidence(weighted_confidence, conflict_severity)
@@ -233,8 +316,14 @@ class StrategySynthesizer:
                 min(1.0, adjusted_confidence + deliberation.summary.confidence_adjustment),
             )
         revision_projection = self._build_revision_projection(opinions, deliberation)
+        applied_weights = self._aligned_weights(opinions, weights)
         final_score = strategy_signal_score(final_signal)
-        supporting, opposing = self._group_opinions(opinions, final_score)
+        supporting, opposing, primary_dissent = self._group_opinions(
+            opinions,
+            final_score,
+            applied_weights,
+        )
+        signal_distribution = self._signal_distribution(opinions, applied_weights)
         consensus_level = self._consensus_level(
             opinions,
             conflicts,
@@ -248,6 +337,7 @@ class StrategySynthesizer:
         invalid_count = max(invalid_count, sum(1 for op in opinions if op.invalid_signal))
 
         payload = {
+            "schema_version": "strategy-synthesis-v1",
             "final_signal": final_signal,
             "weighted_score": round(weighted_score, 4),
             "confidence": round(adjusted_confidence, 4),
@@ -257,6 +347,8 @@ class StrategySynthesizer:
             "conflicts": [_conflict_to_dict(conflict) for conflict in conflicts],
             "supporting_skills": supporting,
             "opposing_skills": opposing,
+            "signal_distribution": signal_distribution,
+            "primary_dissent": primary_dissent,
             "consensus_level": consensus_level,
             "summary_key": "strategy_synthesis.with_conflicts" if conflicts else "strategy_synthesis.no_conflicts",
             "summary_params": {
@@ -288,7 +380,12 @@ class StrategySynthesizer:
     def _group_opinions(
         opinions: List[StrategyOpinion],
         final_score: float,
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        weights: List[float],
+    ) -> tuple[
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+        Optional[Dict[str, Any]],
+    ]:
         """Dynamic bipartite grouping per multi-strategy-contract §动态二分阵营.
 
         Every valid opinion falls into exactly one of supporting/opposing.
@@ -297,17 +394,19 @@ class StrategySynthesizer:
         """
         supporting: List[Dict[str, Any]] = []
         opposing: List[Dict[str, Any]] = []
-        for op in opinions:
+        opposing_candidates: List[tuple[StrategyOpinion, float]] = []
+        for op, weight in zip(opinions, weights):
             if op.invalid_signal:
                 continue
             score = strategy_signal_score(op.signal)
-            item = _opinion_to_item(op)
+            item = _opinion_to_item(op, applied_weight=weight)
 
             if final_score == 3.0:
                 if score == 3.0:
                     supporting.append(item)
                 else:
                     opposing.append(item)
+                    opposing_candidates.append((op, weight))
             else:
                 opinion_bullish = score > 3.0
                 opinion_bearish = score < 3.0
@@ -319,7 +418,57 @@ class StrategySynthesizer:
                     supporting.append(item)
                 else:
                     opposing.append(item)
-        return supporting, opposing
+                    opposing_candidates.append((op, weight))
+
+        primary_dissent = None
+        if opposing_candidates:
+            selected_opinion, selected_weight = min(
+                opposing_candidates,
+                key=lambda candidate: (
+                    -candidate[1],
+                    -candidate[0].confidence,
+                    candidate[0].skill_id,
+                ),
+            )
+            primary_dissent = _opinion_to_item(
+                selected_opinion,
+                applied_weight=selected_weight,
+            )
+        return supporting, opposing, primary_dissent
+
+    @staticmethod
+    def _aligned_weights(
+        opinions: List[StrategyOpinion],
+        weights: Optional[List[float]],
+    ) -> List[float]:
+        """Align non-negative finite display weights with opinion positions.
+
+        Aggregation callers pass the exact applied weights. Direct synthesizer
+        callers pre-dating the display contract keep working by using bounded
+        confidence as the presentation weight only.
+        """
+        aligned: List[float] = []
+        for index, opinion in enumerate(opinions):
+            raw_weight: Any
+            if weights is None:
+                raw_weight = opinion.confidence
+            else:
+                raw_weight = weights[index] if index < len(weights) else 0.0
+            try:
+                weight = float(raw_weight)
+            except (TypeError, ValueError):
+                weight = 0.0
+            if not math.isfinite(weight) or weight < 0:
+                weight = 0.0
+            aligned.append(weight)
+        return aligned
+
+    @staticmethod
+    def _signal_distribution(
+        opinions: List[StrategyOpinion],
+        weights: List[float],
+    ) -> Dict[str, Dict[str, Optional[float]]]:
+        return build_strategy_signal_distribution(opinions, weights)
 
     @staticmethod
     def _consensus_level(
@@ -340,41 +489,12 @@ class StrategySynthesizer:
         6. conflict_severity == "medium" 且 aligned_ratio < 0.5 → low
         7. 其余 → medium
         """
-        if insufficient_evidence:
-            return "insufficient"
-
-        valid_opinions = [op for op in opinions if not op.invalid_signal]
-        if len(valid_opinions) <= 1:
-            return "insufficient"
-        if sum(op.confidence for op in valid_opinions) == 0:
-            return "insufficient"
-
-        conflict_severity = _highest_severity(conflicts)
-        if conflict_severity == "high":
-            return "low"
-
-        final_score = strategy_signal_score(final_signal)
-        aligned = sum(
-            1
-            for op in valid_opinions
-            if (
-                strategy_signal_score(op.signal) == final_score
-                or (
-                    abs(strategy_signal_score(op.signal) - final_score) <= 1.0
-                    and (
-                        (strategy_signal_score(op.signal) > 3.0 and final_score > 3.0)
-                        or (strategy_signal_score(op.signal) < 3.0 and final_score < 3.0)
-                    )
-                )
-            )
+        return derive_strategy_consensus_level(
+            opinions,
+            conflicts,
+            final_signal,
+            insufficient_evidence=insufficient_evidence,
         )
-        aligned_ratio = aligned / len(valid_opinions)
-
-        if not conflicts and aligned_ratio >= 2 / 3:
-            return "high"
-        if conflict_severity == "medium" and aligned_ratio < 0.5:
-            return "low"
-        return "medium"
 
     def _build_revision_projection(
         self,
@@ -538,12 +658,17 @@ def _projection_preference(response: Any) -> tuple[float, float]:
     return abs(strategy_signal_score(signal) - strategy_signal_score("hold")), confidence
 
 
-def _opinion_to_item(opinion: StrategyOpinion) -> Dict[str, Any]:
+def _opinion_to_item(
+    opinion: StrategyOpinion,
+    *,
+    applied_weight: Optional[float] = None,
+) -> Dict[str, Any]:
     return {
         "skill_id": opinion.skill_id,
         "agent_name": opinion.agent_name,
         "signal": opinion.signal,
         "confidence": round(opinion.confidence, 4),
+        "applied_weight": round(applied_weight, 4) if applied_weight is not None else None,
         "reasoning": opinion.reasoning,
         "score_adjustment": opinion.score_adjustment,
         "conditions_met": opinion.conditions_met,
