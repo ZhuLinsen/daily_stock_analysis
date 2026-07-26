@@ -1674,6 +1674,19 @@ def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
     assert "private_key: <redacted>" in redacted
 
 
+def test_diagnostics_redacts_ansi_prefixed_sensitive_fields() -> None:
+    text = "\x1b[31mpassword: tiny\x1b[0m session_id=abc123 \x1b[32mapi_key: short123\x1b[0m"
+
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert "\x1b[" not in redacted
+    assert "tiny" not in redacted
+    assert "short123" not in redacted
+    assert "password: <redacted>" in redacted
+    assert "api_key: <redacted>" in redacted
+    assert "session_id=abc123" in redacted
+
+
 @pytest.mark.parametrize(
     ("text", "secret", "preserved"),
     [
@@ -1726,11 +1739,34 @@ def test_diagnostics_redacts_non_bearer_authorization_values(
     )
 
 
+def test_diagnostics_redacts_parameterized_oauth_authorization_values() -> None:
+    text = (
+        'Authorization: OAuth oauth_consumer_key="client", '
+        'oauth_signature="tiny-secret" session_id=abc123'
+    )
+
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert "tiny-secret" not in redacted
+    assert "Authorization: <redacted> session_id=abc123" in redacted
+
+
 def test_diagnostics_redacts_unclosed_quoted_sensitive_scalar() -> None:
     redacted = redact_diagnostic_text('password: "correct horse battery staple', limit=1000)
 
     assert "correct horse battery staple" not in redacted
     assert redacted == "password: <redacted>"
+
+
+def test_diagnostics_redacts_multiline_quoted_sensitive_scalar() -> None:
+    redacted = redact_diagnostic_text(
+        'password: "correct horse\n battery staple"\nsession_id=abc123\n',
+        limit=1000,
+    )
+
+    assert "correct horse" not in redacted
+    assert "battery staple" not in redacted
+    assert redacted == "password: <redacted>\nsession_id=abc123\n"
 
 
 @pytest.mark.parametrize(
@@ -1867,6 +1903,37 @@ raise SystemExit(2)
     assert 'Proxy-Authorization: <redacted> session_id=proxy123' in stderr_preview
     assert '{"accessToken":"<redacted>","session_id":"camel123"}' in stderr_preview
     assert 'clientSecret: <redacted> token_budget=1000' in stderr_preview
+
+
+def test_nonzero_exit_diagnostic_previews_redact_ansi_oauth_and_multiline_quoted_secrets(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print("\\x1b[31mpassword: tiny\\x1b[0m session_id=ansi123")
+print('Authorization: OAuth oauth_consumer_key="client", oauth_signature="tiny-secret" session_id=oauth123', file=sys.stderr)
+print('password: "correct horse', file=sys.stderr)
+print(' battery staple"', file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stdout_preview = exc_info.value.details["stdout_preview"]
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "\x1b[" not in stdout_preview
+    assert "tiny" not in stdout_preview
+    assert "tiny-secret" not in stderr_preview
+    assert "correct horse" not in stderr_preview
+    assert "battery staple" not in stderr_preview
+    assert "password: <redacted> session_id=ansi123" in stdout_preview
+    assert "Authorization: <redacted> session_id=oauth123" in stderr_preview
+    assert "password: <redacted>\n" in stderr_preview
 
 
 def test_preview_diagnostics_from_files_redacts_truncated_quoted_sensitive_scalar(

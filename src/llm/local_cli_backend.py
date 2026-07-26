@@ -53,6 +53,19 @@ _FINAL_MESSAGE_OMITTED_PREVIEW = "<final-message omitted from stdout preview>"
 _STDOUT_PREVIEW_OMITTED = "<stdout preview omitted because output-last-message was too large>"
 _PROCESS_POLL_INTERVAL_SECONDS = 0.05
 _URL_PATTERN = re.compile(r"https?://[^\s,;)\]}]+", re.IGNORECASE)
+_ANSI_ESCAPE_PATTERN = re.compile(
+    r"""
+    \x1B
+    (?:
+        \[[0-?]*[ -/]*[@-~]
+        |
+        \][^\x07\x1B]*(?:\x07|\x1B\\)
+        |
+        [@-_]
+    )
+    """,
+    re.VERBOSE,
+)
 _SHELL_META_CHARS = ("|", ">", "<", ";", "`")
 _SHELL_META_STRINGS = ("&&", "||", "$(")
 _UNSUPPORTED_ARG_MARKERS = (
@@ -553,6 +566,7 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
 
         replacements = []
         block_match: Optional[re.Match[str]] = None
+        multiline_quote: Optional[str] = None
         for match in matches:
             if not _is_sensitive_diagnostic_field_name(match.group("name")):
                 continue
@@ -573,6 +587,7 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
                 stripped_value[0],
             ):
                 replacements.append((match.start("value"), match.end("value"), "<redacted>"))
+                multiline_quote = multiline_quote or stripped_value[0]
                 continue
 
             if stripped_value and stripped_value[0] not in {"'", '"', "{", "["}:
@@ -586,17 +601,31 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
         redacted_lines.append(_replace_spans(line, replacements))
         index += 1
 
-        if block_match is None:
+        if block_match is not None:
+            base_indent = _leading_space_count(line)
+            while index < len(lines):
+                next_line = lines[index]
+                if next_line.strip() and _leading_space_count(next_line) <= base_indent:
+                    break
+                if not next_line.strip():
+                    redacted_lines.append(next_line)
+                index += 1
             continue
 
-        base_indent = _leading_space_count(line)
+        if multiline_quote is None:
+            continue
+
         while index < len(lines):
             next_line = lines[index]
-            if next_line.strip() and _leading_space_count(next_line) <= base_indent:
-                break
-            if not next_line.strip():
-                redacted_lines.append(next_line)
+            close_index = _diagnostic_quote_close_index(next_line, multiline_quote, start=0)
+            if close_index is None:
+                index += 1
+                continue
+            trailing = next_line[close_index:]
+            if trailing.strip():
+                redacted_lines.append(trailing)
             index += 1
+            break
 
     return "".join(redacted_lines)
 
@@ -622,7 +651,11 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
 
 
 def _has_closed_diagnostic_quote(value: str, quote: str) -> bool:
-    index = 1
+    return _diagnostic_quote_close_index(value, quote, start=1) is not None
+
+
+def _diagnostic_quote_close_index(value: str, quote: str, *, start: int) -> Optional[int]:
+    index = start
     while index < len(value):
         char = value[index]
         if quote == "'" and char == "'" and index + 1 < len(value) and value[index + 1] == "'":
@@ -632,9 +665,9 @@ def _has_closed_diagnostic_quote(value: str, quote: str) -> bool:
             index += 2
             continue
         if char == quote:
-            return True
+            return index + 1
         index += 1
-    return False
+    return None
 
 
 def _consume_diagnostic_scalar(value: str, start: int) -> int:
@@ -668,20 +701,39 @@ def _authorization_value_end(value: str) -> int:
         return len(value)
 
     scheme = scheme_match.group(0).lower()
-    simple_value_start = scheme_match.end()
-    while simple_value_start < len(value) and value[simple_value_start].isspace():
-        simple_value_start += 1
-    simple_value_end = _consume_diagnostic_scalar(value, simple_value_start)
-    if scheme != "digest":
-        return simple_value_end if simple_value_end > simple_value_start else len(value)
-
     index = scheme_match.end()
-    auth_end = index
+    while index < len(value) and value[index].isspace():
+        index += 1
+
+    if scheme in {"digest", "oauth"}:
+        auth_end = _consume_authorization_param_list(
+            value,
+            index,
+            allowed_names=_DIGEST_AUTH_PARAM_NAMES if scheme == "digest" else None,
+        )
+        if auth_end > index:
+            return auth_end
+
+    simple_value_end = _consume_diagnostic_scalar(value, index)
+    return simple_value_end if simple_value_end > index else len(value)
+
+
+def _consume_authorization_param_list(
+    value: str,
+    start: int,
+    *,
+    allowed_names: Optional[frozenset[str]] = None,
+) -> int:
+    index = start
+    auth_end = start
     consumed_any = False
+    first_param = True
     while index < len(value):
         while index < len(value) and value[index].isspace():
             index += 1
-        if index < len(value) and value[index] == ",":
+        if not first_param:
+            if index >= len(value) or value[index] != ",":
+                break
             index += 1
             while index < len(value) and value[index].isspace():
                 index += 1
@@ -689,7 +741,7 @@ def _authorization_value_end(value: str) -> int:
         if name_match is None:
             break
         name = _normalize_diagnostic_field_name(name_match.group(0))
-        if name not in _DIGEST_AUTH_PARAM_NAMES:
+        if allowed_names is not None and name not in allowed_names:
             break
         index += name_match.end()
         while index < len(value) and value[index].isspace():
@@ -705,11 +757,9 @@ def _authorization_value_end(value: str) -> int:
         consumed_any = True
         auth_end = scalar_end
         index = scalar_end
+        first_param = False
 
-    if consumed_any:
-        return auth_end
-
-    return simple_value_end if simple_value_end > simple_value_start else len(value)
+    return auth_end if consumed_any else start
 
 
 def _redact_authorization_fields(text: str) -> str:
@@ -735,7 +785,7 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
     for troubleshooting.
     """
 
-    redacted = text or ""
+    redacted = _ANSI_ESCAPE_PATTERN.sub("", text or "")
     home_path = home or os.path.expanduser("~")
     if home_path:
         redacted = redacted.replace(home_path, "~")
