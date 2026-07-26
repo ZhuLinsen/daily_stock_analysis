@@ -11,7 +11,7 @@ exchange-calendars>=4.13.2   # Trading calendars; 4.5.x is incompatible with pan
 
 # Data source dependencies, ordered by fallback priority
 efinance>=0.5.8             # Priority 0: East Money data source https://github.com/Micro-sheep/efinance
-akshare>=1.12.0             # Priority 1: East Money crawler data source
+akshare>=1.18.79             # Priority 1: East Money crawler data source
 tushare>=1.4.29              # Priority 2: Tushare Pro API
 pytdx>=1.72                 # Priority 2: Tongdaxin quote servers
 baostock>=0.9.3             # Priority 3: Baostock data
