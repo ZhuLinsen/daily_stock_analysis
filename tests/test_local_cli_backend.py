@@ -1651,6 +1651,7 @@ def test_diagnostics_redacts_short_credential_assignments(text: str, secret: str
 def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
     text = (
         "retry: 3 password: correct horse battery staple\n"
+        "backup_password: 'correct horse''s secret'\n"
         "INFO private_key: |\n"
         "  tiny-secret\n"
         "  second secret line\n"
@@ -1660,11 +1661,14 @@ def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
     redacted = redact_diagnostic_text(text, limit=1000)
 
     assert "correct horse battery staple" not in redacted
+    assert "correct horse''s secret" not in redacted
     assert "tiny-secret" not in redacted
     assert "second secret line" not in redacted
     assert "retry: 3" in redacted
     assert "token_budget: 1000" in redacted
     assert "password: <redacted>" in redacted
+    assert "backup_password: '<redacted>'\n" in redacted
+    assert "''s secret" not in redacted
     assert "private_key: <redacted>" in redacted
 
 
@@ -1761,6 +1765,7 @@ def test_nonzero_exit_diagnostic_previews_redact_short_credentials(
 import sys
 print("CUSTOM_API_KEY=stdout-short session_id=abc123")
 print("password: correct horse battery staple")
+print("backup_password: 'correct horse''s secret'")
 print("bot_token: tiny,trail token_budget: 1000")
 print("Authorization: Basic dGlueTpzZWNyZXQ= session_id=auth123")
 print('"api_keys": "stderr-short" token_budget: 1000', file=sys.stderr)
@@ -1781,6 +1786,7 @@ raise SystemExit(2)
     assert "stdout-short" not in stdout_preview
     assert "stderr-short" not in stderr_preview
     assert "correct horse battery staple" not in stdout_preview
+    assert "correct horse''s secret" not in stdout_preview
     assert "tiny-secret" not in stderr_preview
     assert "tiny,trail" not in stdout_preview
     assert "tiny]}" not in stderr_preview
@@ -1788,12 +1794,14 @@ raise SystemExit(2)
     assert "abc.def.ghi" not in stderr_preview
     assert "CUSTOM_API_KEY=<redacted>" in stdout_preview
     assert "password: <redacted>" in stdout_preview
+    assert "backup_password: '<redacted>'" in stdout_preview
     assert "bot_token: <redacted>" in stdout_preview
     assert "Authorization: <redacted>" in stdout_preview
     assert '"api_keys": "<redacted>"' in stderr_preview
     assert "private_key: <redacted>" in stderr_preview
     assert "telegram_bot_token=<redacted>" in stderr_preview
     assert "authorization=<redacted>" in stderr_preview
+    assert "''s secret" not in stdout_preview
     assert "session_id=abc123" in stdout_preview
     assert "session_id=auth123" in stdout_preview
     assert "session_id=stderr123" in stderr_preview
