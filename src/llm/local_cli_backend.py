@@ -517,6 +517,14 @@ def _redact_assignment_value(match: re.Match[str]) -> str:
     return f"{original[:value_start]}{replacement}{original[value_end:]}"
 
 
+def _is_field_specific_sensitive_redaction_target(name: str) -> bool:
+    normalized_name = _normalize_diagnostic_field_name(name)
+    return (
+        _is_sensitive_diagnostic_field_name(name)
+        and normalized_name not in {"authorization", "proxy_authorization", "cookie"}
+    )
+
+
 def _normalize_diagnostic_field_name(name: str) -> str:
     normalized = str(name or "").replace("-", "_")
     normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", normalized)
@@ -547,6 +555,40 @@ def _replace_spans(text: str, replacements: Sequence[Tuple[int, int, str]]) -> s
     return updated
 
 
+def _redact_sensitive_collection_assignments(text: str) -> str:
+    def replace_matches(
+        source: str,
+        pattern: re.Pattern[str],
+        is_sensitive_name: Callable[[str], bool],
+    ) -> str:
+        replacements = []
+        last_end = -1
+        for match in pattern.finditer(source):
+            name = match.group("name")
+            value = match.group("value")
+            if not is_sensitive_name(name) or not value or value[0] not in "{[":
+                continue
+            value_start = match.start("value")
+            if value_start < last_end:
+                continue
+            value_end = _consume_diagnostic_collection(source, value_start)
+            replacements.append((value_start, value_end, "<redacted>"))
+            last_end = value_end
+        return _replace_spans(source, replacements)
+
+    redacted = replace_matches(text, _DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN, _is_sensitive_env_name)
+    redacted = replace_matches(
+        redacted,
+        _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN,
+        _is_field_specific_sensitive_redaction_target,
+    )
+    return replace_matches(
+        redacted,
+        _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN,
+        _is_field_specific_sensitive_redaction_target,
+    )
+
+
 def _redact_multiline_sensitive_fields(text: str) -> str:
     """Redact YAML/log scalar fields that span spaces or indented block lines."""
 
@@ -568,11 +610,7 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
         block_match: Optional[re.Match[str]] = None
         multiline_quote: Optional[str] = None
         for match in matches:
-            if not _is_sensitive_diagnostic_field_name(match.group("name")):
-                continue
-
-            normalized_name = _normalize_diagnostic_field_name(match.group("name"))
-            if normalized_name in {"authorization", "proxy_authorization", "cookie"}:
+            if not _is_field_specific_sensitive_redaction_target(match.group("name")):
                 continue
 
             value = match.group("value")
@@ -640,11 +678,12 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
     def redact_structured_field(match: re.Match[str]) -> str:
         return (
             _redact_assignment_value(match)
-            if _is_sensitive_diagnostic_field_name(match.group("name"))
+            if _is_field_specific_sensitive_redaction_target(match.group("name"))
             else match.group(0)
         )
 
     redacted = _DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN.sub(redact_env, text)
+    redacted = _redact_sensitive_collection_assignments(redacted)
     redacted = _redact_multiline_sensitive_fields(redacted)
     redacted = _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
     return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
@@ -693,6 +732,32 @@ def _consume_diagnostic_scalar(value: str, start: int) -> int:
     while index < len(value) and value[index] not in " \t,;":
         index += 1
     return index
+
+
+def _consume_diagnostic_collection(value: str, start: int) -> int:
+    if start >= len(value) or value[start] not in "{[":
+        return start
+
+    closing_by_opening = {"{": "}", "[": "]"}
+    stack = [closing_by_opening[value[start]]]
+    index = start + 1
+    while index < len(value):
+        char = value[index]
+        if char in {"'", '"'}:
+            index = _consume_diagnostic_scalar(value, index)
+            continue
+        if char in closing_by_opening:
+            stack.append(closing_by_opening[char])
+            index += 1
+            continue
+        if stack and char == stack[-1]:
+            stack.pop()
+            index += 1
+            if not stack:
+                return index
+            continue
+        index += 1
+    return len(value)
 
 
 def _authorization_value_end(value: str) -> int:
