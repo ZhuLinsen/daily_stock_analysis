@@ -928,31 +928,90 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(result.start_price, 100.0)
             self.assertEqual(result.end_close, 105.0)
 
-    def test_expected_start_rejects_effective_date_from_mismatched_market(self) -> None:
-        analysis = type(
-            "Analysis",
-            (),
+    def test_run_backtest_rebuilds_legacy_cn_snapshot_for_jp_history(self) -> None:
+        legacy_snapshot = json.dumps(
             {
-                "context_snapshot": _phase_snapshot(
-                    date(2024, 1, 8),
-                    phase="postmarket",
-                    market="cn",
-                    effective_date=date(2024, 1, 8),
+                "enhanced_context": {"date": "2026-01-01"},
+                "market_phase_summary": {
+                    "market": "cn",
+                    "phase": "postmarket",
+                    "market_local_time": "2026-01-01T10:00:00+08:00",
+                    "session_date": "2026-01-01",
+                    "effective_daily_bar_date": "2025-12-31",
+                    "is_trading_day": True,
+                    "is_market_open_now": False,
+                    "is_partial_bar": False,
+                    "trigger_source": "scheduled_job",
+                    "analysis_intent": "postmarket",
+                    "warnings": ["legacy_snapshot"],
+                },
+            }
+        )
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q_jp_legacy_cn_snapshot",
+                    code="7203.T",
+                    name="Toyota",
+                    report_type="simple",
+                    sentiment_score=60,
+                    operation_advice="买入",
+                    trend_prediction="看多",
+                    analysis_summary="legacy CN phase snapshot",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=datetime(2026, 1, 1, 0, 0, 0),
+                    context_snapshot=legacy_snapshot,
                 )
-            },
-        )()
+            )
+            session.add_all(
+                [
+                    StockDaily(
+                        code="7203.T",
+                        date=date(2025, 12, 30),
+                        open=100.0,
+                        high=100.0,
+                        low=100.0,
+                        close=100.0,
+                    ),
+                    StockDaily(
+                        code="7203.T",
+                        date=date(2026, 1, 5),
+                        open=105.0,
+                        high=106.0,
+                        low=104.0,
+                        close=105.0,
+                    ),
+                ]
+            )
+            session.commit()
 
-        with patch(
-            "src.services.backtest_service.resolve_historical_daily_bar_date",
-            side_effect=AssertionError("mismatched snapshot must fail closed"),
-        ):
-            expected_start_date = BacktestService._resolve_expected_start_date(
-                analysis=analysis,
-                analysis_date=date(2024, 1, 8),
-                market="jp",
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as refill:
+            stats = service.run_backtest(
+                code="7203.T",
+                force=False,
+                eval_window_days=1,
+                min_age_days=0,
+                analysis_date_from=date(2026, 1, 1),
+                analysis_date_to=date(2026, 1, 1),
+                limit=10,
             )
 
-        self.assertIsNone(expected_start_date)
+        refill.assert_not_called()
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["completed"], 1)
+        self.assertEqual(stats["insufficient"], 0)
+        with self.db.get_session() as session:
+            result = (
+                session.query(BacktestResult)
+                .filter(BacktestResult.code == "7203.T")
+                .one()
+            )
+            self.assertEqual(result.eval_status, "completed")
+            self.assertEqual(result.analysis_date, date(2026, 1, 1))
+            self.assertEqual(result.start_price, 100.0)
+            self.assertEqual(result.end_close, 105.0)
 
     def test_run_backtest_refills_from_authoritative_start_date(self) -> None:
         requested = []
@@ -1148,6 +1207,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             forward_bars=[
                 StockDaily(code="AAPL.US", date=date(2024, 1, 4), high=101.0, low=95.0, close=96.0),
             ],
+            market="us",
         )
 
         service = BacktestService(self.db)
@@ -1224,6 +1284,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             forward_bars=[
                 StockDaily(code="AAPL", date=date(2024, 1, 7), high=104.0, low=99.0, close=103.0),
             ],
+            market="us",
         )
 
         service = BacktestService(self.db)
@@ -1270,6 +1331,7 @@ class BacktestServiceTestCase(unittest.TestCase):
             forward_bars=[
                 StockDaily(code="AAPL.US", date=date(2024, 1, 9), high=104.0, low=99.0, close=103.0),
             ],
+            market="us",
         )
 
         service = BacktestService(self.db)
@@ -1395,7 +1457,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         )
         self.assertIsNotNone(suffix_summary)
         assert suffix_summary is not None
-        self.assertEqual(suffix_summary["code"], "AAPL.US")
+        self.assertEqual(suffix_summary["code"], "AAPL")
         self.assertEqual(suffix_summary["total_evaluations"], 1)
 
         bare_query = service.get_recent_evaluations(

@@ -14,7 +14,11 @@ from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
 from src.core.trading_calendar import resolve_historical_daily_bar_date
-from src.market_phase_summary import extract_market_phase_summary, normalize_analysis_phase_bucket
+from src.market_phase_summary import (
+    extract_market_phase_summary,
+    normalize_analysis_phase_bucket,
+    rebuild_market_phase_summary_for_stock_code,
+)
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.stock_repo import StockRepository
 from src.schemas.decision_action import build_action_fields
@@ -838,8 +842,20 @@ class BacktestService:
             if isinstance(phase_summary, dict)
             else ""
         )
-        if not market or snapshot_market != market:
+        if not market:
             return None
+        if snapshot_market != market:
+            phase_summary = rebuild_market_phase_summary_for_stock_code(
+                analysis.code,
+                analysis.context_snapshot,
+            )
+            snapshot_market = (
+                str(phase_summary.get("market") or "").strip().lower()
+                if isinstance(phase_summary, dict)
+                else ""
+            )
+            if snapshot_market != market:
+                return None
 
         effective_date_value = (
             phase_summary.get("effective_daily_bar_date")
