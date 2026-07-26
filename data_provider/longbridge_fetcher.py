@@ -701,13 +701,22 @@ class LongbridgeFetcher(BaseFetcher):
         try:
             from longbridge.openapi import Period, AdjustType
 
+            # history_candlesticks_by_offset(self, /, symbol, period, adjust_type, forward, time, count)
+            # —— 参数顺序：(symbol, period, adjust_type, forward, time, count)
+            #   - forward=True 表示从 time 起**向未来**取 N 根；False 表示**向过去**取 N 根
+            #   - time 为查询基准时间（datetime）；count 为要取的根数（int）
+            # 此前把 count 与 time 两个值传反了位置（time 槽位传入了 6，count 槽位传入了
+            # datetime.now()），SDK 在 PyO3 转换层抛
+            # `argument 'time': 'int' object cannot be converted to 'PyDateTime'`，
+            # 导致 _compute_volume_ratio 在实时行情链路上整体静默失败，量比字段返回 None。
+            # 修复方式：按 SDK 签名顺序传入 datetime.now() 作为 time、6 作为 count。
             candles = ctx.history_candlesticks_by_offset(
                 symbol,
                 Period.Day,
                 AdjustType.NoAdjust,
                 False,
-                6,
                 datetime.now(),
+                6,
             )
             if not candles or len(candles) < 2:
                 return None

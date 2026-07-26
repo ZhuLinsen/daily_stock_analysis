@@ -582,6 +582,64 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
         expected_ratio = round(50000000 / avg_vol, 2)
         self.assertEqual(quote.volume_ratio, expected_ratio)
 
+    def test_volume_ratio_history_candlesticks_by_offset_arg_order(self):
+        """Regression for #2100: ensure `time` (datetime) and `count` (int)
+        are passed in their correct positional slots.
+
+        Before the fix, `_compute_volume_ratio` invoked
+        `ctx.history_candlesticks_by_offset(symbol, period, adjust_type, forward, 6, datetime.now())`
+        — i.e. `time` slot got `6` (int) and `count` slot got `datetime.now()`,
+        which made the PyO3 binding raise
+        `argument 'time': 'int' object cannot be converted to 'PyDateTime'`
+        inside the longbridge SDK, swallowed into DEBUG log and surfaced as
+        volume_ratio=None / "未获取到数据" errors.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            # 期望调用参数顺序：symbol(str), period, adjust_type, forward(bool), time(datetime), count(int)
+            # 前两个位置参数是 symbol 与枚举/类型对象，count 在第 6 个位置必须是 int，time 在第 5 个位置必须是 datetime
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls) as mocked_dt:
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_args = ctx.history_candlesticks_by_offset.call_args.args
+            self.assertGreaterEqual(len(call_args), 6)
+            # 第 5 个位置参数（time）必须是 datetime 实例，而不是 int
+            self.assertIsInstance(call_args[4], dt_cls,
+                f"time slot got {call_args[4]!r} (type {type(call_args[4]).__name__}); "
+                "expected datetime — see #2100")
+            # 第 6 个位置参数（count）必须是 int，不是 datetime
+            self.assertIsInstance(call_args[5], int,
+                f"count slot got {call_args[5]!r} (type {type(call_args[5]).__name__}); "
+                "expected int — see #2100")
+            # 确保旧 bug 复发时本测试失败：旧 bug 此处会断言 datetime.now() 调用，count 得 datetime
+            self.assertEqual(call_args[5], 6)
+            mocked_dt.now.assert_called()
+
     def test_quote_api_failure_returns_none(self):
         """If ctx.quote() raises, return None gracefully."""
         fetcher, ctx = self._make_fetcher_with_mock_ctx()
