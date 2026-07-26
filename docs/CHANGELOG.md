@@ -25,8 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Windows 上 mimetypes 冷启动时读取注册表导致的进程卡死
 - [新功能] Web 首页与 `POST /api/v1/analysis/market-review` 支持用严格校验的 `region` 字符串临时选择单个或多个复盘市场；一次性覆盖不读取或修改全局配置，“服务器默认”在任务提交边界解析为 canonical 实际执行市场，并贯穿 accepted 响应、任务状态/列表/SSE、完成态结构化 payload 与 History。
 - [修复] GitHub Actions PR Review 流程中的 `_event_payload()` 此前用 `except (OSError, ValueError): return {}` 把「事件文件缺失」「文件不可读」「JSON 非法」三类异常统一吞成空对象，下游只表现为 `PR number is unavailable` 无法定位根因；现保留空对象降级行为不变，但分别对三类失败输出不含载荷内容的警告（仅含异常类型与 `GITHUB_EVENT_PATH` 源路径），并补齐三类降级路径与「坏载荷导致 PR 编号不可用」链路的回归测试（fixes #2070）
-- [新功能] STOCK_LIST 解析新增 `parse_analysis_target()` 单条目解析契约，支持 sh/sz/bj/hk/us 前缀校验、裸码默认归股票、未命中前缀降级为股票三段语义；保留现有 `split_stock_list()`/`serialize_stock_list()` 行为不变，并对外暴露 `IndexRegistry`、`AnalysisTarget`、`ParseStatus`、`default_index_registry()` 以便上层注入自定义指数白名单（关联 issue #2063 Phase 1）
-- [修复] YfinanceFetcher 路由：4-5 位纯数字裸港股码（如 `02513`、`00700`、`0001`）此前落入「无法确定市场默认深市」兜底分支，被错误转成 `02513.SZ` 导致 Yahoo Finance 404、日线链路失败；新增 4-5 位裸数字先于 `.SZ` 兜底分流到 `.HK` 的分支，复用 `HK` 前缀分支的补零逻辑，避免新港股代码在 yfinance 路径静默失败。A 股（6 位）/BSE（4 或 6 位 4xxxxx/8xxxxx/920xxx）/ETF/JP/KR/TW/US 等其它路由保持不变（fixes #2091）
+- [修复] DataFetcherManager 港股路由：4-5 位纯数字裸港股码（如 `02513`、`00700`、`0001`）此前仅 `_is_hk_market` 单侧识别，`AkshareFetcher._is_hk_code` 与 `LongbridgeFetcher._is_hk_code` 内仍只接受 5 位裸数字，导致配置了 Yfinance/Akshare/Longbridge 的港股日线/实时链路对 4 位裸港股码静默失败。本 PR 同步三处 `_is_hk_code` 契约到 4-5 位裸数字，并新增 `DataFetcherManager` 港股路由回归测试，避免上游路由判 HK、下游 provider 不识别的部分调用链断口（fixes #2091）
 
 ## [3.27.0] - 2026-07-19
 

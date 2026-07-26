@@ -119,20 +119,13 @@ def _is_hk_code(stock_code: str) -> bool:
     判断代码是否为港股
 
     港股代码规则：
-    - 4-5位数字代码，如 '00700' (腾讯控股)、'0001' (长和)、'0941' (中国移动)
+    - 4-5 位数字代码，如 '00700' (腾讯控股)、'0001' (长和)、'0941' (中国移动)
     - 部分港股代码可能带有前缀，如 'hk00700', 'hk1810'
 
-    Review blocker OR-COR-ea09dfe8 (PR #2097 / issue #2091):
-    之前只把 5 位裸数字视为港股，但 ``data_provider/base.py::\
-    _is_hk_market()`` 已在 PR #2097 放开到 4-5 位裸数字，且
-    ``DataFetcherManager`` 默认优先级下 ``AkshareFetcher`` 在 HK 路由
-    中先于 ``YfinanceFetcher`` 执行。若 akshare 内部仍只接受 5 位裸
-    数字，``0001`` 这类 4 位裸港股码在 manager 层被归入 hk 后，仍会
-    于 ``AkshareFetcher._fetch_raw_data`` 的 ``_is_hk_code("0001")
-    == False`` 分支落到 ``_fetch_stock_data`` A 股链路，导致同一输入
-    在 manager 与 provider 内部使用两套互相冲突的市场契约。同步放开
-    到 4-5 位裸数字即与 ``_is_hk_market`` 和
-    ``YfinanceFetcher._convert_stock_code`` 一致，主调用链路闭环。
+    与 ``data_provider.base._is_hk_market`` 以及
+    ``YfinanceFetcher._convert_stock_code`` / ``LongbridgeFetcher._is_hk_code``
+    对裸港股码的位数范围 (4-5 位) 保持一致，避免 ``DataFetcherManager``
+    路由层判 HK 后被 ``AkshareFetcher`` 内部拒绝造成的调用链断口。
 
     Args:
         stock_code: 股票代码
