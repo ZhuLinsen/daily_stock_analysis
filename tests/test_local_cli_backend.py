@@ -1634,6 +1634,8 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
         ("Authorization: Bearer tiny", "tiny"),
         ('"api_key": "short123"', "short123"),
         ("api_keys: short123", "short123"),
+        ("bot_token: tiny", "tiny"),
+        ("telegram_bot_token: tiny", "tiny"),
         ("client_secret: tiny", "tiny"),
         ("database_url: sqlite-short", "sqlite-short"),
         ("aws_secret_access_key: tiny", "tiny"),
@@ -1664,6 +1666,25 @@ def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
     assert "token_budget: 1000" in redacted
     assert "password: <redacted>" in redacted
     assert "private_key: <redacted>" in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "preserved"),
+    [
+        ("password: abc,def session_id=abc123", "abc,def", "session_id=abc123"),
+        ("bot_token=tiny]} token_budget: 1000", "tiny]}", "token_budget: 1000"),
+    ],
+)
+def test_diagnostics_redacts_sensitive_scalars_with_punctuation(
+    text: str,
+    secret: str,
+    preserved: str,
+) -> None:
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert secret not in redacted
+    assert "<redacted>" in redacted
+    assert preserved in redacted
 
 
 @pytest.mark.parametrize(
@@ -1708,8 +1729,10 @@ def test_nonzero_exit_diagnostic_previews_redact_short_credentials(
 import sys
 print("CUSTOM_API_KEY=stdout-short session_id=abc123")
 print("password: correct horse battery staple")
+print("bot_token: tiny,trail token_budget: 1000")
 print('"api_keys": "stderr-short" token_budget: 1000', file=sys.stderr)
 print("private_key: |\\n  tiny-secret", file=sys.stderr)
+print("telegram_bot_token=tiny]} session_id=stderr123", file=sys.stderr)
 raise SystemExit(2)
 """,
     )
@@ -1724,11 +1747,16 @@ raise SystemExit(2)
     assert "stderr-short" not in stderr_preview
     assert "correct horse battery staple" not in stdout_preview
     assert "tiny-secret" not in stderr_preview
+    assert "tiny,trail" not in stdout_preview
+    assert "tiny]}" not in stderr_preview
     assert "CUSTOM_API_KEY=<redacted>" in stdout_preview
     assert "password: <redacted>" in stdout_preview
+    assert "bot_token: <redacted>" in stdout_preview
     assert '"api_keys": "<redacted>"' in stderr_preview
     assert "private_key: <redacted>" in stderr_preview
+    assert "telegram_bot_token=<redacted>" in stderr_preview
     assert "session_id=abc123" in stdout_preview
+    assert "session_id=stderr123" in stderr_preview
     assert "token_budget: 1000" in stderr_preview
 
 

@@ -193,6 +193,7 @@ _SENSITIVE_DIAGNOSTIC_FIELD_SUFFIXES = (
     "_sendkey",
     "_session_secret",
     "_signing_key",
+    "_token",
     "_webhook",
     "_webhook_url",
 )
@@ -238,10 +239,10 @@ _DIAGNOSTIC_LINE_FIELD_PATTERN = re.compile(
     r"""
     (?<![A-Za-z0-9_-])
     (?P<name>[A-Za-z][A-Za-z0-9_-]*)
-    (?P<separator>[ \t]*:[ \t]*)
+    (?P<separator>[ \t]*(?:=|:)[ \t]*)
     (?P<value>[^\r\n]*?)
     (?=
-        (?:[ \t]+[A-Za-z][A-Za-z0-9_-]*[ \t]*(?:=|:)[ \t]*)
+        (?:(?:[,;][ \t]*)|[ \t]+)[A-Za-z][A-Za-z0-9_-]*[ \t]*(?:=|:)[ \t]*
         |
         \r?\n?
         $
@@ -537,11 +538,7 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
                 block_match = block_match or match
                 continue
 
-            if (
-                stripped_value
-                and stripped_value[0] not in {"'", '"', "{", "["}
-                and re.search(r"\s", stripped_value)
-            ):
+            if stripped_value and stripped_value[0] not in {"'", '"', "{", "["}:
                 replacements.append((match.start("value"), match.end("value"), "<redacted>"))
 
         if not replacements:
