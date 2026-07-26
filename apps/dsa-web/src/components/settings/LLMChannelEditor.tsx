@@ -1915,13 +1915,24 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
      * 导致 submit() 总返回 true、SettingsPage 无法感知 channel 段失败。新增此参数:
      * throwOnError=true 时不再吞 API error,直接 rethrow;validation/local-error
      * 路径仍走 setSaveMessage + 提前 return(false),不抛错以保留 UI 反馈契约。
+     *
+     * 返回值约定(true/false):
+     * - true: API 写入成功(或无写入但等价 no-op,如本地校验通过且无 updateItems)
+     * - false: 本地校验失败或本地状态异常(saveMessage 已写入 editor 区域作 UI 反馈)
+     *
+     * issue #1948 (OR-COR-4d98b0f5): 早期实现所有 local-error 路径只 setSaveMessage +
+     * 裸 return(等价 return undefined);submit() 在 await handleSave 后无条件 return true,
+     * 导致 SettingsPage.handleSaveConfig 误判 channel 段成功、整体保存判成功。现统一改为:
+     * - 所有 local-error 路径 return false
+     * - 成功路径显式 return true
+     * - submit() 检测返回 false 时 throw 一个包装错误让父层 catch 块感知(配合 throwOnError:true)
      */
     throwOnError?: boolean;
-  }) => {
+  }): Promise<boolean> => {
     const hasEmptyName = channels.some((channel) => !channel.name.trim());
     if (hasEmptyName) {
       setSaveMessage({ type: 'local-error', text: '渠道名称不能为空，且只能包含字母、数字或下划线。' });
-      return;
+      return false;
     }
 
     if (managesRuntimeConfig) {
@@ -1934,7 +1945,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       });
       if (mixedPrimary || mixedFallback) {
         setSaveMessage({ type: 'local-error', text: 'Mixed Hermes/non-Hermes route 暂不支持作为主生成或备选模型，请选择纯 Hermes 或纯非 Hermes route。' });
-        return;
+        return false;
       }
 
       const nonCanonicalRouteAlias = (
@@ -1945,7 +1956,7 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       );
       if (nonCanonicalRouteAlias) {
         setSaveMessage({ type: 'local-error', text: '当前运行时模型使用非规范 route alias，请从下拉框重新选择规范模型。' });
-        return;
+        return false;
       }
     }
 
@@ -1961,14 +1972,14 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
         && !isRuntimeModelAvailable(runtimeConfigForSave.primaryModel, availableModels, savedItemMap);
       if (invalidPrimaryModel) {
         setSaveMessage({ type: 'local-error', text: '当前主模型不在已启用渠道的模型列表中，请重新选择。' });
-        return;
+        return false;
       }
 
       const invalidAgentPrimaryModel = runtimeConfigForSave.agentPrimaryModel
         && !isRuntimeModelAvailable(runtimeConfigForSave.agentPrimaryModel, agentSafeModels, savedItemMap);
       if (invalidAgentPrimaryModel) {
         setSaveMessage({ type: 'local-error', text: '当前 Agent 主模型没有 Agent-safe 非 Hermes deployment，请重新选择。' });
-        return;
+        return false;
       }
 
       const invalidFallbackModel = runtimeConfigForSave.fallbackModels.some(
@@ -1976,14 +1987,14 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       );
       if (invalidFallbackModel) {
         setSaveMessage({ type: 'local-error', text: '存在无效的备选模型，请重新选择。' });
-        return;
+        return false;
       }
 
       const invalidVisionModel = runtimeConfigForSave.visionModel
         && !isRuntimeModelAvailable(runtimeConfigForSave.visionModel, visionSafeModels, savedItemMap);
       if (invalidVisionModel) {
         setSaveMessage({ type: 'local-error', text: '当前 Vision 模型不能包含 Hermes deployment，请重新选择纯非 Hermes route。' });
-        return;
+        return false;
       }
     }
 
@@ -2016,6 +2027,10 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       };
       setSaveWarnings(responseWarnings);
       setSaveMessage({ type: 'success', text: managesRuntimeConfig ? 'AI 配置已保存' : '渠道配置已保存' });
+      // OR-COR-4d98b0f5: 显式返回 true 让 submit() 区分成功与 local-error。catch 块
+      // 通过 throwOnError + rethrow 让 API 失败传到 submit(),validation/local-error
+      // 通过返回 false 让 submit() 包装 rethrow。三种失败路径汇总到父层 catch 块统一处理。
+      return true;
     } catch (error: unknown) {
       setSaveWarnings([]);
       setSaveMessage({ type: 'error', error: getParsedApiError(error) });
@@ -2028,6 +2043,10 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       if (opts?.throwOnError) {
         throw error;
       }
+      // OR-COR-4d98b0f5: throwOnError=false 本地保存按钮路径——API 错已 setSaveMessage
+      // 在 editor 区反馈,这里返回 false 与 handleSave boolean 契约一致;调用方(本地
+      // 保存按钮)未使用返回值,不破坏既有契约。
+      return false;
     } finally {
       setIsSaving(false);
     }
@@ -2055,10 +2074,21 @@ export const LLMChannelEditor = forwardRef<LLMChannelEditorHandle, LLMChannelEdi
       // 区分成功/失败。现统一改为 throwOnError=true + rethrow, 父层 try/catch
       // 内 capture 错误并回滚 UI 状态。本地保存按钮仍走 handleSave({throwOnError:false})
       // 路径, 不抛错, UI 反馈走 editor 内 saveMessage, 与既有契约一致。
-      await handleSave({
+      //
+      // OR-COR-4d98b0f5: handleSave 现约定返回 boolean——validation/local-error
+      // 路径返回 false(已 setSaveMessage 在 editor 区显示),成功路径返回 true。
+      // submit() 在 throwOnError:true 模式下,API 失败已由 handleSave catch 块 rethrow。
+      // 但 local-error 路径返回 false 时不抛错(契约:editor 内 saveMessage 已反馈),
+      // 父层 SettingsPage.handleSaveConfig 若只看返回 true/false 决定整体成功,会
+      // 把"channel 草稿 local 校验失败"误判为整体保存成功。这里包装一个本地错误
+      // rethrow, 让父层 catch 块统一处理(API 失败 + local 失败共用一个错误反馈路径)。
+      const ok = await handleSave({
         configVersionOverride: opts?.configVersion,
         throwOnError: true,
       });
+      if (!ok) {
+        throw new Error('LLMChannelEditor.handleSave: local validation failed');
+      }
       return true;
     },
     hasDraft: () => draftItems.length > 0,

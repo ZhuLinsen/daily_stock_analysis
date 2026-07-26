@@ -919,6 +919,8 @@ const SettingsPage: React.FC = () => {
     dirtyCount,
     toast,
     clearToast,
+    showSuccessToast,
+    showErrorToast,
     isLoading,
     isSaving,
     loadError,
@@ -1357,7 +1359,12 @@ const SettingsPage: React.FC = () => {
     const changedItemsToSave = [...changedItems, ...schedulerSyncItem];
     const changedAlphaSiftItem = changedItems.find((item) => item.key === 'ALPHASIFT_ENABLED');
     const changedSchedulerSettings = changedItemsToSave.some((item) => SCHEDULER_SETTING_KEYS.has(item.key));
-    const result = await save(changedItemsToSave);
+    // OR-COR-62780a0c: 联合保存路径用 silent:true 抑制 save() 内置 success toast——
+    // LLMChannelEditor.submit() 仍在进行,若第二段失败,页面会同时留有第一段 success
+    // toast 与第二段错误提示,与最终结果矛盾。两段都成功后由本函数统一调
+    // showSuccessToast 发出页面级 success toast。error toast 仍由 save() 内部 catch
+    // 块或下方 channel 段 catch 块设置,失败反馈不丢失。
+    const result = await save(changedItemsToSave, { silent: true });
     if (!result.success) {
       return;
     }
@@ -1414,12 +1421,21 @@ const SettingsPage: React.FC = () => {
         if (typeof console !== 'undefined' && console.warn) {
           console.warn('[SettingsPage] LLMChannelEditor.submit() failed during handleSaveConfig', channelSaveError);
         }
-        setChannelSaveError(getParsedApiError(channelSaveError));
+        const parsedChannelError = getParsedApiError(channelSaveError);
+        setChannelSaveError(parsedChannelError);
+        // OR-COR-62780a0c: 把整体保存失败反馈也写到全局 toast——silent:true 让 save()
+        // 第一段 success toast 不出现,这里在第二段失败时统一发出 error toast,确保用户
+        // 跨分类切回时也能从顶部全局反馈立即感知整体保存未完成。
+        showErrorToast(parsedChannelError);
         return;
       } finally {
         setChannelSaveInProgress(false);
       }
     }
+
+    // OR-COR-62780a0c: 两段都成功(或无 channel 草稿且第一段成功)后统一发出页面级
+    // success toast。silent:true 跳过了 save() 内置 success toast,这里补回。
+    showSuccessToast(t('settings.configSavedToast'));
 
     if (!changedAlphaSiftItem) {
       return;
@@ -1640,7 +1656,10 @@ const SettingsPage: React.FC = () => {
                 setLlmChannelDraftItems([]);
                 resetDraft();
               }}
-              disabled={isLoading || isSaving}
+              // OR-COR-62780a0c: 用 pageSaveInFlight(普通段 isSaving || channel 段
+              // channelSaveInProgress)代替单一 isSaving,确保 LLM 渠道段进行中用户也不能
+              // 点放弃修改——否则 channel 段写入库的草稿会被 reset 清空,造成状态反转。
+              disabled={isLoading || pageSaveInFlight}
             >
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
               {t('settings.reset')}
@@ -1651,8 +1670,12 @@ const SettingsPage: React.FC = () => {
               size="sm"
               className="px-2.5"
               onClick={() => void handleSaveConfig()}
-              disabled={!effectiveHasDirty || isSaving || isLoading}
-              isLoading={isSaving}
+              // OR-COR-62780a0c: 用 pageSaveInFlight(普通段 isSaving || channel 段
+              // channelSaveInProgress)统一作为禁用门槛,避免 LLM 渠道段进行中用户重复
+              // 点击保存配置触发二段式 race。isLoading 仍保留以兜底初次加载未完成时按钮
+              // 不可点击(此时 pageSaveInFlight 仍为 false)。
+              disabled={!effectiveHasDirty || pageSaveInFlight || isLoading}
+              isLoading={pageSaveInFlight}
               loadingText={t('settings.saving')}
             >
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" />

@@ -19,6 +19,21 @@ type ToastState = {
 
 type RetryAction = 'load' | 'save' | null;
 
+type SaveOptions = {
+  /**
+   * 联合保存路径(SettingsPage.handleSaveConfig)在普通草稿 save() 成功后立即触发
+   * LLMChannelEditor.submit()。若第一段立刻 setToast success,第二段 channel 仍在
+   * 进行或最终失败时,页面会同时显示第一段 success toast 与第二段错误提示,且页头
+   * 全局 success 反馈与最终结果矛盾。
+   *
+   * silent:true 时本段不写 success toast,由调用方在两段都确认成功后统一发出。
+   * error toast 仍由 save() 内部正常设置,确保失败路径反馈不丢失。
+   *
+   * issue #1948 (OR-COR-62780a0c)
+   */
+  silent?: boolean;
+};
+
 type SaveResult = {
   success: boolean;
   message?: string;
@@ -315,17 +330,22 @@ export function useSystemConfig() {
       });
   }, [dirtyKeys, draftValues, serverItemByKey]);
 
-  const save = useCallback(async (changedItems?: SystemConfigUpdateItem[]): Promise<SaveResult> => {
+  const save = useCallback(async (changedItems?: SystemConfigUpdateItem[], opts?: SaveOptions): Promise<SaveResult> => {
     const explicitItems = changedItems ?? [];
     const resolvedChangedItems = explicitItems.length > 0 ? explicitItems : getChangedItems();
+    const silent = opts?.silent === true;
 
     if (!explicitItems.length && !hasDirty) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      if (!silent) {
+        setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      }
       return { success: true, message: '当前没有可保存的修改' };
     }
 
     if (!resolvedChangedItems.length) {
-      setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      if (!silent) {
+        setToast({ type: 'success', message: '当前没有可保存的修改。' });
+      }
       return { success: true, message: '当前没有可保存的修改' };
     }
 
@@ -365,7 +385,14 @@ export function useSystemConfig() {
       const warningText = updateResult.warnings?.length
         ? `；警告：${updateResult.warnings.join('；')}`
         : '';
-      setToast({ type: 'success', message: `配置已更新${warningText}` });
+      // OR-COR-62780a0c: 联合保存路径(silent:true)不在第一段成功时立刻发 success
+      // toast——LLMChannelEditor.submit() 仍在进行,若第二段失败,页面会同时留有
+      // 第一段 success toast 与第二段错误提示。普通段 error toast 仍由下方 catch
+      // 块设置,失败反馈不丢失。SettingsPage.handleSaveConfig 在两段都成功后统一
+      // 调 setSuccessToast 发出页面级 success toast。
+      if (!silent) {
+        setToast({ type: 'success', message: `配置已更新${warningText}` });
+      }
       return { success: true };
     } catch (error: unknown) {
       if (error instanceof SystemConfigValidationError) {
@@ -411,6 +438,18 @@ export function useSystemConfig() {
     setToast(null);
   }, []);
 
+  // OR-COR-62780a0c: 联合保存路径使用 silent:true 跳过 save() 内置 success toast,
+  // 在两段都确认成功后由 SettingsPage.handleSaveConfig 调用本方法统一发出页面级
+  // success toast,避免第一段 toast 与第二段结果矛盾。error 反馈仍由 save() 内部
+  // catch 块设置避免丢失。
+  const showSuccessToast = useCallback((message: string) => {
+    setToast({ type: 'success', message });
+  }, []);
+
+  const showErrorToast = useCallback((error: ParsedApiError) => {
+    setToast({ type: 'error', error });
+  }, []);
+
   return {
     // Server state
     configVersion,
@@ -429,6 +468,8 @@ export function useSystemConfig() {
     dirtyCount: dirtyKeys.length,
     toast,
     clearToast,
+    showSuccessToast,
+    showErrorToast,
 
     // Request state
     isLoading,
