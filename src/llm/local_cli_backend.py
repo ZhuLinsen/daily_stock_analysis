@@ -157,6 +157,7 @@ _SENSITIVE_DIAGNOSTIC_FIELDS = frozenset({
     "password",
     "passwd",
     "private_key",
+    "proxy_authorization",
     "refresh_token",
     "secret",
     "secret_access_key",
@@ -197,6 +198,20 @@ _SENSITIVE_DIAGNOSTIC_FIELD_SUFFIXES = (
     "_webhook",
     "_webhook_url",
 )
+_DIGEST_AUTH_PARAM_NAMES = frozenset({
+    "algorithm",
+    "charset",
+    "cnonce",
+    "nc",
+    "nonce",
+    "opaque",
+    "qop",
+    "realm",
+    "response",
+    "uri",
+    "userhash",
+    "username",
+})
 _DIAGNOSTIC_ASSIGNMENT_VALUE_PATTERN = r"""
     (?P<value>
         "(?:\\.|[^"\\])*"
@@ -253,11 +268,8 @@ _DIAGNOSTIC_LINE_FIELD_PATTERN = re.compile(
 _AUTHORIZATION_FIELD_PATTERN = re.compile(
     r"""
     (?<![A-Za-z0-9_-])
-    (?P<prefix>authorization[ \t]*(?:=|:)[ \t]*)
-    (?:
-        [A-Za-z][A-Za-z0-9_-]*[ \t]+
-    )?
-    [^\s,;}\]]+
+    (?P<prefix>(?:proxy-)?authorization[ \t]*(?:=|:)[ \t]*)
+    (?P<value>[^\r\n]*)
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -492,8 +504,15 @@ def _redact_assignment_value(match: re.Match[str]) -> str:
     return f"{original[:value_start]}{replacement}{original[value_end:]}"
 
 
+def _normalize_diagnostic_field_name(name: str) -> str:
+    normalized = str(name or "").replace("-", "_")
+    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", normalized)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
+    return normalized.lower()
+
+
 def _is_sensitive_diagnostic_field_name(name: str) -> bool:
-    normalized = str(name or "").lower().replace("-", "_")
+    normalized = _normalize_diagnostic_field_name(name)
     return (
         normalized in _SENSITIVE_DIAGNOSTIC_FIELDS
         or any(normalized.endswith(suffix) for suffix in _SENSITIVE_DIAGNOSTIC_FIELD_SUFFIXES)
@@ -538,8 +557,8 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
             if not _is_sensitive_diagnostic_field_name(match.group("name")):
                 continue
 
-            normalized_name = match.group("name").lower().replace("-", "_")
-            if normalized_name in {"authorization", "cookie"}:
+            normalized_name = _normalize_diagnostic_field_name(match.group("name"))
+            if normalized_name in {"authorization", "proxy_authorization", "cookie"}:
                 continue
 
             value = match.group("value")
@@ -547,6 +566,13 @@ def _redact_multiline_sensitive_fields(text: str) -> str:
             if _is_yaml_block_scalar(value):
                 replacements.append((match.start("value"), match.end("value"), "<redacted>"))
                 block_match = block_match or match
+                continue
+
+            if stripped_value[:1] in {"'", '"'} and not _has_closed_diagnostic_quote(
+                stripped_value,
+                stripped_value[0],
+            ):
+                replacements.append((match.start("value"), match.end("value"), "<redacted>"))
                 continue
 
             if stripped_value and stripped_value[0] not in {"'", '"', "{", "["}:
@@ -595,6 +621,111 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
     return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
 
 
+def _has_closed_diagnostic_quote(value: str, quote: str) -> bool:
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if quote == "'" and char == "'" and index + 1 < len(value) and value[index + 1] == "'":
+            index += 2
+            continue
+        if char == "\\" and index + 1 < len(value):
+            index += 2
+            continue
+        if char == quote:
+            return True
+        index += 1
+    return False
+
+
+def _consume_diagnostic_scalar(value: str, start: int) -> int:
+    if start >= len(value):
+        return start
+    quote = value[start]
+    if quote in {"'", '"'}:
+        index = start + 1
+        while index < len(value):
+            char = value[index]
+            if quote == "'" and char == "'" and index + 1 < len(value) and value[index + 1] == "'":
+                index += 2
+                continue
+            if char == "\\" and index + 1 < len(value):
+                index += 2
+                continue
+            if char == quote:
+                return index + 1
+            index += 1
+        return len(value)
+
+    index = start
+    while index < len(value) and value[index] not in " \t,;":
+        index += 1
+    return index
+
+
+def _authorization_value_end(value: str) -> int:
+    scheme_match = re.match(r"[A-Za-z][A-Za-z0-9_-]*", value)
+    if scheme_match is None:
+        return len(value)
+
+    scheme = scheme_match.group(0).lower()
+    simple_value_start = scheme_match.end()
+    while simple_value_start < len(value) and value[simple_value_start].isspace():
+        simple_value_start += 1
+    simple_value_end = _consume_diagnostic_scalar(value, simple_value_start)
+    if scheme != "digest":
+        return simple_value_end if simple_value_end > simple_value_start else len(value)
+
+    index = scheme_match.end()
+    auth_end = index
+    consumed_any = False
+    while index < len(value):
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index < len(value) and value[index] == ",":
+            index += 1
+            while index < len(value) and value[index].isspace():
+                index += 1
+        name_match = re.match(r"[A-Za-z][A-Za-z0-9_-]*", value[index:])
+        if name_match is None:
+            break
+        name = _normalize_diagnostic_field_name(name_match.group(0))
+        if name not in _DIGEST_AUTH_PARAM_NAMES:
+            break
+        index += name_match.end()
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index >= len(value) or value[index] != "=":
+            break
+        index += 1
+        while index < len(value) and value[index].isspace():
+            index += 1
+        scalar_end = _consume_diagnostic_scalar(value, index)
+        if scalar_end <= index:
+            break
+        consumed_any = True
+        auth_end = scalar_end
+        index = scalar_end
+
+    if consumed_any:
+        return auth_end
+
+    return simple_value_end if simple_value_end > simple_value_start else len(value)
+
+
+def _redact_authorization_fields(text: str) -> str:
+    def redact(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        value = match.group("value") or ""
+        if not value.strip():
+            return f"{prefix}<redacted>"
+        auth_end = _authorization_value_end(value)
+        if auth_end <= 0:
+            return f"{prefix}<redacted>"
+        return f"{prefix}<redacted>{value[auth_end:]}"
+
+    return _AUTHORIZATION_FIELD_PATTERN.sub(redact, text)
+
+
 def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int = _PREVIEW_LIMIT) -> str:
     """Redact sensitive diagnostics and return a bounded preview.
 
@@ -610,7 +741,7 @@ def redact_diagnostic_text(text: str, *, home: Optional[str] = None, limit: int 
         redacted = redacted.replace(home_path, "~")
     redacted = re.sub(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@", r"\1<redacted>@", redacted)
     redacted = _URL_PATTERN.sub(_redact_sensitive_diagnostic_url, redacted)
-    redacted = _AUTHORIZATION_FIELD_PATTERN.sub(r"\g<prefix><redacted>", redacted)
+    redacted = _redact_authorization_fields(redacted)
     redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^\n\r]+", r"\1<redacted>", redacted)
     redacted = _redact_sensitive_diagnostic_assignments(redacted)
     redacted = re.sub(r"(?i)(session[_-]?secret\s*[:=]\s*)[^\s]+", r"\1<redacted>", redacted)

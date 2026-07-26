@@ -1633,10 +1633,12 @@ def test_diagnostics_redacts_webhook_urls_and_preserves_adjacent_normal_urls() -
         ("SESSION_SECRET='abc def ghi' next", "abc def ghi"),
         ("Authorization: Bearer tiny", "tiny"),
         ('"api_key": "short123"', "short123"),
+        ('{"accessToken":"short123"}', "short123"),
         ("api_keys: short123", "short123"),
         ("bot_token: tiny", "tiny"),
         ("telegram_bot_token: tiny", "tiny"),
         ("client_secret: tiny", "tiny"),
+        ("clientSecret: tiny", "tiny"),
         ("database_url: sqlite-short", "sqlite-short"),
         ("aws_secret_access_key: tiny", "tiny"),
     ],
@@ -1690,6 +1692,21 @@ def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
             "abc.def.ghi",
             "token_budget=1000",
         ),
+        (
+            'Authorization: Digest username="foo", realm="example", response="tiny-secret" session_id=abc123',
+            "tiny-secret",
+            "session_id=abc123",
+        ),
+        (
+            "Proxy-Authorization: Basic tiny-secret session_id=abc123",
+            "tiny-secret",
+            "session_id=abc123",
+        ),
+        (
+            "proxy-authorization=Negotiate abc.def.ghi token_budget=1000",
+            "abc.def.ghi",
+            "token_budget=1000",
+        ),
     ],
 )
 def test_diagnostics_redacts_non_bearer_authorization_values(
@@ -1701,7 +1718,19 @@ def test_diagnostics_redacts_non_bearer_authorization_values(
 
     assert secret not in redacted
     assert preserved in redacted
-    assert "Authorization: <redacted>" in redacted or "authorization=<redacted>" in redacted
+    assert (
+        "Authorization: <redacted>" in redacted
+        or "authorization=<redacted>" in redacted
+        or "Proxy-Authorization: <redacted>" in redacted
+        or "proxy-authorization=<redacted>" in redacted
+    )
+
+
+def test_diagnostics_redacts_unclosed_quoted_sensitive_scalar() -> None:
+    redacted = redact_diagnostic_text('password: "correct horse battery staple', limit=1000)
+
+    assert "correct horse battery staple" not in redacted
+    assert redacted == "password: <redacted>"
 
 
 @pytest.mark.parametrize(
@@ -1808,6 +1837,54 @@ raise SystemExit(2)
     assert "token_budget: 1000" in stderr_preview
     assert "token_budget=1000" in stderr_preview
     assert "token_budget=2000" in stderr_preview
+
+
+def test_nonzero_exit_diagnostic_previews_redact_digest_proxy_and_camelcase_credentials(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        f"""
+import sys
+print('Authorization: Digest username="foo", realm="example", response="tiny-secret" session_id=auth123', file=sys.stderr)
+print('Proxy-Authorization: Basic proxy-short session_id=proxy123', file=sys.stderr)
+print('{{"accessToken":"json-short","session_id":"camel123"}}', file=sys.stderr)
+print('clientSecret: yaml-short token_budget=1000', file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    assert exc_info.value.error_code is GenerationErrorCode.NON_ZERO_EXIT
+    stderr_preview = exc_info.value.details["stderr_preview"]
+    assert "tiny-secret" not in stderr_preview
+    assert "proxy-short" not in stderr_preview
+    assert "json-short" not in stderr_preview
+    assert "yaml-short" not in stderr_preview
+    assert 'Authorization: <redacted> session_id=auth123' in stderr_preview
+    assert 'Proxy-Authorization: <redacted> session_id=proxy123' in stderr_preview
+    assert '{"accessToken":"<redacted>","session_id":"camel123"}' in stderr_preview
+    assert 'clientSecret: <redacted> token_budget=1000' in stderr_preview
+
+
+def test_preview_diagnostics_from_files_redacts_truncated_quoted_sensitive_scalar(
+    tmp_path: Path,
+) -> None:
+    long_password = "correct horse battery staple " * 130
+    stderr_text = f'password: "{long_password}"\n'
+    assert len(stderr_text.encode("utf-8")) > local_cli_backend_module._PREVIEW_LIMIT * 4
+
+    stdout_path = tmp_path / "stdout.txt"
+    stderr_path = tmp_path / "stderr.txt"
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text(stderr_text, encoding="utf-8")
+
+    previews = local_cli_backend_module._preview_diagnostics_from_files(stdout_path, stderr_path)
+
+    assert "correct horse battery staple" not in previews["stderr_preview"]
+    assert previews["stderr_preview"] == "password: <redacted>"
 
 
 def test_effective_local_cli_concurrency_uses_minimum() -> None:
