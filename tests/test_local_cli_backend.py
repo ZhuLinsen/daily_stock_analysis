@@ -1646,6 +1646,26 @@ def test_diagnostics_redacts_short_credential_assignments(text: str, secret: str
     assert "<redacted>" in redacted
 
 
+def test_diagnostics_redacts_yaml_scalars_with_spaces_and_blocks() -> None:
+    text = (
+        "retry: 3 password: correct horse battery staple\n"
+        "INFO private_key: |\n"
+        "  tiny-secret\n"
+        "  second secret line\n"
+        "token_budget: 1000\n"
+    )
+
+    redacted = redact_diagnostic_text(text, limit=1000)
+
+    assert "correct horse battery staple" not in redacted
+    assert "tiny-secret" not in redacted
+    assert "second secret line" not in redacted
+    assert "retry: 3" in redacted
+    assert "token_budget: 1000" in redacted
+    assert "password: <redacted>" in redacted
+    assert "private_key: <redacted>" in redacted
+
+
 @pytest.mark.parametrize(
     "sensitive_pattern",
     local_cli_backend_module._SENSITIVE_ENV_PATTERNS,
@@ -1687,7 +1707,9 @@ def test_nonzero_exit_diagnostic_previews_redact_short_credentials(
         """
 import sys
 print("CUSTOM_API_KEY=stdout-short session_id=abc123")
+print("password: correct horse battery staple")
 print('"api_keys": "stderr-short" token_budget: 1000', file=sys.stderr)
+print("private_key: |\\n  tiny-secret", file=sys.stderr)
 raise SystemExit(2)
 """,
     )
@@ -1700,8 +1722,12 @@ raise SystemExit(2)
     stderr_preview = exc_info.value.details["stderr_preview"]
     assert "stdout-short" not in stdout_preview
     assert "stderr-short" not in stderr_preview
+    assert "correct horse battery staple" not in stdout_preview
+    assert "tiny-secret" not in stderr_preview
     assert "CUSTOM_API_KEY=<redacted>" in stdout_preview
+    assert "password: <redacted>" in stdout_preview
     assert '"api_keys": "<redacted>"' in stderr_preview
+    assert "private_key: <redacted>" in stderr_preview
     assert "session_id=abc123" in stdout_preview
     assert "token_budget: 1000" in stderr_preview
 

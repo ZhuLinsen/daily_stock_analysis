@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 from urllib.parse import parse_qsl, urlsplit
 
 from src.llm.backend_registry import (
@@ -234,6 +234,22 @@ _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN = re.compile(
     """,
     re.VERBOSE,
 )
+_DIAGNOSTIC_LINE_FIELD_PATTERN = re.compile(
+    r"""
+    (?<![A-Za-z0-9_-])
+    (?P<name>[A-Za-z][A-Za-z0-9_-]*)
+    (?P<separator>[ \t]*:[ \t]*)
+    (?P<value>[^\r\n]*?)
+    (?=
+        (?:[ \t]+[A-Za-z][A-Za-z0-9_-]*[ \t]*(?:=|:)[ \t]*)
+        |
+        \r?\n?
+        $
+    )
+    """,
+    re.VERBOSE,
+)
+_YAML_BLOCK_SCALAR_PATTERN = re.compile(r"^[|>][0-9+-]*[ \t]*(?:#.*)?$")
 _CLAUDE_CODE_STATIC_INSTRUCTION = (
     "Generate the requested DSA analysis output from stdin. "
     "Return only the final response content. Do not call tools, read files, "
@@ -472,6 +488,85 @@ def _is_sensitive_diagnostic_field_name(name: str) -> bool:
     )
 
 
+def _leading_space_count(text: str) -> int:
+    return len(text) - len(text.lstrip(" "))
+
+
+def _is_yaml_block_scalar(value: str) -> bool:
+    return bool(_YAML_BLOCK_SCALAR_PATTERN.match(value.strip()))
+
+
+def _replace_spans(text: str, replacements: Sequence[Tuple[int, int, str]]) -> str:
+    updated = text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        updated = f"{updated[:start]}{replacement}{updated[end:]}"
+    return updated
+
+
+def _redact_multiline_sensitive_fields(text: str) -> str:
+    """Redact YAML/log scalar fields that span spaces or indented block lines."""
+
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+
+    redacted_lines = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        matches = list(_DIAGNOSTIC_LINE_FIELD_PATTERN.finditer(line))
+        if not matches:
+            redacted_lines.append(line)
+            index += 1
+            continue
+
+        replacements = []
+        block_match: Optional[re.Match[str]] = None
+        for match in matches:
+            if not _is_sensitive_diagnostic_field_name(match.group("name")):
+                continue
+
+            normalized_name = match.group("name").lower().replace("-", "_")
+            if normalized_name in {"authorization", "cookie"}:
+                continue
+
+            value = match.group("value")
+            stripped_value = value.strip()
+            if _is_yaml_block_scalar(value):
+                replacements.append((match.start("value"), match.end("value"), "<redacted>"))
+                block_match = block_match or match
+                continue
+
+            if (
+                stripped_value
+                and stripped_value[0] not in {"'", '"', "{", "["}
+                and re.search(r"\s", stripped_value)
+            ):
+                replacements.append((match.start("value"), match.end("value"), "<redacted>"))
+
+        if not replacements:
+            redacted_lines.append(line)
+            index += 1
+            continue
+
+        redacted_lines.append(_replace_spans(line, replacements))
+        index += 1
+
+        if block_match is None:
+            continue
+
+        base_indent = _leading_space_count(line)
+        while index < len(lines):
+            next_line = lines[index]
+            if next_line.strip() and _leading_space_count(next_line) <= base_indent:
+                break
+            if not next_line.strip():
+                redacted_lines.append(next_line)
+            index += 1
+
+    return "".join(redacted_lines)
+
+
 def _redact_sensitive_diagnostic_assignments(text: str) -> str:
     """Redact parsed env and structured-field assignments under separate contracts."""
 
@@ -487,6 +582,7 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
         )
 
     redacted = _DIAGNOSTIC_ENV_ASSIGNMENT_PATTERN.sub(redact_env, text)
+    redacted = _redact_multiline_sensitive_fields(redacted)
     redacted = _DIAGNOSTIC_JSON_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
     return _DIAGNOSTIC_FIELD_ASSIGNMENT_PATTERN.sub(redact_structured_field, redacted)
 
