@@ -1,6 +1,14 @@
 # 多策略投资建议契约：Baseline 语义、Phase 1 收敛、Phase 2/3/4 边界
 
-本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 2 只在 Phase 1 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
+本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
+
+## Skill opinion 样本边界（Issue #1904 P2 PR1）
+
+`AgentRuntimeFacts.skill_opinions` 只投影 individual SkillAgent 的低敏字段：`skill_id`、canonical `signal`、`confidence` 和 opinion 时间。`skill_consensus` / `strategy_consensus`、DecisionAgent、基础 Agent 以及 Invalid Opinion 均不得进入该集合；同一次运行出现同一 `skill_id` 的多条有效观点时，只保留最后一条。SkillAgent 首次解析时必须拒绝非数字、非有限或超出 `[0, 1]` 的 confidence；AgentOpinion 保留输入合法性标记供 RuntimeFacts 防御校验，禁止将非法输入 clamp 后作为有效样本继续使用。
+
+分析历史成功保存后，Pipeline 以 best-effort 方式写入 `skill_opinion_samples` sidecar。父历史存在性检查与样本插入必须位于同一个 SQLite 原子写事务中，历史删除复用相同的写事务与 locked retry；无论插入或删除谁先执行，均不得留下孤儿样本。幂等键为 `(analysis_history_id, skill_id, sample_schema_version)`；重复执行不得覆盖首次保存的不可变样本。写入失败只记录低敏错误类型，不得使报告、历史记录或 DecisionSignal 主流程失败。
+
+当前 `sample_schema_version=skill-opinion-sample-v1`。`skill_version` 与 `horizon` 仅保留为空值兼容位：现有 Skill 定义和 SkillAgent 输出没有可信的版本与周期契约，因此本阶段不得从 LLM `raw_data` 猜测或伪造。PR1 不创建 outcome、不提供 skill 表现统计、不实现 `get_skill_summary()`，也不改变 `AgentMemory` / `SkillAggregator` 权重。
 
 ## 术语与边界
 
@@ -126,6 +134,52 @@ Baseline 禁止使用 `sum(...) or 1.0` 之类的兜底把零权重掩盖成分�
     "consensus_level": "high",
     "conflict_severity": "none",
     "conflict_count": 0
+  },
+  "deliberation": {                       // 可选；仅 material conflicts 触发
+    "status": "completed",
+    "mode": "multi_round_v4",
+    "rounds": 2,
+    "agenda": [ /* conflict agenda item */ ],
+    "responses": [ /* per-agenda participant response */ ],
+    "summary": {
+      "resolution_status": "partially_resolved",
+      "resolved_conflict_count": 0,
+      "unresolved_conflict_count": 1,
+      "minority_view_preserved": true,
+      "confidence_adjustment": -0.06,
+      "confidence_adjustment_reason_key": "deliberation.confidence.high_partially_resolved"
+    },
+    "round_history": [
+      {
+        "round": 1,
+        "source_mode": "mediator_v0",
+        "status": "baseline",
+        "changed_response_count": 2,
+        "confidence_adjustment": -0.06
+      },
+      {
+        "round": 2,
+        "source_mode": "multi_round_v4",
+        "status": "accepted",
+        "changed_response_count": 1,
+        "confidence_adjustment": -0.09
+      }
+    ]
+  },
+  "revision_projection": {                // 可选；仅 deliberation 存在时生成的 preview
+    "status": "computed",
+    "mode": "preview_only",
+    "source_mode": "mediator_v0",
+    "projected_signal": "hold",
+    "projected_weighted_score": 3.0,
+    "projected_confidence": 0.6696,
+    "projected_original_confidence": 0.72,
+    "projected_conflict_count": 1,
+    "projected_conflict_severity": "medium",
+    "projected_consensus_level": "low",
+    "changed_skill_count": 2,
+    "changed_skills": ["trend_v1", "theme_v1"],
+    "final_signal_overridden": false
   }
 }
 ```
@@ -146,9 +200,111 @@ Opinion Item 结构（`supporting_skills` / `opposing_skills` 每个元素）：
 
 Baseline 明确 `strategy_synthesis` 是**由 SkillAggregator 确定性算法产出的唯一权威合成结果**。Orchestrator 的 `_collect_strategy_synthesis()` 必须优先使用 `ctx.get_data("skill_consensus")` 中的 synthesis，只有在 SkillAggregator 未产出时才允许回退到 `ctx.opinions` 中的 `skill_consensus` opinion。**LLM 返回的 dashboard 不得覆盖或修改 `dashboard.strategy_synthesis`**；`normalize_dashboard_payload` 收到 LLM 输出时应剥离 LLM 侧的 `strategy_synthesis` 字段，避免 LLM 幻觉污染权威合成结果。
 
+### Strategy Deliberation v0（Phase 1.5）
+
+`strategy_synthesis.deliberation` 是可选协同推理块，只在中高强度冲突或明确关键冲突类型出现时生成。v0 使用确定性 `mediator_v0`，不调用 LLM、不让策略自由聊天、不修改原始 opinion、不重新计算 `final_signal`。它的职责是把冲突转成可审计议题，并记录策略回应、轻量修正与综合置信度折减原因。
+
+触发条件：
+
+- `len(valid_opinions) >= 2`
+- 且存在 `severity in {"medium", "high"}` 的 conflict，或 conflict type 属于 `directional_opposition` / `high_confidence_dissent`
+
+v0 revision 只允许：
+
+- `unchanged`：坚持原观点。
+- `softened`：仅降低 confidence，或将 `strong_buy -> buy`、`strong_sell -> sell`；`buy` / `sell` / `hold` 不反转，只可降低 confidence。
+
+v0 明确禁止：
+
+- `reversed`：不得反转观点。
+- 重新计算 `final_signal`。
+- 引入多轮 debate、并发调度、前端展示或新配置项。
+
+`deliberation.summary.confidence_adjustment` 只作为 `StrategySynthesizer` 在原 conflict severity 折减后的额外保守折减。高冲突部分缓解时默认约 `-0.06`，未缓解时约 `-0.08`；中冲突部分缓解时默认约 `-0.04`，未缓解时约 `-0.05`。该字段必须保留在 payload 中，方便后续 renderer 或 Web UI 展示“为什么置信度被继续下调”。
+
+### LLM Mediator v1（Phase 1.6）
+
+`llm_mediator_v1` 是 `StrategyDeliberation` 的可注入增强模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `LLMDeliberationMediator`，由它先生成 v0 baseline agenda，再把低敏结构化 opinions/conflicts/baseline payload 发送给 LLM callable。LLM 只能返回同 schema 的 JSON 对象；返回文本、坏 JSON、缺字段、ID 漂移或越界 revision 时，必须无条件回退 v0。
+
+v1 schema guard：
+
+- `agenda` 必须保留 v0 的 `agenda_id` 集合；不得新增、删除或替换参与方。
+- `responses` 必须覆盖 v0 的 `(agenda_id, skill_id)` 集合；不得新增未参与策略。
+- `revision` 只允许 `unchanged` / `softened`；`reversed` 继续禁止。
+- v0 baseline 已经 `softened` 的 response 必须继续保持 `softened`，不得恢复 original signal，且 `revised_confidence` 不得高于 baseline 的已验证值。
+- v0 baseline 为 `unchanged` 的 response 可以保持不变，也可以按原规则继续 `softened`；不得反转 signal 或提高 confidence。
+- `summary.confidence_adjustment` 不得比 v0 baseline 更乐观，且单次额外折减下限为 `-0.10`，避免 LLM 撤销确定性折减。
+
+v1 输出通过校验时 `deliberation.mode="llm_mediator_v1"`；否则保持 `mediator_v0` 输出。v1 仍不调用策略 agent 自审、不多轮 debate、不重算 `final_signal`，也不新增配置项。
+
+### Strategy Self-Review v2（Phase 1.7）
+
+`self_review_v2` 是 `StrategyDeliberation` 的可注入自审模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `StrategySelfReviewMediator`，由它先获取 baseline deliberation（可以是 `mediator_v0` 或通过校验的 `llm_mediator_v1`），再按每个 baseline response 的 `(agenda_id, skill_id)` 调用自审 callable。未来该 callable 可以由真实冲突参与 strategy agent 执行；当前契约只规定输入/输出与降级行为。
+
+v2 self-review guard：
+
+- 每个 baseline response 必须返回且只返回自己的 response JSON；不得修改其它策略回应。
+- 返回的 `agenda_id` / `skill_id` 必须与 baseline response 完全一致。
+- `revision` 仍只允许 `unchanged` / `softened`；`reversed` 继续禁止。
+- baseline 已经 `softened` 时不得改回 `unchanged`、恢复 original signal 或提高 baseline `revised_confidence`。
+- baseline 为 `unchanged` 时可以保持不变，也可以按原规则继续 `softened`；不得反转 signal 或提高 confidence。
+- v2 根据通过校验的 responses 重算 summary 时，最终 `confidence_adjustment` 不得比输入 baseline 更乐观。
+- 任一参与方缺失、坏 JSON、ID 漂移、越权修改或试图 `reversed`，整轮 self-review 回退到 baseline deliberation，禁止混合部分有效自审。
+
+v2 输出通过校验时 `deliberation.mode="self_review_v2"`。v2 仍只做一轮、不新增并发调度、不重算 `final_signal`、不改变原始 opinion，也不新增配置项。
+
+### Revision Projection v3（Phase 1.8）
+
+`strategy_synthesis.revision_projection` 是可选预览块，只在 `deliberation` 存在时由 `StrategySynthesizer` 计算。它读取已经通过 v0/v1/v2 schema guard 的 `responses`，把 `revision="softened"` 的回应应用到临时 `StrategyOpinion` 副本上，再用 confidence-weighted score 预览新的综合结果。
+
+v3 输出边界：
+
+- `revision_projection.mode` 固定为 `preview_only`。
+- `source_mode` 记录投影来源：`mediator_v0` / `llm_mediator_v1` / `self_review_v2`。
+- `projected_signal` / `projected_weighted_score` / `projected_confidence` 只描述采纳 softened 修订后的预览结果。
+- `projected_conflict_count` / `projected_conflict_severity` / `projected_consensus_level` 基于临时修订副本重新检测，不改写原始 conflicts。
+- `changed_skill_count` / `changed_skills` 只统计实际 softened 的策略。
+- `final_signal_overridden` 必须固定为 `false`，用于明确 v3 不覆盖权威最终信号。
+
+v3 明确禁止：
+
+- 把 `projected_signal` 回写到顶层 `final_signal`。
+- 把 `projected_weighted_score` 回写到顶层 `weighted_score`。
+- 把 `projected_confidence` 回写到顶层 `confidence`。
+- 在没有 `deliberation` 的场景输出空 projection。
+- 接受未经 v0/v1/v2 guard 的自由文本、反转信号或新增策略回应。
+
+v3 在投影入口还会重新核对 `original_signal`、允许的 softened signal 与 `revised_confidence` 上界；即使调用方注入了未使用内置 mediator guard 的自定义结果，也不会把更激进的 response 应用到临时 opinion 副本。
+
+### Configurable Multi-Round Deliberation v4（Phase 1.9）
+
+`multi_round_v4` 是 `StrategyDeliberation` 的可注入多轮增强模式，不是默认运行时行为。调用方可以向 `StrategySynthesizer(deliberation_mediator=...)` 注入 `MultiRoundDeliberationMediator`，并通过构造参数配置：
+
+- `fallback`：第一轮 baseline mediator，可为 `mediator_v0`、`llm_mediator_v1` 或 `self_review_v2`。
+- `max_rounds`：总轮数上限，范围 `1–4`；`1` 等价只保留 fallback baseline。
+- `stop_when_stable`：当某轮没有任何 response 变化时是否提前停止，默认开启。
+- `round_completion(round_index, messages)`：下一轮结构化修订 callable，只能返回同 schema JSON。
+
+v4 round guard：
+
+- 每轮必须保留上一轮的 `agenda_id` 集合和 `(agenda_id, skill_id)` response 集合；不得新增、删除或替换参与方。
+- `revision` 仍只允许 `unchanged` / `softened`；`reversed` 继续禁止。
+- 上一轮已经 `softened` 的 response 不能回到 `unchanged`。
+- 上一轮已经 `softened` 的 response 不能更换 `revised_signal`，也不能提高 `revised_confidence`。
+- 上一轮 `unchanged` 的 response 可以继续 `unchanged`，也可以按原规则 `softened`。
+- `summary.confidence_adjustment` 不能为正数，也不能比上一轮更乐观；单轮下限仍按 v1 guard 钳制到 `-0.10`。
+- 任一轮坏 JSON、ID 漂移、越界 revision、撤销 softened 或提高 confidence 时，停止后续轮次并返回上一轮已验证结果；如果第 2 轮即失败，则保持 fallback baseline。
+
+v4 输出：
+
+- 至少接受一轮额外修订时，`deliberation.mode="multi_round_v4"`。
+- `deliberation.rounds` 记录实际接受到的总轮数。
+- `deliberation.round_history` 记录 baseline 与每个已接受轮次的 `round`、`source_mode`、`status`、`changed_response_count` 和 `confidence_adjustment`。
+- v4 仍不重算顶层 `final_signal`，不改变原始 opinion，不直接覆盖顶层 `weighted_score` 或 `confidence`；顶层 confidence 只继续读取最终 `deliberation.summary.confidence_adjustment` 做保守折减。
+
 ### 关键不变量
 
-Baseline 的语义边界收敛为八条不变量。所有 Phase N 的实现必须同时满足这八条，任一违反视为契约破坏。
+Baseline 的语义边界收敛为九条不变量。所有 Phase N 的实现必须同时满足这九条，任一违反视为契约破坏。
 
 | ID | 不变量 | 场景 | 期望 |
 | --- | --- | --- | --- |
@@ -160,6 +316,7 @@ Baseline 的语义边界收敛为八条不变量。所有 Phase N 的实现必�
 | I-6 | Payload 与 renderer 语义一致 | `dashboard.strategy_synthesis` 值 | 四条 renderer（Markdown / WeChat / Notification / History）实际文本必须与 payload 完全一致，不得出现"共识度：高 + 支持策略：无"等自相矛盾组合 |
 | I-7 | Canonical-First 评分 | Aggregator / ConflictDetector / Synthesizer 内部的评分、加权、冲突判定、分组 | 必须使用 `normalize_strategy_signal()` 返回的 canonical 小写值；禁止用大写 `"BUY"`、别名等原始字符串直接查 `strategy_signal_score` |
 | I-8 | 多语言空占位符 | `supporting_skills` / `opposing_skills` 为空时的展示 | 必须通过 `labels.none_label` 按 `report_language` 查表；禁止在代码或模板中硬编码中文 `"无"` / 英文 `"None"` / 韩文 `"없음"` 字面量 |
+| I-9 | Deliberation 单调保守 | v1/v2/v4 基于上一层已验证 baseline 修订，v3 应用 projection | 不得撤销已有 `softened`、恢复 original signal、提高 baseline revised confidence 或提高 baseline confidence adjustment；越界结果回退上一层 |
 
 ## Phase 1 语义收敛（本 PR 交付范围）
 
@@ -180,14 +337,17 @@ Phase 1 涉及的入口：
 
 Phase 1 不改变 `AgentOpinion` 字段、不改变 API 返回结构、不改变数据库 schema、不新增配置项、不改变现有 skill 的执行方式。
 
-## Phase 2 并发调度（本 PR 不做）
+## Phase 2 并发调度
 
-Phase 2 只在 Phase 1 契约下新增 2–4 策略并发调度与阶段调度：
+Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度：
 
-- 策略执行从串行改为并发（`asyncio.gather` 或 thread pool），阶段调度中按 `SKILL_CONCURRENCY` / `SKILL_TIMEOUT_PER_SKILL` 控制。
-- 单个 skill 超时或异常，走 Baseline Invalid 处理路径（`reason="skill_timeout"` / `skill_error"`），进入 Diagnostics，不阻塞其他 skill 与主流程。
-- Phase 2 不改变 Baseline Evidence Chain / Diagnostics 分离原则、不改变阵营语义、不改变共识门槛、不改变 payload schema。
-- Phase 2 不改变 renderer 展示逻辑；`invalid_opinion_count` 计数天然覆盖超时/异常 skill。
+- `src/agent/skills/scheduler.py::AgentSkillScheduler` 使用 thread pool 并发执行 specialist skill agents；每个 skill 使用 `AgentContext` 副本运行，并通过独立的 `copy_context()` 把主管线冻结的 target date 等 `ContextVar` 状态传播到 worker，主线程按路由顺序合并结构化 opinion，避免多个 skill 同时写共享 `ctx.opinions`。
+- specialist 最终入口最多选择 4 个策略；`AGENT_SKILL_CONCURRENCY` 控制同时运行的 worker 数，默认 `3`，范围 `1–4`。默认值下第 4 个策略进入下一 concurrency wave，不会被路由层静默丢弃。
+- `AGENT_SKILL_AGENT_TIMEOUT_S` 继续作为单个 skill 的独立超时上限；Pipeline 总预算开启时，`_run_stage_agent()` 仍取 Pipeline 剩余预算与 skill 独立上限的较小值。
+- 单个 skill 超时或异常，走 Diagnostics 路径（`reason="skill_timeout"` / `"skill_error"`），进入 `ctx.meta["invalid_opinions"]`，不阻塞其他 skill 与主流程。
+- Phase 2 不改变 Baseline Evidence Chain / Diagnostics 分离原则、不改变阵营语义、不改变共识门槛、不改变 `strategy_synthesis` payload schema。
+- Phase 2 不改变 renderer 展示逻辑；scheduler timeout/error/no-opinion 与 signal 校验失败统一进入 StrategyEngine 的 authoritative Diagnostics，`invalid_opinion_count` / `total_opinion_count` 覆盖这些失败 skill。
+- `ctx.meta["skill_scheduler"]` 仅作为运行时诊断，记录调度模式、并发数、单 skill timeout、调度数量、完成数量和 invalid 数量；不得参与综合评分。
 
 ## Phase 3 前端多语言完整展示（本 PR 不做）
 

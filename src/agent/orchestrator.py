@@ -30,6 +30,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from src.agent.chat_context import build_visible_chat_history
@@ -48,6 +49,7 @@ from src.agent.protocols import (
 )
 from src.agent.skills.defaults import is_skill_agent_name
 from src.agent.skills.engine import EvidencePartition, StrategyEngine, StrategyResult, StrategyResultStatus
+from src.agent.skills.scheduler import AgentSkillScheduler, SkillBatchResult
 from src.agent.risk_override import (
     RiskOverrideApplication,
     build_risk_override_application,
@@ -162,6 +164,14 @@ class AgentOrchestrator:
             for key, attr in entries
             if (val := getattr(config, attr, None)) is not None and val > 0
         }
+
+    def _get_skill_concurrency(self) -> int:
+        raw_value = getattr(self.config, "agent_skill_concurrency", 3)
+        try:
+            parsed = int(raw_value or 3)
+        except (TypeError, ValueError):
+            parsed = 3
+        return max(1, min(4, parsed))
 
     def _build_timeout_result(
         self,
@@ -579,7 +589,34 @@ class AgentOrchestrator:
                 self._skill_agent_names = {a.agent_name for a in specialist_agents}
                 specialist_agents_inserted = True
                 if specialist_agents:
-                    agents[index:index] = specialist_agents
+                    batch = self._run_specialist_agent_batch(
+                        specialist_agents,
+                        ctx,
+                        progress_callback=progress_callback,
+                        timeout_seconds=remaining_budget,
+                    )
+                    for stage_result in batch.stage_results:
+                        stats.record_stage(stage_result)
+                        all_tool_calls.extend(
+                            tc for tc in (stage_result.meta.get("tool_calls_log") or [])
+                        )
+                        models_used.extend(stage_result.meta.get("models_used", []))
+                        if stage_result.status == StageStatus.FAILED:
+                            self._record_degraded_stage(ctx, stage_result.stage_name, stage_result)
+                    ctx.opinions.extend(batch.opinions)
+                    invalid_bucket = ctx.meta.get("invalid_opinions")
+                    if not isinstance(invalid_bucket, list):
+                        invalid_bucket = []
+                    invalid_bucket.extend(batch.invalid_records)
+                    ctx.meta["invalid_opinions"] = invalid_bucket
+                    ctx.meta["skill_scheduler"] = {
+                        "mode": "thread_pool",
+                        "max_concurrency": batch.max_concurrency,
+                        "timeout_per_skill": batch.timeout_per_skill,
+                        "scheduled_skill_count": len(specialist_agents),
+                        "completed_skill_count": sum(1 for item in batch.stage_results if item.success),
+                        "invalid_skill_count": len(batch.invalid_records),
+                    }
                     continue
 
             if agent.agent_name == "decision":
@@ -774,13 +811,13 @@ class AgentOrchestrator:
                 technical_skill_policy=self.technical_skill_policy,
             )
             router = SkillRouter()
-            selected = router.select_skills(ctx)
+            selected = router.select_skills(ctx, max_count=4)
             if not selected:
                 return []
 
             from src.agent.skills.skill_agent import SkillAgent
             agents = []
-            for skill_id in selected[:3]:  # cap at 3 concurrent skills
+            for skill_id in selected:
                 agent = self._prepare_agent(SkillAgent(
                     skill_id=skill_id,
                     **common_kwargs,
@@ -798,6 +835,77 @@ class AgentOrchestrator:
     def _build_strategy_agents(self, ctx: AgentContext) -> list:
         """Compatibility wrapper for legacy tests/imports."""
         return self._build_specialist_agents(ctx)
+
+    def _run_specialist_agent_batch(
+        self,
+        agents: list,
+        ctx: AgentContext,
+        *,
+        progress_callback: Optional[Callable] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> SkillBatchResult:
+        sub_agent_timeout_map = self._get_sub_agent_timeout_map()
+        configured_skill_timeout = sub_agent_timeout_map.get("skill", 0.0)
+        budget_per_skill = self._skill_batch_timeout_slice(
+            len(agents),
+            timeout_seconds=timeout_seconds,
+        )
+        if configured_skill_timeout and budget_per_skill is not None:
+            timeout_per_skill = min(configured_skill_timeout, budget_per_skill)
+        elif configured_skill_timeout:
+            timeout_per_skill = configured_skill_timeout
+        elif budget_per_skill is not None:
+            timeout_per_skill = budget_per_skill
+        else:
+            timeout_per_skill = 0.0
+        scheduler = AgentSkillScheduler(
+            max_concurrency=self._get_skill_concurrency(),
+            timeout_per_skill=timeout_per_skill,
+        )
+        if progress_callback:
+            for agent in agents:
+                progress_callback(stream_event(
+                    "stage_start",
+                    stage=agent.agent_name,
+                    message=f"Starting {agent.agent_name} analysis...",
+                ))
+
+        batch = scheduler.run(
+            agents,
+            ctx,
+            self._run_stage_agent,
+            progress_callback=progress_callback,
+        )
+        if progress_callback:
+            for result in batch.stage_results:
+                progress_callback(stream_event(
+                    "stage_done",
+                    stage=result.stage_name,
+                    status=result.status.value,
+                    duration=result.duration_s,
+                ))
+        return batch
+
+    def _skill_batch_timeout_slice(
+        self,
+        agent_count: int,
+        *,
+        timeout_seconds: Optional[float],
+    ) -> Optional[float]:
+        """Split remaining specialist budget across queued concurrency waves."""
+        if timeout_seconds is None:
+            return None
+        try:
+            remaining = float(timeout_seconds)
+        except (TypeError, ValueError):
+            return None
+        if remaining <= 0:
+            return 0.0
+
+        count = max(1, int(agent_count or 1))
+        worker_count = min(self._get_skill_concurrency(), count)
+        wave_count = max(1, ceil(count / worker_count))
+        return remaining / wave_count
 
     # -----------------------------------------------------------------
     # Skill aggregation
@@ -894,7 +1002,13 @@ class AgentOrchestrator:
         Replaces the old two-step _partition_skill_opinions + _aggregate_skill_opinions
         calls. The engine is the single authoritative owner of strategy_synthesis.
         """
-        result = self.strategy_engine.process(ctx.opinions)
+        existing_invalid = ctx.meta.get("invalid_opinions")
+        if not isinstance(existing_invalid, list):
+            existing_invalid = []
+        result = self.strategy_engine.process(
+            ctx.opinions,
+            diagnostic_records=existing_invalid,
+        )
 
         ctx.meta["invalid_opinions"] = list(result.invalid_records)
         ctx.opinions = list(result.non_skill_opinions) + list(result.valid_skill_opinions)

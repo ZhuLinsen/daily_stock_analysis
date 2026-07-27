@@ -73,8 +73,6 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
 
 WEB_SETTINGS_HIDDEN_FROM_UI = {
     "DATABASE_PATH",
-    "DINGTALK_WEBHOOK_URL",
-    "DINGTALK_SECRET",
     "SQLITE_WAL_ENABLED",
     "SQLITE_BUSY_TIMEOUT_MS",
     "SQLITE_WRITE_RETRY_MAX",
@@ -1675,6 +1673,59 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["not_webhook_delivery", "restart_required"],
     },
+    "DINGTALK_WEBHOOK_URL": {
+        "title": "DingTalk Bot Webhook",
+        "description": "DingTalk group robot webhook URL. This is separate from App/Stream mode.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {
+            "item_type": "url",
+            "allowed_schemes": ["http", "https"],
+        },
+        "display_order": 18,
+        "help_key": "settings.notification.DINGTALK_WEBHOOK_URL",
+        "examples": [
+            "DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=your_token",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：通知渠道配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
+            },
+        ],
+        "warning_codes": ["webhook_secret_value"],
+    },
+    "DINGTALK_SECRET": {
+        "title": "DingTalk Signing Secret",
+        "description": "Signing secret for a DingTalk group robot. Leave empty when signing is disabled.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 19,
+        "help_key": "settings.notification.DINGTALK_SECRET",
+        "examples": [
+            "DINGTALK_SECRET=your_dingtalk_signing_secret",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：通知渠道配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
+            },
+        ],
+        "warning_codes": ["secret_value"],
+    },
     "PUSHPLUS_TOKEN": {
         "title": "PushPlus Token",
         "description": "Token for PushPlus notifications.",
@@ -2527,7 +2578,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "REPORT_LANGUAGE": {
         "title": "Report Language",
-        "description": "Default output language for reports and notification templates. Supported values: zh, en.",
+        "description": "Default output language for reports, Agent Chat fallback replies, and notification templates. Supported values: zh, en, ko.",
         "category": "notification",
         "data_type": "string",
         "ui_control": "select",
@@ -2546,6 +2597,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "REPORT_LANGUAGE=zh",
             "REPORT_LANGUAGE=en",
+            "REPORT_LANGUAGE=ko",
         ],
         "docs": [
             {
@@ -4005,6 +4057,32 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "examples": [
             "AGENT_RISK_OVERRIDE=true",
             "AGENT_RISK_OVERRIDE=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：Agent 配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "AGENT_SKILL_CONCURRENCY": {
+        "title": "Strategy Skill Concurrency",
+        "description": "Maximum number of specialist strategy-skill agents to run concurrently in specialist mode.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "3",
+        "options": [],
+        "validation": {"min": 1, "max": 4},
+        "display_order": 64,
+        "help_key": "settings.agent.AGENT_SKILL_CONCURRENCY",
+        "examples": [
+            "AGENT_SKILL_CONCURRENCY=3",
+            "AGENT_SKILL_CONCURRENCY=4",
         ],
         "docs": [
             {

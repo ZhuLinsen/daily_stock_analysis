@@ -361,13 +361,21 @@ def _is_us_code(stock_code: str) -> bool:
 
 
 def _is_hk_code(stock_code: str) -> bool:
+    """
+    判定是否为港股代码，与 ``data_provider.base._is_hk_market`` 的市场契约一致：
+    支持 ``.HK`` 后缀、``HK00700`` 前缀形式，以及 4-5 位纯数字裸码（港股
+    普通股为 4 位如 ``0001`` 长和、``0941`` 中国移动；最多 5 位）。
+
+    Note: 4 位裸数字与 A 股不冲突——A 股 ETF/股票均为 6 位。
+    """
     normalized = (stock_code or "").strip().upper()
     if normalized.startswith("HK"):
         digits = normalized[2:]
         return digits.isdigit() and 1 <= len(digits) <= 5
     if normalized.endswith(".HK"):
-        return True
-    if normalized.isdigit() and len(normalized) == 5:
+        base = normalized[:-3]
+        return base.isdigit() and 1 <= len(base) <= 5
+    if normalized.isdigit() and 4 <= len(normalized) <= 5:
         return True
     return False
 

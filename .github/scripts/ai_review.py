@@ -47,13 +47,35 @@ def run_git(args):
 
 
 def _event_payload():
+    """Read GitHub Actions event payload from ``GITHUB_EVENT_PATH``.
+
+    Returns an empty dict when the file is missing, unreadable, or contains
+    invalid JSON, preserving the prior graceful-degradation behaviour, but
+    emits a warning distinguishing the three failure modes so the failure
+    no longer silently collapses into "PR number is unavailable" downstream.
+    The warning records the exception type and the source path only; it
+    never prints the payload content.
+    """
     event_path = os.environ.get('GITHUB_EVENT_PATH')
-    if not event_path or not os.path.exists(event_path):
+    if not event_path:
+        return {}
+    if not os.path.exists(event_path):
+        print(f"⚠️ GITHUB_EVENT_PATH 指向的文件不存在: {event_path}，事件载荷降级为空对象")
         return {}
     try:
         with open(event_path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except (OSError, ValueError):
+    except UnicodeDecodeError as exc:
+        # 文件可读但字节序列不是合法 UTF-8(open 默认会抛 UnicodeDecodeError,
+        # 它是 ValueError 子类但既不是 OSError 也不是 json.JSONDecodeError,
+        # 旧 (OSError, ValueError) 接口接住了它,新分支需显式补充避免回归)。
+        print(f"⚠️ 事件载荷非 UTF-8 ({type(exc).__name__}): {event_path}，降级为空对象")
+        return {}
+    except OSError as exc:
+        print(f"⚠️ 事件载荷读取失败 ({type(exc).__name__}): {event_path}，降级为空对象")
+        return {}
+    except json.JSONDecodeError as exc:
+        print(f"⚠️ 事件载荷 JSON 解析失败 ({type(exc).__name__}): {event_path}，降级为空对象")
         return {}
 
 

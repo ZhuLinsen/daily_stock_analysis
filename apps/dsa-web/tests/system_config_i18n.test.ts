@@ -131,6 +131,7 @@ describe('systemConfigI18n option label localization', () => {
     ['REPORT_TYPE', 'brief', undefined, '简报'],
     ['REPORT_LANGUAGE', 'zh', 'Chinese', '中文'],
     ['REPORT_LANGUAGE', 'en', 'English', '英文'],
+    ['REPORT_LANGUAGE', 'ko', 'Korean', '韩文'],
     ['NOTIFICATION_MIN_SEVERITY', '', 'Not set', '未设置'],
     ['NOTIFICATION_MIN_SEVERITY', 'info', 'info', '信息'],
     ['NOTIFICATION_MIN_SEVERITY', 'warning', 'warning', '警告'],

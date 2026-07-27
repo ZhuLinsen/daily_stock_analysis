@@ -9,6 +9,7 @@ they can be serialised, logged, and passed across process boundaries.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -230,8 +231,21 @@ class AgentOpinion:
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
-        """Clamp confidence to [0.0, 1.0]."""
-        self.confidence = max(0.0, min(1.0, float(self.confidence)))
+        """Clamp confidence while retaining whether its input was sample-safe."""
+        raw_confidence = self.confidence
+        confidence = float(raw_confidence)
+        self._confidence_input_valid = (
+            not isinstance(raw_confidence, bool)
+            and isinstance(raw_confidence, (int, float))
+            and math.isfinite(confidence)
+            and 0.0 <= confidence <= 1.0
+        )
+        self.confidence = max(0.0, min(1.0, confidence))
+
+    @property
+    def confidence_input_valid(self) -> bool:
+        """Whether confidence was originally a finite numeric value in [0, 1]."""
+        return bool(getattr(self, "_confidence_input_valid", False))
 
     @property
     def signal_enum(self) -> Optional[Signal]:

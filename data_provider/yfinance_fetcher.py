@@ -143,6 +143,16 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"转换港股代码: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
+        # 港股裸码：4-5 位纯数字（如 00700、02513、0001）按港股处理。
+        # A 股代码全部是 6 位，4-5 位裸数字不可能是 A 股或 BSE（BSE 是
+        # 4/8/920xxx 6 位），因此可以先于 .SZ 兜底分流到 .HK，避免 yfinance
+        # 把 02513 这类新港股误判为深市后缀导致 Yahoo 404。详见 issue #2091。
+        if code.isdigit() and 4 <= len(code) <= 5:
+            hk_code = code.lstrip('0') or '0'
+            hk_code = hk_code.zfill(4)
+            logger.debug(f"识别裸港股代码: {stock_code} -> {hk_code}.HK")
+            return f"{hk_code}.HK"
+
         # 已经包含后缀的情况
         if '.SS' in code or '.SZ' in code or '.HK' in code or '.BJ' in code:
             return code

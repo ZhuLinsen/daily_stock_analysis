@@ -909,7 +909,19 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(mock_test.call_args.kwargs["channel"], "wechat")
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
 
-    def test_test_notification_channel_schema_accepts_p6_channels(self) -> None:
+    def test_test_notification_channel_schema_accepts_registered_channels(self) -> None:
+        dingtalk_request = TestNotificationChannelRequest(
+            channel="dingtalk",
+            items=[
+                {
+                    "key": "DINGTALK_WEBHOOK_URL",
+                    "value": "https://oapi.dingtalk.com/robot/send?access_token=test",
+                }
+            ],
+            title="DSA 閫氱煡娴嬭瘯",
+            content="hello",
+            timeout_seconds=5,
+        )
         ntfy_request = TestNotificationChannelRequest(
             channel="ntfy",
             items=[{"key": "NTFY_URL", "value": "https://ntfy.sh/dsa-topic"}],
@@ -928,6 +940,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
             timeout_seconds=5,
         )
 
+        self.assertEqual(dingtalk_request.channel, "dingtalk")
         self.assertEqual(ntfy_request.channel, "ntfy")
         self.assertEqual(gotify_request.channel, "gotify")
 

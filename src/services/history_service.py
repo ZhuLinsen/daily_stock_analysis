@@ -308,6 +308,20 @@ class HistoryService:
             context_snapshot,
         )
 
+    @staticmethod
+    def _extract_market_review_region(context_snapshot: Any) -> Optional[str]:
+        snapshot = parse_json_field(context_snapshot)
+        if not isinstance(snapshot, dict):
+            return None
+
+        region = snapshot.get("market_review_region")
+        if not isinstance(region, str):
+            payload = snapshot.get("market_review_payload")
+            region = payload.get("region") if isinstance(payload, dict) else None
+
+        normalized = region.strip() if isinstance(region, str) else ""
+        return normalized or None
+
     def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
         raw_result = parse_json_field(getattr(record, "raw_result", None))
         model_used = raw_result.get("model_used") if isinstance(raw_result, dict) else None
@@ -327,6 +341,9 @@ class HistoryService:
             "stock_code": display_code,
             "stock_name": record.name,
             "report_type": record.report_type,
+            "region": self._extract_market_review_region(
+                getattr(record, "context_snapshot", None)
+            ),
             "trend_prediction": record.trend_prediction,
             "analysis_summary": record.analysis_summary,
             "sentiment_score": record.sentiment_score,

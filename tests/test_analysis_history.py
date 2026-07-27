@@ -749,8 +749,10 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 news_content="大盘复盘正文",
                 context_snapshot={
                     "report_kind": "market_review",
+                    "market_review_region": "jp,kr",
                     "market_review_payload": {
                         "kind": "market_review",
+                        "region": "jp,kr",
                         "sections": [{"title": "复盘", "markdown": "结构化正文"}],
                     },
                 },
@@ -770,8 +772,21 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["stock_code"], "MARKET")
         self.assertEqual(payload["items"][0]["report_type"], "market_review")
+        self.assertEqual(payload["items"][0]["region"], "jp,kr")
         self.assertIsNone(payload["items"][0]["action"])
         self.assertIsNone(payload["items"][0]["action_label"])
+
+        if get_history_list is not None:
+            response = get_history_list(
+                stock_code="MARKET",
+                report_type="market_review",
+                start_date=None,
+                end_date=None,
+                page=1,
+                limit=10,
+                db_manager=self.db,
+            )
+            self.assertEqual(response.items[0].region, "jp,kr")
 
     def test_distinct_stock_bar_excludes_market_review_records_by_default(self) -> None:
         """The stock bar aggregation should not mix MARKET into ordinary stock entries."""

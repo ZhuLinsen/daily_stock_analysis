@@ -62,6 +62,18 @@ class ChatRequest(BaseModel):
         """Return skill ids from the unified request shape."""
         return self.skills
 
+
+def _build_agent_chat_context(request: ChatRequest, config, skills: Optional[List[str]]) -> Dict[str, Any]:
+    """Build the shared context contract for regular and streaming Agent Chat."""
+    context = dict(request.context or {})
+    if skills is not None:
+        context["skills"] = skills
+    report_language = context.get("report_language")
+    if report_language is None or (isinstance(report_language, str) and not report_language.strip()):
+        context["report_language"] = config.report_language
+    return context
+
+
 class ChatResponse(BaseModel):
     success: bool
     content: str
@@ -204,12 +216,7 @@ async def agent_chat(request: ChatRequest):
         skills = request.effective_skills
         executor = _build_executor(config, skills or None)
 
-        # Pass explicit skills into context for the orchestrator.
-        # Direct assignment so caller-provided skills always take precedence
-        # over any stale value carried in the context dict.
-        ctx = dict(request.context or {})
-        if skills is not None:
-            ctx["skills"] = skills
+        ctx = _build_agent_chat_context(request, config, skills)
 
         # Offload the blocking call to a thread to avoid blocking the event loop.
         loop = asyncio.get_running_loop()
@@ -473,12 +480,8 @@ async def agent_chat_stream(request: ChatRequest):
                 )
             _ACTIVE_CODEX_STREAMS[request_id] = cancel_event
 
-    # Pass explicit skills into context for the orchestrator.
-    # Direct assignment so caller-provided skills always take precedence.
     skills = request.effective_skills
-    stream_ctx = dict(request.context or {})
-    if skills is not None:
-        stream_ctx["skills"] = skills
+    stream_ctx = _build_agent_chat_context(request, config, skills)
 
     def progress_callback(event: dict):
         if backend_id == "codex_app_server" and cancel_event.is_set():

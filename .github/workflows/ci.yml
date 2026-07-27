@@ -31,6 +31,7 @@ jobs:
               - 'src/brokers/futu/**'
               - 'scripts/build-backend.ps1'
               - 'scripts/build-backend-macos.sh'
+              - 'scripts/macos-signature-audit.sh'
               - 'scripts/build-all.ps1'
               - 'scripts/build-all-macos.sh'
               - 'apps/dsa-desktop/**'
@@ -176,6 +177,8 @@ jobs:
         run: npm ci --prefix apps/dsa-web
       - name: 🧊 Build and verify frozen backend
         run: bash scripts/build-backend-macos.sh
+      - name: 📦 Build and verify unsigned desktop package
+        run: bash scripts/build-desktop-macos.sh
 
   web-gate:
     name: web-gate

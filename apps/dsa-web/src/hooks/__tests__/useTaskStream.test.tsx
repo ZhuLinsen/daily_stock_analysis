@@ -104,6 +104,7 @@ describe('useTaskStream', () => {
           analysis_phase: 'intraday',
           created_at: '2026-03-29T08:00:00Z',
           skills: ['growth_quality'],
+          region: 'jp,kr',
           flow_event: {
             id: 'flow-1',
             timestamp: '2026-03-29T08:00:01Z',
@@ -142,6 +143,7 @@ describe('useTaskStream', () => {
       selectionSource: undefined,
       analysisPhase: 'intraday',
       skills: ['growth_quality'],
+      region: 'jp,kr',
     });
     expect(onTaskFlowEvent).toHaveBeenCalledWith(
       expect.objectContaining({ taskId: 'task-1' }),

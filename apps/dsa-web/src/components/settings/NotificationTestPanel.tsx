@@ -16,6 +16,7 @@ function getChannelOptions(language: 'zh' | 'en'): Array<{ value: NotificationTe
   return [
     { value: 'wechat', label: language === 'en' ? 'WeCom' : '企业微信' },
     { value: 'feishu', label: language === 'en' ? 'Feishu Webhook' : '飞书 Webhook' },
+    { value: 'dingtalk', label: language === 'en' ? 'DingTalk' : '钉钉' },
     { value: 'telegram', label: 'Telegram' },
     { value: 'email', label: language === 'en' ? 'Email' : '邮件' },
     { value: 'pushover', label: 'Pushover' },

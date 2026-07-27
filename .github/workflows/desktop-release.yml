@@ -30,12 +30,15 @@ jobs:
       - name: Resolve release ref
         shell: bash
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             git fetch --tags --force
             git rev-parse "${RELEASE_TAG}" >/dev/null
             git checkout "${RELEASE_TAG}"
           fi
+          echo "DSA_WEB_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "DSA_WEB_REVISION=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v6
         with:
@@ -145,12 +148,15 @@ jobs:
       - name: Resolve release ref
         shell: bash
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             git fetch --tags --force
             git rev-parse "${RELEASE_TAG}" >/dev/null
             git checkout "${RELEASE_TAG}"
           fi
+          echo "DSA_WEB_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "DSA_WEB_REVISION=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v6
         with:

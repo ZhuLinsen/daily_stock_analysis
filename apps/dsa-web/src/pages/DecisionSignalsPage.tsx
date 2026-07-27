@@ -22,6 +22,7 @@ import {
   DecisionSignalCard,
   DecisionSignalDetails,
 } from '../components/decision-signals/DecisionSignalDisplay';
+import { DecisionSignalProfileCalibration } from '../components/decision-signals/DecisionSignalProfileCalibration';
 import { DecisionSignalTimeline } from '../components/decision-signals/DecisionSignalTimeline';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
@@ -1368,27 +1369,32 @@ const DecisionSignalsPage: React.FC = () => {
           ) : statsLoading ? (
             <p className="text-sm text-secondary-text">{t('common.loading')}...</p>
           ) : outcomeStats && outcomeStats.total > 0 ? (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
-                <p className="text-xs text-secondary-text">{t('decisionSignals.statsTotal')}</p>
-                <p className="mt-1 text-2xl font-semibold text-foreground">{outcomeStats.total}</p>
+            <div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
+                  <p className="text-xs text-secondary-text">{t('decisionSignals.statsTotal')}</p>
+                  <p className="mt-1 text-2xl font-semibold text-foreground">{outcomeStats.total}</p>
+                </div>
+                <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
+                  <p className="text-xs text-secondary-text">{t('decisionSignals.statsHitRate')}</p>
+                  <p className="mt-1 text-2xl font-semibold text-success">{formatStatPercent(outcomeStats.hitRatePct)}</p>
+                </div>
+                <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
+                  <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.hit')}</p>
+                  <p className="mt-1 text-2xl font-semibold text-success">{outcomeStats.hit}</p>
+                </div>
+                <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
+                  <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.miss')}</p>
+                  <p className="mt-1 text-2xl font-semibold text-danger">{outcomeStats.miss}</p>
+                </div>
+                <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
+                  <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.unable')}</p>
+                  <p className="mt-1 text-2xl font-semibold text-warning">{outcomeStats.unable}</p>
+                </div>
               </div>
-              <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
-                <p className="text-xs text-secondary-text">{t('decisionSignals.statsHitRate')}</p>
-                <p className="mt-1 text-2xl font-semibold text-success">{formatStatPercent(outcomeStats.hitRatePct)}</p>
-              </div>
-              <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
-                <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.hit')}</p>
-                <p className="mt-1 text-2xl font-semibold text-success">{outcomeStats.hit}</p>
-              </div>
-              <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
-                <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.miss')}</p>
-                <p className="mt-1 text-2xl font-semibold text-danger">{outcomeStats.miss}</p>
-              </div>
-              <div className="rounded-xl border border-border/60 bg-elevated/40 px-3 py-3">
-                <p className="text-xs text-secondary-text">{t('decisionSignals.outcome.unable')}</p>
-                <p className="mt-1 text-2xl font-semibold text-warning">{outcomeStats.unable}</p>
-              </div>
+              {outcomeStats.profileCalibration ? (
+                <DecisionSignalProfileCalibration calibration={outcomeStats.profileCalibration} />
+              ) : null}
             </div>
           ) : (
             <EmptyState

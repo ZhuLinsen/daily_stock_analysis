@@ -198,6 +198,48 @@ const outcomeStats: DecisionSignalOutcomeStatsResponse = {
   avgStockReturnPct: 2.5,
   unableReasons: { missing_anchor_price: 1 },
   breakdowns: {},
+  profileCalibration: {
+    minimumCompletedSampleSize: 30,
+    breakdowns: {
+      decisionProfile: [
+        {
+          dimensions: { decisionProfile: 'balanced' },
+          total: 2,
+          completed: 2,
+          unable: 0,
+          hit: 1,
+          miss: 1,
+          neutral: 0,
+          sampleSufficient: false,
+          hitRatePct: null,
+          avgStockReturnPct: null,
+          missRatePct: null,
+          unableRatePct: null,
+          maxAdverseExcursionPct: null,
+        },
+        {
+          dimensions: { decisionProfile: 'unknown' },
+          total: 1,
+          completed: 0,
+          unable: 1,
+          hit: 0,
+          miss: 0,
+          neutral: 0,
+          sampleSufficient: false,
+          hitRatePct: null,
+          avgStockReturnPct: null,
+          missRatePct: null,
+          unableRatePct: null,
+          maxAdverseExcursionPct: null,
+        },
+      ],
+      decisionProfileAction: [],
+      decisionProfileHorizon: [],
+      decisionProfileMarketPhase: [],
+      decisionProfileDataQualityLevel: [],
+      profileSource: [],
+    },
+  },
 };
 
 const outcomeList: DecisionSignalOutcomeListResponse = {
@@ -403,6 +445,21 @@ describe('DecisionSignalsPage', () => {
     expect(screen.getByText('放量下跌风险')).toBeInTheDocument();
     expect(screen.getByText(formattedCreatedAt)).toBeInTheDocument();
     expect(screen.getByText('当前统计为全局已复盘 outcome 口径，不等于当前可见信号数量，也不随当前股票过滤。')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '决策风格历史表现' })).toBeInTheDocument();
+    expect(decisionSignalsApi.getOutcomeStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the existing stats card usable when the backend omits profile calibration', async () => {
+    vi.mocked(decisionSignalsApi.getOutcomeStats).mockResolvedValueOnce({
+      ...outcomeStats,
+      profileCalibration: undefined,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('信号表现统计')).toBeInTheDocument();
+    expect(screen.getByText('50%')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '决策风格历史表现' })).not.toBeInTheDocument();
   });
 
   it('shows a zero-sample outcome stats state instead of misleading zero metrics', async () => {

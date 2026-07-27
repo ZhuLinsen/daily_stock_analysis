@@ -498,6 +498,25 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
     ],
   },
+  'settings.notification.DINGTALK_WEBHOOK_URL': {
+    title: '钉钉群机器人 Webhook',
+    summary: '通过普通钉钉群机器人 Webhook 推送通知，与 App/Stream 模式相互独立。',
+    usage: '在钉钉群安全设置中添加自定义机器人，复制以 oapi.dingtalk.com/robot/send 开头的 Webhook 地址。',
+    valueNotes: [
+      'Webhook 包含 access_token，必须按密钥保护。',
+      '若机器人启用了关键词安全模式，通知内容必须包含配置的关键词。',
+    ],
+    impact: ['影响钉钉群机器人通知的送达目标。'],
+    notes: ['不要填写钉钉应用 App Key；App/Stream 模式使用独立配置。'],
+  },
+  'settings.notification.DINGTALK_SECRET': {
+    title: '钉钉群机器人加签密钥',
+    summary: '配置钉钉群机器人安全设置中的 SEC 开头加签密钥。',
+    usage: '仅在机器人启用“加签”安全设置时填写；未启用加签时保持为空。',
+    valueNotes: ['该值属于敏感凭证，Web 设置页仅显示遮罩。'],
+    impact: ['填写后，发送器会为每次 Webhook 请求追加 timestamp 和 sign 参数。'],
+    notes: ['关键词和加签可由钉钉同时要求，需分别满足。'],
+  },
   'settings.notification.webhooks': {
     title: '企业微信 Webhook',
     summary: '配置企业微信群机器人 Webhook，用于把分析报告推送到指定群。',
@@ -559,10 +578,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.notification.report_output': {
     title: '报告输出设置',
-    summary: '控制通知报告的详细程度、语言和模板输出。',
-    usage: 'REPORT_TYPE 可选 simple/full/brief，REPORT_LANGUAGE 可选 zh/en。',
-    valueNotes: ['报告语言影响默认模板和通知文案，不等同于前端界面语言。'],
-    impact: ['影响通知正文长度、语言和阅读体验。'],
+    summary: '控制通知报告的详细程度、默认输出语言和模板输出。',
+    usage: 'REPORT_TYPE 可选 simple/full/brief，REPORT_LANGUAGE 可选 zh/en/ko；Agent Chat 只有在未显式传入 context.report_language 时才继承这里的默认语言。',
+    valueNotes: ['报告语言会影响默认模板、通知文案，以及未单独指定语言的 Agent Chat 回复；它不等同于前端界面语言。'],
+    impact: ['影响通知正文长度、语言和未显式指定语言的 Agent Chat 阅读体验。'],
     notes: ['full 报告可能更长，部分平台可能触发分段发送。'],
   },
   'settings.system.WEBUI_HOST': {
@@ -910,6 +929,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     ],
     impact: ['影响 Agent 分析的最大等待时间。'],
     notes: ['超时不影响其他股票的分析流程。'],
+  },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: '策略专家并发数',
+    summary: '控制 specialist 模式下最多同时运行多少个策略专家 Agent。',
+    usage: '默认 3，允许范围 1 到 4。调低可减少瞬时模型调用压力，调高可缩短多策略批处理等待时间。',
+    valueNotes: [
+      '该值只限制策略专家 batch 的并发，不改变最终参与综合的策略选择。',
+      '整体 Agent 超时仍是共享预算；并发数低于策略数时，单个策略会按批次数量分摊剩余预算。',
+    ],
+    impact: ['影响 specialist 多策略分析的并发度、耗时和模型调用峰值。'],
+    notes: ['单个策略失败或超时会进入诊断信息，不阻塞其它策略和最终决策。'],
   },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: '风险 Agent 否决权',
@@ -1669,6 +1699,25 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'Do not treat Stream mode and group bot Webhook as the same delivery path.',
     ],
   },
+  'settings.notification.DINGTALK_WEBHOOK_URL': {
+    title: 'DingTalk Group Bot Webhook',
+    summary: 'Delivers notifications through a regular DingTalk group bot webhook, separate from App/Stream mode.',
+    usage: 'Add a custom bot in a DingTalk group and paste the webhook URL beginning with oapi.dingtalk.com/robot/send.',
+    valueNotes: [
+      'The webhook contains an access_token and must be treated as a secret.',
+      'If keyword security is enabled, notification content must include the configured keyword.',
+    ],
+    impact: ['Controls the destination for DingTalk group bot notifications.'],
+    notes: ['Do not enter an App Key here; App/Stream mode uses separate settings.'],
+  },
+  'settings.notification.DINGTALK_SECRET': {
+    title: 'DingTalk Group Bot Signing Secret',
+    summary: 'Configures the SEC-prefixed signing secret from DingTalk group bot security settings.',
+    usage: 'Set this only when signing is enabled for the bot; otherwise leave it empty.',
+    valueNotes: ['This is a sensitive credential and is masked in Web settings.'],
+    impact: ['When set, the sender appends timestamp and sign parameters to each webhook request.'],
+    notes: ['DingTalk may require both keyword and signing security; configure each independently.'],
+  },
   'settings.notification.webhooks': {
     title: 'Enterprise WeChat Webhook',
     summary: 'Configures an Enterprise WeChat group bot webhook for report delivery.',
@@ -1724,10 +1773,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.notification.report_output': {
     title: 'Report Output',
-    summary: 'Controls notification detail level, language, and template output.',
-    usage: 'REPORT_TYPE supports simple/full/brief. REPORT_LANGUAGE supports zh/en.',
-    valueNotes: ['Report language affects default report and notification text, not the Web UI language.'],
-    impact: ['Affects notification length, language, and readability.'],
+    summary: 'Controls notification detail level, default output language, and template output.',
+    usage: 'REPORT_TYPE supports simple/full/brief. REPORT_LANGUAGE supports zh/en/ko. Agent Chat inherits this default only when context.report_language is omitted.',
+    valueNotes: ['Report language affects default templates, notification text, and Agent Chat replies that do not explicitly set a language; it does not change the Web UI language.'],
+    impact: ['Affects notification length, language, and the readability of Agent Chat replies that rely on the default language.'],
     notes: ['Full reports can be long and may be split by some platforms.'],
   },
   'settings.system.WEBUI_HOST': {
@@ -2067,6 +2116,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects the maximum wait time for Agent analysis.'],
     notes: ['Timeout does not affect other stocks in the analysis pipeline.'],
+  },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: 'Strategy Skill Concurrency',
+    summary: 'Controls how many specialist strategy agents can run at the same time in specialist mode.',
+    usage: 'Default is 3, allowed range is 1 to 4. Lower values reduce peak model pressure; higher values can shorten multi-strategy batch latency.',
+    valueNotes: [
+      'This only limits specialist batch concurrency and does not change which strategies participate in synthesis.',
+      'The overall Agent timeout remains a shared budget; when strategy count exceeds concurrency, each skill receives a budget slice based on the number of waves.',
+    ],
+    impact: ['Affects specialist multi-strategy concurrency, latency, and peak model calls.'],
+    notes: ['A single strategy failure or timeout enters diagnostics and does not block other strategies or the final decision.'],
   },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: 'Risk Agent Veto',
