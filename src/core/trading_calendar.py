@@ -248,6 +248,60 @@ def get_effective_trading_date(
         return fallback_date
 
 
+def resolve_historical_daily_bar_date(
+    market: Optional[str],
+    target_date: date,
+    phase: Optional[str],
+) -> Optional[date]:
+    """Resolve the completed daily bar that a historical phase could consume.
+
+    A persisted ``effective_daily_bar_date`` remains the primary authority.
+    This fallback is only for older snapshots that still contain a trustworthy
+    phase. It fails closed for missing, unknown, or calendar-inconsistent phases.
+    """
+    if market not in MARKET_EXCHANGE or not _XCALS_AVAILABLE:
+        return None
+
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in {
+        "premarket",
+        "intraday",
+        "lunch_break",
+        "closing_auction",
+        "postmarket",
+        "non_trading",
+    }:
+        return None
+
+    try:
+        cal = xcals.get_calendar(MARKET_EXCHANGE[market])
+        is_session = bool(cal.is_session(target_date))
+
+        if normalized_phase in {
+            "premarket",
+            "intraday",
+            "lunch_break",
+            "closing_auction",
+        }:
+            if not is_session:
+                return None
+            session = cal.date_to_session(target_date, direction="previous")
+            return cal.previous_session(session).date()
+
+        if normalized_phase == "postmarket":
+            return target_date if is_session else None
+
+        if is_session:
+            return None
+        return cal.date_to_session(target_date, direction="previous").date()
+    except Exception as e:
+        logger.warning(
+            "trading_calendar.resolve_historical_daily_bar_date fail-closed: %s",
+            e,
+        )
+        return None
+
+
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:
     """
     Convert exchange-calendar timestamps into market-local datetimes.
