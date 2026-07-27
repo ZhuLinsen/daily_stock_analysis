@@ -14,6 +14,7 @@ from data_provider.us_index_mapping import is_us_index_code
 from src.services.market_symbol_utils import (
     get_suffix_market,
     normalize_suffix_market_symbol,
+    suffix_base_lookup_allowed,
 )
 
 
@@ -254,23 +255,60 @@ def _build_market_code_variants(
     return variants
 
 
-def resolve_daily_stock_identity(code: Optional[str]) -> Optional[DailyStockIdentity]:
+def resolve_daily_stock_identity(
+    code: Optional[str],
+    *,
+    market_hint: Optional[str] = None,
+) -> Optional[DailyStockIdentity]:
     """Parse one stock identity for every local daily-bar consumer.
 
-    Four-digit bare numbers keep the historical daily-data compatibility rule
-    and are interpreted as Hong Kong codes. Other public normalization behavior
-    remains unchanged.
+    Persisted market metadata and the stock index may disambiguate legacy bare
+    JP/KR codes before numeric CN/HK defaults are applied.
     """
     raw_code = str(code or "").strip().upper()
     if not raw_code:
         return None
 
-    if is_us_index_code(raw_code):
-        normalized_code, explicit_exchange = raw_code, ""
-    elif raw_code.isdigit() and len(raw_code) == 4:
-        normalized_code, explicit_exchange = raw_code.zfill(5), "HK"
+    identity_code = raw_code
+    trusted_market = str(market_hint or "").strip().lower()
+    if raw_code.isdigit() and len(raw_code) in {4, 5, 6}:
+        from src.data.stock_index_loader import resolve_index_stock_code
+
+        indexed_code = resolve_index_stock_code(raw_code)
+        indexed_market = get_suffix_market(indexed_code or "")
+        if trusted_market in {"jp", "kr"}:
+            if indexed_market and indexed_market != trusted_market:
+                return None
+            if indexed_market == trusted_market:
+                identity_code = str(indexed_code).strip().upper()
+            elif trusted_market == "jp" and len(raw_code) in {4, 5}:
+                identity_code = f"{raw_code}.T"
+            elif trusted_market == "kr" and len(raw_code) == 6:
+                return DailyStockIdentity(
+                    normalized_code=raw_code,
+                    market="kr",
+                    refill_code="",
+                    code_candidates=(raw_code,),
+                )
+            else:
+                return None
+        elif trusted_market == "cn":
+            if len(raw_code) != 6:
+                return None
+        elif trusted_market == "hk":
+            if len(raw_code) not in {4, 5}:
+                return None
+        elif trusted_market:
+            return None
+        elif indexed_market in {"jp", "kr"}:
+            identity_code = str(indexed_code).strip().upper()
+
+    if is_us_index_code(identity_code):
+        normalized_code, explicit_exchange = identity_code, ""
+    elif identity_code.isdigit() and len(identity_code) == 4:
+        normalized_code, explicit_exchange = identity_code.zfill(5), "HK"
     else:
-        normalized_code, explicit_exchange = _normalize_code_and_exchange(raw_code)
+        normalized_code, explicit_exchange = _normalize_code_and_exchange(identity_code)
     if normalized_code is None:
         return None
 
@@ -306,14 +344,17 @@ def resolve_daily_stock_identity(code: Optional[str]) -> Optional[DailyStockIden
         candidates.extend(_build_hk_market_variants(normalized_code))
     else:
         candidates = [raw_code, normalized_code, refill_code]
-    for candidate in list(candidates):
-        candidates.extend(
-            _build_market_code_variants(
-                raw_code,
-                candidate,
-                explicit_exchange,
+        if suffix_base_lookup_allowed(normalized_code):
+            candidates.append(normalized_code.rsplit(".", 1)[0])
+    if market not in {"jp", "kr", "tw"}:
+        for candidate in list(candidates):
+            candidates.extend(
+                _build_market_code_variants(
+                    raw_code,
+                    candidate,
+                    explicit_exchange,
+                )
             )
-        )
     unique_candidates = tuple(
         dict.fromkeys(candidate for candidate in candidates if candidate)
     )

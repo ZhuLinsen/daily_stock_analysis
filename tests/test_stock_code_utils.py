@@ -87,6 +87,16 @@ class TestBuildDailyCodeCandidates:
         assert code in identity.code_candidates
         assert refill_code in identity.code_candidates
 
+    def test_kr_suffix_adds_only_its_legacy_bare_candidate(self):
+        identity = resolve_daily_stock_identity("005930.KS")
+
+        assert identity is not None
+        assert identity.market == "kr"
+        assert identity.code_candidates == ("005930.KS", "005930")
+
+    def test_bare_code_with_unsupported_market_hint_fails_closed(self):
+        assert resolve_daily_stock_identity("005930", market_hint="tw") is None
+
 
 class TestIsCodeLike:
     # --- Plain digit codes ---

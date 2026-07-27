@@ -133,6 +133,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         forward_bars: list[StockDaily],
         phase: str = "intraday",
         market: str = "cn",
+        include_effective_date: bool = True,
     ) -> None:
         with self.db.get_session() as session:
             session.add(
@@ -152,7 +153,7 @@ class BacktestServiceTestCase(unittest.TestCase):
                         analysis_date,
                         phase=phase,
                         market=market,
-                        effective_date=analysis_date,
+                        effective_date=analysis_date if include_effective_date else None,
                         trigger_source="api",
                     ),
                 )
@@ -178,6 +179,41 @@ class BacktestServiceTestCase(unittest.TestCase):
                 ) for bar in forward_bars
             ])
             session.commit()
+
+    def _seed_legacy_offshore_analysis(
+        self,
+        *,
+        query_id: str,
+        code: str,
+        market: str,
+        analysis_date: date,
+        start_close: float,
+        forward_date: date,
+        end_close: float,
+        include_effective_date: bool = True,
+    ) -> None:
+        self._seed_analysis(
+            query_id=query_id,
+            code=code,
+            analysis_date=analysis_date,
+            created_at=datetime.combine(analysis_date, datetime.min.time()),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=start_close,
+            forward_bars=[
+                StockDaily(
+                    code=code,
+                    date=forward_date,
+                    open=end_close,
+                    high=end_close + 1,
+                    low=end_close - 1,
+                    close=end_close,
+                )
+            ],
+            phase="postmarket",
+            market=market,
+            include_effective_date=include_effective_date,
+        )
 
     def tearDown(self) -> None:
         Config._instance = None
@@ -219,6 +255,109 @@ class BacktestServiceTestCase(unittest.TestCase):
             outcome="win",
             simulated_return_pct=1.0,
         )
+
+    def test_kr_suffix_filter_reaches_legacy_bare_history(self) -> None:
+        self._seed_legacy_offshore_analysis(
+            query_id="q_kr_legacy_bare_filter",
+            code="005930",
+            market="kr",
+            analysis_date=date(2024, 10, 2),
+            start_close=100.0,
+            forward_date=date(2024, 10, 4),
+            end_close=105.0,
+        )
+
+        candidates = BacktestRepository(self.db).get_candidates(
+            code="005930.KS",
+            min_age_days=0,
+            limit=10,
+            eval_window_days=1,
+            engine_version="v1",
+            force=True,
+        )
+
+        self.assertEqual(
+            [candidate.query_id for candidate in candidates],
+            ["q_kr_legacy_bare_filter"],
+        )
+
+    def test_jp_suffix_filter_reaches_legacy_bare_history(self) -> None:
+        self._seed_legacy_offshore_analysis(
+            query_id="q_jp_legacy_bare_filter",
+            code="7203",
+            market="jp",
+            analysis_date=date(2024, 10, 1),
+            start_close=200.0,
+            forward_date=date(2024, 10, 2),
+            end_close=210.0,
+        )
+
+        candidates = BacktestRepository(self.db).get_candidates(
+            code="7203.T",
+            min_age_days=0,
+            limit=10,
+            eval_window_days=1,
+            engine_version="v1",
+            force=True,
+        )
+
+        self.assertEqual(
+            [candidate.query_id for candidate in candidates],
+            ["q_jp_legacy_bare_filter"],
+        )
+
+    def test_unfiltered_rerun_uses_persisted_market_for_legacy_jp_kr_bare_codes(
+        self,
+    ) -> None:
+        self._seed_legacy_offshore_analysis(
+            query_id="q_jp_legacy_bare_rerun",
+            code="7203",
+            market="jp",
+            analysis_date=date(2024, 10, 1),
+            start_close=200.0,
+            forward_date=date(2024, 10, 2),
+            end_close=210.0,
+            include_effective_date=False,
+        )
+        self._seed_legacy_offshore_analysis(
+            query_id="q_kr_legacy_bare_rerun",
+            code="005930",
+            market="kr",
+            analysis_date=date(2024, 10, 2),
+            start_close=100.0,
+            forward_date=date(2024, 10, 4),
+            end_close=105.0,
+            include_effective_date=False,
+        )
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as refill:
+            stats = service.run_backtest(
+                code=None,
+                force=False,
+                eval_window_days=1,
+                min_age_days=0,
+                analysis_date_from=date(2024, 10, 1),
+                analysis_date_to=date(2024, 10, 2),
+                limit=10,
+            )
+
+        refill.assert_not_called()
+        self.assertEqual(stats["processed"], 2)
+        self.assertEqual(stats["completed"], 2)
+        self.assertEqual(stats["insufficient"], 0)
+        with self.db.get_session() as session:
+            results = {
+                result.code: result
+                for result in session.query(BacktestResult)
+                .filter(BacktestResult.code.in_(["7203", "005930"]))
+                .all()
+            }
+
+        self.assertEqual(results["7203"].analysis_date, date(2024, 10, 1))
+        self.assertEqual(results["7203"].start_price, 200.0)
+        self.assertEqual(results["005930"].analysis_date, date(2024, 10, 2))
+        self.assertEqual(results["005930"].start_price, 100.0)
 
     def test_force_semantics(self) -> None:
         service = BacktestService(self.db)

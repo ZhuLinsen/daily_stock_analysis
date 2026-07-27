@@ -124,7 +124,18 @@ class BacktestService:
                         )
                     )
                     continue
-                daily_identity = resolve_daily_stock_identity(analysis.code)
+                phase_summary = extract_market_phase_summary(
+                    analysis.context_snapshot
+                )
+                persisted_market = (
+                    str(phase_summary.get("market") or "").strip().lower()
+                    if isinstance(phase_summary, dict)
+                    else None
+                )
+                daily_identity = resolve_daily_stock_identity(
+                    analysis.code,
+                    market_hint=persisted_market,
+                )
                 daily_code_candidates = (
                     list(daily_identity.code_candidates)
                     if daily_identity is not None
