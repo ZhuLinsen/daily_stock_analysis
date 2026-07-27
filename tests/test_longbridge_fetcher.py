@@ -583,8 +583,10 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
         self.assertEqual(quote.volume_ratio, expected_ratio)
 
     def test_volume_ratio_history_candlesticks_by_offset_arg_order(self):
-        """Regression for #2100: ensure `time` (datetime) and `count` (int)
-        are passed in their correct positional slots.
+        """Regression for #2100: verify keyword args used in
+        history_candlesticks_by_offset call, immune to positional signature
+        drift between longbridge 0.2.74 (Linux: forward, time, count)
+        and 4.x (Windows/macOS/Python>=3.12: forward, count, time).
 
         Before the fix, `_compute_volume_ratio` invoked
         `ctx.history_candlesticks_by_offset(symbol, period, adjust_type, forward, 6, datetime.now())`
@@ -592,7 +594,7 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
         which made the PyO3 binding raise
         `argument 'time': 'int' object cannot be converted to 'PyDateTime'`
         inside the longbridge SDK, swallowed into DEBUG log and surfaced as
-        volume_ratio=None / "未获取到数据" errors.
+        volume_ratio=None.
         """
         import types
         from datetime import datetime as dt_cls, date as dt_date, timedelta
@@ -620,25 +622,73 @@ class TestLongbridgeFetcherMocked(unittest.TestCase):
                 mock_candles.append(c)
             ctx.history_candlesticks_by_offset.return_value = mock_candles
 
-            # 期望调用参数顺序：symbol(str), period, adjust_type, forward(bool), time(datetime), count(int)
-            # 前两个位置参数是 symbol 与枚举/类型对象，count 在第 6 个位置必须是 int，time 在第 5 个位置必须是 datetime
             with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls) as mocked_dt:
                 fetcher.get_realtime_quote("AAPL")
 
             ctx.history_candlesticks_by_offset.assert_called_once()
-            call_args = ctx.history_candlesticks_by_offset.call_args.args
-            self.assertGreaterEqual(len(call_args), 6)
-            # 第 5 个位置参数（time）必须是 datetime 实例，而不是 int
-            self.assertIsInstance(call_args[4], dt_cls,
-                f"time slot got {call_args[4]!r} (type {type(call_args[4]).__name__}); "
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            # keyword args 跨 SDK 版本契约兼容：
+            # 0.2.74 positional signature: (symbol, period, adjust_type, forward, time, count)
+            # 4.x positional signature: (symbol, period, adjust_type, forward, count, time)
+            # keyword args 不受位置变化影响
+            self.assertIn("time", call_kwargs, "keyword arg 'time' must be present")
+            self.assertIn("count", call_kwargs, "keyword arg 'count' must be present")
+            self.assertIn("symbol", call_kwargs, "keyword arg 'symbol' must be present")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                f"time kwarg got {call_kwargs['time']!r} (type {type(call_kwargs['time']).__name__}); "
                 "expected datetime — see #2100")
-            # 第 6 个位置参数（count）必须是 int，不是 datetime
-            self.assertIsInstance(call_args[5], int,
-                f"count slot got {call_args[5]!r} (type {type(call_args[5]).__name__}); "
+            self.assertIsInstance(call_kwargs["count"], int,
+                f"count kwarg got {call_kwargs['count']!r} (type {type(call_kwargs['count']).__name__}); "
                 "expected int — see #2100")
-            # 确保旧 bug 复发时本测试失败：旧 bug 此处会断言 datetime.now() 调用，count 得 datetime
-            self.assertEqual(call_args[5], 6)
+            self.assertEqual(call_kwargs["count"], 6)
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
             mocked_dt.now.assert_called()
+
+    def test_volume_ratio_keyword_args_cross_sdk_compat(self):
+        """Verify keyword args work regardless of positional signature drift.
+
+        Simulates a 4.x-style mock where positional order is
+        (symbol, period, adjust_type, forward, count, time) — the opposite
+        of 0.2.74's (symbol, period, adjust_type, forward, time, count).
+        Keyword args in the production code make both signatures callable
+        with the same keyword dict.
+        """
+        import types
+        from datetime import datetime as dt_cls, date as dt_date, timedelta
+
+        mock_lb_module = types.ModuleType("longbridge")
+        mock_lb_openapi = types.ModuleType("longbridge.openapi")
+        mock_lb_openapi.Period = MagicMock()
+        mock_lb_openapi.AdjustType = MagicMock()
+        with patch.dict("sys.modules", {
+            "longbridge": mock_lb_module,
+            "longbridge.openapi": mock_lb_openapi,
+        }):
+            fetcher, ctx = self._make_fetcher_with_mock_ctx()
+            ctx.quote.return_value = [self._make_mock_quote(volume=50000000)]
+            ctx.static_info.return_value = [self._make_mock_static()]
+
+            base = dt_date.today() - timedelta(days=6)
+            mock_candles = []
+            for i, vol in enumerate([40000000, 38000000, 42000000, 41000000, 39000000]):
+                c = MagicMock()
+                c.volume = vol
+                past_date = base + timedelta(days=i)
+                c.timestamp = MagicMock()
+                c.timestamp.date.return_value = past_date
+                mock_candles.append(c)
+            ctx.history_candlesticks_by_offset.return_value = mock_candles
+
+            with patch("data_provider.longbridge_fetcher.datetime", wraps=dt_cls):
+                fetcher.get_realtime_quote("AAPL")
+
+            ctx.history_candlesticks_by_offset.assert_called_once()
+            call_kwargs = ctx.history_candlesticks_by_offset.call_args.kwargs
+            self.assertEqual(call_kwargs["count"], 6,
+                "count should be 6 regardless of positional signature version")
+            self.assertIsInstance(call_kwargs["time"], dt_cls,
+                "time should be datetime even when 4.x positional order is (forward, count, time)")
+            self.assertEqual(call_kwargs["symbol"], "AAPL.US")
 
     def test_quote_api_failure_returns_none(self):
         """If ctx.quote() raises, return None gracefully."""
