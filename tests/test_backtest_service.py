@@ -415,6 +415,48 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(result.analysis_date, date(2024, 10, 1))
         self.assertEqual(result.start_price, 200.0)
 
+    def test_canonical_hk_query_does_not_backtest_legacy_bare_jp_collision(
+        self,
+    ) -> None:
+        self._seed_legacy_offshore_analysis(
+            query_id="q_jp_legacy_bare_hk_collision",
+            code="8035",
+            market="jp",
+            analysis_date=date(2024, 10, 1),
+            start_close=200.0,
+            forward_date=date(2024, 10, 2),
+            end_close=210.0,
+        )
+
+        repo_candidates = BacktestRepository(self.db).get_candidates(
+            code="08035.HK",
+            min_age_days=0,
+            limit=10,
+            eval_window_days=1,
+            engine_version="v1",
+            force=True,
+        )
+        stats = BacktestService(self.db).run_backtest(
+            code="08035.HK",
+            force=False,
+            eval_window_days=1,
+            min_age_days=0,
+            analysis_date_from=date(2024, 10, 1),
+            analysis_date_to=date(2024, 10, 1),
+            limit=10,
+        )
+
+        self.assertEqual(repo_candidates, [])
+        self.assertEqual(stats["processed"], 0)
+        self.assertEqual(stats["saved"], 0)
+        with self.db.get_session() as session:
+            self.assertEqual(
+                session.query(BacktestResult)
+                .filter(BacktestResult.code == "8035")
+                .count(),
+                0,
+            )
+
     def test_force_semantics(self) -> None:
         service = BacktestService(self.db)
 

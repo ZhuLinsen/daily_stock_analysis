@@ -107,6 +107,24 @@ class TestBuildDailyCodeCandidates:
         assert identity.market == "jp"
         assert identity.code_candidates == ("8035.T",)
 
+    def test_cross_market_hk_code_does_not_add_ambiguous_bare_alias(self):
+        identity = resolve_daily_stock_identity("08035.HK")
+
+        assert identity is not None
+        assert identity.market == "hk"
+        assert "8035" not in identity.code_candidates
+        assert "08035.HK" in identity.code_candidates
+        assert "8035.HK" in identity.code_candidates
+
+    def test_trusted_legacy_jp_identity_keeps_its_raw_bare_code(self):
+        identity = resolve_daily_stock_identity("8035", market_hint="jp")
+
+        assert identity is not None
+        assert identity.market == "jp"
+        assert identity.code_candidates[0] == "8035"
+        assert "8035" in identity.code_candidates
+        assert "8035.T" in identity.code_candidates
+
 
 class TestIsCodeLike:
     # --- Plain digit codes ---

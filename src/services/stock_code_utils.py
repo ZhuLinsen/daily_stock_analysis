@@ -56,15 +56,31 @@ class DailyStockIdentity:
     code_candidates: tuple[str, ...]
 
 
-def _suffix_base_lookup_is_unambiguous(canonical_code: str) -> bool:
-    if not suffix_base_lookup_allowed(canonical_code):
-        return False
-
-    base = canonical_code.rsplit(".", 1)[0]
+def _filter_cross_market_numeric_aliases(
+    *,
+    raw_code: str,
+    market: str,
+    candidates: List[str],
+) -> tuple[str, ...]:
+    """Drop only derived numeric aliases known to collide across markets."""
+    from src.core.trading_calendar import get_market_for_stock
     from src.data.stock_index_loader import resolve_index_stock_code_candidates
 
-    indexed_candidates = resolve_index_stock_code_candidates(base)
-    return indexed_candidates == (canonical_code,)
+    filtered: List[str] = []
+    for candidate in dict.fromkeys(value for value in candidates if value):
+        if candidate == raw_code or not candidate.isdigit():
+            filtered.append(candidate)
+            continue
+
+        indexed_markets = {
+            indexed_market
+            for indexed_code in resolve_index_stock_code_candidates(candidate)
+            if (indexed_market := get_market_for_stock(indexed_code)) is not None
+        }
+        if indexed_markets and indexed_markets != {market}:
+            continue
+        filtered.append(candidate)
+    return tuple(filtered)
 
 
 def _infer_cn_exchange(base: str) -> str:
@@ -374,7 +390,7 @@ def resolve_daily_stock_identity(
         candidates.extend(_build_hk_market_variants(normalized_code))
     else:
         candidates = [raw_code, normalized_code, refill_code]
-        if _suffix_base_lookup_is_unambiguous(normalized_code):
+        if suffix_base_lookup_allowed(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
     if market not in {"jp", "kr", "tw"}:
         for candidate in list(candidates):
@@ -385,8 +401,10 @@ def resolve_daily_stock_identity(
                     explicit_exchange,
                 )
             )
-    unique_candidates = tuple(
-        dict.fromkeys(candidate for candidate in candidates if candidate)
+    unique_candidates = _filter_cross_market_numeric_aliases(
+        raw_code=raw_code,
+        market=market,
+        candidates=candidates,
     )
     return DailyStockIdentity(
         normalized_code=normalized_code,
