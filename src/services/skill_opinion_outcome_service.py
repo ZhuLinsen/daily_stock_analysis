@@ -5,24 +5,20 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from src.core.skill_opinion_outcome_evaluator import (
     SUPPORTED_SKILL_OUTCOME_HORIZONS,
     SkillOpinionOutcomeEvaluation,
     SkillOpinionOutcomeEvaluator,
 )
-from src.market_phase_summary import extract_market_phase_summary
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.skill_opinion_outcome_repo import (
     SkillOpinionOutcomeCandidate,
     SkillOpinionOutcomeRepository,
 )
 from src.repositories.stock_repo import StockRepository
-from src.services.stock_code_utils import (
-    InvalidStockCodeError,
-    build_daily_code_candidates,
-)
+from src.services.stock_daily_start_resolver import resolve_stock_daily_start
 from src.services.stock_daily_window_resolver import resolve_stock_daily_window
 from src.storage import (
     AnalysisHistory,
@@ -138,30 +134,28 @@ class SkillOpinionOutcomeService:
         self,
         candidate: SkillOpinionOutcomeCandidate,
     ) -> SkillOpinionOutcomeEvaluation:
-        analysis_date, exact_start_required = self._resolve_analysis_date(candidate.history)
-        try:
-            daily_code_candidates = build_daily_code_candidates(
-                candidate.sample.stock_code
-            )
-        except InvalidStockCodeError:
+        analysis_date = self._resolve_analysis_date(candidate.history)
+        start_resolution = resolve_stock_daily_start(
+            stock_code=candidate.sample.stock_code,
+            context_snapshot=candidate.history.context_snapshot,
+            analysis_date=analysis_date,
+        )
+        if start_resolution.failure_reason is not None:
             return SkillOpinionOutcomeEvaluation(
                 eval_status="unable",
-                unable_reason="invalid_stock_code",
+                unable_reason=start_resolution.failure_reason,
                 analysis_date=analysis_date,
             )
 
-        window = None
-        if analysis_date is not None:
-            window = resolve_stock_daily_window(
-                stock_repo=self.stock_repo,
-                code_candidates=daily_code_candidates,
-                analysis_date=analysis_date,
-                eval_window_days=SUPPORTED_SKILL_OUTCOME_HORIZONS.get(
-                    candidate.horizon,
-                    0,
-                ),
-                exact_start_required=exact_start_required,
-            )
+        window = resolve_stock_daily_window(
+            stock_repo=self.stock_repo,
+            code_candidates=list(start_resolution.identity.code_candidates),
+            expected_start_date=start_resolution.expected_start_date,
+            eval_window_days=SUPPORTED_SKILL_OUTCOME_HORIZONS.get(
+                candidate.horizon,
+                0,
+            ),
+        )
 
         return SkillOpinionOutcomeEvaluator.evaluate(
             signal=candidate.sample.signal,
@@ -171,38 +165,18 @@ class SkillOpinionOutcomeService:
             forward_bars=window.forward_bars if window is not None else (),
         )
 
-    @classmethod
+    @staticmethod
     def _resolve_analysis_date(
-        cls,
         history: AnalysisHistory,
-    ) -> Tuple[Optional[date], bool]:
-        summary = extract_market_phase_summary(history.context_snapshot)
-        if isinstance(summary, dict):
-            effective_date = cls._parse_date(summary.get("effective_daily_bar_date"))
-            if effective_date is not None:
-                return effective_date, True
-
+    ) -> Optional[date]:
         snapshot_date = BacktestRepository.parse_analysis_date_from_snapshot(
             history.context_snapshot
         )
         if snapshot_date is not None:
-            return snapshot_date, False
+            return snapshot_date
         created_at = getattr(history, "created_at", None)
         if isinstance(created_at, datetime):
-            return created_at.date(), False
-        return None, False
-
-    @staticmethod
-    def _parse_date(value: Any) -> Optional[date]:
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        if isinstance(value, str):
-            try:
-                return date.fromisoformat(value.strip()[:10])
-            except ValueError:
-                return None
+            return created_at.date()
         return None
 
     @staticmethod

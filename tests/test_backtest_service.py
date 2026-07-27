@@ -1139,7 +1139,7 @@ class BacktestServiceTestCase(unittest.TestCase):
 
         service = BacktestService(self.db)
         with patch(
-            "src.services.backtest_service.resolve_historical_daily_bar_date",
+            "src.services.stock_daily_start_resolver.resolve_historical_daily_bar_date",
             side_effect=AssertionError("snapshot effective date must take priority"),
         ):
             stats = service.run_backtest(

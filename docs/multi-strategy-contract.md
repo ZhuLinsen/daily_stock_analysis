@@ -16,9 +16,9 @@
 
 每条 outcome 只使用 sample 自己的 canonical `signal`，不得读取最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；方向收益严格大于零才是 `hit`，零收益是 `miss`。`hold` 在价格窗口完整后保存为 `observational`，不产生方向正确性。
 
-分析日期优先使用持久化 `market_phase_summary.effective_daily_bar_date`；该来源要求完全相同日期的起始 bar。兼容来源才允许选择目标日期或此前最近一条本地日线。股票代码候选和窗口选择复用父 PR #2073 的共享 resolver：完整窗口优先于部分窗口，再选择最新起始 bar，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
+历史分析日期来自 `enhanced_context.date`，缺失时才回退到历史记录创建日期。Backtest 与 Outcome 统一通过共享 resolver 解析股票身份、重建受支持的旧市场快照并确定权威起始 session：优先使用市场一致且合法的 `market_phase_summary.effective_daily_bar_date`；缺少该字段时，只有 phase 与交易日历能够证明起点才进行推导，否则 fail closed，不允许选择任意更早的本地日线。共享窗口 resolver 只接受权威起始 session 的 bar，在同日起点中优先完整窗口，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
 
-缺少起始 bar、未来本地日线不足等可恢复状态保存为可重试 `pending`；永久无效输入保存为 `unable`。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
+权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
 
 本次 stacked PR 只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
 
