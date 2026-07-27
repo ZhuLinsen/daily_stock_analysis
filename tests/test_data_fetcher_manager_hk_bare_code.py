@@ -39,7 +39,7 @@ class _FakeFetcher(BaseFetcher):
         # the only thing keeping them out of the HK chain.
         self.priority = {"YfinanceFetcher": 4, "AkshareFetcher": 1,
                          "TushareFetcher": 2, "BaostockFetcher": 3,
-                         "EfinanceFetcher": 0, "TencentFetcher": 0}.get(name, 5)
+                         "EfinanceFetcher": 0, "TencentFetcher": 5}.get(name, 5)
         self.calls: list[str] = []
         self.should_fail = should_fail
 

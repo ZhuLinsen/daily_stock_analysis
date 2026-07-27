@@ -1153,6 +1153,7 @@ class DataFetcherManager:
           2. PytdxFetcher (Priority 2) - 通达信
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)
+          5. TencentFetcher (Priority 5) - A 股最终兜底
         """
         from src.config import get_config
         from .efinance_fetcher import EfinanceFetcher
@@ -1218,11 +1219,11 @@ class DataFetcherManager:
         with self._fetchers_lock:
             self._fetchers = [
                 efinance,
-                tencent,
                 akshare,
                 pytdx,
                 baostock,
                 yfinance,
+                tencent,
                 *optional_fetchers,
             ]
 
