@@ -359,6 +359,62 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(results["005930"].analysis_date, date(2024, 10, 2))
         self.assertEqual(results["005930"].start_price, 100.0)
 
+    def test_unfiltered_rerun_rebuilds_legacy_cn_snapshot_for_indexed_bare_jp_code(
+        self,
+    ) -> None:
+        self._seed_legacy_offshore_analysis(
+            query_id="q_jp_legacy_cn_bare_rerun",
+            code="7203",
+            market="cn",
+            analysis_date=date(2024, 10, 1),
+            start_close=200.0,
+            forward_date=date(2024, 10, 2),
+            end_close=210.0,
+            include_effective_date=False,
+        )
+        with self.db.get_session() as session:
+            analysis = (
+                session.query(AnalysisHistory)
+                .filter(AnalysisHistory.query_id == "q_jp_legacy_cn_bare_rerun")
+                .one()
+            )
+            snapshot = json.loads(analysis.context_snapshot)
+            snapshot["market_phase_summary"].update(
+                {
+                    "market_local_time": "2024-10-01T16:00:00+08:00",
+                    "session_date": "2024-10-01",
+                    "effective_daily_bar_date": "2024-10-01",
+                }
+            )
+            analysis.context_snapshot = json.dumps(snapshot)
+            session.commit()
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as refill:
+            stats = service.run_backtest(
+                code=None,
+                force=False,
+                eval_window_days=1,
+                min_age_days=0,
+                analysis_date_from=date(2024, 10, 1),
+                analysis_date_to=date(2024, 10, 1),
+                limit=10,
+            )
+
+        refill.assert_not_called()
+        self.assertEqual(stats["processed"], 1)
+        self.assertEqual(stats["completed"], 1)
+        self.assertEqual(stats["insufficient"], 0)
+        with self.db.get_session() as session:
+            result = (
+                session.query(BacktestResult)
+                .filter(BacktestResult.code == "7203")
+                .one()
+            )
+
+        self.assertEqual(result.analysis_date, date(2024, 10, 1))
+        self.assertEqual(result.start_price, 200.0)
+
     def test_force_semantics(self) -> None:
         service = BacktestService(self.db)
 

@@ -145,6 +145,11 @@ class BacktestService:
                     analysis=analysis,
                     analysis_date=analysis_date,
                     market=daily_identity.market if daily_identity is not None else None,
+                    stock_code=(
+                        daily_identity.normalized_code
+                        if daily_identity is not None
+                        else None
+                    ),
                 )
                 daily_window = None
                 if expected_start_date is not None:
@@ -846,6 +851,7 @@ class BacktestService:
         analysis,
         analysis_date: date,
         market: Optional[str],
+        stock_code: Optional[str],
     ) -> Optional[date]:
         phase_summary = extract_market_phase_summary(analysis.context_snapshot)
         snapshot_market = (
@@ -857,7 +863,7 @@ class BacktestService:
             return None
         if snapshot_market != market:
             phase_summary = rebuild_market_phase_summary_for_stock_code(
-                analysis.code,
+                stock_code,
                 analysis.context_snapshot,
             )
             snapshot_market = (

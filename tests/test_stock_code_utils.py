@@ -97,6 +97,16 @@ class TestBuildDailyCodeCandidates:
     def test_bare_code_with_unsupported_market_hint_fails_closed(self):
         assert resolve_daily_stock_identity("005930", market_hint="tw") is None
 
+    def test_cross_market_bare_code_without_hint_fails_closed(self):
+        assert resolve_daily_stock_identity("8035") is None
+
+    def test_cross_market_suffix_code_does_not_add_ambiguous_bare_alias(self):
+        identity = resolve_daily_stock_identity("8035.T")
+
+        assert identity is not None
+        assert identity.market == "jp"
+        assert identity.code_candidates == ("8035.T",)
+
 
 class TestIsCodeLike:
     # --- Plain digit codes ---

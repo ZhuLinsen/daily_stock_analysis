@@ -56,6 +56,17 @@ class DailyStockIdentity:
     code_candidates: tuple[str, ...]
 
 
+def _suffix_base_lookup_is_unambiguous(canonical_code: str) -> bool:
+    if not suffix_base_lookup_allowed(canonical_code):
+        return False
+
+    base = canonical_code.rsplit(".", 1)[0]
+    from src.data.stock_index_loader import resolve_index_stock_code_candidates
+
+    indexed_candidates = resolve_index_stock_code_candidates(base)
+    return indexed_candidates == (canonical_code,)
+
+
 def _infer_cn_exchange(base: str) -> str:
     """Infer CN exchange from a 6-digit A/B-share code."""
     if not (base.isdigit() and len(base) == 6):
@@ -272,15 +283,28 @@ def resolve_daily_stock_identity(
     identity_code = raw_code
     trusted_market = str(market_hint or "").strip().lower()
     if raw_code.isdigit() and len(raw_code) in {4, 5, 6}:
-        from src.data.stock_index_loader import resolve_index_stock_code
+        from src.data.stock_index_loader import resolve_index_stock_code_candidates
 
-        indexed_code = resolve_index_stock_code(raw_code)
-        indexed_market = get_suffix_market(indexed_code or "")
+        indexed_candidates = resolve_index_stock_code_candidates(raw_code)
+        indexed_identities = [
+            (candidate, get_suffix_market(candidate))
+            for candidate in indexed_candidates
+        ]
+        indexed_offshore = [
+            (candidate, market)
+            for candidate, market in indexed_identities
+            if market in {"jp", "kr"}
+        ]
         if trusted_market in {"jp", "kr"}:
-            if indexed_market and indexed_market != trusted_market:
+            matching_candidates = [
+                candidate
+                for candidate, market in indexed_offshore
+                if market == trusted_market
+            ]
+            if len(matching_candidates) == 1:
+                identity_code = matching_candidates[0]
+            elif indexed_candidates:
                 return None
-            if indexed_market == trusted_market:
-                identity_code = str(indexed_code).strip().upper()
             elif trusted_market == "jp" and len(raw_code) in {4, 5}:
                 identity_code = f"{raw_code}.T"
             elif trusted_market == "kr" and len(raw_code) == 6:
@@ -293,15 +317,21 @@ def resolve_daily_stock_identity(
             else:
                 return None
         elif trusted_market == "cn":
-            if len(raw_code) != 6:
+            if len(raw_code) == 6:
+                pass
+            elif len(indexed_candidates) == 1 and len(indexed_offshore) == 1:
+                identity_code = indexed_offshore[0][0]
+            else:
                 return None
         elif trusted_market == "hk":
             if len(raw_code) not in {4, 5}:
                 return None
         elif trusted_market:
             return None
-        elif indexed_market in {"jp", "kr"}:
-            identity_code = str(indexed_code).strip().upper()
+        elif len(indexed_candidates) > 1:
+            return None
+        elif len(indexed_offshore) == 1:
+            identity_code = indexed_offshore[0][0]
 
     if is_us_index_code(identity_code):
         normalized_code, explicit_exchange = identity_code, ""
@@ -344,7 +374,7 @@ def resolve_daily_stock_identity(
         candidates.extend(_build_hk_market_variants(normalized_code))
     else:
         candidates = [raw_code, normalized_code, refill_code]
-        if suffix_base_lookup_allowed(normalized_code):
+        if _suffix_base_lookup_is_unambiguous(normalized_code):
             candidates.append(normalized_code.rsplit(".", 1)[0])
     if market not in {"jp", "kr", "tw"}:
         for candidate in list(candidates):
