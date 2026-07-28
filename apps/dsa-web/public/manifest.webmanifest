@@ -1,0 +1,15 @@
+{
+  "name": "股票雷达",
+  "short_name": "股票雷达",
+  "description": "个人股票新闻分析与风险提醒",
+  "start_url": "/news",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0e17",
+  "theme_color": "#0891b2",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

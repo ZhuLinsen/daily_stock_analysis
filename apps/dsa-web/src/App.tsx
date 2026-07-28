@@ -1,6 +1,6 @@
 import type React from 'react';
 import { lazy, useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
 import {
   PageLoadingFallback,
@@ -23,6 +23,13 @@ const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
+const NewsPage = lazy(() => import('./pages/NewsPage'));
+const NewsDetailPage = lazy(() => import('./pages/NewsPage').then((module) => ({ default: module.NewsDetailPage })));
+
+const NewsDetailRoute = () => {
+  const { newsId = '' } = useParams();
+  return <NewsDetailPage newsId={newsId} />;
+};
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -86,6 +93,8 @@ const AppContent: React.FC = () => {
         <Route path="/screening" element={<StockScreeningPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
+        <Route path="/news" element={<NewsPage />} />
+        <Route path="/news/:newsId" element={<NewsDetailRoute />} />
         <Route path="/usage" element={<TokenUsagePage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />

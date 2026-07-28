@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="股票雷达">
+  <rect width="512" height="512" rx="112" fill="#07111f"/>
+  <circle cx="256" cy="256" r="163" fill="none" stroke="#155e75" stroke-width="19"/>
+  <circle cx="256" cy="256" r="93" fill="none" stroke="#0e7490" stroke-width="13"/>
+  <path d="m256 256 136-93" stroke="#67e8f9" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="24" fill="#22d3ee"/>
+  <path d="m133 331 64-51 51 32 112-115" fill="none" stroke="#34d399" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
