@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -18,6 +18,7 @@ from src.storage import (
     DatabaseManager,
     PersonalNewsAnalysis,
     PersonalNewsArticle,
+    PersonalNewsDigest,
     PersonalNewsHash,
     PersonalNewsProviderStatus,
     PersonalNewsPushRecord,
@@ -244,11 +245,14 @@ class PersonalNewsRepository:
 
     def sync_settings(self, settings: NewsRadarSettings) -> None:
         values = {
-            "watchlist": ",".join(settings.watchlist),
             "macro_keywords": ",".join(settings.macro_keywords),
-            "poll_interval_minutes": str(settings.poll_interval_minutes),
             "min_analysis_score": str(settings.min_analysis_score),
             "min_push_score": str(settings.min_push_score),
+            "app_timezone": settings.app_timezone,
+            "news_push_interval_hours": str(settings.news_push_interval_hours),
+            "refresh_on_open": "true" if settings.refresh_on_open else "false",
+            "open_refresh_cooldown_minutes": str(settings.open_refresh_cooldown_minutes),
+            "max_ai_items_per_run": str(settings.max_ai_items_per_run),
             "public_base_url": settings.public_base_url,
         }
         with self.db.get_session() as session:
@@ -260,6 +264,101 @@ class PersonalNewsRepository:
                     row.value = value
                     row.updated_at = utc_naive_now()
             session.commit()
+
+        if self.get_setting("watchlist") is None:
+            self.set_setting("watchlist", ",".join(settings.watchlist))
+
+    def get_setting(self, key: str) -> Optional[str]:
+        with self.db.get_session() as session:
+            row = session.get(PersonalNewsSetting, key)
+            return row.value if row is not None else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.db.get_session() as session:
+            row = session.get(PersonalNewsSetting, key)
+            if row is None:
+                row = PersonalNewsSetting(key=key, value=value)
+                session.add(row)
+            else:
+                row.value = value
+                row.updated_at = utc_naive_now()
+            session.commit()
+
+    def get_watchlist_symbols(self) -> List[str]:
+        raw = self.get_setting("watchlist") or ""
+        return [item for item in raw.split(",") if item]
+
+    def list_watchlist(self) -> List[Dict[str, str]]:
+        from src.data.stock_index_loader import get_index_stock_name
+
+        return [
+            {"symbol": symbol, "name": get_index_stock_name(symbol) or symbol}
+            for symbol in self.get_watchlist_symbols()
+        ]
+
+    def add_watchlist_symbols(self, symbols: Iterable[str]) -> List[Dict[str, str]]:
+        current = self.get_watchlist_symbols()
+        self.set_setting("watchlist", ",".join(dict.fromkeys([*current, *symbols])))
+        return self.list_watchlist()
+
+    def remove_watchlist_symbol(self, symbol: str) -> List[Dict[str, str]]:
+        current = [item for item in self.get_watchlist_symbols() if item != symbol]
+        self.set_setting("watchlist", ",".join(current))
+        return self.list_watchlist()
+
+    def reserve_digest(
+        self,
+        *,
+        digest_id: str,
+        article_ids: Iterable[int],
+        content: str,
+        channel: str = "feishu",
+    ) -> Dict[str, Any]:
+        ids = sorted({int(article_id) for article_id in article_ids})
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(PersonalNewsDigest).where(PersonalNewsDigest.digest_id == digest_id)
+            ).scalar_one_or_none()
+            created = row is None
+            if row is None:
+                row = PersonalNewsDigest(
+                    digest_id=digest_id,
+                    article_ids_json=json.dumps(ids),
+                    content=content,
+                    channel=channel,
+                    status="pending",
+                )
+                session.add(row)
+                session.flush()
+            result = self._serialize_digest(row)
+            result["created"] = created
+            session.commit()
+            return result
+
+    def record_digest_result(self, digest_id: str, *, success: bool, error: str = "") -> None:
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(PersonalNewsDigest).where(PersonalNewsDigest.digest_id == digest_id)
+            ).scalar_one()
+            row.attempts = int(row.attempts or 0) + 1
+            row.status = "sent" if success else "failed"
+            row.last_error = None if success else (error or "push failed")[:2000]
+            row.sent_at = utc_naive_now() if success else None
+            row.updated_at = utc_naive_now()
+            session.commit()
+
+    @staticmethod
+    def _serialize_digest(row: PersonalNewsDigest) -> Dict[str, Any]:
+        return {
+            "digest_id": row.digest_id,
+            "article_ids": json.loads(row.article_ids_json or "[]"),
+            "content": row.content,
+            "channel": row.channel,
+            "status": row.status,
+            "attempts": row.attempts,
+            "created_at": row.created_at,
+            "sent_at": row.sent_at,
+        }
 
     def set_provider_status(self, provider: str, provider_type: str, status: str, message: str = "") -> None:
         with self.db.get_session() as session:

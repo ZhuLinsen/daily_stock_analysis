@@ -294,6 +294,24 @@ class PersonalNewsPushRecord(Base):
     )
 
 
+class PersonalNewsDigest(Base):
+    """One retryable, idempotent combined notification for a scan."""
+
+    __tablename__ = "personal_news_digests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    digest_id = Column(String(64), nullable=False, unique=True, index=True)
+    article_ids_json = Column(Text, nullable=False, default="[]")
+    content = Column(Text, nullable=False)
+    channel = Column(String(32), nullable=False, default="feishu")
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=utc_naive_now, index=True)
+    sent_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, nullable=False, default=utc_naive_now, onupdate=utc_naive_now)
+
+
 class PersonalNewsSetting(Base):
     """Small persistent settings surface for the single-user demo."""
 

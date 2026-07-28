@@ -1,10 +1,35 @@
-# 个人股票新闻雷达 Demo
+# 个人股票新闻 Demo
 
-该模式面向单用户，复用项目已有的股票搜索、OpenAI-compatible/LiteLLM、企业微信、飞书、FastAPI、React WebUI 和 SQLite。它不依赖 Firebase、Google Play Services、PostgreSQL、Redis、Celery、Kafka 或原生 Android 客户端。
+这是现有项目中的单用户轻量模式，复用 SQLite、FastAPI、React、现有搜索/LLM/飞书模块。它不需要原生 Android、Firebase、PostgreSQL、Redis、Celery 或多用户系统。
 
-## 本地运行
+## 最小配置
 
-复制配置并至少填写自选股、一个新闻搜索来源，以及可选的 AI 和推送凭据：
+复制 `.env.example` 为 `.env`，只需填写三个服务的凭据：
+
+```env
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_API_KEY=你的模型 API Key
+OPENAI_MODEL=deepseek-v4-flash
+
+BOCHA_API_KEYS=你的博查 API Key
+
+FEISHU_WEBHOOK_URL=你的飞书机器人 Webhook
+FEISHU_WEBHOOK_SECRET=
+```
+
+`FEISHU_WEBHOOK_SECRET` 仅在机器人启用签名校验时填写。股票不再写进 `.env`，请在 `/news` 页面添加、批量粘贴或删除。
+
+这些默认值通常无需修改：
+
+```env
+APP_TIMEZONE=Asia/Shanghai
+NEWS_PUSH_INTERVAL_HOURS=12
+REFRESH_ON_OPEN=true
+OPEN_REFRESH_COOLDOWN_MINUTES=10
+MAX_AI_ITEMS_PER_RUN=5
+```
+
+## 启动与使用
 
 ```powershell
 Copy-Item .env.example .env
@@ -12,99 +37,26 @@ notepad .env
 python main.py --news-watch
 ```
 
-浏览器打开 `http://127.0.0.1:8000/news`。轮询模式会立即执行一轮，之后按 `POLL_INTERVAL_MINUTES` 间隔运行。单个新闻源、LLM 或推送渠道失败不会终止服务。
+打开 `http://127.0.0.1:8000/news`：
 
-最小配置：
+- 输入单只或批量股票，支持逗号、空格和换行；
+- A 股保存为 `600519.SH`、`300750.SZ`、`920000.BJ`，港股保存为 `00700.HK`，美股保存为 `NVDA`；
+- 新加入的股票会触发一次后台检查；页面仍可浏览历史结果；
+- 每个浏览器会话首次打开页面会异步请求刷新，后端有 10 分钟全局冷却和进程锁；
+- 页面显示刷新状态、最后检查时间、本轮新增、最新 AI 观察、重要新增和历史资讯。
 
-```env
-WATCHLIST=600519,300750,002594,hk00700,hk09988,AAPL,NVDA,TSLA
-MACRO_KEYWORDS=美联储,中国人民银行,利率,关税,制裁,芯片出口,人工智能,新能源汽车,原油,黄金,汇率
-POLL_INTERVAL_MINUTES=15
-MIN_ANALYSIS_SCORE=60
-MIN_PUSH_SCORE=75
-PUBLIC_BASE_URL=https://stocks.example.com
+## 调度、分析与推送
 
-OPENAI_BASE_URL=https://你的兼容服务/v1
-OPENAI_API_KEY=你的密钥
-OPENAI_MODEL=你的模型标识
+服务启动时不扫描、不推送。任务固定在 `Asia/Shanghai` 的 08:00 和 20:00 运行；`NEWS_PUSH_INTERVAL_HOURS=12` 用于表达产品节奏，不恢复 15 分钟轮询。
 
-WECHAT_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的密钥
-FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/你的密钥
-```
+每轮先抓取、规范化、去重和确定性评分。只有数据库中首次出现的新闻才进入 AI，按重要性降序最多处理 5 条；没有新增时不调用 AI，也不推送。已经分析过的新闻不会因为重启或再次打开页面而重复分析。
 
-`WATCHLIST` 未设置时会复用现有 `STOCK_LIST`。所有密钥只保存在 `.env` 服务端配置中，不会进入浏览器、service worker 或 Git；仓库已忽略 `.env`。
+同一轮最多发送一条飞书汇总，包含股票、重要性、方向、摘要、中文“观察策略”、原因、风险、失效条件和原始来源。重复新闻不会重复推送。AI 输出经过严格 Pydantic 校验，缺少正反因素、风险、失效条件或可核验来源时不会推送。
 
-## 处理规则
+## PWA 与部署
 
-程序先标准化 URL、标题、来源、时间和股票代码，再通过规范 URL、标题哈希以及“股票代码 + 标题 + 六小时时间窗”事件哈希去重。哈希、分析和每个通知渠道的发送状态都持久化在现有 SQLite 数据库中，因此重启后不会重新分析或重复推送；失败的渠道可在下一次发现同一新闻时单独重试。
+移动浏览器通过 HTTPS 打开 `/news` 后，可选择“添加到主屏幕”或“安装应用”。PWA 仅缓存应用外壳和最近历史；刷新失败时仍能查看已经保存的资讯。
 
-重要性是 0–100 的确定性程序评分，考虑公告/监管属性、自选股命中、高影响事件、来源可靠度、多源确认、时效、价格/成交量变化和实体匹配置信度。LLM 不参与打分：默认 60 分以上才分析，75 分以上才推送。
+香港轻量服务器可继续使用现有 systemd + Caddy 部署方式：构建 Web 后让 systemd 执行 `python main.py --news-watch`，Caddy 反向代理到 FastAPI。凭据只保存在服务器 `.env`，不要写入浏览器、service worker 或 Git。
 
-AI 只解释输入证据，并通过 Pydantic 验证固定 JSON。输出缺少来源、正面因素或负面因素，或 JSON 非法时会重试一次；再次失败只保存错误，不推送无效分析。
-
-## 企业微信与飞书
-
-企业微信群机器人使用 `WECHAT_WEBHOOK_URL`。飞书可使用简单的 `FEISHU_WEBHOOK_URL`，也可继续使用项目现有 App Bot 配置。两者可以同时启用；某一渠道失败不影响另一渠道或分析入库。
-
-推送详情链接格式为 `PUBLIC_BASE_URL/news/{news_id}`。公网部署必须把 `PUBLIC_BASE_URL` 设置成手机可访问的 HTTPS 地址。
-
-## Android 安装 PWA
-
-先通过 HTTPS 打开 `/news`，然后在 Chrome、Edge 或支持安装 PWA 的 Android 浏览器菜单中选择“添加到主屏幕”或“安装应用”。安装后显示名称为“股票雷达”，以 standalone 模式启动，并对应用壳、历史新闻列表与详情响应做简单离线缓存。
-
-第一阶段没有生成 APK，也没有加入 Capacitor：PWA 已覆盖个人 Demo 的核心使用方式，且当前任务不应让 Android SDK/Java 环境阻塞后端和 Web 完成。如果后续确实需要 APK，可在通过 PWA 验收后增加只加载现有 WebUI 的 `mobile-wrapper/`。
-
-## 香港轻量服务器部署
-
-以下示例使用 Python 虚拟环境、systemd 和 Caddy；实际域名、用户和路径请替换，密钥仍只放在 `.env`：
-
-```bash
-sudo apt update
-sudo apt install -y python3-venv nodejs npm caddy
-git clone https://github.com/ZhuLinsen/daily_stock_analysis.git /opt/stock-news-demo
-cd /opt/stock-news-demo
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cd apps/dsa-web && npm ci && npm run build && cd ../..
-cp .env.example .env
-chmod 600 .env
-```
-
-`/etc/systemd/system/stock-news-demo.service`：
-
-```ini
-[Unit]
-Description=Personal stock news radar
-After=network-online.target
-
-[Service]
-Type=simple
-User=stockradar
-WorkingDirectory=/opt/stock-news-demo
-EnvironmentFile=/opt/stock-news-demo/.env
-ExecStart=/opt/stock-news-demo/.venv/bin/python main.py --news-watch
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`/etc/caddy/Caddyfile`：
-
-```caddy
-stocks.example.com {
-    reverse_proxy 127.0.0.1:8000
-}
-```
-
-启用服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now stock-news-demo
-sudo systemctl reload caddy
-sudo systemctl status stock-news-demo
-```
-
-Caddy 会为有效公网域名自动申请 HTTPS 证书。建议启用项目现有管理员认证，并通过防火墙只开放 80/443。
+该 Demo 不是交易所级实时系统，不自动交易，也不提供确定性买卖建议或目标价。

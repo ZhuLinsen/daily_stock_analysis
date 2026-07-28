@@ -33,15 +33,24 @@ class ExistingSearchNewsSource:
             serpapi_keys=self.config.serpapi_keys,
             minimax_keys=self.config.minimax_api_keys,
             searxng_base_urls=self.config.searxng_base_urls,
-            searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
+            # Personal demo never auto-discovers public instances. Explicitly
+            # configured optional providers remain compatible, while Bocha is enough.
+            searxng_public_instances_enabled=False,
             news_max_age_days=self.config.news_max_age_days,
             news_strategy_profile="ultra_short",
         )
         candidates: List[NewsCandidate] = []
         for symbol in settings.watchlist:
-            response = service.search_stock_news(symbol, symbol, max_results=8)
+            from src.data.stock_index_loader import get_index_stock_name
+
+            stock_name = get_index_stock_name(symbol) or symbol
+            try:
+                response = service.search_stock_news(symbol, stock_name, max_results=8)
+            except Exception as exc:
+                logger.warning("personal-news search failed for %s: %s", symbol, type(exc).__name__)
+                continue
             if not response.success:
-                logger.warning("personal-news source failed for %s: %s", symbol, response.error_message)
+                logger.warning("personal-news search unavailable for %s", symbol)
                 continue
             price_change, volume_change = self._quote_snapshot(symbol)
             for item in response.results:
@@ -148,8 +157,12 @@ class LiteLLMNewsAnalyzer:
                 return result
             except Exception as exc:  # validation and provider failures share the one-retry contract
                 last_error = exc
-                logger.warning("personal-news LLM validation failed (attempt=%s): %s", attempt + 1, exc)
-        raise ValueError(f"invalid structured analysis after retry: {last_error}")
+                logger.warning(
+                    "personal-news LLM validation failed (attempt=%s, error=%s)",
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+        raise ValueError(f"invalid structured analysis after retry: {type(last_error).__name__}")
 
     def _complete(self, prompt: str, *, correction: bool) -> str:
         completion_fn = self._completion_fn
@@ -206,24 +219,18 @@ class LiteLLMNewsAnalyzer:
 
 
 class ExistingPushNotifier:
-    """Sends through the existing WeCom and Feishu sender implementations."""
+    """Send the personal demo's single digest through the existing Feishu sender."""
 
     def __init__(self, config: Any):
         self.config = config
 
     def channels(self) -> Iterable[str]:
-        if self.config.wechat_webhook_url:
-            yield "wechat"
         if self.config.feishu_webhook_url or (
             self.config.feishu_app_id and self.config.feishu_app_secret and self.config.feishu_chat_id
         ):
             yield "feishu"
 
     def send(self, channel: str, content: str) -> bool:
-        if channel == "wechat":
-            from src.notification_sender.wechat_sender import WechatSender
-
-            return WechatSender(self.config).send_to_wechat(content)
         if channel == "feishu":
             from src.notification_sender.feishu_sender import FeishuSender
 

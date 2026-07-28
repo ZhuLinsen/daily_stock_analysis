@@ -95,6 +95,7 @@ class Scheduler:
         schedule_time_provider: Optional[Callable[[], str]] = None,
         schedule_times: Optional[Sequence[str]] = None,
         schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
+        timezone_name: Optional[str] = None,
         register_signals: bool = True,
     ):
         """
@@ -118,6 +119,7 @@ class Scheduler:
         )
         self._schedule_time_provider = schedule_time_provider
         self._schedule_times_provider = schedule_times_provider
+        self.timezone_name = (timezone_name or "").strip() or None
         self.shutdown_handler = GracefulShutdown(register_signals=register_signals)
         self._task_callback: Optional[Callable] = None
         self._daily_job: Optional[Any] = None
@@ -180,7 +182,9 @@ class Scheduler:
 
         previous_time = self.schedule_time
         self._cancel_daily_job()
-        self._daily_job = self.schedule.every().day.at(candidate).do(self._safe_run_task)
+        daily = self.schedule.every().day
+        at_job = daily.at(candidate, self.timezone_name) if self.timezone_name else daily.at(candidate)
+        self._daily_job = at_job.do(self._safe_run_task)
         self.schedule_time = candidate
 
         if previous_time == candidate:
@@ -229,10 +233,11 @@ class Scheduler:
         candidates = normalize_schedule_times(raw_items, fallback_time=self.schedule_time)
         previous_times = list(self.schedule_times)
         self._cancel_daily_job()
-        self._daily_jobs = [
-            self.schedule.every().day.at(candidate).do(self._safe_run_task)
-            for candidate in candidates
-        ]
+        self._daily_jobs = []
+        for candidate in candidates:
+            daily = self.schedule.every().day
+            at_job = daily.at(candidate, self.timezone_name) if self.timezone_name else daily.at(candidate)
+            self._daily_jobs.append(at_job.do(self._safe_run_task))
         self._daily_job = self._daily_jobs[0] if self._daily_jobs else None
         self.schedule_times = candidates
         self.schedule_time = candidates[0] if candidates else "18:00"

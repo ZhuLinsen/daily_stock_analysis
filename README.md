@@ -174,9 +174,12 @@ python main.py --stocks 600519,hk00700,AAPL,2330.TW
 python main.py --market-review
 python main.py --schedule
 python main.py --serve-only
+python main.py --news-watch
 ```
 
 > Docker 部署、定时任务、云服务器访问请参考 [完整指南](docs/full-guide.md)；桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)。
+
+个人股票新闻 Demo 只需配置 OpenAI-compatible 模型、博查和飞书；股票在 `/news` 页面维护。服务在北京时间 08:00、20:00 检查，页面每个浏览器会话首次打开也会在 10 分钟冷却允许时异步刷新。详见 [个人股票新闻 Demo](docs/personal-news-demo.md)。
 
 ## 📱 推送效果
 

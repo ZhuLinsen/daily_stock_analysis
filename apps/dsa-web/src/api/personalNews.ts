@@ -11,6 +11,7 @@ export type NewsAnalysis = {
   risks: string[];
   action: string;
   actionReason: string;
+  invalidationConditions: string[];
   sourceUrls: string[];
   dataTime: string;
 };
@@ -43,6 +44,18 @@ export type ProviderStatus = {
   checkedAt: string;
 };
 
+export type WatchlistItem = { symbol: string; name: string };
+
+export type RefreshStatus = {
+  status: 'started' | 'running' | 'cooldown' | 'completed' | 'failed';
+  lastRefreshAt: string | null;
+  nextAllowedRefreshAt: string | null;
+  error?: string | null;
+  stats?: ({ new?: number; analyzed?: number; pushed?: number; errors?: number } & Record<string, unknown>) | null;
+  newArticleIds?: number[];
+  message?: string;
+};
+
 export const personalNewsApi = {
   async list(): Promise<PersonalNewsItem[]> {
     const response = await apiClient.get('/personal-news', { params: { limit: 100 } });
@@ -55,5 +68,25 @@ export const personalNewsApi = {
   async providers(): Promise<ProviderStatus[]> {
     const response = await apiClient.get('/personal-news/providers');
     return toCamelCase<ProviderStatus[]>(response.data);
+  },
+  async watchlist(): Promise<WatchlistItem[]> {
+    const response = await apiClient.get('/personal-news/watchlist');
+    return toCamelCase<WatchlistItem[]>(response.data);
+  },
+  async addWatchlist(symbols: string): Promise<{ items: WatchlistItem[]; added: string[]; refresh: RefreshStatus | null }> {
+    const response = await apiClient.post('/personal-news/watchlist', { symbols });
+    return toCamelCase(response.data);
+  },
+  async deleteWatchlist(symbol: string): Promise<WatchlistItem[]> {
+    const response = await apiClient.delete(`/personal-news/watchlist/${encodeURIComponent(symbol)}`);
+    return toCamelCase<WatchlistItem[]>(response.data);
+  },
+  async refresh(trigger: 'page_open' | 'manual' = 'manual'): Promise<RefreshStatus> {
+    const response = await apiClient.post('/personal-news/refresh', { trigger });
+    return toCamelCase<RefreshStatus>(response.data);
+  },
+  async refreshStatus(): Promise<RefreshStatus> {
+    const response = await apiClient.get('/personal-news/refresh/status');
+    return toCamelCase<RefreshStatus>(response.data);
   },
 };

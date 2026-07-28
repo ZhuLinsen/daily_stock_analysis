@@ -44,12 +44,23 @@ class Market(str, Enum):
 
 def parse_stock_symbol(value: str) -> tuple[str, Market]:
     symbol = (value or "").strip().upper()
-    if re.fullmatch(r"(?:SH|SZ|BJ)?\d{6}(?:\.(?:SH|SZ|BJ))?", symbol):
-        canonical = re.sub(r"^(?:SH|SZ|BJ)", "", symbol).split(".", 1)[0]
-        return canonical, Market.A_SHARE
+    explicit_a_share = re.fullmatch(r"(?:(SH|SZ|BJ)[.]?)?(\d{6})(?:[.](SH|SZ|BJ))?", symbol)
+    if explicit_a_share:
+        prefix, digits, suffix = explicit_a_share.groups()
+        exchange = suffix or prefix
+        if exchange is None:
+            if digits.startswith(("92", "43", "81", "82", "83", "87", "88")):
+                exchange = "BJ"
+            elif digits.startswith("6"):
+                exchange = "SH"
+            elif digits.startswith(("0", "2", "3")):
+                exchange = "SZ"
+            else:
+                raise ValueError(f"cannot infer A-share exchange: {value}")
+        return f"{digits}.{exchange}", Market.A_SHARE
     if re.fullmatch(r"(?:HK)?\d{5}(?:\.HK)?", symbol):
         digits = symbol.removeprefix("HK").removesuffix(".HK")
-        return f"HK{digits}", Market.HK
+        return f"{digits}.HK", Market.HK
     if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}(?:\.US)?", symbol):
         return symbol.removesuffix(".US"), Market.US
     raise ValueError(f"unsupported stock symbol: {value}")
@@ -69,6 +80,7 @@ class NewsAnalysis(BaseModel):
     risks: List[str]
     action: Action
     action_reason: str = Field(min_length=1, max_length=1000)
+    invalidation_conditions: List[str]
     source_urls: List[str]
     data_time: datetime
 
@@ -82,8 +94,10 @@ class NewsAnalysis(BaseModel):
 
     @model_validator(mode="after")
     def require_balanced_factors(self) -> "NewsAnalysis":
-        if not self.positive_factors or not self.negative_factors:
-            raise ValueError("positive_factors and negative_factors are both required")
+        if not self.positive_factors or not self.negative_factors or not self.risks:
+            raise ValueError("positive_factors, negative_factors, and risks are required")
+        if not self.invalidation_conditions:
+            raise ValueError("invalidation_conditions is required")
         return self
 
 
@@ -117,10 +131,14 @@ class NewsCandidate(BaseModel):
 class NewsRadarSettings(BaseModel):
     watchlist: List[str] = Field(default_factory=list)
     macro_keywords: List[str] = Field(default_factory=list)
-    poll_interval_minutes: int = Field(default=15, ge=1, le=1440)
     min_analysis_score: int = Field(default=60, ge=0, le=100)
     min_push_score: int = Field(default=75, ge=0, le=100)
-    public_base_url: str = "http://127.0.0.1:8000"
+    app_timezone: str = "Asia/Shanghai"
+    news_push_interval_hours: int = Field(default=12, ge=1, le=24)
+    refresh_on_open: bool = True
+    open_refresh_cooldown_minutes: int = Field(default=10, ge=1, le=1440)
+    max_ai_items_per_run: int = Field(default=5, ge=1, le=20)
+    public_base_url: str = ""
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "NewsRadarSettings":
@@ -136,14 +154,31 @@ class NewsRadarSettings(BaseModel):
                 return list(fallback or [])
             return [item.strip() for item in raw.replace("，", ",").split(",") if item.strip()]
 
+        def boolean(name: str, default: bool) -> bool:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+
         return cls(
             watchlist=[parse_stock_symbol(item)[0] for item in split("WATCHLIST", fallback_watchlist)],
             macro_keywords=split("MACRO_KEYWORDS"),
-            poll_interval_minutes=int(os.getenv("POLL_INTERVAL_MINUTES", "15")),
             min_analysis_score=int(os.getenv("MIN_ANALYSIS_SCORE", "60")),
             min_push_score=int(os.getenv("MIN_PUSH_SCORE", "75")),
-            public_base_url=(os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")),
+            app_timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai").strip() or "Asia/Shanghai",
+            news_push_interval_hours=int(os.getenv("NEWS_PUSH_INTERVAL_HOURS", "12")),
+            refresh_on_open=boolean("REFRESH_ON_OPEN", True),
+            open_refresh_cooldown_minutes=int(os.getenv("OPEN_REFRESH_COOLDOWN_MINUTES", "10")),
+            max_ai_items_per_run=int(os.getenv("MAX_AI_ITEMS_PER_RUN", "5")),
+            public_base_url=os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/"),
         )
+
+
+def parse_watchlist_input(value: str) -> List[str]:
+    """Parse comma, whitespace, newline, and Chinese punctuation separated symbols."""
+    raw_items = re.split(r"[,，;；\s]+", value or "")
+    normalized = [parse_stock_symbol(item)[0] for item in raw_items if item.strip()]
+    return list(dict.fromkeys(normalized))
 
 
 def utc_now() -> datetime:

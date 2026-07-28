@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,9 +22,11 @@ from src.personal_news.schemas import (
     NewsRadarSettings,
     TimeHorizon,
     parse_stock_symbol,
+    parse_watchlist_input,
 )
 from src.personal_news.scoring import score_importance
 from src.personal_news.service import PersonalNewsMonitor
+from src.scheduler import Scheduler
 from src.storage import DatabaseManager
 
 
@@ -65,6 +69,7 @@ def analysis() -> NewsAnalysis:
         risks=["供应约束可能影响兑现"],
         action=Action.WATCH_NOW,
         action_reason="基本面信息偏正面，但不适合高开追涨。",
+        invalidation_conditions=["公司撤回或下调本次指引"],
         source_urls=["https://example.com/news/1"],
         data_time=datetime.now(timezone.utc),
     )
@@ -76,10 +81,15 @@ def test_title_and_url_normalization() -> None:
 
 
 def test_a_hk_us_symbol_parsing() -> None:
-    assert parse_stock_symbol("600519") == ("600519", Market.A_SHARE)
-    assert parse_stock_symbol("hk00700") == ("HK00700", Market.HK)
-    assert parse_stock_symbol("00700.HK") == ("HK00700", Market.HK)
+    assert parse_stock_symbol("600519") == ("600519.SH", Market.A_SHARE)
+    assert parse_stock_symbol("300750") == ("300750.SZ", Market.A_SHARE)
+    assert parse_stock_symbol("920000") == ("920000.BJ", Market.A_SHARE)
+    assert parse_stock_symbol("hk00700") == ("00700.HK", Market.HK)
+    assert parse_stock_symbol("00700.HK") == ("00700.HK", Market.HK)
     assert parse_stock_symbol("aapl.us") == ("AAPL", Market.US)
+    assert parse_watchlist_input("600519，300750\n00700 nvda") == [
+        "600519.SH", "300750.SZ", "00700.HK", "NVDA"
+    ]
 
 
 def test_repository_deduplicates_url_and_similar_event(repository: PersonalNewsRepository) -> None:
@@ -188,8 +198,8 @@ def test_fixture_e2e_merges_sources_pushes_once_and_renders_detail(repository: P
     first_run = monitor.run_once()
     assert first_run["new"] == 1
     assert first_run["analyzed"] == 1
-    assert first_run["pushed"] == 2
-    assert {channel for channel, _ in notifier.sent} == {"wechat", "feishu"}
+    assert first_run["pushed"] == 1
+    assert {channel for channel, _ in notifier.sent} == {"feishu"}
     item = repository.list_articles()[0]
     assert item["source_count"] == 2
     assert item["analysis"]["action"] == "WATCH_NOW"
@@ -207,7 +217,7 @@ def test_fixture_e2e_merges_sources_pushes_once_and_renders_detail(repository: P
     second_run = restarted.run_once()
     assert second_run["new"] == 0
     assert second_run["pushed"] == 0
-    assert len(notifier.sent) == 2
+    assert len(notifier.sent) == 1
 
 
 def test_single_source_failure_does_not_stop_other_sources(repository: PersonalNewsRepository) -> None:
@@ -221,31 +231,103 @@ def test_single_source_failure_does_not_stop_other_sources(repository: PersonalN
     assert stats["new"] == 1
 
 
-def test_failed_push_retries_without_replaying_successful_channel(repository: PersonalNewsRepository) -> None:
-    class RetryNotifier(FakeNotifier):
-        def __init__(self):
-            super().__init__()
-            self.feishu_attempts = 0
-
-        def send(self, channel, content):
-            self.sent.append((channel, content))
-            if channel == "feishu":
-                self.feishu_attempts += 1
-                return self.feishu_attempts > 1
-            return True
-
-    notifier = RetryNotifier()
+def test_no_new_articles_skips_ai_and_push(repository: PersonalNewsRepository) -> None:
+    notifier = FakeNotifier()
+    analyzer = FakeAnalyzer()
     monitor = PersonalNewsMonitor(
         settings=NewsRadarSettings(watchlist=["NVDA"], min_analysis_score=60, min_push_score=75),
         sources=[FakeSource("source", [candidate()])],
         repository=repository,
-        analyzer=FakeAnalyzer(),
+        analyzer=analyzer,
         notifier=notifier,
     )
     assert monitor.run_once()["pushed"] == 1
-    assert monitor.run_once()["pushed"] == 1
-    assert [channel for channel, _ in notifier.sent].count("wechat") == 1
-    assert [channel for channel, _ in notifier.sent].count("feishu") == 2
+    second = monitor.run_once()
+    assert second["new"] == second["analyzed"] == second["pushed"] == 0
+    assert len(notifier.sent) == 1
+
+
+def test_watchlist_is_persisted_and_preserves_hk_leading_zero(repository: PersonalNewsRepository) -> None:
+    repository.add_watchlist_symbols(parse_watchlist_input("00700 NVDA"))
+    assert repository.get_watchlist_symbols() == ["00700.HK", "NVDA"]
+    repository.remove_watchlist_symbol("00700.HK")
+    assert repository.get_watchlist_symbols() == ["NVDA"]
+
+
+def test_only_top_five_new_items_are_analyzed_and_one_digest_is_sent(repository: PersonalNewsRepository) -> None:
+    class CountingAnalyzer(FakeAnalyzer):
+        def __init__(self):
+            self.calls = 0
+
+        def analyze(self, item, *, data_time):
+            self.calls += 1
+            return super().analyze(item, data_time=data_time)
+
+    analyzer = CountingAnalyzer()
+    notifier = FakeNotifier()
+    items = [candidate(title=f"英伟达重要公告 {index}", url=f"https://example.com/{index}") for index in range(7)]
+    monitor = PersonalNewsMonitor(
+        settings=NewsRadarSettings(watchlist=["NVDA"], max_ai_items_per_run=5),
+        sources=[FakeSource("source", items)], repository=repository, analyzer=analyzer, notifier=notifier,
+    )
+    result = monitor.run_once()
+    assert result["new"] == 7
+    assert result["analyzed"] == analyzer.calls == 5
+    assert result["pushed"] == 1
+    assert len(notifier.sent) == 1
+    assert "【自选股 12 小时资讯】" in notifier.sent[0][1]
+    assert "观察策略：重点关注" in notifier.sent[0][1]
+
+
+def test_refresh_cooldown_and_process_lock(repository: PersonalNewsRepository) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingSource(FakeSource):
+        def fetch(self, settings):
+            entered.set()
+            release.wait(timeout=2)
+            return []
+
+    monitor = PersonalNewsMonitor(
+        settings=NewsRadarSettings(watchlist=["NVDA"]),
+        sources=[BlockingSource("blocking")], repository=repository,
+    )
+    assert monitor.request_refresh()["status"] == "started"
+    assert entered.wait(timeout=1)
+    assert monitor.request_refresh()["status"] == "running"
+    release.set()
+    assert monitor._refresh_thread is not None
+    monitor._refresh_thread.join(timeout=2)
+    assert monitor.refresh_status()["status"] == "completed"
+    assert monitor.request_refresh()["status"] == "cooldown"
+
+
+def test_personal_schedule_uses_exact_china_times_without_startup_run(monkeypatch) -> None:
+    scheduled: list[tuple[str, str]] = []
+    callback_calls: list[str] = []
+
+    class FakeJob:
+        @property
+        def day(self):
+            return self
+
+        def at(self, value, timezone_name):
+            scheduled.append((value, timezone_name))
+            return self
+
+        def do(self, callback):
+            self.callback = callback
+            return self
+
+    monkeypatch.setitem(sys.modules, "schedule", SimpleNamespace(every=FakeJob, cancel_job=lambda _job: None))
+    scheduler = Scheduler(
+        schedule_times=["08:00", "20:00"], timezone_name="Asia/Shanghai", register_signals=False
+    )
+    scheduler.set_daily_task(lambda: callback_calls.append("ran"), run_immediately=False)
+
+    assert scheduled == [("08:00", "Asia/Shanghai"), ("20:00", "Asia/Shanghai")]
+    assert callback_calls == []
 
 
 def test_pwa_manifest_and_service_worker_exist() -> None:

@@ -17,15 +17,17 @@
 - 确定性 0–100 重要性评分；LLM 不参与打分。
 - 复用现有 SearchService、LiteLLM、企业微信、飞书、FastAPI 与 React WebUI 的专用编排。
 - 严格 Pydantic JSON 输出、一次修复重试、无来源拒绝和无效分析禁止推送。
-- `python main.py --news-watch` 单进程轮询、非重入、单轮失败隔离、结构化日志和优雅 Ctrl+C 停止。
-- `/api/v1/personal-news` 列表、详情、Provider 状态和手动运行 API。
-- `/news` 移动端列表、`/news/{id}` 详情、Provider 状态、原始来源链接。
+- `python main.py --news-watch` 在北京时间 08:00、20:00 调度，启动不扫描；单进程非重入、单轮失败隔离和优雅 Ctrl+C 停止。
+- `/api/v1/personal-news` 列表、详情、Provider、SQLite 自选股管理、异步刷新和刷新状态 API。
+- `/news` 支持批量维护 A/港/美股、每会话首次打开异步刷新、刷新状态、最新观察、重要新增、历史详情和原始来源链接。
+- 仅新增新闻进入 AI，单轮按重要性最多 5 条；无新增不调用 AI、不推送，同轮最多发送一条飞书摘要。
 - manifest、192/512 SVG 图标、standalone PWA 和历史新闻简单离线缓存。
 
 ## 验证结果
 
-- `pytest tests/test_personal_news_monitor.py -q`：11 passed。
+- `pytest tests/test_personal_news_monitor.py -q`：15 passed。
 - `npm run lint`：通过。
+- `npm test -- --run src/pages/__tests__/NewsPage.test.tsx`：1 passed。
 - `npm run build`：通过，生成 `static/`，包含 `NewsPage` 独立 chunk 与 PWA 公共文件。
 - 初始仓库新闻测试未重跑完整套件，原因见“基线”。
 
@@ -34,4 +36,4 @@
 - 未提供真实新闻搜索、LLM API Key、企业微信或飞书 Webhook，因此在线抓取、真实模型响应和真实推送未执行；测试使用 Fake Provider。
 - 未生成 Capacitor/APK：第一阶段明确以 PWA 为交付目标，且未配置 Android SDK/Java 签名环境。
 - `npm install` 报告依赖树有 16 个漏洞（1 low、2 moderate、13 high）；未执行可能引入破坏性升级的 `npm audit fix`。
-- 这是 15 分钟级个人新闻雷达，不是交易所级实时行情系统，不提供自动交易、确定性买卖建议或目标价。
+- 这是每天两次并支持页面冷却刷新的个人新闻 Demo，不是交易所级实时行情系统，不提供自动交易、确定性买卖建议或目标价。

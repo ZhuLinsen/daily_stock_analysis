@@ -1480,13 +1480,12 @@ def main() -> int:
     try:
         # 模式0: 个人新闻雷达（单进程轮询；Web 服务已在后台线程启动）
         if getattr(args, 'news_watch', False):
-            from src.personal_news.service import build_personal_news_monitor
+            from src.personal_news.service import get_personal_news_monitor
 
-            monitor = build_personal_news_monitor(config)
+            monitor = get_personal_news_monitor(config)
             logger.info(
-                "模式: 个人新闻雷达 (interval=%s minutes, watchlist=%s)",
-                monitor.settings.poll_interval_minutes,
-                ",".join(monitor.settings.watchlist) or "empty",
+                "模式: 个人新闻雷达 (schedule=08:00,20:00 timezone=%s)",
+                monitor.settings.app_timezone,
             )
             logger.info("Web/PWA: http://%s:%s/news", args.host, args.port)
             try:
