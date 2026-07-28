@@ -1,8 +1,8 @@
 name: 每日股票分析
 on:
-  # 【⚠️修改点】北京时间21:00 = UTC13:00，周一到周五
+  # 【⚠️修改点】北京时间06:00 = UTC前一天22:00，对应UTC周日-周四(0-4)
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '0 22 * * 0-4'
   # 网页手动一键运行
   workflow_dispatch:
     inputs:
@@ -166,4 +166,5 @@ jobs:
             echo "✅ 已生成股票分析报告文件"
             ls -lh reports/
           else
-            echo "⚠️ 
+            echo "⚠️ 未生成任何报告文件，请检查前面步骤日志"
+          fi
