@@ -2915,6 +2915,31 @@ raise SystemExit(2)
     assert "export OPENAI_API_KEY=<redacted> session_id=stderr789" in stderr_preview
 
 
+def test_redact_diagnostic_text_multi_segment_shell_command_substitutions(
+    tmp_path: Path,
+) -> None:
+    backend = _backend(
+        tmp_path,
+        """
+import sys
+print("A=$(echo OPENAI_API_KEY=sk-12345);B=ok; tail $(printenv SECRET_TOKEN)")
+print("safe=$(date); echo $(ls)", file=sys.stderr)
+raise SystemExit(2)
+""",
+    )
+
+    with pytest.raises(GenerationError) as exc_info:
+        backend.generate("prompt", {})
+
+    stdout_preview = exc_info.value.details["stdout_preview"]
+    stderr_preview = exc_info.value.details["stderr_preview"]
+
+    for secret in ("OPENAI_API_KEY", "sk-12345", "SECRET_TOKEN"):
+        assert secret not in f"{stdout_preview}\n{stderr_preview}"
+    assert "<redacted>" in stdout_preview
+    assert stderr_preview.count("<redacted>") == 0
+
+
 def test_nonzero_exit_previews_redact_json_auth_and_embedded_assignments(
     tmp_path: Path,
 ) -> None:

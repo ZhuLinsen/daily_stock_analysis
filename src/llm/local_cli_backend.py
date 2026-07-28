@@ -1303,6 +1303,68 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
                 continue
             replacements.append((value_start, value_end, "<redacted>"))
             last_end = value_end
+        # Scan remaining $(...) command substitutions not bound to any env
+        # assignment, so multi-segment diagnostics like
+        # A=$(echo X);B=ok; tail $(printenv SECRET_TOKEN)
+        # redact every sensitive reference regardless of how it is invoked.
+        tail_start = 0
+        while True:
+            sub = source.find("$(", tail_start)
+            if sub == -1:
+                break
+            if sub > 0 and source[sub - 1] == "$":
+                tail_start = sub + 1
+                continue
+            # Skip $( that is the direct value of a sensitive env assignment
+            # already handled above, so we don't double-rewrite it. A leading
+            # non-sensitive token like A=$(echo SECRET) must still be scanned
+            # because the inner token triggers the redaction.
+            prior_semi = source.rfind(";", 0, sub)
+            if prior_semi == -1:
+                prior_nl = source.rfind("\n", 0, sub)
+            else:
+                prior_nl = -1
+            skip_due_to_prior = False
+            if prior_semi != -1:
+                candidate = source[prior_semi + 1:sub].strip(" \t")
+                if candidate:
+                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", candidate)
+                    if prior_match and _is_sensitive_env_name(prior_match.group("name")):
+                        skip_due_to_prior = True
+            if not skip_due_to_prior and prior_nl != -1:
+                candidate = source[prior_nl + 1:sub].strip(" \t")
+                if candidate:
+                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", candidate)
+                    if prior_match and _is_sensitive_env_name(prior_match.group("name")):
+                        skip_due_to_prior = True
+            if not skip_due_to_prior and prior_semi == -1 and prior_nl == -1:
+                head = source[:sub].lstrip(" \t")
+                if head:
+                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", head)
+                    if prior_match and _is_sensitive_env_name(prior_match.group("name")):
+                        skip_due_to_prior = True
+            if skip_due_to_prior:
+                tail_start = sub + 1
+                continue
+            value_end = _consume_shell_command_substitution(source, sub)
+            if value_end <= sub:
+                tail_start = sub + 1
+                continue
+            snippet = source[sub + 2:value_end - 1] if value_end > sub + 2 else source[sub + 2:]
+            # Scan every uppercase token inside the command substitution so
+            # that printenv SECRET_TOKEN, echo API_KEY=..., ${TOKEN:+x}, and
+            # similar forms each trigger redaction even when the leading word
+            # is a generic command name like "echo" or "printenv".
+            sensitive_hit = any(
+                _is_sensitive_env_name(token)
+                for token in re.findall(r"[A-Z][A-Z0-9_]*", snippet)
+            )
+            if sensitive_hit:
+                replacements.append((sub, value_end, "<redacted>"))
+                last_end = value_end
+                tail_start = value_end
+            else:
+                tail_start = sub + 1
         return _replace_spans(source, replacements)
 
     redacted = _redact_yaml_explicit_sensitive_fields(text)
