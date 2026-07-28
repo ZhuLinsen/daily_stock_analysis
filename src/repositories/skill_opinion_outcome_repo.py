@@ -104,10 +104,6 @@ class SkillOpinionOutcomeRepository:
                     .outerjoin(SkillOpinionOutcomeRecord, join_condition)
                     .where(and_(*conditions))
                     .order_by(
-                        case(
-                            (SkillOpinionOutcomeRecord.id.is_(None), 0),
-                            else_=1,
-                        ),
                         func.coalesce(
                             SkillOpinionOutcomeRecord.updated_at,
                             SkillOpinionSampleRecord.created_at,
@@ -129,10 +125,10 @@ class SkillOpinionOutcomeRepository:
         horizon_rank = {horizon: index for index, horizon in enumerate(horizons)}
         candidates.sort(
             key=lambda item: (
-                item.existing_outcome is not None,
                 self._candidate_time(item),
                 int(item.sample.id),
                 horizon_rank[item.horizon],
+                item.existing_outcome is not None,
             )
         )
         return candidates[:limit]

@@ -543,6 +543,50 @@ def test_pending_is_retried_but_terminal_outcome_is_immutable(isolated_db) -> No
     assert _stored_outcome(isolated_db, sample_id).stock_return_pct == pytest.approx(5.0)
 
 
+def test_old_pending_retry_is_not_starved_by_new_missing_candidates(
+    isolated_db,
+) -> None:
+    _, pending_sample_id = _add_sample(isolated_db, skill_id="pending")
+    _, missing_sample_id = _add_sample(isolated_db, skill_id="missing")
+    repo = SkillOpinionOutcomeRepository(isolated_db)
+    pending_fields = {
+        "skill_opinion_sample_id": pending_sample_id,
+        "horizon": "1d",
+        "engine_version": SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        "eval_status": "pending",
+        "outcome": None,
+        "direction_correct": None,
+        "unable_reason": "insufficient_future_data",
+    }
+    repo.persist_outcome(pending_fields)
+
+    with isolated_db.session_scope() as session:
+        pending_outcome = session.query(SkillOpinionOutcomeRecord).filter_by(
+            skill_opinion_sample_id=pending_sample_id,
+            horizon="1d",
+            engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        ).one()
+        pending_outcome.updated_at = datetime(2024, 1, 1, 12, 0, 0)
+        session.get(SkillOpinionSampleRecord, missing_sample_id).created_at = datetime(
+            2024, 1, 2, 12, 0, 0
+        )
+
+    first = repo.list_candidate_keys(
+        horizons=["1d"],
+        engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        limit=1,
+    )
+    assert [item.sample.id for item in first] == [pending_sample_id]
+
+    repo.persist_outcome(pending_fields)
+    second = repo.list_candidate_keys(
+        horizons=["1d"],
+        engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        limit=1,
+    )
+    assert [item.sample.id for item in second] == [missing_sample_id]
+
+
 def test_history_deletion_removes_outcomes_before_samples(isolated_db) -> None:
     history_id, sample_id = _add_sample(isolated_db)
     repo = SkillOpinionOutcomeRepository(isolated_db)
