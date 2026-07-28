@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [新功能] 新增单用户个人股票新闻雷达，复用现有搜索、LiteLLM、企业微信/飞书、FastAPI 与 SQLite，支持 15 分钟轮询、持久去重、确定性评分、严格 JSON 分析、移动端新闻详情及可安装 PWA。
+- [测试] 新增个人新闻雷达 Fixture E2E，覆盖 A/港/美股代码、URL/标题/事件去重、非法 LLM JSON、来源缺失、通知重试、重启防重放、数据源隔离和 PWA 产物。
 - [修复] 统一等价股票代码的本地日线候选与同源窗口解析；冲突沪深交易所代码不再降级匹配裸码，回测仅接受快照或交易日历确认的起点，并在同一起点中优先完整的单一代码窗口。
 - [新功能] 新增按 individual SkillAgent 自身 signal、版本化 engine 与本地已存同源日线窗口计算并持久化 `skill_opinion_outcomes` 的核心服务；本阶段不提供管理员 API、表现统计、样本充足度或权重调整。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
