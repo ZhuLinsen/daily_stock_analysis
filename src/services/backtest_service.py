@@ -135,12 +135,16 @@ class BacktestService:
                     else []
                 )
                 expected_start_date = start_resolution.expected_start_date
+                local_start_date = (
+                    expected_start_date
+                    or start_resolution.legacy_local_start_date
+                )
                 daily_window = None
-                if expected_start_date is not None:
+                if local_start_date is not None:
                     daily_window = resolve_stock_daily_window(
                         stock_repo=self.stock_repo,
                         code_candidates=daily_code_candidates,
-                        expected_start_date=expected_start_date,
+                        expected_start_date=local_start_date,
                         eval_window_days=int(eval_window_days),
                     )
 

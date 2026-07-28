@@ -25,6 +25,7 @@ class DailyStockStartResolution:
     identity: Optional[DailyStockIdentity]
     expected_start_date: Optional[date]
     failure_reason: Optional[str]
+    legacy_local_start_date: Optional[date] = None
 
 
 def resolve_stock_daily_start(
@@ -98,6 +99,7 @@ def resolve_stock_daily_start(
                 identity,
                 None,
                 "invalid_effective_daily_bar_date",
+                legacy_local_start_date=effective_date,
             )
         return DailyStockStartResolution(identity, effective_date, None)
 
