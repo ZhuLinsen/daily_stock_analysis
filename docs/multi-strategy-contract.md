@@ -28,7 +28,7 @@ Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独
 
 样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
 
-当前统计 service 不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示。把统计接入保守权重属于独立后续变更，接入前无论统计表是否已有记录，运行时仍保持现有中性权重。
+只读统计阶段（PR #2119）本身不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示；本页后文的 Phase 4 在该统计契约之上独立接入保守运行时权重。当前组合实现仍只读消费已经持久化的 Outcome，不负责自动触发 evaluator。
 
 ## 术语与边界
 

@@ -970,11 +970,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.AGENT_SKILL_AUTOWEIGHT': {
     title: '策略自动权重',
-    summary: '根据历史回测表现自动调整策略权重。',
-    usage: '开启后，系统按各策略的历史回测准确率加权综合信号。',
-    valueNotes: ['依赖回测数据；回测记录不足时可能无法有效加权。'],
-    impact: ['影响多策略综合时的信号权重分配。'],
-    notes: ['需要先开启回测功能并积累足够的回测数据。'],
+    summary: '基于真实、可归因且样本充足的 Skill Outcome 保守调整策略权重。',
+    usage: '开启后，仅当单个 Skill、周期和评估引擎版本独立达到 30 条 evaluated Outcome 时，系统才使用贝叶斯收缩结果调整综合信号权重。',
+    valueNotes: ['没有真实 Outcome、样本不足或统计异常时保持中性权重 1.0。'],
+    impact: ['影响多策略综合时的相对权重，单个性能因子限制在约 0.833 至 1.2。'],
+    notes: ['不使用全局回测胜率冒充 Skill 表现；当前平均方向收益不参与权重公式。'],
   },
   'settings.agent.AGENT_SKILL_ROUTING': {
     title: '策略路由模式',
@@ -1029,11 +1029,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '启用或关闭历史分析回测功能。',
     usage: '开启后，系统会定期将历史分析结果与后续实际走势对比，评估策略准确率。',
     valueNotes: [
-      '回测数据用于策略自动权重（AGENT_SKILL_AUTOWEIGHT）和记忆校准。',
+      '回测记录继续用于历史分析评估和现有记忆校准路径；Skill 自动权重改用独立的可归因 Outcome 数据。',
       '关闭回测不影响已有回测记录，但会停止新回测评估。',
     ],
-    impact: ['影响策略权重校准、记忆校准和回测报告生成。'],
-    notes: ['Agent 策略自动权重功能依赖回测数据。'],
+    impact: ['影响历史回测评估、记忆校准和回测报告生成；不直接控制 Skill Outcome 权重。'],
+    notes: ['AGENT_SKILL_AUTOWEIGHT 不再依赖全局回测胜率。'],
   },
   'settings.backtest.eval_params': {
     title: '回测评估参数',
@@ -2157,11 +2157,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.AGENT_SKILL_AUTOWEIGHT': {
     title: 'Auto-Weight Strategies',
-    summary: 'Automatically weights strategy opinions by their historical backtest performance.',
-    usage: 'When enabled, strategies with higher historical accuracy receive more weight in signal aggregation.',
-    valueNotes: ['Depends on backtest data; insufficient records may prevent effective weighting.'],
-    impact: ['Affects signal weight distribution when multiple strategies contribute.'],
-    notes: ['Requires the backtest feature to be enabled with sufficient historical data.'],
+    summary: 'Conservatively weights strategies from real, attributable Skill Outcomes with sufficient samples.',
+    usage: 'When enabled, Bayesian-shrunk performance adjusts signal weights only after one Skill, horizon, and evaluator version independently reaches 30 evaluated Outcomes.',
+    valueNotes: ['Missing Outcomes, insufficient samples, or invalid statistics keep the neutral weight of 1.0.'],
+    impact: ['Affects relative weights in multi-strategy aggregation; each performance factor is bounded to approximately 0.833 through 1.2.'],
+    notes: ['Global backtest win rates never substitute for Skill performance; average directional return is currently descriptive only.'],
   },
   'settings.agent.AGENT_SKILL_ROUTING': {
     title: 'Strategy Routing Mode',
@@ -2216,11 +2216,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Enables or disables historical analysis backtesting.',
     usage: 'When enabled, the system periodically compares past analysis results with subsequent actual price movements to evaluate strategy accuracy.',
     valueNotes: [
-      'Backtest data feeds into strategy auto-weighting (AGENT_SKILL_AUTOWEIGHT) and memory calibration.',
+      'Backtest records continue to support historical evaluation and existing memory calibration paths; Skill auto-weighting uses separate attributable Outcome data.',
       'Disabling backtest stops new evaluations but preserves existing records.',
     ],
-    impact: ['Affects strategy weight calibration, memory calibration, and backtest report generation.'],
-    notes: ['The Agent strategy auto-weight feature depends on backtest data.'],
+    impact: ['Affects historical backtesting, memory calibration, and backtest reports; it does not directly control Skill Outcome weights.'],
+    notes: ['AGENT_SKILL_AUTOWEIGHT no longer depends on a global backtest win rate.'],
   },
   'settings.backtest.eval_params': {
     title: 'Backtest Evaluation Parameters',
