@@ -1140,8 +1140,8 @@ class BacktestServiceTestCase(unittest.TestCase):
         service = BacktestService(self.db)
         with patch(
             "src.services.stock_daily_start_resolver.resolve_historical_daily_bar_date",
-            side_effect=AssertionError("snapshot effective date must take priority"),
-        ):
+            return_value=date(2024, 1, 5),
+        ) as resolve_historical_date:
             stats = service.run_backtest(
                 code="600519.SH",
                 force=False,
@@ -1152,6 +1152,11 @@ class BacktestServiceTestCase(unittest.TestCase):
                 limit=10,
             )
 
+        resolve_historical_date.assert_called_once_with(
+            "cn",
+            date(2024, 1, 5),
+            "postmarket",
+        )
         self.assertEqual(stats["processed"], 1)
         self.assertEqual(stats["completed"], 1)
         self.assertEqual(stats["insufficient"], 0)

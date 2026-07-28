@@ -221,6 +221,14 @@ def test_effective_daily_bar_date_requires_exact_start_bar(isolated_db) -> None:
             "future_effective_daily_bar_date",
         ),
         (
+            {
+                "phase": "postmarket",
+                "market": "cn",
+                "effective_daily_bar_date": "2024-01-06",
+            },
+            "invalid_effective_daily_bar_date",
+        ),
+        (
             {"phase": "postmarket", "market": "us"},
             "invalid_market_phase_context",
         ),

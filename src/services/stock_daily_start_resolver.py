@@ -86,6 +86,19 @@ def resolve_stock_daily_start(
                 None,
                 "future_effective_daily_bar_date",
             )
+        if (
+            resolve_historical_daily_bar_date(
+                identity.market,
+                effective_date,
+                "postmarket",
+            )
+            != effective_date
+        ):
+            return DailyStockStartResolution(
+                identity,
+                None,
+                "invalid_effective_daily_bar_date",
+            )
         return DailyStockStartResolution(identity, effective_date, None)
 
     phase = (
