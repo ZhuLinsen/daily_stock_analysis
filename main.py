@@ -284,6 +284,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --check-notify     # 检查通知配置，不发送通知
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
+  python main.py --news-watch       # 启动个人新闻雷达与 Web/PWA
   python main.py --market-review    # 仅运行大盘复盘
         '''
     )
@@ -342,6 +343,12 @@ def parse_arguments() -> argparse.Namespace:
         '--schedule',
         action='store_true',
         help='启用定时任务模式，每日定时执行'
+    )
+
+    parser.add_argument(
+        '--news-watch',
+        action='store_true',
+        help='启动个人新闻雷达：Web 服务 + 轻量轮询、去重、评分、AI 分析与推送'
     )
 
     parser.add_argument(
@@ -1382,6 +1389,8 @@ def main() -> int:
         args.serve = True
     if args.webui_only:
         args.serve_only = True
+    if args.news_watch:
+        args.serve = True
 
     # 兼容旧版 WEBUI_ENABLED 环境变量
     if config.webui_enabled and not (args.serve or args.serve_only):
@@ -1469,6 +1478,23 @@ def main() -> int:
         return 0
 
     try:
+        # 模式0: 个人新闻雷达（单进程轮询；Web 服务已在后台线程启动）
+        if getattr(args, 'news_watch', False):
+            from src.personal_news.service import build_personal_news_monitor
+
+            monitor = build_personal_news_monitor(config)
+            logger.info(
+                "模式: 个人新闻雷达 (interval=%s minutes, watchlist=%s)",
+                monitor.settings.poll_interval_minutes,
+                ",".join(monitor.settings.watchlist) or "empty",
+            )
+            logger.info("Web/PWA: http://%s:%s/news", args.host, args.port)
+            try:
+                monitor.run_forever()
+            except KeyboardInterrupt:
+                logger.info("\n个人新闻雷达已停止")
+            return 0
+
         # 模式0: 回测
         if getattr(args, 'backtest', False):
             logger.info("模式: 回测")

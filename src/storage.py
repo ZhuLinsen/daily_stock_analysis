@@ -216,6 +216,106 @@ class NewsIntel(Base):
         return f"<NewsIntel(code={self.code}, title={self.title[:20]}...)>"
 
 
+class PersonalNewsArticle(Base):
+    """Canonical article record used by the lightweight personal news radar."""
+
+    __tablename__ = "personal_news_articles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(500), nullable=False)
+    normalized_title = Column(String(500), nullable=False, index=True)
+    title_hash = Column(String(64), nullable=False, index=True)
+    url = Column(String(1000), nullable=False, unique=True, index=True)
+    source = Column(String(100), nullable=False, default="unknown", index=True)
+    summary = Column(Text)
+    symbols_json = Column(Text, nullable=False, default="[]")
+    published_at = Column(DateTime, index=True)
+    fetched_at = Column(DateTime, nullable=False, default=utc_naive_now, index=True)
+    importance_score = Column(Integer, nullable=False, default=0, index=True)
+    score_reasons_json = Column(Text, nullable=False, default="[]")
+    source_count = Column(Integer, nullable=False, default=1)
+    price_change_percent = Column(Float)
+    volume_change_percent = Column(Float)
+    is_announcement = Column(Boolean, nullable=False, default=False)
+    raw_payload_json = Column(Text, nullable=False, default="{}")
+
+    __table_args__ = (
+        Index("ix_personal_news_title_time", "title_hash", "published_at"),
+    )
+
+
+class PersonalNewsHash(Base):
+    """Persisted deduplication keys so restarts never replay old articles."""
+
+    __tablename__ = "personal_news_hashes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    hash_type = Column(String(24), nullable=False)
+    hash_value = Column(String(64), nullable=False)
+    article_id = Column(Integer, ForeignKey("personal_news_articles.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint("hash_type", "hash_value", name="uix_personal_news_hash"),
+    )
+
+
+class PersonalNewsAnalysis(Base):
+    """Validated structured LLM output for one important article."""
+
+    __tablename__ = "personal_news_analyses"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    article_id = Column(Integer, ForeignKey("personal_news_articles.id", ondelete="CASCADE"), nullable=False, unique=True)
+    payload_json = Column(Text, nullable=False)
+    provider = Column(String(100))
+    model = Column(String(200))
+    status = Column(String(24), nullable=False, default="completed", index=True)
+    error = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=utc_naive_now, index=True)
+
+
+class PersonalNewsPushRecord(Base):
+    """Per-channel delivery ledger used for retry-safe notification deduplication."""
+
+    __tablename__ = "personal_news_push_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    article_id = Column(Integer, ForeignKey("personal_news_articles.id", ondelete="CASCADE"), nullable=False)
+    channel = Column(String(32), nullable=False)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    pushed_at = Column(DateTime)
+    updated_at = Column(DateTime, nullable=False, default=utc_naive_now, onupdate=utc_naive_now)
+
+    __table_args__ = (
+        UniqueConstraint("article_id", "channel", name="uix_personal_news_push_channel"),
+    )
+
+
+class PersonalNewsSetting(Base):
+    """Small persistent settings surface for the single-user demo."""
+
+    __tablename__ = "personal_news_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False, default="")
+    updated_at = Column(DateTime, nullable=False, default=utc_naive_now, onupdate=utc_naive_now)
+
+
+class PersonalNewsProviderStatus(Base):
+    """Last known health state for search, LLM, and push providers."""
+
+    __tablename__ = "personal_news_provider_status"
+
+    provider = Column(String(100), primary_key=True)
+    provider_type = Column(String(32), nullable=False)
+    status = Column(String(24), nullable=False, default="unknown")
+    message = Column(Text)
+    checked_at = Column(DateTime, nullable=False, default=utc_naive_now, index=True)
+
+
 class IntelligenceSource(Base):
     """可配置资讯源。"""
 
