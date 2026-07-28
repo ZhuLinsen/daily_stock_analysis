@@ -22,6 +22,14 @@
 
 本 PR 基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
 
+### Skill Opinion Outcome 表现统计
+
+Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独立分 bucket。任何 bucket 都不能借用同 skill 的其他 horizon、其他 skill、其他 engine version 或全局样本解锁指标。当前固定门槛为 `evaluated >= 30`；只有 individual skill opinion 自身 signal 产生的 `hit` / `miss` 计入 evaluated，`pending`、`observational` 和 `unable` 只保留计数，不计入样本充足度。
+
+样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
+
+当前统计 service 不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示。把统计接入保守权重属于独立后续变更，接入前无论统计表是否已有记录，运行时仍保持现有中性权重。
+
 ## 术语与边界
 
 当前仓库里有多种名为 opinion / signal / consensus / synthesis 的数据面，Baseline 必须先消歧，避免把现有运行时结构误写成未来 phase。
