@@ -19,6 +19,9 @@ from src.config import Config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE
 from src.repositories.backtest_repo import BacktestRepository
 from src.services.backtest_service import BacktestService
+from src.services.stock_daily_start_resolver import (
+    resolve_stock_daily_start,
+)
 from src.storage import AnalysisHistory, BacktestResult, BacktestSummary, DatabaseManager, StockDaily
 
 
@@ -1231,6 +1234,31 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(result.eval_status, "completed")
             self.assertEqual(result.start_price, 100.0)
             self.assertEqual(result.end_close, 103.0)
+
+    def test_non_session_resolution_exposes_backtest_only_local_start(
+        self,
+    ) -> None:
+        resolution = resolve_stock_daily_start(
+            stock_code="600520",
+            context_snapshot=_phase_snapshot(
+                date(2024, 1, 6),
+                phase="postmarket",
+                market="cn",
+                effective_date=date(2024, 1, 6),
+                trigger_source="api",
+            ),
+            analysis_date=date(2024, 1, 6),
+        )
+
+        self.assertIsNone(resolution.expected_start_date)
+        self.assertEqual(
+            resolution.failure_reason,
+            "invalid_effective_daily_bar_date",
+        )
+        self.assertEqual(
+            resolution.backtest_start_date,
+            date(2024, 1, 6),
+        )
 
     def test_run_backtest_rebuilds_legacy_cn_snapshot_for_jp_history(self) -> None:
         legacy_snapshot = json.dumps(
