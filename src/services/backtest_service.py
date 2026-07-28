@@ -13,11 +13,9 @@ from sqlalchemy import and_, select
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import get_config
 from src.core.backtest_engine import OVERALL_SENTINEL_CODE, BacktestEngine, EvaluationConfig
-from src.core.trading_calendar import resolve_historical_daily_bar_date
 from src.market_phase_summary import (
     extract_market_phase_summary,
     normalize_analysis_phase_bucket,
-    rebuild_market_phase_summary_for_stock_code,
 )
 from src.repositories.backtest_repo import BacktestRepository
 from src.repositories.stock_repo import StockRepository
@@ -26,6 +24,7 @@ from src.services.stock_code_utils import (
     normalize_code as normalize_backtest_code,
     resolve_daily_stock_identity,
 )
+from src.services.stock_daily_start_resolver import resolve_stock_daily_start
 from src.services.stock_daily_window_resolver import resolve_stock_daily_window
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager
 from src.utils.data_processing import parse_json_field
@@ -124,39 +123,28 @@ class BacktestService:
                         )
                     )
                     continue
-                phase_summary = extract_market_phase_summary(
-                    analysis.context_snapshot
+                start_resolution = resolve_stock_daily_start(
+                    stock_code=analysis.code,
+                    context_snapshot=analysis.context_snapshot,
+                    analysis_date=analysis_date,
                 )
-                persisted_market = (
-                    str(phase_summary.get("market") or "").strip().lower()
-                    if isinstance(phase_summary, dict)
-                    else None
-                )
-                daily_identity = resolve_daily_stock_identity(
-                    analysis.code,
-                    market_hint=persisted_market,
-                )
+                daily_identity = start_resolution.identity
                 daily_code_candidates = (
                     list(daily_identity.code_candidates)
                     if daily_identity is not None
                     else []
                 )
-                expected_start_date = self._resolve_expected_start_date(
-                    analysis=analysis,
-                    analysis_date=analysis_date,
-                    market=daily_identity.market if daily_identity is not None else None,
-                    stock_code=(
-                        daily_identity.normalized_code
-                        if daily_identity is not None
-                        else None
-                    ),
+                expected_start_date = start_resolution.expected_start_date
+                local_start_date = (
+                    expected_start_date
+                    or start_resolution.legacy_local_start_date
                 )
                 daily_window = None
-                if expected_start_date is not None:
+                if local_start_date is not None:
                     daily_window = resolve_stock_daily_window(
                         stock_repo=self.stock_repo,
                         code_candidates=daily_code_candidates,
-                        expected_start_date=expected_start_date,
+                        expected_start_date=local_start_date,
                         eval_window_days=int(eval_window_days),
                     )
 
@@ -844,63 +832,6 @@ class BacktestService:
             return analysis.created_at.date()
         logger.warning(f"无法确定分析日期，跳过记录: {analysis.code}#{getattr(analysis, 'id', '?')}")
         return None
-
-    @staticmethod
-    def _resolve_expected_start_date(
-        *,
-        analysis,
-        analysis_date: date,
-        market: Optional[str],
-        stock_code: Optional[str],
-    ) -> Optional[date]:
-        phase_summary = extract_market_phase_summary(analysis.context_snapshot)
-        snapshot_market = (
-            str(phase_summary.get("market") or "").strip().lower()
-            if isinstance(phase_summary, dict)
-            else ""
-        )
-        if not market:
-            return None
-        if snapshot_market != market:
-            phase_summary = rebuild_market_phase_summary_for_stock_code(
-                stock_code,
-                analysis.context_snapshot,
-            )
-            snapshot_market = (
-                str(phase_summary.get("market") or "").strip().lower()
-                if isinstance(phase_summary, dict)
-                else ""
-            )
-            if snapshot_market != market:
-                return None
-
-        effective_date_value = (
-            phase_summary.get("effective_daily_bar_date")
-            if isinstance(phase_summary, dict)
-            else None
-        )
-        if effective_date_value:
-            try:
-                effective_date = datetime.strptime(
-                    str(effective_date_value),
-                    "%Y-%m-%d",
-                ).date()
-            except (TypeError, ValueError):
-                return None
-            if effective_date <= analysis_date:
-                return effective_date
-            return None
-
-        phase = (
-            phase_summary.get("phase")
-            if isinstance(phase_summary, dict)
-            else None
-        )
-        return resolve_historical_daily_bar_date(
-            market,
-            analysis_date,
-            phase,
-        )
 
     def _try_fill_daily_data(self, *, code: str, analysis_date: date, eval_window_days: int) -> None:
         refill_code = str(code or "").strip()

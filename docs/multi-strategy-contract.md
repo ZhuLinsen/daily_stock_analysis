@@ -10,6 +10,18 @@
 
 当前 `sample_schema_version=skill-opinion-sample-v1`。`skill_version` 与 `horizon` 仅保留为空值兼容位：现有 Skill 定义和 SkillAgent 输出没有可信的版本与周期契约，因此本阶段不得从 LLM `raw_data` 猜测或伪造。PR1 不创建 outcome、不提供 skill 表现统计、不实现 `get_skill_summary()`，也不改变 `AgentMemory` / `SkillAggregator` 权重。
 
+## Skill Opinion Outcome 边界（Issue #1904 P2）
+
+`skill_opinion_outcomes` 表示一条不可变 `skill_opinion_sample` 在一个 `horizon`、一个 `engine_version` 下的独立后验结果，唯一键为 `(skill_opinion_sample_id, horizon, engine_version)`。初始 horizon 仅允许 `1d`、`3d`、`5d`、`10d`；每次运行的 `limit` 限制待处理的 `sample × horizon` outcome key 数量，不是 sample 数量。显式空 horizons、空白 skill/stock 筛选和越界 limit 必须 fail closed，不得退化为全量运行。
+
+每条 outcome 只使用 sample 自己的 canonical `signal`，不得读取最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；方向收益严格大于零才是 `hit`，零收益是 `miss`。`hold` 在价格窗口完整后保存为 `observational`，不产生方向正确性。
+
+历史分析日期来自 `enhanced_context.date`，缺失时才回退到历史记录创建日期。Backtest 与 Outcome 统一通过共享 resolver 解析股票身份、重建受支持的旧市场快照并确定权威起始 session：优先使用市场一致且合法的 `market_phase_summary.effective_daily_bar_date`；缺少该字段时，只有 phase 与交易日历能够证明起点才进行推导，否则 fail closed，不允许选择任意更早的本地日线。共享窗口 resolver 只接受权威起始 session 的 bar，在同日起点中优先完整窗口，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
+
+权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
+
+本 PR 基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+
 ## 术语与边界
 
 当前仓库里有多种名为 opinion / signal / consensus / synthesis 的数据面，Baseline 必须先消歧，避免把现有运行时结构误写成未来 phase。

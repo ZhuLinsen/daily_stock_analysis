@@ -1139,9 +1139,9 @@ class BacktestServiceTestCase(unittest.TestCase):
 
         service = BacktestService(self.db)
         with patch(
-            "src.services.backtest_service.resolve_historical_daily_bar_date",
-            side_effect=AssertionError("snapshot effective date must take priority"),
-        ):
+            "src.services.stock_daily_start_resolver.resolve_historical_daily_bar_date",
+            return_value=date(2024, 1, 5),
+        ) as resolve_historical_date:
             stats = service.run_backtest(
                 code="600519.SH",
                 force=False,
@@ -1152,6 +1152,11 @@ class BacktestServiceTestCase(unittest.TestCase):
                 limit=10,
             )
 
+        resolve_historical_date.assert_called_once_with(
+            "cn",
+            date(2024, 1, 5),
+            "postmarket",
+        )
         self.assertEqual(stats["processed"], 1)
         self.assertEqual(stats["completed"], 1)
         self.assertEqual(stats["insufficient"], 0)
@@ -1164,6 +1169,68 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(result.eval_status, "completed")
             self.assertEqual(result.start_price, 100.0)
             self.assertEqual(result.end_close, 105.0)
+
+    def test_run_backtest_replays_legacy_non_session_effective_date_from_local_bars(
+        self,
+    ) -> None:
+        self._seed_analysis(
+            query_id="q_legacy_non_session_effective_date",
+            code="600520",
+            analysis_date=date(2024, 1, 1),
+            created_at=datetime(2024, 1, 1, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(
+                    code="600520",
+                    date=date(2024, 1, 2),
+                    high=102.0,
+                    low=99.0,
+                    close=101.0,
+                ),
+                StockDaily(
+                    code="600520",
+                    date=date(2024, 1, 3),
+                    high=103.0,
+                    low=100.0,
+                    close=102.0,
+                ),
+                StockDaily(
+                    code="600520",
+                    date=date(2024, 1, 4),
+                    high=104.0,
+                    low=101.0,
+                    close=103.0,
+                ),
+            ],
+            phase="postmarket",
+        )
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as refill:
+            stats = service.run_backtest(
+                code="600520",
+                force=False,
+                eval_window_days=3,
+                min_age_days=0,
+                analysis_date_from=date(2024, 1, 1),
+                analysis_date_to=date(2024, 1, 1),
+                limit=10,
+            )
+
+        refill.assert_not_called()
+        self.assertEqual(stats["completed"], 1)
+        self.assertEqual(stats["insufficient"], 0)
+        with self.db.get_session() as session:
+            result = (
+                session.query(BacktestResult)
+                .filter(BacktestResult.code == "600520")
+                .one()
+            )
+            self.assertEqual(result.eval_status, "completed")
+            self.assertEqual(result.start_price, 100.0)
+            self.assertEqual(result.end_close, 103.0)
 
     def test_run_backtest_rebuilds_legacy_cn_snapshot_for_jp_history(self) -> None:
         legacy_snapshot = json.dumps(
