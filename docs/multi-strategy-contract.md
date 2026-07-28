@@ -20,7 +20,7 @@
 
 权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
 
-本 PR 基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+Outcome 核心阶段（#2116）基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，当时未包含表现统计、样本充足度、排名或权重调整。其后的只读统计阶段在下节单独定义；该阶段仍不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不调整运行时权重。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
 
 ### Skill Opinion Outcome 表现统计
 
