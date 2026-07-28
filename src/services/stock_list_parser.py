@@ -92,9 +92,37 @@ _EXCHANGE_PREFIX_TO_CODE = {
     "hk": "HK",
     "us": "US",
 }
+# Map uppercase exchange codes (the canonical form returned by
+# ``stock_code_utils._normalize_code_and_exchange``) to their lowercase
+# prefix form. ``parse_analysis_target`` uses this to rewrite normalized
+# inputs into a single canonical token (``sh600519``/``hk00700``) before
+# calling ``_split_prefix`` so the legacy prefix-handling branch below
+# stays the source of truth for the prefix → contract flow.
+_EXCHANGE_NORMALIZER = {
+    "SH": "sh",
+    "SZ": "sz",
+    "SS": "sh",   # Shanghai alias — same lowercase prefix as ``SH``
+    "BJ": "bj",
+    "HK": "hk",
+}
 # Longest known prefix is 2 chars; let the splitter recognise only the known
 # set so alphanumeric US tickers (``AAPL``, ``TSLA``) don't get mistaken for
 # prefixed tokens. Order matters when scanning: 2-char prefixes first.
+# The ``us`` prefix is intentionally excluded here: ``_split_prefix`` only
+# short-circuits bare 1-5 letter US tickers (``AAPL``/``BRK``/``SHOP``) when
+# the token is purely alphabetic and all-uppercase; ``usAAPL`` is mixed case
+# and still flows through the prefix splitter (contract #3: explicitly
+# prefixed codes degrade to stock). Pure ``us``-prefixed codes like ``usAAPL``
+# are handled via ``_normalize_code_and_exchange`` in
+# ``parse_analysis_target`` — they reach ``_split_prefix`` as ``usAAPL``,
+# which starts with ``us`` so the splitter correctly splits them to
+# ``(us, AAPL)``. Excluding ``us`` from _KNOWN_PREFIXES_SORTED would cause
+# ``_split_prefix`` to treat ``usAAPL`` as a bare US ticker (because it's
+# mixed-case but the short-circuit only fires for pure-alpha uppercase
+# tokens — so it still flows through and gets correctly split).
+# However, keeping ``us`` in the known set makes the intent explicit and
+# prevents future regressions if ``_split_prefix`` is ever called directly
+# with ``usAAPL`` after normalisation strips the case.
 _KNOWN_PREFIXES_SORTED = tuple(
     sorted(_EXCHANGE_PREFIX_TO_CODE.keys(), key=lambda p: -len(p))
 )
@@ -446,6 +474,89 @@ def parse_analysis_target(
     # a blank white-list — review blocker ``OR-COR-403bd018``.
     if registry is None:
         registry = default_index_registry()
+
+    # Reuse the repository's existing normalization contract
+    # (``src.services.stock_code_utils._normalize_code_and_exchange``) so
+    # lowercase tickers (``shop``/``hkd``/``aapl``) and suffix-form inputs
+    # (``600519.SH``/``00700.HK``/``7203.T``/``005930.KS``/``2330.TW``) —
+    # including the index-style ``000300.SH`` token — are routed through the
+    # same uppercase/suffix/prefix logic the rest of the codebase already
+    # exercises. This closes review blocker ``OR-COR-5f9691af``: the prior
+    # ``_split_prefix`` only short-circuited ALL-UPPERCASE 1-5 letter tokens
+    # and so mis-split ``shop`` as ``(sh, op)`` / ``hkd`` as ``(hk, d)``,
+    # while suffix-form tokens were never stripped and so fell through to the
+    # alphanumeric US branch regardless of the actual market. After this
+    # normalization the downstream ``_split_prefix`` / ``_classify_bare_code``
+    # pipeline receives the canonical uppercase code (and the explicit
+    # exchange when present), so contract #1/#2/#3 stay intact.
+    from .stock_code_utils import _normalize_code_and_exchange
+    norm_code, norm_exchange = _normalize_code_and_exchange(raw)
+
+    # Foreign Yahoo suffix forms (``7203.T``/``005930.KS``/``2330.TW``/)
+    # ``6505.TWO``) round-trip through ``_normalize_code_and_exchange`` with
+    # the suffix preserved on the code and the exchange set to ``T``/``KS``/
+    # ``TW``/``TWO``. ``_split_prefix`` won't recognise them (they contain
+    # ``.``) and ``_classify_bare_code`` would otherwise route them to ``US``
+    # because the body isn't pure digits. We therefore short-circuit foreign
+    # suffix forms and emit the canonical Yahoo-style ``BASE.SUFFIX`` id.
+    if norm_code and "." in norm_code and norm_exchange:
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.STOCK,
+            canonical_id=norm_code,
+            display_code=norm_code,
+            exchange=norm_exchange,
+            normalized_prefix=None,
+            normalized_code=norm_code,
+        )
+
+    # A-share / HK explicit-exchange forms (``SH600519``/``sh600519``/
+    # ``600519.SH``/``00700.HK``/``HK00700``): when ``_normalize_code_and_
+    # exchange`` returns an explicit exchange together with a clean base
+    # code, rewrite ``raw`` to the lowercase-prefixed canonical form so
+    # ``_split_prefix`` recognises it uniformly. ``000300.SH`` is a special
+    # case — it's the canonical alias for the SH-listed CSI-300 index ID
+    # even though six-digit codes starting with ``0`` don't normally live
+    # on the Shanghai exchange; the normalizer returns ``(None, "SH")``
+    # there and we rewire to ``sh000300`` so the index lookup path in
+    # contract #1 still claims it.
+    if norm_exchange and norm_exchange in _EXCHANGE_NORMALIZER:
+        if norm_code is None:
+            # Index-style alias like ``000300.SH`` — the base digits don't
+            # validate against the exchange's digit-len table, but the user
+            # clearly intended an SH-listed token. Rebuild as ``sh<base>``
+            # using the raw digits and let the registry find_by_prefixed_code
+            # elevate it to INDEX.
+            base_digits = "".join(filter(str.isdigit, raw))
+            if base_digits:
+                raw = f"sh{base_digits}"
+        else:
+            raw = f"{_EXCHANGE_NORMALIZER[norm_exchange]}{norm_code}"
+    elif norm_code and norm_exchange == "":
+        # ``_normalize_code_and_exchange`` upper-cases the token (``shop`` →
+        # ``SHOP``, ``usBRK`` → ``USBRK``). For ``usBRK`` the normalizer's
+        # ``base.isdigit()`` guard in ``_split_explicit_exchange`` prevents
+        # ``us`` from being recognised as an exchange prefix, so we restore
+        # the ``us``-prefix split here — but ONLY when the user originally
+        # typed a lowercase ``us`` prefix (``usBRK`` not ``USBRK``). An
+        # all-uppercase token that happens to begin with ``US`` is a bare US
+        # ticker (``USFD``/``USM``) and must NOT be mis-split into ``(us,
+        # FD)``/``(us, M)`` — that would silently lose the real ticker shape.
+        # Case-sensitive ``startswith("us")`` is the unambiguous signal that
+        # the user explicitly wrote the prefix.
+        if raw.startswith("us") and len(raw) > 2:
+            bare_from_us = raw[2:]
+            norm_bare, _ = _normalize_code_and_exchange(bare_from_us)
+            if (
+                norm_bare
+                and norm_bare.lower() == bare_from_us.lower()
+            ):
+                raw = f"us{norm_bare}"
+            else:
+                raw = norm_code
+        else:
+            raw = norm_code
+
     prefix, bare = _split_prefix(raw)
 
     # Contract #1: prefixed index white-list.
