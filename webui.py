@@ -18,9 +18,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 def main() -> int:
