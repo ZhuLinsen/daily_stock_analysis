@@ -587,6 +587,67 @@ def test_old_pending_retry_is_not_starved_by_new_missing_candidates(
     assert [item.sample.id for item in second] == [missing_sample_id]
 
 
+@pytest.mark.parametrize("existing_pending", [False, True])
+def test_failed_candidate_attempt_rotates_behind_newer_missing_candidate(
+    isolated_db,
+    monkeypatch,
+    existing_pending,
+) -> None:
+    _, failed_sample_id = _add_sample(isolated_db, skill_id="failed")
+    _, missing_sample_id = _add_sample(isolated_db, skill_id="missing")
+    repo = SkillOpinionOutcomeRepository(isolated_db)
+    if existing_pending:
+        repo.persist_outcome(
+            {
+                "skill_opinion_sample_id": failed_sample_id,
+                "horizon": "1d",
+                "engine_version": SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+                "eval_status": "pending",
+                "outcome": None,
+                "direction_correct": None,
+                "unable_reason": "insufficient_future_data",
+            }
+        )
+
+    with isolated_db.session_scope() as session:
+        session.get(SkillOpinionSampleRecord, failed_sample_id).created_at = datetime(
+            2024, 1, 1, 12, 0, 0
+        )
+        session.get(SkillOpinionSampleRecord, missing_sample_id).created_at = datetime(
+            2024, 1, 2, 12, 0, 0
+        )
+        if existing_pending:
+            session.query(SkillOpinionOutcomeRecord).filter_by(
+                skill_opinion_sample_id=failed_sample_id,
+                horizon="1d",
+                engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+            ).one().updated_at = datetime(2024, 1, 1, 12, 0, 0)
+
+    service = SkillOpinionOutcomeService(db_manager=isolated_db)
+
+    def raise_transient_failure(_candidate):
+        raise RuntimeError("transient evaluator failure")
+
+    monkeypatch.setattr(
+        service,
+        "_evaluate_candidate",
+        raise_transient_failure,
+    )
+
+    result = service.run_outcomes(horizons=["1d"], limit=1)
+
+    assert result["failed"] == 1
+    retry_marker = _stored_outcome(isolated_db, failed_sample_id)
+    assert retry_marker is not None
+    assert retry_marker.eval_status == "pending"
+    next_candidates = repo.list_candidate_keys(
+        horizons=["1d"],
+        engine_version=SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        limit=1,
+    )
+    assert [item.sample.id for item in next_candidates] == [missing_sample_id]
+
+
 def test_history_deletion_removes_outcomes_before_samples(isolated_db) -> None:
     history_id, sample_id = _add_sample(isolated_db)
     repo = SkillOpinionOutcomeRepository(isolated_db)
