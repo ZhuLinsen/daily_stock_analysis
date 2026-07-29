@@ -218,8 +218,8 @@ class TickFlowFetcher(BaseFetcher):
         for column in ("open", "high", "low", "close", "amount"):
             normalized[column] = pd.to_numeric(raw.get(column), errors="coerce")
 
-        # TickFlow daily volume is in lots for A-shares; project standard is shares.
-        normalized["volume"] = self._cn_lots_to_shares(raw.get("volume"))
+        # TickFlow daily volume is in shares for A-shares (already in correct unit).
+        normalized["volume"] = pd.to_numeric(raw.get("volume"), errors="coerce")
 
         if "pct_chg" in raw.columns:
             normalized["pct_chg"] = pd.to_numeric(raw["pct_chg"], errors="coerce")
@@ -829,7 +829,7 @@ class TickFlowFetcher(BaseFetcher):
         open_price = self._safe_float(quote.get("open"))
         high = self._safe_float(quote.get("high"))
         low = self._safe_float(quote.get("low"))
-        volume = self._cn_lots_to_shares(quote.get("volume"), default=0)
+        volume = self._safe_float(quote.get("volume")) or 0.0
         amount = self._safe_float(quote.get("amount")) or 0.0
         change_amount = self._safe_float(ext.get("change_amount"))
         if change_amount is None and prev_close is not None:
