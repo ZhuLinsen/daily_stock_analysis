@@ -514,22 +514,118 @@ def parse_analysis_target(
     # ``600519.SH``/``00700.HK``/``HK00700``): when ``_normalize_code_and_
     # exchange`` returns an explicit exchange together with a clean base
     # code, rewrite ``raw`` to the lowercase-prefixed canonical form so
-    # ``_split_prefix`` recognises it uniformly. ``000300.SH`` is a special
-    # case — it's the canonical alias for the SH-listed CSI-300 index ID
-    # even though six-digit codes starting with ``0`` don't normally live
-    # on the Shanghai exchange; the normalizer returns ``(None, "SH")``
-    # there and we rewire to ``sh000300`` so the index lookup path in
-    # contract #1 still claims it.
+    # ``_split_prefix`` recognises it uniformly.
+    #
+    # ``000300.SH`` is a special case — the canonical alias for the SH-listed
+    # CSI-300 index ID even though six-digit codes starting with ``0`` don't
+    # normally live on the Shanghai exchange; the normalizer returns
+    # ``(None, "SH")`` there and we rewire to ``sh000300`` so the index
+    # lookup path in contract #1 still claims it.
+    #
+    # When ``norm_code is None`` we must NOT blindly rebuild ``sh<base>``
+    # for every explicit-suffix input — that would silently rewrite
+    # ``600519.BJ``/``600000.HK``/``1234567.SH`` (which the normalizer
+    # correctly rejected: the base digits don't validate against the
+    # exchange's digit-len / market table, or the base isn't numeric at
+    # all) into ``sh600519``/``sh600000``/``sh1234567``, masking the user's
+    # typo as a valid Shanghai stock (review blockers
+    # ``OR-COR-607f1395`` / ``OR-COR-26596201`` / ``OR-COR-d6afd0d6``).
+    #
+    # Discrimination strategy:
+    #   1. Restrict the alias-rebuild path to ``SH``/``SS`` only. Those are
+    #      the only exchanges where a digit-len mismatch could legitimately
+    #      hide an index alias (``000300.SH`` is the canonical example).
+    #      ``.BJ``/``.HK`` base+exchange mismatches are always genuine typos
+    #      and must surface as ``unsupported``.
+    #   2. Even within ``SH``/``SS``, only rebuild when (a) the base is pure
+    #      6-digit numeric (so non-numeric reject cases like ``abc.SH``
+    #      short-circuit to ``unsupported``) AND (b) the rebuilt
+    #      ``sh<base>`` actually has a hit in ``registry.find_by_prefixed_code``
+    #      — i.e. the user's token is a recognized INDEX alias. A
+    #      ``1234567.SH`` that nobody in the registry knows about is a
+    #      malformed reject, not an index lookup.
+    #   3. ``SZ``-style aliases (e.g. ``399001.SZ``) would similarly only be
+    #      rebuildable when recognized; the SH-only branch matches the
+    #      current default registry's composition and the reviewer-flagged
+    #      regression set.
     if norm_exchange and norm_exchange in _EXCHANGE_NORMALIZER:
         if norm_code is None:
-            # Index-style alias like ``000300.SH`` — the base digits don't
-            # validate against the exchange's digit-len table, but the user
-            # clearly intended an SH-listed token. Rebuild as ``sh<base>``
-            # using the raw digits and let the registry find_by_prefixed_code
-            # elevate it to INDEX.
-            base_digits = "".join(filter(str.isdigit, raw))
-            if base_digits:
-                raw = f"sh{base_digits}"
+            from .stock_code_utils import _split_explicit_exchange
+            raw_upper = raw.upper()
+            explicit_parts = _split_explicit_exchange(raw_upper)
+            # Only enforce strict reject on ``.SUFFIX`` explicit-suffix
+            # tokens — prefix-form tokens like ``sh000999`` continue to
+            # fall through to the legacy ``_split_prefix`` path so
+            # contract #3 (``sh + unknown → degrade to stock``) still
+            # holds even when the bare code is rejected by the
+            # normalizer's CN-exchange table (000999 doesn't belong to SH
+            # per the digit-len rules, but the user's explicit ``sh``
+            # prefix is the contract signal, not the digit shape).
+            has_explicit_suffix = "." in raw
+            if explicit_parts is not None and has_explicit_suffix:
+                suffix_exchange, base_candidate, _ = explicit_parts
+                # Restrict the alias rebuild to SH/SS aliases only — only
+                # those can legitimately hide a registry index such as
+                # ``sh000300``. Other exchanges (BJ/HK) always reject on
+                # base+exchange mismatch (e.g. ``600519.BJ``).
+                if suffix_exchange in {"SH", "SS"}:
+                    rebuilt_prefix = _EXCHANGE_NORMALIZER[suffix_exchange]
+                    # Two acceptable alias shapes:
+                    #   (a) Standard suffix form ``000300.SH`` — base_candidate
+                    #       is purely 6 digits and recognized by the registry.
+                    #   (b) Mixed prefix+suffix form ``sh000300.SH`` — the
+                    #       splitter leaves base_candidate as ``SH000300``
+                    #       (non-numeric), but the digits inside raw still
+                    #       equal ``000300`` and the registry recognizes it.
+                    #       We accept (b) only when the extracted digits form a
+                    #       pure 6-digit A-share base that the registry knows.
+                    base_digits = "".join(filter(str.isdigit, raw))
+                    alias_ok = (
+                        base_candidate.isdigit()
+                        and len(base_candidate) == 6
+                        and registry.find_by_prefixed_code(
+                            rebuilt_prefix, base_candidate
+                        )
+                        is not None
+                    ) or (
+                        not base_candidate.isdigit()
+                        and base_digits.isdigit()
+                        and len(base_digits) == 6
+                        and registry.find_by_prefixed_code(
+                            rebuilt_prefix, base_digits
+                        )
+                        is not None
+                    )
+                    if alias_ok:
+                        raw = f"{rebuilt_prefix}{base_digits or base_candidate}"
+                    else:
+                        return AnalysisTarget(
+                            raw_input=raw_input,
+                            asset_type=ParseStatus.UNSUPPORTED,
+                            canonical_id=raw,
+                            display_code=raw,
+                            exchange=suffix_exchange,
+                            unsupported_reason=(
+                                f"explicit exchange suffix {suffix_exchange!r} "
+                                f"does not accept base {base_candidate!r}"
+                            ),
+                        )
+                else:
+                    # ``.BJ`` / ``.HK`` reject (base/exchange mismatch,
+                    # base too long, base non-numeric, …) — surface as
+                    # ``unsupported`` rather than silently rewriting into
+                    # ``sh<digits>`` (blocking review OR-COR-607f1395 etc.).
+                    return AnalysisTarget(
+                        raw_input=raw_input,
+                        asset_type=ParseStatus.UNSUPPORTED,
+                        canonical_id=raw,
+                        display_code=raw,
+                        exchange=suffix_exchange,
+                        unsupported_reason=(
+                            f"explicit exchange suffix {suffix_exchange!r} "
+                            f"rejects base {base_candidate!r}"
+                        ),
+                    )
         else:
             raw = f"{_EXCHANGE_NORMALIZER[norm_exchange]}{norm_code}"
     elif norm_code and norm_exchange == "":

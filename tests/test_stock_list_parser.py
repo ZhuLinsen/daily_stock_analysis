@@ -554,3 +554,46 @@ class TestReviewBlockerRegressions:
         assert target.asset_type == ParseStatus.STOCK
         assert target.exchange == "SH"
         assert target.matched_index is None
+
+
+# ---------------------------------------------------------------------------
+# Explicit-exchange-suffix review-blocker regressions (issue #2063 phase 1
+# review): when a user types ``600519.BJ`` / ``00700.HK`` / ``abc.SH`` /
+# ``1234567.SH`` they must see ``unsupported`` rather than be silently
+# rewritten to a ``sh600519.bj`` / ``hk00700`` / ``sh1234567`` / ``shabc``
+# token that no fetcher accepts.
+# ---------------------------------------------------------------------------
+class TestExplicitExchangeSuffixRejections:
+    """Maintainer-specified explicit-suffix rejection inputs."""
+
+    @pytest.mark.parametrize(
+        "code,expected_exchange,reason_substr",
+        [
+            ("600519.BJ", "BJ", "BJ"),
+            ("600000.HK", "HK", "HK"),
+            ("1234567.SH", "SH", "SH"),
+            ("abc.SH", "SH", "SH"),
+        ],
+    )
+    def test_explicit_suffix_with_invalid_base_is_unsupported(
+        self,
+        code: str,
+        expected_exchange: str,
+        reason_substr: str,
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.UNSUPPORTED
+        assert target.exchange == expected_exchange
+        assert target.canonical_id == code
+        assert target.unsupported_reason is not None
+        assert reason_substr in target.unsupported_reason
+
+    def test_explicit_sh_suffix_resolves_through_index_alias(self) -> None:
+        """``000300.SH`` matches the default registry alias for the CSI 300
+        index; ``sh`` is the registered exchange for that bare code so the
+        suffix must not flip the asset_type to unsupported."""
+        target = parse_analysis_target("000300.SH")
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == "sh000300"
+        assert target.exchange == "SH"
+        assert target.unsupported_reason is None
