@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [文档] 新增德语 README 并作为仓库首页：根目录 `README.md` 改为德语，简体中文原文迁移到 `docs/README_ZH.md`（保留 git 历史），四语言互链统一为 Deutsch / 简体中文 / English / 繁體中文；同步更新 `docs/INDEX.md`、`docs/INDEX_EN.md` 语言入口与 `docs/full-guide.md` 的中文 README 回链。
 - [文档] README 补齐钉钉群机器人通知渠道（快速开始 Secret 表、能力总览与项目简介），并将 Web 工作台启动命令统一为 `--serve` / `--serve-only`、注明 `--webui` / `--webui-only` 为兼容别名；中英繁三份 README 同步更新。
 - [新功能] 飞书推送新增文件上传能力：`FeishuSender.send_feishu_file(file_path)` 通过 App Bot SDK (`im.v1.file.create`) 上传文件并发送文件消息；Webhook 模式回退为发送文件内容文本；新增 `FEISHU_SEND_AS_FILE=true` 配置开关，开启后飞书以文件形式发送报告而非文字消息。
 

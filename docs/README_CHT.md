@@ -19,7 +19,7 @@
 
 [**產品預覽**](#-產品預覽) · [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**文檔中心**](./INDEX.md) · [**完整指南**](./full-guide.md)
 
-繁體中文 | [English](README_EN.md) | [简体中文](../README.md)
+繁體中文 | [Deutsch](../README.md) | [简体中文](README_ZH.md) | [English](README_EN.md)
 
 </div>
 
