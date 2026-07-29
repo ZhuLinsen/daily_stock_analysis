@@ -63,6 +63,8 @@ python scripts/check_ai_assets.py
 
 ## 4. 常用命令
 
+> 单一入口见根目录 `Makefile`（`make help` 查看全部 target）。下列命令为各工具的原始形式，便于复制与故障排查。
+
 ### 运行应用
 
 ```bash
