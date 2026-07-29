@@ -36,14 +36,22 @@ class SkillOpinionPerformanceService:
         self,
         *,
         skill_id: Optional[str] = None,
+        skill_ids: Optional[Sequence[str]] = None,
         horizons: Optional[Sequence[str]] = None,
         engine_version: str = SKILL_OPINION_OUTCOME_ENGINE_VERSION,
     ) -> Dict[str, Any]:
         """Return low-sensitive statistics for the current engine version."""
 
+        if skill_id is not None and skill_ids is not None:
+            raise ValueError("skill_id and skill_ids are mutually exclusive")
         skill_id_norm = (
             self._required_text(skill_id, "skill_id")
             if skill_id is not None
+            else None
+        )
+        skill_ids_norm = (
+            self._normalize_skill_ids(skill_ids)
+            if skill_ids is not None
             else None
         )
         horizons_norm = self._normalize_horizons(horizons)
@@ -54,6 +62,7 @@ class SkillOpinionPerformanceService:
         buckets = self.repo.list_performance_buckets(
             engine_version=engine_version_norm,
             skill_id=skill_id_norm,
+            skill_ids=skill_ids_norm,
             horizons=horizons_norm,
         )
         horizon_rank = {
@@ -130,6 +139,20 @@ class SkillOpinionPerformanceService:
         if not text:
             raise ValueError(f"{field_name} must not be blank")
         return text
+
+    @classmethod
+    def _normalize_skill_ids(
+        cls,
+        values: Sequence[str],
+    ) -> List[str]:
+        if isinstance(values, (str, bytes)) or not values:
+            raise ValueError("skill_ids must not be empty")
+        normalized: List[str] = []
+        for value in values:
+            skill_id = cls._required_text(value, "skill_ids")
+            if skill_id not in normalized:
+                normalized.append(skill_id)
+        return normalized
 
     @staticmethod
     def _normalize_horizons(

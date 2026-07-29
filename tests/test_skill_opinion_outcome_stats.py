@@ -289,6 +289,28 @@ def test_service_filters_exact_bucket_identity(isolated_db) -> None:
     assert bucket["miss"] == 1
 
 
+def test_service_filters_requested_skill_set(isolated_db) -> None:
+    for skill_id in ("alpha", "beta", "gamma"):
+        _add_outcome(
+            isolated_db,
+            skill_id=skill_id,
+            horizon="1d",
+            eval_status="evaluated",
+            outcome="hit",
+            directional_return_pct=1.0,
+        )
+
+    stats = SkillOpinionPerformanceService(
+        db_manager=isolated_db
+    ).get_stats(
+        skill_ids=[" beta ", "alpha", "beta"],
+    )
+
+    assert {
+        bucket["skill_id"] for bucket in stats["buckets"]
+    } == {"alpha", "beta"}
+
+
 def test_sibling_buckets_cannot_combine_to_unlock_metrics(
     isolated_db,
 ) -> None:
@@ -330,6 +352,9 @@ def test_sibling_buckets_cannot_combine_to_unlock_metrics(
     "filters",
     [
         {"skill_id": "   "},
+        {"skill_ids": []},
+        {"skill_ids": ["   "]},
+        {"skill_id": "alpha", "skill_ids": ["beta"]},
         {"horizons": []},
         {"horizons": ["2d"]},
         {"engine_version": "   "},

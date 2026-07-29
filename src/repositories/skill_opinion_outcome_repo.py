@@ -206,6 +206,7 @@ class SkillOpinionOutcomeRepository:
         *,
         engine_version: str,
         skill_id: Optional[str] = None,
+        skill_ids: Optional[Sequence[str]] = None,
         horizons: Optional[Sequence[str]] = None,
     ) -> List[SkillOpinionPerformanceBucket]:
         """Aggregate persisted outcome facts without applying sample policy."""
@@ -217,6 +218,10 @@ class SkillOpinionOutcomeRepository:
         ]
         if skill_id is not None:
             conditions.append(SkillOpinionSampleRecord.skill_id == skill_id)
+        if skill_ids is not None:
+            conditions.append(
+                SkillOpinionSampleRecord.skill_id.in_(list(skill_ids))
+            )
         if horizons is not None:
             conditions.append(
                 SkillOpinionOutcomeRecord.horizon.in_(list(horizons))

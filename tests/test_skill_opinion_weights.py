@@ -32,8 +32,10 @@ class _FakePerformanceService:
     def __init__(self, buckets=None, *, error=None):
         self.buckets = list(buckets or [])
         self.error = error
+        self.last_filters = None
 
-    def get_stats(self, **_kwargs):
+    def get_stats(self, **filters):
+        self.last_filters = filters
         if self.error is not None:
             raise self.error
         return {
@@ -292,6 +294,22 @@ def test_statistics_failure_fails_neutral():
     service = _service(error=RuntimeError("database unavailable"))
 
     assert service.compute_weights(["alpha"]) == {"alpha": 1.0}
+
+
+def test_weight_query_is_restricted_to_requested_skills():
+    performance_service = _FakePerformanceService(
+        [_bucket(skill_id="alpha")]
+    )
+    service = SkillOpinionWeightService(
+        performance_service=performance_service
+    )
+
+    service.compute_weights([" alpha ", "beta", "alpha"])
+
+    assert performance_service.last_filters == {
+        "engine_version": SKILL_OPINION_OUTCOME_ENGINE_VERSION,
+        "skill_ids": ["alpha", "beta"],
+    }
 
 
 def test_real_outcomes_flow_through_statistics_into_aggregator(

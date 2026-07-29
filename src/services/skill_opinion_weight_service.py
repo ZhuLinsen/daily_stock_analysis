@@ -59,6 +59,7 @@ class SkillOpinionWeightService:
         try:
             stats = self.performance_service.get_stats(
                 engine_version=self.engine_version,
+                skill_ids=requested,
             )
             if not isinstance(stats, dict):
                 return neutral
