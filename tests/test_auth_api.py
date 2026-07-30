@@ -800,9 +800,11 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         # ``delete_cookie`` emits ``dsa_session=; Max-Age=0; ...`` (empty value);
         # a newly minted session would carry a long signed token instead.
         # Split on the first ';' to isolate the ``name=value`` pair, then take
-        # the value side.
+        # the value side. Starlette's delete_cookie emits an empty value but
+        # may quote it; strip surrounding double quotes before comparing.
         cookie_pair = set_cookie.split(";", 1)[0]
         cookie_value = cookie_pair.split("=", 1)[1] if "=" in cookie_pair else ""
+        cookie_value = cookie_value.strip().strip('"')
         self.assertEqual(
             cookie_value,
             "",
