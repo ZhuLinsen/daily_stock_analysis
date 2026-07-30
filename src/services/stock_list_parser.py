@@ -550,18 +550,28 @@ def parse_analysis_target(
     #      regression set.
     if norm_exchange and norm_exchange in _EXCHANGE_NORMALIZER:
         if norm_code is None:
-            from .stock_code_utils import _split_explicit_exchange
+            from .stock_code_utils import _split_explicit_exchange, _PREFIX_DIGIT_LENS
             raw_upper = raw.upper()
             explicit_parts = _split_explicit_exchange(raw_upper)
-            # Only enforce strict reject on ``.SUFFIX`` explicit-suffix
-            # tokens — prefix-form tokens like ``sh000999`` continue to
-            # fall through to the legacy ``_split_prefix`` path so
-            # contract #3 (``sh + unknown → degrade to stock``) still
-            # holds even when the bare code is rejected by the
-            # normalizer's CN-exchange table (000999 doesn't belong to SH
-            # per the digit-len rules, but the user's explicit ``sh``
-            # prefix is the contract signal, not the digit shape).
-            has_explicit_suffix = "." in raw
+            # ⤷ Distinguish dotted-prefix form (``SH.000999``) from
+            #   strict-suffix form (``000999.SH``). The splitter surfaces
+            #   dotted-prefix tokens by leaving ``raw_upper`` starting with
+            #   ``<EXCHANGE>.`` while strict-suffix tokens always end in
+            #   ``.SUFFIX`` *without* a leading dotted prefix. Only the
+            #   strict-suffix shape should fire reject here — dotted-prefix
+            #   must continue to fall through to the legacy ``_split_prefix``
+            #   path so contract #3 (``sh + unknown → degrade to stock``)
+            #   still holds even when the bare code is rejected by the
+            #   normalizer's CN-exchange table (000999 doesn't belong to SH
+            #   per the digit-len rules, but the user's explicit ``sh``
+            #   prefix is the contract signal, not the digit shape).
+            has_explicit_suffix = (
+                "." in raw
+                and not any(
+                    raw_upper.startswith(f"{pfx}.")
+                    for pfx in _PREFIX_DIGIT_LENS
+                )
+            )
             if explicit_parts is not None and has_explicit_suffix:
                 suffix_exchange, base_candidate, _ = explicit_parts
                 # Restrict the alias rebuild to SH/SS aliases only — only
@@ -575,11 +585,27 @@ def parse_analysis_target(
                     #       is purely 6 digits and recognized by the registry.
                     #   (b) Mixed prefix+suffix form ``sh000300.SH`` — the
                     #       splitter leaves base_candidate as ``SH000300``
-                    #       (non-numeric), but the digits inside raw still
-                    #       equal ``000300`` and the registry recognizes it.
-                    #       We accept (b) only when the extracted digits form a
-                    #       pure 6-digit A-share base that the registry knows.
+                    #       (non-numeric). We ONLY accept (b) when raw is
+                    #       a clean ``<prefix><digits>.<suffix>`` shape, so
+                    #       malformed inputs like ``sh0x00300.SH`` (with
+                    #       hex-like garbage embedded between the prefix
+                    #       and the digits) don't get silently rebuilt into
+                    #       a recognized index alias (blocking
+                    #       OR-COR-d83a3580). The check is conservative —
+                    #       ``str(base_candidate)`` starts with the
+                    #       uppercase prefix and the remainder is a
+                    #       purely-6-digit string.
+                    base_after_prefix = (
+                        base_candidate[len(suffix_exchange):]
+                        if base_candidate.startswith(suffix_exchange)
+                        else base_candidate
+                    )
                     base_digits = "".join(filter(str.isdigit, raw))
+                    clean_alias_shape = (
+                        base_candidate.startswith(suffix_exchange)
+                        and base_after_prefix.isdigit()
+                        and len(base_after_prefix) == 6
+                    )
                     alias_ok = (
                         base_candidate.isdigit()
                         and len(base_candidate) == 6
@@ -588,8 +614,8 @@ def parse_analysis_target(
                         )
                         is not None
                     ) or (
-                        not base_candidate.isdigit()
-                        and base_digits.isdigit()
+                        clean_alias_shape
+                        and base_digits == base_after_prefix
                         and len(base_digits) == 6
                         and registry.find_by_prefixed_code(
                             rebuilt_prefix, base_digits
@@ -628,6 +654,31 @@ def parse_analysis_target(
                     )
         else:
             raw = f"{_EXCHANGE_NORMALIZER[norm_exchange]}{norm_code}"
+    elif norm_exchange:
+        # Foreign explicit-exchange suffix (``.T`` / ``.KS`` / ``.KQ`` / ``.TW``
+        # / ``.TWO``) whose base failed ``_valid_exchange_code`` so
+        # ``norm_code is None`` but ``norm_exchange`` still carries the
+        # recognized suffix name. The legacy bare-code classifier would
+        # otherwise silently flip the token into a US stock (blocking
+        # review OR-COR-e21e9de5). Surface as ``unsupported`` with the
+        # offending suffix so callers can show the user *which* foreign
+        # market they typed and why we're rejecting it.
+        from .stock_code_utils import _split_explicit_exchange as _split_for_foreign
+        raw_upper = raw.upper()
+        explicit_parts = _split_for_foreign(raw_upper)
+        if explicit_parts is not None:
+            suffix_exchange, base_candidate, _ = explicit_parts
+            return AnalysisTarget(
+                raw_input=raw_input,
+                asset_type=ParseStatus.UNSUPPORTED,
+                canonical_id=raw,
+                display_code=raw,
+                exchange=suffix_exchange,
+                unsupported_reason=(
+                    f"explicit foreign exchange suffix {suffix_exchange!r} "
+                    f"rejects base {base_candidate!r}"
+                ),
+            )
     elif norm_code and norm_exchange == "":
         # ``_normalize_code_and_exchange`` upper-cases the token (``shop`` →
         # ``SHOP``, ``usBRK`` → ``USBRK``). For ``usBRK`` the normalizer's
