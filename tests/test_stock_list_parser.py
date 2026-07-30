@@ -598,6 +598,29 @@ class TestExplicitExchangeSuffixRejections:
         assert target.exchange == "SH"
         assert target.unsupported_reason is None
 
+    # ---- OR-COR-4b91e5a0: ``sz399001.SZ`` / ``sz399006.SZ`` mixed
+    #      prefix+suffix forms must resolve through the same index-alias
+    #      rebuild path as ``sh000300.SH``. The default registry already
+    #      lists both as SZ indices, so the parser must rebuild them into
+    #      ``sz399001`` / ``sz399006`` instead of rejecting with
+    #      "explicit exchange suffix 'SZ' rejects base 'SZ399001'".
+    @pytest.mark.parametrize(
+        "code,expected_canonical,expected_display",
+        [
+            ("sz399001.SZ", "sz399001", "深证成指"),
+            ("sz399006.SZ", "sz399006", "创业板指"),
+        ],
+    )
+    def test_sz_mixed_prefix_suffix_resolves_through_index_alias(
+        self, code: str, expected_canonical: str, expected_display: str
+    ) -> None:
+        target = parse_analysis_target(code)
+        assert target.asset_type == ParseStatus.INDEX
+        assert target.canonical_id == expected_canonical
+        assert target.exchange == "SZ"
+        assert target.display_code == expected_display
+        assert target.unsupported_reason is None
+
     # ---- OR-COR-d83a3580: malformed explicit-suffix with embedded hex-like
     #      digits must NOT be silently rebuilt into a valid index alias.
     @pytest.mark.parametrize(
@@ -618,27 +641,37 @@ class TestExplicitExchangeSuffixRejections:
         assert target.unsupported_reason is not None
         assert expected_exchange in target.unsupported_reason
 
-    # ---- OR-COR-b3e32200: dotted-prefix form (``SH.000999``) must follow
-    #      contract #3 — degrade to stock when the prefix is explicit but the
-    #      bare base isn't a registered index — rather than rejecting as a
-    #      strict suffix. The strict-suffix reject branch should only fire
-    #      when the user actually typed the ``.SUFFIX`` form, not when the
-    #      splitter recognized a dotted prefix (``SH.000999``).
+    # ---- OR-COR-b3e32200 / OR-COR-6f4d6b12: dotted-prefix form
+    #      (``SH.000999`` / ``BJ.600519`` / ``HK.600519`` / ``SS.000999``)
+    #      with a base the normalizer rejected must reject as ``unsupported``
+    #      rather than degrade to a malformed canonical stock (``sh.000999``)
+    #      or — worse — silently flip to US (``SS.000999`` → exchange='US').
+    #      Contract #3 (``sh + unknown → degrade to stock``) only applies when
+    #      the bare base is a passable code shape; an explicit dotted-prefix
+    #      reject is a typo, not a stock.
+    #
+    #      NOTE: ``SZ.000001`` is intentionally NOT included here — ``SZ`` is
+    #      in the alias-rebuild whitelist, so the dotted-prefix form is
+    #      equivalent to the strict-suffix form ``000001.SZ`` (alias for SZ
+    #      stock 000001) and must resolve to a real STOCK, not reject.
     @pytest.mark.parametrize(
-        "code,expected_prefix,expected_canonical",
+        "code,expected_exchange",
         [
-            ("SH.000999", "sh", "sh.000999"),  # degrade to SH stock (dot preserved)
-            ("SZ.000001", "sz", "sz000001"),  # degrade to SZ stock (no dot in raw)
+            ("SH.000999", "SH"),
+            ("BJ.600519", "BJ"),
+            ("HK.600519", "HK"),
+            ("SS.000999", "SS"),
         ],
     )
-    def test_dotted_prefix_degrades_to_stock_per_contract3(
-        self, code: str, expected_prefix: str, expected_canonical: str
+    def test_dotted_prefix_with_invalid_base_is_unsupported(
+        self, code: str, expected_exchange: str
     ) -> None:
         target = parse_analysis_target(code)
-        assert target.asset_type == ParseStatus.STOCK
-        assert target.normalized_prefix == expected_prefix
-        assert target.canonical_id == expected_canonical
-        assert target.unsupported_reason is None
+        assert target.asset_type == ParseStatus.UNSUPPORTED
+        assert target.exchange == expected_exchange
+        assert target.canonical_id == code
+        assert target.unsupported_reason is not None
+        assert expected_exchange in target.unsupported_reason
 
     # ---- OR-COR-e21e9de5: foreign-exchange suffixes (.T/.KS/.KQ/.TW/.TWO)
     #      with invalid bases must reject — not silently flip to US stock.

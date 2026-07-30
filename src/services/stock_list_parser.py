@@ -572,13 +572,33 @@ def parse_analysis_target(
                     for pfx in _PREFIX_DIGIT_LENS
                 )
             )
-            if explicit_parts is not None and has_explicit_suffix:
+            # Dotted-prefix form (``SH.000999`` / ``BJ.600519`` /
+            # ``HK.600519`` / ``SS.000999``): the splitter surfaces these as
+            # ``raw_upper`` starting with ``<EXCHANGE>.``. The normalizer
+            # already rejected the base via ``_valid_exchange_code`` (e.g.
+            # ``000999`` doesn't match SH's digit-len / market table), so we
+            # must NOT let the token fall through to ``_split_prefix`` —
+            # otherwise ``SS.000999`` would silently degrade into a US
+            # ticker (because lowercase ``ss.000999`` doesn't start with any
+            # known exchange prefix) and ``SH.000999`` would round-trip as
+            # ``sh.000999`` (a non-canonical id no fetcher accepts). Treat
+            # dotted-prefix rejects the same way as strict-suffix rejects.
+            # See review blocker ``OR-COR-6f4d6b12``.
+            has_dotted_prefix = (
+                "." in raw
+                and raw_upper.startswith(tuple(f"{pfx}." for pfx in _PREFIX_DIGIT_LENS))
+            )
+            if explicit_parts is not None and (has_explicit_suffix or has_dotted_prefix):
                 suffix_exchange, base_candidate, _ = explicit_parts
-                # Restrict the alias rebuild to SH/SS aliases only — only
-                # those can legitimately hide a registry index such as
-                # ``sh000300``. Other exchanges (BJ/HK) always reject on
-                # base+exchange mismatch (e.g. ``600519.BJ``).
-                if suffix_exchange in {"SH", "SS"}:
+                # Restrict the alias rebuild to SH/SS/SZ aliases only —
+                # those are the only exchanges where a digit-len mismatch
+                # could legitimately hide a registry index alias
+                # (``000300.SH`` is the canonical example;
+                # ``sz399001.SZ`` / ``sz399006.SZ`` are the SZ-side mirror).
+                # Other exchanges (BJ/HK) always reject on base+exchange
+                # mismatch (e.g. ``600519.BJ``). See blocker
+                # ``OR-COR-4b91e5a0`` for the SZ index alias gap.
+                if suffix_exchange in {"SH", "SS", "SZ"}:
                     rebuilt_prefix = _EXCHANGE_NORMALIZER[suffix_exchange]
                     # Two acceptable alias shapes:
                     #   (a) Standard suffix form ``000300.SH`` — base_candidate
