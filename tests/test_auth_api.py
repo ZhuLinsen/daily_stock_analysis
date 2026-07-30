@@ -608,13 +608,18 @@ class AuthApiTestCase(unittest.TestCase):
             auth.refresh_auth_state()
             auth.set_initial_password("passwd6")
 
-    def test_disable_auth_with_valid_session_but_no_current_password_returns_400(self):
-        """Closing auth with a valid session cookie but no currentPassword -> 400 current_required.
+    def test_disable_auth_with_session_cookie_but_no_current_password_returns_400(self):
+        """Closing auth with a session cookie but no currentPassword -> 400 current_required.
 
-        Issue #1970: a leaked session cookie alone must never be enough to disable auth.
+        Issue #1970: a leaked session cookie alone must never be enough to
+        disable auth. The current disable handler does NOT consume the session
+        cookie on the disable path — it only checks ``currentPassword`` — so
+        this test asserts that *even when* a cookie is present, the missing
+        ``currentPassword`` still triggers ``current_required``. The cookie
+        is therefore non-contributory precondition, not a validated session.
         """
         self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             response = asyncio.run(
                 auth_endpoint.auth_update_settings(
@@ -627,10 +632,16 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertIn(b'"error":"current_required"', response.body)
         self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
 
-    def test_disable_auth_with_valid_session_and_wrong_current_password_returns_401(self):
-        """Closing auth with valid session + wrong currentPassword -> 401 invalid_password."""
+    def test_disable_auth_with_session_cookie_and_wrong_current_password_returns_401(self):
+        """Closing auth with a session cookie + wrong currentPassword -> 401 invalid_password.
+
+        The disable path does not read the cookie; it only verifies
+        ``currentPassword`` against the stored hash. The cookie is a
+        non-contributory precondition kept here to prove that carrying a
+        session cookie does not bypass ``currentPassword`` verification.
+        """
         self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             response = asyncio.run(
                 auth_endpoint.auth_update_settings(
@@ -643,10 +654,16 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertIn(b'"error":"invalid_password"', response.body)
         self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
 
-    def test_disable_auth_with_valid_session_and_correct_current_password_succeeds(self):
-        """Closing auth with valid session + correct currentPassword -> 200 disable."""
+    def test_disable_auth_with_session_cookie_and_correct_current_password_succeeds(self):
+        """Closing auth with a session cookie + correct currentPassword -> 200 disable.
+
+        Asserts the disable path proceeds when ``currentPassword`` matches
+        the stored hash; the cookie is non-contributory (handler does not
+        read it on the disable path) and is kept only to prove carrying a
+        cookie does not change the success contract.
+        """
         self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "fake-valid-session"})
+        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             response = asyncio.run(
                 auth_endpoint.auth_update_settings(
@@ -697,30 +714,56 @@ class AuthApiTestCase(unittest.TestCase):
     def test_disable_auth_repeated_wrong_password_triggers_rate_limit_429(self):
         """Repeated invalid currentPassword attempts on the disable path must trigger 429.
 
-        Mock verify_stored_password so we can drive >= RATE_LIMIT_MAX_FAILURES attempts
-        from a single client IP without depending on timing.
+        Drives the disable path through ``RATE_LIMIT_MAX_FAILURES`` consecutive
+        wrong-password attempts that record failures, plus one more request
+        that should now be rejected because the in-process ``auth._rate_limit``
+        map has accumulated to the threshold. The final attempt should return
+        429 with ``rate_limited`` error and ``ADMIN_AUTH_ENABLED=true``,
+        proving the disable path actually accumulates failures through the
+        shared rate-limit table rather than prefilled state.
+
+        Mock ``verify_stored_password`` to return False so we can drive the
+        full retry loop deterministically without depending on hashing speed
+        or wall time.
         """
         self._auth_setup_with_stored_password()
-        request = self._build_request()
-        checked_ip = auth.get_client_ip(request)
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             with patch.object(auth_endpoint, "verify_stored_password", return_value=False):
-                # Prefill the in-process rate-limit map so we cross the threshold on the
-                # last attempt rather than consuming real time in the test suite.
-                import time as _time
                 from src.auth import RATE_LIMIT_MAX_FAILURES
 
-                auth._rate_limit = {checked_ip: (RATE_LIMIT_MAX_FAILURES, _time.time())}
-                response = asyncio.run(
-                    auth_endpoint.auth_update_settings(
-                        request,
-                        auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
+                responses: list = []
+                # First RATE_LIMIT_MAX_FAILURES attempts: each records a
+                # failure and returns 401 invalid_password.
+                # The next attempt (RATE_LIMIT_MAX_FAILURES + 1) enters
+                # check_rate_limit which now sees count >= MAX and returns
+                # 429 rate_limited before reaching verify_stored_password.
+                for _ in range(RATE_LIMIT_MAX_FAILURES + 1):
+                    response = asyncio.run(
+                        auth_endpoint.auth_update_settings(
+                            self._build_request(),
+                            auth_endpoint.AuthSettingsRequest(
+                                authEnabled=False,
+                                currentPassword="wrongpass",
+                            ),
+                        )
                     )
-                )
+                    responses.append(response)
 
-        self.assertEqual(response.status_code, 429)
-        self.assertIn(b'"error":"rate_limited"', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
+            # The first RATE_LIMIT_MAX_FAILURES attempts should be 401
+            # invalid_password (each one records a failure); the final
+            # attempt should be 429 rate_limited, proving the disable
+            # path actually accumulates failures through the shared
+            # rate-limit table rather than prefilled state.
+            self.assertEqual(
+                [r.status_code for r in responses[:-1]],
+                [401] * RATE_LIMIT_MAX_FAILURES,
+            )
+            self.assertEqual(responses[-1].status_code, 429)
+            self.assertIn(b'"error":"rate_limited"', responses[-1].body)
+            self.assertIn(
+                "ADMIN_AUTH_ENABLED=true",
+                self.env_path.read_text(encoding="utf-8"),
+            )
 
 
 class AuthDisableViaRealASGITestCase(unittest.TestCase):
