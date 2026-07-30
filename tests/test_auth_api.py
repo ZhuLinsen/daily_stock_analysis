@@ -608,109 +608,6 @@ class AuthApiTestCase(unittest.TestCase):
             auth.refresh_auth_state()
             auth.set_initial_password("passwd6")
 
-    def test_disable_auth_with_session_cookie_but_no_current_password_returns_400(self):
-        """Closing auth with a session cookie but no currentPassword -> 400 current_required.
-
-        Issue #1970: a leaked session cookie alone must never be enough to
-        disable auth. The current disable handler does NOT consume the session
-        cookie on the disable path — it only checks ``currentPassword`` — so
-        this test asserts that *even when* a cookie is present, the missing
-        ``currentPassword`` still triggers ``current_required``. The cookie
-        is therefore non-contributory precondition, not a validated session.
-        """
-        self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
-        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            response = asyncio.run(
-                auth_endpoint.auth_update_settings(
-                    request,
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False),
-                )
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(b'"error":"current_required"', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
-
-    def test_disable_auth_with_session_cookie_and_wrong_current_password_returns_401(self):
-        """Closing auth with a session cookie + wrong currentPassword -> 401 invalid_password.
-
-        The disable path does not read the cookie; it only verifies
-        ``currentPassword`` against the stored hash. The cookie is a
-        non-contributory precondition kept here to prove that carrying a
-        session cookie does not bypass ``currentPassword`` verification.
-        """
-        self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
-        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            response = asyncio.run(
-                auth_endpoint.auth_update_settings(
-                    request,
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
-                )
-            )
-
-        self.assertEqual(response.status_code, 401)
-        self.assertIn(b'"error":"invalid_password"', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
-
-    def test_disable_auth_with_session_cookie_and_correct_current_password_succeeds(self):
-        """Closing auth with a session cookie + correct currentPassword -> 200 disable.
-
-        Asserts the disable path proceeds when ``currentPassword`` matches
-        the stored hash; the cookie is non-contributory (handler does not
-        read it on the disable path) and is kept only to prove carrying a
-        cookie does not change the success contract.
-        """
-        self._auth_setup_with_stored_password()
-        request = self._build_request(cookies={"dsa_session": "opaque-cookie-not-consumed"})
-        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            response = asyncio.run(
-                auth_endpoint.auth_update_settings(
-                    request,
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="passwd6"),
-                )
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertIn(b'"authEnabled":false', response.body)
-        self.assertIn(b'"loggedIn":false', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
-        self.assertIn("dsa_session=", response.headers["set-cookie"])
-
-    def test_disable_auth_without_session_and_no_current_password_returns_400(self):
-        """Closing auth without session cookie + no currentPassword -> 400 current_required.
-
-        Regression guard: behavior without a session cookie must remain unchanged.
-        """
-        self._auth_setup_with_stored_password()
-        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            response = asyncio.run(
-                auth_endpoint.auth_update_settings(
-                    self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False),
-                )
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(b'"error":"current_required"', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
-
-    def test_disable_auth_without_session_and_wrong_current_password_returns_401(self):
-        """Closing auth without session cookie + wrong currentPassword -> 401 invalid_password."""
-        self._auth_setup_with_stored_password()
-        with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
-            response = asyncio.run(
-                auth_endpoint.auth_update_settings(
-                    self._build_request(),
-                    auth_endpoint.AuthSettingsRequest(authEnabled=False, currentPassword="wrongpass"),
-                )
-            )
-
-        self.assertEqual(response.status_code, 401)
-        self.assertIn(b'"error":"invalid_password"', response.body)
-        self.assertIn("ADMIN_AUTH_ENABLED=true", self.env_path.read_text(encoding="utf-8"))
-
     def test_disable_auth_repeated_wrong_password_triggers_rate_limit_429(self):
         """Repeated invalid currentPassword attempts on the disable path must trigger 429.
 
@@ -722,9 +619,9 @@ class AuthApiTestCase(unittest.TestCase):
         proving the disable path actually accumulates failures through the
         shared rate-limit table rather than prefilled state.
 
-        Mock ``verify_stored_password`` to return False so we can drive the
-        full retry loop deterministically without depending on hashing speed
-        or wall time.
+        This is the handler-level rate-limit branch test; the higher-level
+        "valid session cookie must not bypass currentPassword" contract is
+        covered by ``AuthDisableViaRealASGITestCase``.
         """
         self._auth_setup_with_stored_password()
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
@@ -795,16 +692,6 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         os.environ["DATABASE_PATH"] = str(cls.data_dir / "test.db")
         Config.reset_instance()
 
-        # Force AuthMiddleware to enforce auth for the duration of this class,
-        # independent of the cached ``src.auth._auth_enabled`` flag (which flips
-        # to False after a successful disable). The endpoint reads
-        # ``src.auth.is_auth_enabled`` directly, so patching the middleware copy
-        # keeps the API protected for negative-path tests even after disable.
-        cls._middleware_auth_patcher = patch(
-            "api.middlewares.auth.is_auth_enabled", return_value=True
-        )
-        cls._middleware_auth_patcher.start()
-
         cls._data_dir_patcher = patch.object(
             auth, "_get_data_dir", return_value=cls.data_dir
         )
@@ -822,7 +709,6 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._middleware_auth_patcher.stop()
         cls._data_dir_patcher.stop()
         Config.reset_instance()
         os.environ.pop("ENV_FILE", None)
@@ -843,15 +729,18 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         if not auth.has_stored_password():
             auth.set_initial_password("passwd6")
 
-    def _login_for_session(self) -> dict:
-        """Authenticate via the real /api/v1/auth/login endpoint and return cookies."""
+    def _login_for_session(self) -> None:
+        """Authenticate via the real /api/v1/auth/login endpoint.
+
+        The TestClient persists cookies across requests; we do not need to
+        return them — assertions about cookie state after disable read
+        ``self.client.cookies`` directly.
+        """
         login_resp = self.client.post(
             "/api/v1/auth/login",
             json={"password": "passwd6"},
         )
         self.assertEqual(login_resp.status_code, 200, login_resp.text)
-        # The TestClient persists cookies across requests; expose them for assertions.
-        return dict(self.client.cookies)
 
     def test_disable_via_real_asgi_with_valid_session_but_no_current_password_returns_400(self):
         """Real middleware + endpoint: valid session cookie + no currentPassword -> 400.
@@ -876,10 +765,25 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         """Real middleware + endpoint: valid session + correct currentPassword -> 200.
 
         Positive path: a logged-in admin who supplies the correct currentPassword
-        can disable auth, the .env flips to ADMIN_AUTH_ENABLED=false, and the
-        response sets a fresh (rotated) session cookie.
+        can disable auth, the .env flips to ADMIN_AUTH_ENABLED=false, the server
+        rotates the session secret, and the response instructs the client to
+        drop the existing dsa_session cookie. A leaked pre-disable cookie must
+        NOT remain usable after this response, so we assert:
+
+        1. The Set-Cookie header carries ``dsa_session=`` with an empty value
+           (or a deletion-form cookie), not a fresh authenticated session id.
+        2. The header contains ``Max-Age=0`` or an ``Expires`` date in the past
+           — the standard cookie-deletion semantics used by ``delete_cookie``.
+        3. The TestClient cookie jar drops the ``dsa_session`` cookie after
+           the response, so subsequent requests in this client context no
+           longer carry it.
         """
         self._login_for_session()
+        # Sanity: the login flow left a session cookie in the jar.
+        self.assertIn("dsa_session", self.client.cookies)
+        pre_disable_cookie = self.client.cookies.get("dsa_session")
+        self.assertTrue(pre_disable_cookie)
+
         resp = self.client.post(
             "/api/v1/auth/settings",
             json={"authEnabled": False, "currentPassword": "passwd6"},
@@ -889,10 +793,37 @@ class AuthDisableViaRealASGITestCase(unittest.TestCase):
         self.assertFalse(body.get("authEnabled"))
         self.assertFalse(body.get("loggedIn"))
         self.assertIn("ADMIN_AUTH_ENABLED=false", self.env_path.read_text(encoding="utf-8"))
-        # The endpoint rotates the session secret on a successful disable; assert
-        # a Set-Cookie header is present so downstream clients cannot reuse the
-        # pre-disable cookie.
-        self.assertIn("dsa_session=", resp.headers.get("set-cookie", ""))
+
+        # 1. Cookie value is empty / deletion-form — not a fresh session id.
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("dsa_session=", set_cookie)
+        # ``delete_cookie`` emits ``dsa_session=; Max-Age=0; ...`` (empty value);
+        # a newly minted session would carry a long signed token instead.
+        # Split on the first ';' to isolate the ``name=value`` pair, then take
+        # the value side.
+        cookie_pair = set_cookie.split(";", 1)[0]
+        cookie_value = cookie_pair.split("=", 1)[1] if "=" in cookie_pair else ""
+        self.assertEqual(
+            cookie_value,
+            "",
+            f"expected empty dsa_session value (cookie deletion form), got: {cookie_value!r}",
+        )
+
+        # 2. Cookie carries Max-Age=0 OR an Expires date in the past —
+        #    the standard cookie-deletion semantics used by ``delete_cookie``.
+        set_cookie_lower = set_cookie.lower()
+        has_max_age_zero = "max-age=0" in set_cookie_lower
+        has_expires_past = "expires=" in set_cookie_lower and ("1970" in set_cookie_lower or "01 jan 1970" in set_cookie_lower)
+        self.assertTrue(
+            has_max_age_zero or has_expires_past,
+            f"expected cookie deletion header (Max-Age=0 / Expires in the past), got: {set_cookie!r}",
+        )
+
+        # 3. The TestClient cookie jar should no longer carry dsa_session
+        #    after processing the deletion response. This proves the
+        #    authenticated jar state has actually been cleared, not just
+        #    overwritten with a new value.
+        self.assertNotIn("dsa_session", self.client.cookies)
 
 
 if __name__ == "__main__":
