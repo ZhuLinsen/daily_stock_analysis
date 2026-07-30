@@ -16,11 +16,19 @@
 
 每条 outcome 只使用 sample 自己的 canonical `signal`，不得读取最终 Agent decision、`skill_consensus` 或其他 skill 的 signal。`strong_buy` / `buy` 按 bullish 评价，`strong_sell` / `sell` 按 bearish 评价；方向收益严格大于零才是 `hit`，零收益是 `miss`。`hold` 在价格窗口完整后保存为 `observational`，不产生方向正确性。
 
-历史分析日期来自 `enhanced_context.date`，缺失时才回退到历史记录创建日期。Backtest 与 Outcome 统一通过共享 resolver 解析股票身份、重建受支持的旧市场快照并确定权威起始 session：优先使用市场一致且合法的 `market_phase_summary.effective_daily_bar_date`；缺少该字段时，只有 phase 与交易日历能够证明起点才进行推导，否则 fail closed，不允许选择任意更早的本地日线。共享窗口 resolver 只接受权威起始 session 的 bar，在同日起点中优先完整窗口，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
+历史分析日期来自 `enhanced_context.date`，缺失时才回退到历史记录创建日期。Backtest 与 Outcome 共享股票身份解析、受支持的旧市场快照重建和权威起始 session 判定：优先使用市场一致且合法的 `market_phase_summary.effective_daily_bar_date`；缺少该字段时，只有 phase 与交易日历能够证明起点才进行推导，否则 fail closed，不允许选择任意更早的本地日线。Outcome 只接受通过判定的 `expected_start_date`。Backtest 为兼容既有历史，可在非 session `effective_daily_bar_date` 对应的精确本地 bar 已存在时，通过显式 `backtest_start_date` 只读回放；该 fallback 不属于权威 Outcome 样本，不触发无效日期 refill，也不进入 Skill Outcome 统计或权重校准。共享窗口 resolver 在指定起点中优先完整窗口，且起始与 forward bars 必须来自同一 stored code shape，不得跨候选拼接。
 
-权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
+对 Outcome 而言，权威起始 session 已确定、但对应起始 bar 尚未写入，或未来本地日线不足时，保存为可重试 `pending`。候选 key 按上次尝试时间（缺失 outcome 时按 sample 创建时间）公平调度；每次重试会刷新 `pending.updated_at` 并将其移至队尾，避免持续新增的缺失 key 饿死旧重试，也避免重试反向阻塞新样本。损坏或晚于分析日期的 `effective_daily_bar_date`、股票市场与快照市场冲突，以及无法由可信 phase 与交易日历证明起点等永久无效元数据，保存为终态 `unable`，不得伪装成 `missing_start_bar` 持续重试。同一 engine version 下只有 `pending` 可更新，`evaluated`、`observational`、`unable` 均不可覆盖；规则变化必须提升 engine version。历史删除在同一写事务内按 outcome → sample → history 显式清理，不能依赖 SQLite 外键开关。
 
-本 PR 基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不提供表现统计、样本充足度、排名和权重调整。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+Outcome 核心阶段（#2116）基于已合并的 #2073，只提供 Outcome evaluator、repository 和 service 核心，当时未包含表现统计、样本充足度、排名或权重调整。其后的只读统计阶段在下节单独定义；该阶段仍不新增管理员 API、Schema、OpenAPI 或主 Pipeline 自动触发，也不调整运行时权重。若后续需要运维入口，应以实际调用方和权限契约为依据独立审查。
+
+### Skill Opinion Outcome 表现统计
+
+Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独立分 bucket。任何 bucket 都不能借用同 skill 的其他 horizon、其他 skill、其他 engine version 或全局样本解锁指标。当前固定门槛为 `evaluated >= 30`；只有 individual skill opinion 自身 signal 产生的 `hit` / `miss` 计入 evaluated，`pending`、`observational` 和 `unable` 只保留计数，不计入样本充足度。
+
+样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
+
+当前统计 service 不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示。把统计接入保守权重属于独立后续变更，接入前无论统计表是否已有记录，运行时仍保持现有中性权重。
 
 ## 术语与边界
 
