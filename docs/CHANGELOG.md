@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [修复] 本地 CLI 的 `stdout_preview` / `stderr_preview` 按环境变量、JSON、YAML/日志标量与 URL 的独立契约脱敏短凭证，避免小于 32 字符的 API key、secret 或 token 进入诊断；普通字段仅按敏感名称判定，未加引号的 YAML 敏感标量则 fail-closed 脱敏至行尾（refs #1784）。
+- [修复] `redact_diagnostic_text()` 在 `export SENSITIVE_ENV=$(printenv OTHER_SECRET) session_id=...` 形态下不再因第二遍 `$(...)` 扫描与第一遍敏感赋值替换区重叠而吞掉 `session_id` 等尾随非敏感诊断字段；第二遍扫描现以 first-pass 已替换 span 列表为可信跳过表，并对 prior-head / prior-semicolon 分支的 leading regex 加上 `(?:export[ \t]+)?` 前缀，使 `export FOO=$(...)` 与 `FOO=$(...)` 在所有分支行为对齐（关闭 PR #2118 review blocker OR-COR-7c0a5d41）。
 
 ## [3.28.0] - 2026-07-26
 

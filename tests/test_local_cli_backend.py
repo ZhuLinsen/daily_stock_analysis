@@ -2940,6 +2940,55 @@ raise SystemExit(2)
     assert stderr_preview.count("<redacted>") == 0
 
 
+@pytest.mark.parametrize(
+    "diagnostic, must_keep, must_redact",
+    [
+        # OR-COR-7c0a5d41: export SENSITIVE=$(...) form must not drop
+        # trailing non-sensitive fields like session_id when the
+        # substitution body contains a sensitive uppercase token.
+        # NOTE: the LHS assignment name (``OPENAI_API_KEY``) is itself
+        # sensitive and intentionally displayed as the assignment
+        # target — the leakage vector we guard here is the inner
+        # command-substitution secret (``SECRET_TOKEN`` / ``sk-12345``)
+        # and the *trailing* non-sensitive fields that the second-pass
+        # scan was eaten by overlapping spans.
+        (
+            "export OPENAI_API_KEY=$(printenv SECRET_TOKEN) session_id=dup1 token_budget=1000",
+            ["session_id=dup1", "token_budget=1000"],
+            ["SECRET_TOKEN", "printenv SECRET_TOKEN"],
+        ),
+        (
+            "export OPENAI_API_KEY=$(echo OPENAI_API_KEY=sk-12345) session_id=dup3",
+            ["session_id=dup3"],
+            ["sk-12345"],
+        ),
+        # Non-export form must continue to preserve trailing fields.
+        (
+            "OPENAI_API_KEY=$(printenv SECRET_TOKEN) session_id=dup4 token_budget=2000",
+            ["session_id=dup4", "token_budget=2000"],
+            ["SECRET_TOKEN", "printenv SECRET_TOKEN"],
+        ),
+    ],
+)
+def test_redact_diagnostic_text_export_env_preserves_trailing_fields(
+    diagnostic: str, must_keep: list[str], must_redact: list[str]
+) -> None:
+    """``export SENSITIVE_ENV=$(printenv OTHER_SECRET) session_id=...``
+    must redact the secret substitution while preserving the trailing
+    non-sensitive diagnostics (session_id, token_budget, …). Regression
+    for OR-COR-7c0a5d41.
+    """
+    redacted = redact_diagnostic_text(diagnostic, limit=1000)
+    for secret in must_redact:
+        assert secret not in redacted, f"leaked {secret!r}: {redacted!r}"
+    for kept in must_keep:
+        assert kept in redacted, f"dropped {kept!r}: {redacted!r}"
+    # Sanity: the LHS assignment name (e.g. ``OPENAI_API_KEY=``) is the
+    # redaction *target* marker and should remain visible so users
+    # can see which env was scrubbed.
+    assert "<redacted>" in redacted
+
+
 def test_nonzero_exit_previews_redact_json_auth_and_embedded_assignments(
     tmp_path: Path,
 ) -> None:

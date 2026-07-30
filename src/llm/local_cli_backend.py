@@ -1292,6 +1292,13 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
     def redact_sensitive_env_command_substitutions(source: str) -> str:
         replacements = []
         last_end = -1
+        # Collect all sensitive-env-assignment spans from the first pass
+        # so the second pass can skip any ``$(...)`` that sits inside one
+        # of those already-redacted regions. Without this overlap guard
+        # the second pass re-adds the same span and ``_replace_spans``
+        # silently drops trailing diagnostics such as ``session_id``
+        # (regression OR-COR-7c0a5d41).
+        first_pass_spans: list[tuple[int, int]] = []
         for match in _DIAGNOSTIC_ENV_ASSIGNMENT_PREFIX_PATTERN.finditer(source):
             value_start = match.end()
             if value_start < last_end or source[value_start:value_start + 2] != "$(":
@@ -1302,6 +1309,7 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
             if value_end <= value_start:
                 continue
             replacements.append((value_start, value_end, "<redacted>"))
+            first_pass_spans.append((value_start, value_end))
             last_end = value_end
         # Scan remaining $(...) command substitutions not bound to any env
         # assignment, so multi-segment diagnostics like
@@ -1318,7 +1326,18 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
             # Skip $( that is the direct value of a sensitive env assignment
             # already handled above, so we don't double-rewrite it. A leading
             # non-sensitive token like A=$(echo SECRET) must still be scanned
-            # because the inner token triggers the redaction.
+            # because the inner token triggers the redaction. We use the
+            # collected spans rather than re-deriving the leading prefix
+            # so that the ``export SENSITIVE=$(...)`` shape is recognised
+            # the same way as ``SENSITIVE=$(...)`` (both share the same
+            # leading match in ``_DIAGNOSTIC_ENV_ASSIGNMENT_PREFIX_PATTERN``
+            # which already accepts an optional ``export`` prefix).
+            skip_due_to_first_pass = any(
+                start <= sub < end for start, end in first_pass_spans
+            )
+            if skip_due_to_first_pass:
+                tail_start = sub + 1
+                continue
             prior_semi = source.rfind(";", 0, sub)
             if prior_semi == -1:
                 prior_nl = source.rfind("\n", 0, sub)
@@ -1328,19 +1347,28 @@ def _redact_sensitive_diagnostic_assignments(text: str) -> str:
             if prior_semi != -1:
                 candidate = source[prior_semi + 1:sub].strip(" \t")
                 if candidate:
-                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", candidate)
+                    prior_match = re.match(
+                        r"(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$",
+                        candidate,
+                    )
                     if prior_match and _is_sensitive_env_name(prior_match.group("name")):
                         skip_due_to_prior = True
             if not skip_due_to_prior and prior_nl != -1:
                 candidate = source[prior_nl + 1:sub].strip(" \t")
                 if candidate:
-                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", candidate)
+                    prior_match = re.match(
+                        r"(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$",
+                        candidate,
+                    )
                     if prior_match and _is_sensitive_env_name(prior_match.group("name")):
                         skip_due_to_prior = True
             if not skip_due_to_prior and prior_semi == -1 and prior_nl == -1:
                 head = source[:sub].lstrip(" \t")
                 if head:
-                    prior_match = re.match(r"(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$", head)
+                    prior_match = re.match(
+                        r"(?:export[ \t]+)?(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*$",
+                        head,
+                    )
                     if prior_match and _is_sensitive_env_name(prior_match.group("name")):
                         skip_due_to_prior = True
             if skip_due_to_prior:
