@@ -365,7 +365,7 @@ const fieldDescriptionMap: Record<string, string> = {
   AGENT_ORCHESTRATOR_MODE: "Multi-Agent 编排深度。quick（技术→决策）、standard（技术→情报→决策）、full（含风控）、specialist（含策略专家评估）。",
   AGENT_ORCHESTRATOR_TIMEOUT_S: "Agent 执行总超时预算（秒）。single-agent 用作整体 ReAct 循环预算，multi-agent 用作协作编排预算；0 表示不限制。",
   AGENT_RISK_OVERRIDE: "允许风控 Agent 在发现关键风险时否决买入信号。",
-  AGENT_SKILL_AUTOWEIGHT: "根据回测表现自动调整策略权重。",
+  AGENT_SKILL_AUTOWEIGHT: "基于样本充足的真实 Skill Outcome 保守调整策略权重。",
   AGENT_SKILL_ROUTING: "策略选择方式。auto 按市场状态自动选择，manual 使用 AGENT_SKILLS 列表。",
   AGENT_MEMORY_ENABLED: "启用记忆与校准系统，追踪历史分析准确率并自动调节置信度。",
   AGENT_NL_ROUTING: '启用自然语言路由，让 Agent 自动识别意图并选择执行路径。',

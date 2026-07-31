@@ -701,13 +701,18 @@ class LongbridgeFetcher(BaseFetcher):
         try:
             from longbridge.openapi import Period, AdjustType
 
+            # history_candlesticks_by_offset 使用 keyword args 确保跨 SDK 版本兼容:
+            # 0.2.74 (Linux) 与 4.x (Windows/macOS/Python>=3.12) 的
+            # positional 签名存在差异 (0.2.74: forward, time, count; 4.x: forward, count, time)，
+            # keyword args 不受顺序影响。
+            # forward=False → 从 time 起向过去取; time 为基准时间; count 为根数。
             candles = ctx.history_candlesticks_by_offset(
-                symbol,
-                Period.Day,
-                AdjustType.NoAdjust,
-                False,
-                6,
-                datetime.now(),
+                symbol=symbol,
+                period=Period.Day,
+                adjust_type=AdjustType.NoAdjust,
+                forward=False,
+                time=datetime.now(),
+                count=6,
             )
             if not candles or len(candles) < 2:
                 return None

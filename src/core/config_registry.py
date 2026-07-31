@@ -4172,7 +4172,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "AGENT_SKILL_AUTOWEIGHT": {
         "title": "Auto-Weight Strategies",
-        "description": "Automatically weight strategy-skill opinions by their historical backtest performance.",
+        "description": "Conservatively weight strategy-skill opinions from sufficient attributable Outcome samples.",
         "category": "agent",
         "data_type": "boolean",
         "ui_control": "switch",

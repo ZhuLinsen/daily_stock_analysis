@@ -1,6 +1,6 @@
 # 多策略投资建议契约：Baseline 语义、Phase 1 收敛、Phase 2/3/4 边界
 
-本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
+本页是 Issue #1964「多策略投资建议」的专题文档，用于记录 2 个及以上策略/技能（skill）观点在系统内的**语义收敛边界**：有效证据集合、无效观点隔离、阵营分组、共识度、跨消费面一致性。Baseline 负责契约边界和现状盘点；Phase 1 只在 Baseline 契约内完成有效证据集合分拣、`strategy_synthesis` 确定性合成、DecisionAgent prompt 收敛、四条 renderer 一致性以及 E2E 反例覆盖；Phase 1.5 在 Phase 1 契约上新增受控协同推理 v0（mediator_v0），只记录冲突议题、策略回应、softened 修正和置信度折减原因；Phase 1.6 新增可注入 LLM mediator v1（llm_mediator_v1），只允许 schema 合法的结构化修订，并在缺失、异常或越界时回退 v0；Phase 1.7 新增可注入 strategy self-review v2（self_review_v2），只允许冲突参与策略按固定 schema 自审，并在任一参与方越界时整轮回退 baseline；Phase 1.8 新增修订投影 v3（revision_projection），只预览采纳 softened 修订后的综合信号、置信度和冲突状态，不覆盖权威 `final_signal`；Phase 1.9 新增可配置多轮协同推理 v4（multi_round_v4），按 `max_rounds` 继续结构化修订并保留 `round_history`，任一轮越界时回到上一轮已验证结果；Phase 2 只在 Phase 1/1.5/1.6/1.7/1.8/1.9 契约下新增 2–4 策略并发调度与阶段调度；Phase 3 只在 Phase 2 之上补前端多语言完整展示；Phase 4 只在同一 `CONTRACT_VERSION = "1.0"` 内补真实 Skill Outcome 权重反馈闭环。Baseline 的所有约束对后续 Phase 均永久生效，Phase N 不得静默降级 Baseline 中已经写死的边界。
 
 ## Skill opinion 样本边界（Issue #1904 P2 PR1）
 
@@ -28,7 +28,7 @@ Outcome 统计是只读数据面，按 `skill_id + horizon + engine_version` 独
 
 样本不足时，bucket 的 `sample_status` 为 `observational`，计数继续返回，但 `hit_rate_pct`、`miss_rate_pct`、`avg_directional_return_pct` 和 `unable_rate_pct` 全部为 `null`，不得输出排名或推导权重。样本充足时，hit/miss rate 以 `hit + miss` 为分母，平均方向收益只使用 evaluated rows；unable rate 以终态记录 `evaluated + observational + unable` 为分母，临时 `pending` 不得稀释永久失败比例。
 
-当前统计 service 不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示。把统计接入保守权重属于独立后续变更，接入前无论统计表是否已有记录，运行时仍保持现有中性权重。
+只读统计阶段（PR #2119）本身不修改 `BacktestService.get_skill_summary()`、`AgentMemory` 或 `SkillAggregator`，也不新增 API、Pipeline 自动触发和 Web 展示；本页后文的 Phase 4 在该统计契约之上独立接入保守运行时权重。当前组合实现仍只读消费已经持久化的 Outcome，不负责自动触发 evaluator。
 
 ## 术语与边界
 
@@ -378,12 +378,50 @@ Phase 3 只在 Phase 2 之上补前端（`apps/dsa-web/`、`apps/dsa-desktop/`�
 - 多语言 label 表复用 `src/report_language.py` 已有的 zh/en/ko 三语；前端只做投影，不重新定义。
 - Phase 3 不改变 Baseline 契约、不新增 payload 字段、不新增 API 端点。
 
-## Phase 4 权重回测反馈闭环（本 PR 不做）
+## Phase 4 Skill Outcome 权重反馈闭环
 
-Phase 4 在同一 `CONTRACT_VERSION = "1.0"` 内补权重回测反馈：
+Phase 4 在同一 `CONTRACT_VERSION = "1.0"` 内只使用真实、可归因的
+individual Skill Outcome 调整运行时相对权重。权重统计继续严格按
+`skill_id + horizon + engine_version` 分 bucket；每个 horizon 必须独立满足
+`evaluated >= 30`，不得跨 horizon、skill 或 engine version 拼接样本解锁权重。
 
-- `SkillAggregator._compute_weight()` 已有 `perf_weight` / `_backtest_factor()` 接线，Phase 4 只补自动权重更新的闭环。
-- Phase 4 不改变 Baseline canonical signal / valid 判定 / 共识门槛 / 阵营语义；权重变化只影响 `weighted_score` 与 `confidence`，不影响 `consensus_level` 判定路径。
+单个充足 bucket 使用对称 `Beta(15, 15)` 先验做命中率收缩：
+
+```text
+n = hit + miss
+posterior_hit_rate = (hit + 15) / (n + 30)
+direction_score = 2 * posterior_hit_rate - 1
+unable_rate = unable / (evaluated + observational + unable)
+bucket_score = clamp(direction_score - 0.25 * unable_rate, -1, 1)
+evidence_strength = n / (n + 30)
+```
+
+`pending` 不进入 unable rate 分母，`observational` / `unable` 不能补足
+evaluated 门槛。当前 opinion 没有可信 horizon，因此只对已经各自满足门槛的
+bucket 做证据强度加权模型平均：
+
+```text
+combined_score =
+    sum(bucket_score * evidence_strength)
+    / sum(evidence_strength)
+performance_factor = exp(ln(1.2) * combined_score)
+effective_weight = opinion.confidence * performance_factor
+```
+
+`performance_factor` 被限制在乘法对称区间 `[1 / 1.2, 1.2]`。没有充足
+bucket、统计读取失败、bucket 损坏、数值非有限或
+`AGENT_SKILL_AUTOWEIGHT=false` 时必须返回中性因子 `1.0`；权重失败不得中断
+分析。运行时不再使用 `BacktestService` 的全局或不可归因 summary 冒充 Skill
+表现。本阶段只读消费已经持久化的 Outcome，不新增 evaluator 的 Pipeline、API
+或定时触发入口。
+
+`avg_directional_return_pct` 当前仍是只读描述指标，不参与权重。只有平均值而
+没有离散度或标准误时，直接加入公式会制造伪精确；后续若要使用收益，必须先
+建立版本化的风险调整收益契约。
+
+Phase 4 不改变 Baseline canonical signal / valid 判定 / 共识门槛 / 阵营语义；
+权重变化只影响 `weighted_score` 与 `confidence`，不影响 `consensus_level`
+判定路径。`AGENT_ARCH=single` 不经过 `SkillAggregator`，保持兼容。
 
 ## 消费面盘点
 
