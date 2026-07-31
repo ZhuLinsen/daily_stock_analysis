@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   Plus,
+  RefreshCw,
   Star,
   Trash2,
 } from 'lucide-react';
@@ -121,12 +122,12 @@ const WatchlistRowItem: React.FC<{
 
   return (
     <div
-      className={`home-subpanel grid min-w-0 gap-2 px-3 py-2.5 ${item?.id !== undefined ? 'cursor-pointer' : ''}`}
+      className={`home-subpanel grid min-w-0 gap-1.5 px-2.5 py-2 ${item?.id !== undefined ? 'cursor-pointer' : ''}`}
       onClick={() => {
         if (item?.id !== undefined) onClick(item.id);
       }}
     >
-      <div className="flex min-w-0 items-start justify-between gap-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">
@@ -142,12 +143,25 @@ const WatchlistRowItem: React.FC<{
               <Clock3 className="h-3.5 w-3.5 shrink-0 text-muted-text" aria-label={t('watchlist.notAnalyzedToday')} />
             )}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
+          <div className="mt-0.5 flex min-w-0 items-center gap-1.5">
             <span className="font-mono text-[11px] text-secondary-text">{row.code}</span>
             {item?.lastAnalysisTime ? (
               <>
                 <span className="h-1 w-1 rounded-full bg-subtle-hover" />
                 <span className="text-[11px] text-muted-text">{formatDateTime(item.lastAnalysisTime)}</span>
+              </>
+            ) : null}
+            {row.activeTask ? (
+              <>
+                <span className="h-1 w-1 shrink-0 rounded-full bg-subtle-hover" />
+                <StatusDot
+                  tone={row.activeTask.status === 'processing' ? 'info' : 'neutral'}
+                  pulse={row.activeTask.status === 'processing'}
+                  className="h-1.5 w-1.5 shrink-0"
+                />
+                <span className="min-w-0 truncate text-[11px] text-muted-text">
+                  {t('watchlist.taskRunning', { status: taskLabel })}
+                </span>
               </>
             ) : null}
           </div>
@@ -170,16 +184,6 @@ const WatchlistRowItem: React.FC<{
           </Button>
         </div>
       </div>
-      {row.activeTask ? (
-        <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-text">
-          <StatusDot
-            tone={row.activeTask.status === 'processing' ? 'info' : 'neutral'}
-            pulse={row.activeTask.status === 'processing'}
-            className="h-1.5 w-1.5"
-          />
-          <span className="truncate">{t('watchlist.taskRunning', { status: taskLabel })}</span>
-        </div>
-      ) : null}
     </div>
   );
 };
@@ -300,7 +304,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
 
   return (
     <aside className={`glass-card flex min-h-0 flex-1 flex-col overflow-hidden ${className}`}>
-      <div className="space-y-3 border-b border-subtle px-4 py-4">
+      <div className="space-y-2 border-b border-subtle px-3 py-3">
         {renderTabs}
 
         {activeTab === 'watchlist' ? (
@@ -310,24 +314,39 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
               title={t('watchlist.title')}
               titleClassName="text-sm font-medium"
               leading={<Star className="h-4 w-4 text-primary" aria-hidden="true" />}
-              actions={<span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: watchlistRows.length })}</span>}
+              actions={(
+                <>
+                  <span className="text-[11px] text-muted-text">{t('common.itemsCount', { count: watchlistRows.length })}</span>
+                  <Button
+                    type="button"
+                    size="xsm"
+                    variant="ghost"
+                    className="h-7 w-7 px-0"
+                    disabled={watchlistLoading}
+                    aria-label={t('watchlist.refresh')}
+                    onClick={() => void onRefreshWatchlist()}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${watchlistLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  </Button>
+                </>
+              )}
             />
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.todayCoverage')}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{watchlistAnalyzedTodayCount}/{watchlistRows.length}</p>
-              </div>
-              <div className="rounded-xl border border-subtle bg-base/35 px-3 py-2">
-                <p className="text-[11px] text-muted-text">{t('watchlist.pendingToday')}</p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{pendingWatchlistCount}</p>
-              </div>
+            <div className="flex min-w-0 items-center gap-2 text-[11px]">
+              <Badge variant="default" size="sm" className="min-w-0 shadow-none">
+                <span className="truncate text-muted-text">{t('watchlist.todayCoverage')}</span>
+                <span className="font-semibold text-foreground">{watchlistAnalyzedTodayCount}/{watchlistRows.length}</span>
+              </Badge>
+              <Badge variant="default" size="sm" className="min-w-0 shadow-none">
+                <span className="truncate text-muted-text">{t('watchlist.pendingToday')}</span>
+                <span className="font-semibold text-foreground">{pendingWatchlistCount}</span>
+              </Badge>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 size="sm"
                 variant="home-action-ai"
-                className="whitespace-nowrap px-2 text-xs"
+                className="h-8 whitespace-nowrap px-2 text-xs"
                 disabled={watchlistRows.length === 0 || isBatchAnalyzing}
                 isLoading={isBatchAnalyzing}
                 loadingText={t('watchlist.submitting')}
@@ -340,7 +359,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 type="button"
                 size="sm"
                 variant="home-action-report"
-                className="whitespace-nowrap px-2 text-xs"
+                className="h-8 whitespace-nowrap px-2 text-xs"
                 disabled={pendingWatchlistCount === 0 || isTodayStatusUnavailable || isBatchAnalyzing}
                 onClick={() => void onAnalyzeWatchlist('pending')}
               >
@@ -353,7 +372,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 value={draftCode}
                 onChange={(event) => setDraftCode(event.target.value)}
                 placeholder={t('watchlist.addPlaceholder')}
-                className="h-9 rounded-lg px-3 text-xs"
+                className="h-8 rounded-lg px-3 text-xs"
                 disabled={watchlistActioning}
                 aria-label={t('watchlist.addPlaceholder')}
               />
@@ -361,7 +380,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 type="submit"
                 size="sm"
                 variant="secondary"
-                className="h-9 w-9 px-0"
+                className="h-8 w-8 px-0"
                 disabled={!draftCode.trim() || watchlistActioning}
                 isLoading={watchlistActioning}
                 aria-label={t('watchlist.add')}
@@ -405,7 +424,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         )}
       </div>
 
-      <ScrollArea viewportClassName="p-4" className="min-h-0 flex-1">
+      <ScrollArea viewportClassName="p-3" className="min-h-0 flex-1">
         {activeTab === 'watchlist' ? (
           watchlistLoading ? (
             <DashboardStateBlock loading compact title={t('watchlist.loading')} />
@@ -459,20 +478,6 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
         )}
       </ScrollArea>
 
-      {activeTab === 'watchlist' ? (
-        <div className="border-t border-subtle px-4 py-3">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="w-full"
-            disabled={watchlistLoading}
-            onClick={() => void onRefreshWatchlist()}
-          >
-            {t('watchlist.refresh')}
-          </Button>
-        </div>
-      ) : null}
     </aside>
   );
 };
