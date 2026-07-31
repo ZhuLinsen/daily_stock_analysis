@@ -21,6 +21,7 @@ describe('llmProviderTemplates', () => {
       'volcengine',
       'siliconflow',
       'openrouter',
+      'orcarouter',
       'gemini',
       'anthropic',
       'openai',

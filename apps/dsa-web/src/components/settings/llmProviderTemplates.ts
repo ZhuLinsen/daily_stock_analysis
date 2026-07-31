@@ -161,6 +161,18 @@ export const LLM_PROVIDER_TEMPLATES: LLMProviderTemplate[] = [
     ],
   },
   {
+    channelId: 'orcarouter',
+    label: 'OrcaRouter',
+    protocol: 'openai',
+    baseUrl: 'https://api.orcarouter.ai/v1',
+    placeholderModels: 'anthropic/claude-sonnet-4.6,openai/gpt-5.5',
+    capabilities: ['openai-compatible', 'aggregator', 'model-discovery'],
+    configHint: '模型列表和模型可见性依赖账号权限与 API Key。',
+    officialSources: [
+      { label: 'OrcaRouter Models API', url: 'https://docs.orcarouter.ai/api-reference/models/list-available-models' },
+    ],
+  },
+  {
     channelId: 'gemini',
     label: 'Gemini 官方',
     protocol: 'gemini',
