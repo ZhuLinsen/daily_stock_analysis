@@ -110,16 +110,22 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
 
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
+  onClick: (recordId: number) => void;
   onRemove: (code: string) => Promise<void>;
   disabled: boolean;
-}> = ({ row, onRemove, disabled }) => {
+}> = ({ row, onClick, onRemove, disabled }) => {
   const { t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const item = row.latestItem;
   const stockName = item?.stockName || row.code;
 
   return (
-    <div className="home-subpanel grid min-w-0 gap-2 px-3 py-2.5">
+    <div
+      className={`home-subpanel grid min-w-0 gap-2 px-3 py-2.5 ${item?.id !== undefined ? 'cursor-pointer' : ''}`}
+      onClick={() => {
+        if (item?.id !== undefined) onClick(item.id);
+      }}
+    >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -155,7 +161,10 @@ const WatchlistRowItem: React.FC<{
             className="h-7 w-7 px-0"
             disabled={disabled}
             aria-label={t('watchlist.removeAria', { code: row.code })}
-            onClick={() => void onRemove(row.code)}
+            onClick={(event) => {
+              event.stopPropagation();
+              void onRemove(row.code);
+            }}
           >
             <Trash2 className="h-3.5 w-3.5 text-danger" aria-hidden="true" />
           </Button>
@@ -416,6 +425,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                 <WatchlistRowItem
                   key={row.code}
                   row={row}
+                  onClick={onHistoryItemClick}
                   onRemove={onRemoveFromWatchlist}
                   disabled={watchlistActioning}
                 />
