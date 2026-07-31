@@ -239,6 +239,7 @@ const HomePage: React.FC = () => {
 
   useEffect(() => stopMarketReviewPolling, [stopMarketReviewPolling]);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
+  const [emptyWatchlistStockCode, setEmptyWatchlistStockCode] = useState<string | null>(null);
 
   const {
     query,
@@ -672,9 +673,26 @@ const HomePage: React.FC = () => {
 
   const handleHistoryItemClick = useCallback((recordId: number) => {
     clearMarketReviewState();
+    setEmptyWatchlistStockCode(null);
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
   }, [clearMarketReviewState, selectHistoryItem]);
+
+  const handleEmptyWatchlistItemClick = useCallback((stockCode: string) => {
+    clearMarketReviewState();
+    setEmptyWatchlistStockCode(stockCode);
+    setSidebarOpen(false);
+  }, [clearMarketReviewState]);
+
+  useEffect(() => {
+    if (
+      emptyWatchlistStockCode
+      && selectedReport?.meta.stockCode
+      && normalizeStockCode(selectedReport.meta.stockCode) === normalizeStockCode(emptyWatchlistStockCode)
+    ) {
+      setEmptyWatchlistStockCode(null);
+    }
+  }, [emptyWatchlistStockCode, selectedReport]);
 
   const [isDeletingStock, setIsDeletingStock] = useState(false);
   const handleDeleteStock = useCallback(async (stockCode: string) => {
@@ -1238,9 +1256,10 @@ const HomePage: React.FC = () => {
           watchlistAnalyzedTodayCount={watchlistAnalyzedTodayCount}
           historyItems={mergedStockBarItems}
           isLoadingHistory={isLoadingStockBar}
-          selectedStockCode={selectedReport?.meta.stockCode}
+          selectedStockCode={emptyWatchlistStockCode ?? selectedReport?.meta.stockCode}
           selectedRecordId={selectedReport?.meta.id}
           onHistoryItemClick={handleHistoryItemClick}
+          onEmptyWatchlistItemClick={handleEmptyWatchlistItemClick}
           onDeleteStock={handleDeleteStock}
           isDeleting={isDeletingStock}
           className="flex-1 overflow-hidden"
@@ -1252,6 +1271,7 @@ const HomePage: React.FC = () => {
       batchAnalyzeStatus,
       handleAnalyzeWatchlist,
       handleDeleteStock,
+      handleEmptyWatchlistItemClick,
       handleHistoryItemClick,
       isBatchAnalyzingWatchlist,
       isDeletingStock,
@@ -1260,6 +1280,7 @@ const HomePage: React.FC = () => {
       todayAnalysisLoadFailed,
       mergedStockBarItems,
       openTaskRunFlow,
+      emptyWatchlistStockCode,
       selectedReport?.meta.id,
       selectedReport?.meta.stockCode,
       sidebarWorkspaceTab,
@@ -1523,7 +1544,16 @@ const HomePage: React.FC = () => {
                 onDismiss={clearError}
               />
             ) : null}
-            {!marketReviewReport && isLoadingReport ? (
+            {emptyWatchlistStockCode ? (
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
+                  title={t('watchlist.noReportTitle', { code: emptyWatchlistStockCode })}
+                  description={t('watchlist.noReportDescription')}
+                  className="max-w-xl border-dashed"
+                  icon={<BarChart3 className="h-6 w-6" aria-hidden="true" />}
+                />
+              </div>
+            ) : !marketReviewReport && isLoadingReport ? (
               <div className="flex h-full flex-col items-center justify-center">
                 <DashboardStateBlock title={t('home.loadingReport')} loading />
               </div>

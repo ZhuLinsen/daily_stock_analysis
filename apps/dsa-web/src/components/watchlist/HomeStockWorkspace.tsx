@@ -63,6 +63,7 @@ interface HomeStockWorkspaceProps {
   selectedStockCode?: string;
   selectedRecordId?: number;
   onHistoryItemClick: (recordId: number) => void;
+  onEmptyWatchlistItemClick: (stockCode: string) => void;
   onDeleteStock?: (stockCode: string) => Promise<void> | void;
   isDeleting?: boolean;
   className?: string;
@@ -112,9 +113,11 @@ const ScoreBadge: React.FC<{ item?: StockBarItem }> = ({ item }) => {
 const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onClick: (recordId: number) => void;
+  onEmptyClick: (stockCode: string) => void;
   onRemove: (code: string) => Promise<void>;
   disabled: boolean;
-}> = ({ row, onClick, onRemove, disabled }) => {
+  selected: boolean;
+}> = ({ row, onClick, onEmptyClick, onRemove, disabled, selected }) => {
   const { t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const item = row.latestItem;
@@ -122,9 +125,15 @@ const WatchlistRowItem: React.FC<{
 
   return (
     <div
-      className={`home-subpanel grid min-w-0 gap-1.5 px-2.5 py-2 ${item?.id !== undefined ? 'cursor-pointer' : ''}`}
+      className={`home-subpanel grid min-w-0 cursor-pointer gap-1.5 px-2.5 py-2 ${
+        selected ? 'border-primary/60 bg-primary/10 shadow-glow-cyan' : ''
+      }`}
       onClick={() => {
-        if (item?.id !== undefined) onClick(item.id);
+        if (item?.id !== undefined) {
+          onClick(item.id);
+          return;
+        }
+        onEmptyClick(row.code);
       }}
     >
       <div className="flex min-w-0 items-center justify-between gap-2">
@@ -232,6 +241,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   selectedStockCode,
   selectedRecordId,
   onHistoryItemClick,
+  onEmptyWatchlistItemClick,
   onDeleteStock,
   isDeleting = false,
   className = '',
@@ -445,8 +455,12 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                   key={row.code}
                   row={row}
                   onClick={onHistoryItemClick}
+                  onEmptyClick={onEmptyWatchlistItemClick}
                   onRemove={onRemoveFromWatchlist}
                   disabled={watchlistActioning}
+                  selected={row.latestItem?.id !== undefined
+                    ? row.latestItem.id === selectedRecordId
+                    : row.code.trim().toLowerCase() === selectedStockCode?.trim().toLowerCase()}
                 />
               ))}
             </div>
