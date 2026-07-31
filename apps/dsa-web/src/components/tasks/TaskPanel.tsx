@@ -1,10 +1,13 @@
 import type React from 'react';
-import { ChevronDown, RefreshCw, Workflow } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, ChevronUp, RefreshCw, Workflow } from 'lucide-react';
 import { Badge, Button, Card, StatusDot, Tooltip } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 import { getRequestedPhaseLabel } from '../../utils/marketPhase';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+
+const TASK_PANEL_EXPANDED_STORAGE_KEY = 'dsa.taskPanel.expanded';
 
 /**
  * 任务项组件属性
@@ -172,6 +175,13 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   onOpenRunFlow,
 }) => {
   const { t } = useUiLanguage();
+  const [isExpanded, setIsExpanded] = useState(() => {
+    try {
+      return sessionStorage.getItem(TASK_PANEL_EXPANDED_STORAGE_KEY) !== 'false';
+    } catch {
+      return true;
+    }
+  });
   // 筛选活跃任务（pending / processing / cancel requested）
   const activeTasks = tasks.filter(
     (t) => t.status === 'pending' || t.status === 'processing' || t.status === 'cancel_requested'
@@ -184,6 +194,23 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 
   const pendingCount = activeTasks.filter((t) => t.status === 'pending').length;
   const processingCount = activeTasks.filter((t) => t.status === 'processing').length;
+  const cancelRequestedCount = activeTasks.filter((t) => t.status === 'cancel_requested').length;
+  const overallProgress = Math.round(
+    activeTasks.reduce((total, task) => total + Math.max(0, Math.min(100, task.progress || 0)), 0)
+      / activeTasks.length,
+  );
+
+  const handleExpandedChange = () => {
+    setIsExpanded((current) => {
+      const next = !current;
+      try {
+        sessionStorage.setItem(TASK_PANEL_EXPANDED_STORAGE_KEY, String(next));
+      } catch {
+        // Storage may be unavailable; local component state still keeps the interaction usable.
+      }
+      return next;
+    });
+  };
 
   return (
     <Card
@@ -201,31 +228,56 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
           )}
           headingClassName="items-center"
           actions={(
-            <div className="flex items-center gap-2 text-xs text-muted-text">
-              {processingCount > 0 && (
-                <span className="flex items-center gap-1">
-                  <StatusDot tone="info" pulse className="h-1.5 w-1.5" aria-label="进行中任务" />
-                  {t('taskPanel.processingTasks', { count: processingCount })}
-                </span>
-              )}
-              {pendingCount > 0 ? (
-                <span className="flex items-center gap-1">
-                  <StatusDot tone="neutral" className="h-1.5 w-1.5" aria-label="等待中任务" />
-                  {t('taskPanel.pendingTasks', { count: pendingCount })}
-                </span>
+            <div className="flex items-center gap-1.5">
+              {isExpanded ? (
+                <div className="hidden items-center gap-2 text-xs text-muted-text sm:flex">
+                  {processingCount > 0 ? <span>{t('taskPanel.processingTasks', { count: processingCount })}</span> : null}
+                  {pendingCount > 0 ? <span>{t('taskPanel.pendingTasks', { count: pendingCount })}</span> : null}
+                </div>
               ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xsm"
+                className="h-8 w-8 px-0"
+                aria-expanded={isExpanded}
+                aria-label={isExpanded ? t('taskPanel.collapse') : t('taskPanel.expand')}
+                onClick={handleExpandedChange}
+              >
+                {isExpanded
+                  ? <ChevronUp className="h-4 w-4" aria-hidden="true" />
+                  : <ChevronDown className="h-4 w-4" aria-hidden="true" />}
+              </Button>
             </div>
           )}
         />
       </div>
 
-      <div className="max-h-64 overflow-y-auto p-2">
-        <div className="space-y-2">
-          {activeTasks.map((task) => (
-            <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
-          ))}
+      {isExpanded ? (
+        <div className="max-h-64 overflow-y-auto p-2">
+          <div className="space-y-2">
+            {activeTasks.map((task) => (
+              <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
+            ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="flex min-w-0 items-center gap-3 px-3 py-2 text-xs text-muted-text" data-testid="task-panel-collapsed-summary">
+          <span className="flex shrink-0 items-center gap-1">
+            <StatusDot tone="info" pulse={processingCount > 0} className="h-1.5 w-1.5" />
+            {t('taskPanel.processingTasks', { count: processingCount })}
+          </span>
+          <span className="shrink-0">{t('taskPanel.pendingTasks', { count: pendingCount })}</span>
+          {cancelRequestedCount > 0 ? (
+            <span className="min-w-0 truncate text-warning">
+              {t('taskPanel.cancelRequestedTasks', { count: cancelRequestedCount })}
+            </span>
+          ) : null}
+          <span className="ml-auto shrink-0 tabular-nums">
+            {t('taskPanel.overallProgress', { progress: overallProgress })}
+          </span>
+        </div>
+      )}
     </Card>
   );
 };

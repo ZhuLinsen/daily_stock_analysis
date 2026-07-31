@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TaskPanel } from '../TaskPanel';
 import type { TaskInfo } from '../../../types/analysis';
 
@@ -15,6 +15,10 @@ const baseTask: TaskInfo = {
 };
 
 describe('TaskPanel', () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+  });
+
   it('renders requested analysis phase badges for active tasks', () => {
     render(
       <TaskPanel
@@ -116,6 +120,38 @@ describe('TaskPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看 贵州茅台 运行流' }));
 
     expect(onOpenRunFlow).toHaveBeenCalledWith(baseTask);
+  });
+
+  it('collapses to a task summary and keeps the state for the page session', () => {
+    const tasks: TaskInfo[] = [
+      baseTask,
+      {
+        ...baseTask,
+        taskId: 'task-2',
+        stockCode: 'AAPL',
+        stockName: 'Apple',
+        status: 'pending',
+        progress: 0,
+      },
+    ];
+    const { unmount } = render(<TaskPanel tasks={tasks} />);
+
+    const collapseButton = screen.getByRole('button', { name: '折叠分析任务' });
+    expect(collapseButton).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(collapseButton);
+
+    expect(screen.queryByTestId('task-panel-item')).not.toBeInTheDocument();
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 进行中');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('1 等待中');
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toHaveTextContent('总体 20%');
+    expect(screen.getByRole('button', { name: '展开分析任务' })).toHaveAttribute('aria-expanded', 'false');
+
+    unmount();
+    render(<TaskPanel tasks={tasks} />);
+
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '展开分析任务' }));
+    expect(screen.getAllByTestId('task-panel-item')).toHaveLength(2);
   });
 
   it('keeps cancel-requested tasks visible without rendering them as failed', () => {
