@@ -165,4 +165,110 @@ describe('TaskPanel', () => {
 
     expect(container).toBeEmptyDOMElement();
   });
+
+  it('collapses active task list when toggle is clicked and persists to localStorage', () => {
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            stockCode: '600519',
+            stockName: '贵州茅台',
+          },
+          {
+            ...baseTask,
+            taskId: 'task-2',
+            stockCode: 'AAPL',
+            stockName: 'Apple',
+            status: 'pending',
+          },
+        ]}
+      />,
+    );
+
+    // 折叠按钮存在 + aria-expanded=true（展开态）
+    const toggle = screen.getByTestId('task-panel-collapse-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    // 任务卡可见，折叠摘要不可见
+    expect(screen.getByText('贵州茅台')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-panel-collapsed-summary')).not.toBeInTheDocument();
+
+    // 点击折叠
+    fireEvent.click(toggle);
+
+    // 折叠态：摘要可见，任务卡不可见
+    const summary = screen.getByTestId('task-panel-collapsed-summary');
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // localStorage 在 useEffect 写入，新增 key=dsa.taskPanel.collapsed, value='1'
+    expect(localStorage.getItem('dsa.taskPanel.collapsed')).toBe('1');
+
+    // 点击摘要恢复展开
+    fireEvent.click(summary);
+    expect(screen.getByText('贵州茅台')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-panel-collapsed-summary')).not.toBeInTheDocument();
+    expect(localStorage.getItem('dsa.taskPanel.collapsed')).toBe('0');
+
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+  });
+
+  it('restores collapsed state from localStorage on mount', () => {
+    localStorage.setItem('dsa.taskPanel.collapsed', '1');
+
+    render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+          },
+        ]}
+      />,
+    );
+
+    // 初始即折叠：摘要可见，任务卡名不可见
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toBeInTheDocument();
+    expect(screen.queryByText('贵州茅台')).not.toBeInTheDocument();
+
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+  });
+
+  it('keeps collapsed state stable across re-renders from parent (issue #2115 requirement)', () => {
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+
+    const { rerender } = render(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            stockName: '贵州茅台',
+          },
+        ]}
+      />,
+    );
+
+    // 折叠
+    fireEvent.click(screen.getByTestId('task-panel-collapse-toggle'));
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toBeInTheDocument();
+
+    // 父组件触发重渲染（同样 tasks prop 数组新引用）
+    rerender(
+      <TaskPanel
+        tasks={[
+          {
+            ...baseTask,
+            stockName: '贵州茅台',
+          },
+        ]}
+      />,
+    );
+
+    // 折叠态保留：摘要仍可见
+    expect(screen.getByTestId('task-panel-collapsed-summary')).toBeInTheDocument();
+
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+  });
 });

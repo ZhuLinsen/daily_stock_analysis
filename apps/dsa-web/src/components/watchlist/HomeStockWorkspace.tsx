@@ -64,6 +64,14 @@ interface HomeStockWorkspaceProps {
   onHistoryItemClick: (recordId: number) => void;
   onDeleteStock?: (stockCode: string) => Promise<void> | void;
   isDeleting?: boolean;
+  /**
+   * 自选股行点击但无历史记录时的回调（issue #2115）。
+   *
+   * 默认 noop；HomePage 可以接入 toast / 浮层提示用户先发起分析。
+   * 显式 onNoHistoryHint 而不是在组件内部硬编码 toast，避免 watchlist
+   * 组件直接依赖 toast 系统，保持组件层次清晰。
+   */
+  onNoHistoryHint?: (code: string) => void;
   className?: string;
 }
 
@@ -112,14 +120,40 @@ const WatchlistRowItem: React.FC<{
   row: HomeWatchlistRow;
   onRemove: (code: string) => Promise<void>;
   disabled: boolean;
-}> = ({ row, onRemove, disabled }) => {
+  onItemClick: (recordId: number) => void;
+  onNoHistoryHint: (code: string) => void;
+}> = ({ row, onRemove, disabled, onItemClick, onNoHistoryHint }) => {
   const { t } = useUiLanguage();
   const taskLabel = getTaskStatusLabel(row.activeTask, t);
   const item = row.latestItem;
   const stockName = item?.stockName || row.code;
+  // issue #2115: 键盘可达性 + 阻止删除按钮点击冒泡到行点击。
+  // 有 latestItem.id 时 click/Enter/Space 打开详情；无历史时给空状态提示。
+  const hasHistory = typeof item?.id === 'number';
+  const handleClick = () => {
+    if (hasHistory && item?.id !== undefined) {
+      onItemClick(item.id);
+    } else {
+      onNoHistoryHint(row.code);
+    }
+  };
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleClick();
+    }
+  };
 
   return (
-    <div className="home-subpanel grid min-w-0 gap-2 px-3 py-2.5">
+    <div
+      className="home-subpanel grid min-w-0 gap-2 px-3 py-2.5"
+      role="button"
+      tabIndex={0}
+      data-testid="watchlist-row-item"
+      aria-label={hasHistory ? t('watchlist.openItemAria', { code: row.code }) : t('watchlist.noHistoryAria', { code: row.code })}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+    >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2">
@@ -155,7 +189,11 @@ const WatchlistRowItem: React.FC<{
             className="h-7 w-7 px-0"
             disabled={disabled}
             aria-label={t('watchlist.removeAria', { code: row.code })}
-            onClick={() => void onRemove(row.code)}
+            onClick={(event) => {
+              // 阻止冒泡到行 click 触发详情打开（issue #2115）
+              event.stopPropagation();
+              void onRemove(row.code);
+            }}
           >
             <Trash2 className="h-3.5 w-3.5 text-danger" aria-hidden="true" />
           </Button>
@@ -221,6 +259,7 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
   onHistoryItemClick,
   onDeleteStock,
   isDeleting = false,
+  onNoHistoryHint,
   className = '',
 }) => {
   const { t } = useUiLanguage();
@@ -418,6 +457,8 @@ export const HomeStockWorkspace: React.FC<HomeStockWorkspaceProps> = ({
                   row={row}
                   onRemove={onRemoveFromWatchlist}
                   disabled={watchlistActioning}
+                  onItemClick={onHistoryItemClick}
+                  onNoHistoryHint={onNoHistoryHint ?? (() => { /* noop default */ })}
                 />
               ))}
             </div>

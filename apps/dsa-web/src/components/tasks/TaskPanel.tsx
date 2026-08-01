@@ -1,10 +1,43 @@
 import type React from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, RefreshCw, Workflow } from 'lucide-react';
 import { Badge, Button, Card, StatusDot, Tooltip } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 import { getRequestedPhaseLabel } from '../../utils/marketPhase';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
+
+/**
+ * 折叠状态 localStorage key。
+ *
+ * 折叠状态在 issue #2115 中是「稳定的本地 UI state」需求：用户希望任务
+ * 面板可以折叠为一行摘要，刷新页面后保留偏好。仓库没有现成的 useLocalStorage
+ * 抽象（参考 utils/uiLanguage.ts 的 getUiLanguageStorage 模式），这里就近用
+ * 同样的 try/catch 模式避免 SSR/隐私模式抛错。
+ */
+const TASK_PANEL_COLLAPSED_STORAGE_KEY = 'dsa.taskPanel.collapsed';
+
+function readCollapsedFromStorage(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(TASK_PANEL_COLLAPSED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeCollapsedToStorage(collapsed: boolean): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TASK_PANEL_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
+  } catch {
+    // Ignore storage failures; in-memory state still updates.
+  }
+}
 
 /**
  * 任务项组件属性
@@ -172,6 +205,19 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   onOpenRunFlow,
 }) => {
   const { t } = useUiLanguage();
+  // 折叠状态：稳定的本地 UI state，刷新后保留偏好（issue #2115）
+  // 初始值懒读取 localStorage，避免 SSR 不一致；useEffect 在挂载后再写回，
+  // 与 utils/uiLanguage.ts 的 persistUiLanguage 同 pattern。
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(readCollapsedFromStorage);
+
+  useEffect(() => {
+    writeCollapsedToStorage(isCollapsed);
+  }, [isCollapsed]);
+
+  const toggleCollapsed = useCallback(() => {
+    setIsCollapsed((prev) => !prev);
+  }, []);
+
   // 筛选活跃任务（pending / processing / cancel requested）
   const activeTasks = tasks.filter(
     (t) => t.status === 'pending' || t.status === 'processing' || t.status === 'cancel_requested'
@@ -184,12 +230,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 
   const pendingCount = activeTasks.filter((t) => t.status === 'pending').length;
   const processingCount = activeTasks.filter((t) => t.status === 'processing').length;
+  const totalCount = activeTasks.length;
+  const collapsedSummary = t('taskPanel.collapsedSummary', { count: totalCount });
+  const collapseToggleAriaLabel = isCollapsed
+    ? t('taskPanel.expandAria')
+    : t('taskPanel.collapseAria');
 
   return (
     <Card
       variant="bordered"
       padding="none"
-      className={`home-panel-card overflow-hidden ${className}`}
+      className={`home-panel-card overflow-hidden shrink-0 ${className}`}
     >
       <div className="border-b border-subtle px-3 py-3">
         <DashboardPanelHeader
@@ -214,18 +265,47 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                   {t('taskPanel.pendingTasks', { count: pendingCount })}
                 </span>
               ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xsm"
+                className="h-7 w-7 px-0"
+                onClick={toggleCollapsed}
+                aria-label={collapseToggleAriaLabel}
+                aria-expanded={!isCollapsed}
+                data-testid="task-panel-collapse-toggle"
+              >
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${isCollapsed ? '' : 'rotate-180'}`}
+                  aria-hidden="true"
+                />
+              </Button>
             </div>
           )}
         />
       </div>
 
-      <div className="max-h-64 overflow-y-auto p-2">
-        <div className="space-y-2">
-          {activeTasks.map((task) => (
-            <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
-          ))}
+      {isCollapsed ? (
+        <button
+          type="button"
+          className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 py-2.5 text-left text-xs text-muted-text hover:bg-white/4"
+          onClick={toggleCollapsed}
+          aria-label={collapseToggleAriaLabel}
+          aria-expanded={!isCollapsed}
+          data-testid="task-panel-collapsed-summary"
+        >
+          <span className="min-w-0 truncate">{collapsedSummary}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        </button>
+      ) : (
+        <div className="max-h-64 overflow-y-auto p-2">
+          <div className="space-y-2">
+            {activeTasks.map((task) => (
+              <TaskItem key={task.taskId} task={task} onOpenRunFlow={onOpenRunFlow} />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </Card>
   );
 };
