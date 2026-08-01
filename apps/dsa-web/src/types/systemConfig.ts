@@ -162,6 +162,20 @@ export interface TestGenerationBackendResponse {
   status: GenerationBackendStatus;
 }
 
+export interface AgentBackendStatusResponse {
+  backend: 'litellm' | 'codex_app_server' | string;
+  available: boolean;
+  experimental: boolean;
+  version?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+}
+
+export interface AgentBackendStatusPreviewRequest {
+  items?: SystemConfigUpdateItem[];
+  maskToken?: string;
+}
+
 export interface UpdateSystemConfigRequest {
   configVersion: string;
   maskToken?: string;
@@ -262,6 +276,7 @@ export interface TestLLMChannelResponse {
 export type NotificationTestChannel =
   | 'wechat'
   | 'feishu'
+  | 'dingtalk'
   | 'telegram'
   | 'email'
   | 'pushover'

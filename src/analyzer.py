@@ -76,6 +76,7 @@ from src.llm.provider_cache import (
     build_provider_cache_route_context,
     filter_prompt_cache_telemetry,
 )
+from src.llm.response_content import strip_leading_think_wrapper
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.report_language import (
@@ -101,6 +102,7 @@ from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
 from src.services.daily_market_context import format_daily_market_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
+from src.market_structure_prompt import format_market_structure_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,7 @@ def _legacy_audit_marker_specs(
     add("analysis_date", context.get("date"))
     add("market_phase", "## Market Phase Context" if report_language in ("en", "ko") else "## 市场阶段上下文")
     add("daily_market_context", "## Daily Market Context" if report_language in ("en", "ko") else "## 大盘环境摘要")
+    add("market_structure_context", "## Market Structure Context" if report_language in ("en", "ko") else "## 市场结构上下文")
     add("analysis_context_pack", analysis_context_pack_summary)
     add("quote", "## 📈 技术面数据")
     add("news_context", "## 📰 舆情情报" if news_context else None)
@@ -1733,6 +1736,7 @@ class AnalysisResult:
 
     # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
     fundamental_context: Optional[Dict[str, Any]] = None
+    market_structure_context: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -1772,6 +1776,7 @@ class AnalysisResult:
             'current_price': self.current_price,
             'change_pct': self.change_pct,
             'model_used': self.model_used,
+            'market_structure_context': self.market_structure_context,
         }
 
     def get_core_conclusion(self) -> str:
@@ -2805,8 +2810,14 @@ class GeminiAnalyzer:
             return obj.get(key)
         return getattr(obj, key, None)
 
-    def _extract_text_blocks(self, blocks: Any) -> str:
-        """Extract text from OpenAI-compatible content block lists."""
+    def _extract_text_blocks(self, blocks: Any, *, strip: bool = True) -> str:
+        """Extract final-answer text from OpenAI-compatible content blocks.
+
+        Some reasoning models (including MiniMax) expose thinking and final
+        answer blocks in the same list.  Thinking blocks can also carry a
+        ``text`` field, so concatenating every block corrupts structured output
+        by prefixing the JSON answer with chain-of-thought text.
+        """
         if not blocks:
             return ""
 
@@ -2816,20 +2827,28 @@ class GeminiAnalyzer:
                 parts.append(block)
                 continue
 
+            block_type = ""
             text = None
             if isinstance(block, dict):
+                block_type = str(block.get("type") or "").strip().lower()
                 text = block.get("text")
                 if text is None:
                     text = block.get("content")
             else:
+                block_type = str(getattr(block, "type", "") or "").strip().lower()
                 text = getattr(block, "text", None)
                 if text is None:
                     text = getattr(block, "content", None)
 
+            # Keep untyped legacy blocks for compatibility, but typed blocks
+            # must explicitly represent final output text.
+            if block_type and block_type not in {"text", "output_text"}:
+                continue
             if isinstance(text, str) and text:
                 parts.append(text)
 
-        return "".join(parts).strip()
+        result = "".join(parts)
+        return result.strip() if strip else result
 
     def _extract_completion_text(self, response: Any) -> str:
         """Extract text from non-stream LiteLLM completion responses."""
@@ -2845,7 +2864,7 @@ class GeminiAnalyzer:
             content_blocks = self._get_response_field(message, "content_blocks")
         block_text = self._extract_text_blocks(content_blocks)
         if block_text:
-            return block_text
+            return strip_leading_think_wrapper(block_text)
 
         content = None
         if message is not None:
@@ -2854,9 +2873,9 @@ class GeminiAnalyzer:
             content = self._get_response_field(choice, "content")
 
         if isinstance(content, list):
-            return self._extract_text_blocks(content)
+            return strip_leading_think_wrapper(self._extract_text_blocks(content))
         if isinstance(content, str):
-            return content.strip()
+            return strip_leading_think_wrapper(content)
         return str(content).strip() if content is not None else ""
 
     def _extract_stream_text(self, chunk: Any) -> str:
@@ -2884,15 +2903,7 @@ class GeminiAnalyzer:
                 content = getattr(message, "content", None)
 
         if isinstance(content, list):
-            parts: List[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "".join(parts)
+            return self._extract_text_blocks(content, strip=False)
 
         return content if isinstance(content, str) else ""
 
@@ -2937,7 +2948,7 @@ class GeminiAnalyzer:
                 partial_received=chars_received > 0,
             ) from exc
 
-        response_text = "".join(chunks).strip()
+        response_text = strip_leading_think_wrapper("".join(chunks))
         if not response_text:
             raise _LiteLLMStreamError(
                 f"{model} stream returned empty response",
@@ -3745,6 +3756,12 @@ class GeminiAnalyzer:
         )
         if daily_market_context_section:
             prompt += daily_market_context_section
+        market_structure_section = format_market_structure_prompt_section(
+            context.get("market_structure_context"),
+            report_language=report_language,
+        )
+        if market_structure_section:
+            prompt += market_structure_section
         if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
             prompt += analysis_context_pack_summary
         prompt += f"""

@@ -9,6 +9,7 @@ import { alphasiftApi, notifyAlphaSiftConfigChanged, notifySystemConfigChanged }
 import { systemConfigApi } from '../api/systemConfig';
 import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/common';
 import {
+  AgentBackendStatusPanel,
   AuthSettingsCard,
   ChangePasswordCard,
   GenerationBackendStatusPanel,
@@ -24,7 +25,7 @@ import {
 } from '../components/settings';
 import { WEB_BUILD_INFO } from '../utils/constants';
 import { parseStockListValue } from '../utils/stockList';
-import { getCategoryDescription } from '../utils/systemConfigI18n';
+import { getCategoryDescription, getCategoryTitle } from '../utils/systemConfigI18n';
 import type {
   ConfigValidationIssue,
   SchedulerStatusResponse,
@@ -132,6 +133,14 @@ const GENERATION_BACKEND_STATUS_KEYS = new Set([
   'ANSPIRE_API_KEYS',
 ]);
 const LLM_CHANNEL_STATUS_KEY_PATTERN = /^LLM_[A-Z0-9_]+_(PROTOCOL|BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS|ENABLED)$/;
+const AGENT_BACKEND_STATUS_KEYS = new Set([
+  'AGENT_BACKEND',
+  'AGENT_GENERATION_BACKEND',
+  'AGENT_LITELLM_MODEL',
+  'AGENT_MODE',
+  'AGENT_ARCH',
+  'AGENT_ORCHESTRATOR_TIMEOUT_S',
+]);
 
 function isLlmChannelEditorDraftKey(key: string): boolean {
   const normalized = key.trim().toUpperCase();
@@ -916,6 +925,23 @@ const SettingsPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentChangedItemsFingerprint, llmChannelDraftItemsFingerprint],
   );
+  const agentBackendDraftItems = useMemo(
+    () => {
+      const merged = new Map(
+        generationBackendDraftItems.map((item) => [item.key.trim().toUpperCase(), item]),
+      );
+      for (const item of currentChangedItems) {
+        const key = item.key.trim().toUpperCase();
+        if (AGENT_BACKEND_STATUS_KEYS.has(key)) {
+          merged.set(key, item);
+        }
+      }
+      return Array.from(merged.values());
+    },
+    // The fingerprint changes only when the draft content changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentChangedItemsFingerprint, generationBackendDraftItems],
+  );
   const handleLlmChannelDraftItemsChange = useCallback((items: Array<{ key: string; value: string }>) => {
     setLlmChannelDraftItems(items);
   }, []);
@@ -946,6 +972,13 @@ const SettingsPage: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const requestedCategory = new URLSearchParams(window.location.search).get('category');
+    if (requestedCategory && categories.some((category) => category.category === requestedCategory)) {
+      setActiveCategory(requestedCategory);
+    }
+  }, [categories, setActiveCategory]);
 
   useEffect(() => {
     void refreshSetupStatus();
@@ -1073,7 +1106,7 @@ const SettingsPage: React.FC = () => {
   const DATA_SOURCE_HIDDEN_KEYS = new Set([
     'ALPHASIFT_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set<string>();
+  const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
   const activeItems =
     activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
@@ -1365,24 +1398,46 @@ const SettingsPage: React.FC = () => {
       ? <>Check and provide the desktop log <code>desktop.log</code>, plus the release version, Windows version, and trigger path.</>
       : <>请查看并提供桌面端日志 <code>desktop.log</code>，同时补充 release 版本、Windows 版本和触发入口。</>
     : t('settings.diagnosticHintWeb');
+  const activeCategoryTitle = getCategoryTitle(activeCategory as SystemConfigCategory, t('settings.activePanelTitle'), uiLanguage);
+  const activeCategoryDescription = getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage);
+  const selectedAgentBackend = (rawActiveItemMap.get('AGENT_BACKEND') || 'auto').trim().toLowerCase();
+  const selectedAgentArch = (rawActiveItemMap.get('AGENT_ARCH') || 'single').trim().toLowerCase();
+  const hasCodexArchitectureConflict = selectedAgentBackend === 'codex_app_server' && selectedAgentArch !== 'single';
+  const codexArchitectureIssue: ConfigValidationIssue = {
+    key: 'AGENT_ARCH',
+    code: 'unsupported_agent_arch',
+    message: t('settings.agentBackendSingleOnly'),
+    severity: 'error',
+    expected: 'single',
+    actual: selectedAgentArch,
+  };
   const activeConfigPanel = hasActiveConfigItems ? (
     <SettingsSectionCard
-      title={t('settings.activePanelTitle')}
-      description={getCategoryDescription(activeCategory as SystemConfigCategory, '', uiLanguage) || t('settings.activePanelDescription')}
+      title={activeCategoryTitle}
+      description={activeCategoryDescription || t('settings.activePanelDescription')}
     >
-      {visibleActiveItems.map((item) => (
-        <SettingsField
-          key={item.key}
-          item={item}
-          value={item.value}
-          disabled={isSaving}
-          onChange={setDraftValue}
-          issues={issueByKey[item.key] || []}
-        />
-      ))}
+      {visibleActiveItems.length ? (
+        <div className="divide-y divide-[var(--settings-border-soft)] overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)]">
+          {visibleActiveItems.map((item) => {
+            const fieldIssues = item.key === 'AGENT_ARCH' && hasCodexArchitectureConflict
+              ? [...(issueByKey[item.key] || []), codexArchitectureIssue]
+              : issueByKey[item.key] || [];
+            return (
+              <SettingsField
+                key={item.key}
+                item={item}
+                value={item.value}
+                disabled={isSaving}
+                onChange={setDraftValue}
+                issues={fieldIssues}
+              />
+            );
+          })}
+        </div>
+      ) : null}
       {promptCacheAdvancedItems.length ? (
-        <details className="group/prompt-cache rounded-[1.15rem] border border-[var(--settings-border)] bg-[var(--settings-surface)] p-4 shadow-soft-card transition-[background-color,border-color,box-shadow] duration-200 hover:border-[var(--settings-border-strong)] hover:bg-[var(--settings-surface-hover)]">
-          <summary className="flex cursor-pointer list-none items-start justify-between gap-3 [&::-webkit-details-marker]:hidden">
+        <details className="group/prompt-cache overflow-hidden rounded-lg border border-[var(--settings-border)] bg-[var(--settings-surface)] transition-colors duration-200 hover:bg-[var(--settings-surface-hover)]">
+          <summary className="flex cursor-pointer list-none items-start justify-between gap-3 px-4 py-4 [&::-webkit-details-marker]:hidden">
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-semibold text-foreground">
                 {t('settings.promptCacheAdvancedTitle')}
@@ -1393,7 +1448,7 @@ const SettingsPage: React.FC = () => {
             </div>
             <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-text transition-transform group-open/prompt-cache:rotate-180" aria-hidden="true" />
           </summary>
-          <div className="mt-4 space-y-4">
+          <div className="divide-y divide-[var(--settings-border-soft)] border-t border-[var(--settings-border-soft)]">
             {promptCacheAdvancedItems.map((item) => (
               <SettingsField
                 key={item.key}
@@ -1418,11 +1473,11 @@ const SettingsPage: React.FC = () => {
 
   return (
     <div className="settings-page min-h-full px-4 pb-6 pt-4 md:px-6">
-      <div className="mb-5 rounded-[1.5rem] border settings-border bg-card/94 px-5 py-5 shadow-soft-card-strong backdrop-blur-sm">
+      <div className="mb-4 rounded-lg border settings-border bg-card/90 px-4 py-4 shadow-soft-card backdrop-blur-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight text-foreground">{t('settings.pageTitle')}</h1>
-            <p className="text-xs leading-6 text-muted-text">
+            <p className="max-w-3xl text-xs leading-5 text-muted-text sm:text-sm sm:leading-6">
               {t('settings.pageDescription')}
             </p>
           </div>
@@ -1431,25 +1486,31 @@ const SettingsPage: React.FC = () => {
             <Button
               type="button"
               variant="settings-secondary"
+              size="sm"
+              className="px-2.5"
               onClick={resetDraft}
               disabled={isLoading || isSaving}
             >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
               {t('settings.reset')}
             </Button>
-              <Button
-                type="button"
-                variant="settings-primary"
-                onClick={() => void handleSaveConfig()}
-                disabled={!effectiveHasDirty || isSaving || isLoading}
-                isLoading={isSaving}
-                loadingText={t('settings.saving')}
-              >
-                {isSaving
-                  ? t('settings.saving')
-                  : effectiveDirtyCount
-                    ? t('settings.saveConfigWithCount', { count: effectiveDirtyCount })
-                    : t('settings.saveConfig')}
-              </Button>
+            <Button
+              type="button"
+              variant="settings-primary"
+              size="sm"
+              className="px-2.5"
+              onClick={() => void handleSaveConfig()}
+              disabled={!effectiveHasDirty || isSaving || isLoading}
+              isLoading={isSaving}
+              loadingText={t('settings.saving')}
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              {isSaving
+                ? t('settings.saving')
+                : effectiveDirtyCount
+                  ? t('settings.saveConfigWithCount', { count: effectiveDirtyCount })
+                  : t('settings.saveConfig')}
+            </Button>
           </div>
         </div>
 
@@ -1475,7 +1536,7 @@ const SettingsPage: React.FC = () => {
       {isLoading ? (
         <SettingsLoading />
       ) : (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px_1fr]">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <SettingsCategoryNav
               categories={categories}
@@ -1583,10 +1644,10 @@ const SettingsPage: React.FC = () => {
                   </div>
                   <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-text">
-                      {t('settings.versionBuildId')}
+                      {t('settings.versionRevision')}
                     </p>
                     <p className="mt-2 break-all font-mono text-sm text-foreground">
-                      {WEB_BUILD_INFO.buildId}
+                      {WEB_BUILD_INFO.revision}
                     </p>
                   </div>
                   <div className="rounded-2xl border settings-border bg-background/40 px-4 py-3">
@@ -1777,6 +1838,28 @@ const SettingsPage: React.FC = () => {
                   maskToken={maskToken}
                   disabled={isSaving || isLoading}
                 />
+              </SettingsPanelErrorBoundary>
+            ) : null}
+            {activeCategory === 'agent' ? (
+              <SettingsPanelErrorBoundary
+                title={t('settings.agentBackendStatus')}
+                resetKey={`agent-backend:${configVersion}`}
+                diagnosticHint={settingsPanelDiagnosticHint}
+              >
+                <SettingsSectionCard
+                  title={t('settings.agentBackendSectionTitle')}
+                  description={t('settings.agentBackendSectionDescription')}
+                >
+                  <AgentBackendStatusPanel
+                    items={agentBackendDraftItems}
+                    maskToken={maskToken}
+                    selectedBackend={selectedAgentBackend}
+                    agentArch={selectedAgentArch}
+                    disabled={isSaving || isLoading}
+                    onUseSingleAgent={() => setDraftValue('AGENT_ARCH', 'single')}
+                    onEnableAgentMode={() => setDraftValue('AGENT_MODE', 'true')}
+                  />
+                </SettingsSectionCard>
               </SettingsPanelErrorBoundary>
             ) : null}
             {shouldGuardActiveConfigPanel && hasActiveConfigItems ? (

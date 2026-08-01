@@ -34,6 +34,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     UniqueConstraint,
+    CheckConstraint,
     Text,
     text,
     select,
@@ -57,6 +58,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
+from src.schemas.decision_profile import extract_legacy_decision_profile
 from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
@@ -993,6 +995,7 @@ class DecisionSignalRecord(Base):
     source_agent = Column(String(64))
     source_report_id = Column(Integer, index=True)
     trace_id = Column(String(64), index=True)
+    decision_profile = Column(String(16), index=True)
     market_phase = Column(String(24), index=True)
     trigger_source = Column(String(64), nullable=False, index=True)
     action = Column(String(16), nullable=False, index=True)
@@ -1040,6 +1043,35 @@ class DecisionSignalRecord(Base):
             'action',
             'horizon',
             'market_phase',
+        ),
+        Index(
+            'ix_decision_signal_report_type_market_stock_profile_action_horizon_phase',
+            'source_report_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'decision_profile',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
+        Index(
+            'ix_decision_signal_trace_type_market_stock_profile_action_horizon_phase',
+            'trace_id',
+            'source_type',
+            'market',
+            'stock_code',
+            'decision_profile',
+            'action',
+            'horizon',
+            'market_phase',
+        ),
+        Index(
+            'ix_decision_signal_market_stock_profile_created',
+            'market',
+            'stock_code',
+            'decision_profile',
+            'created_at',
         ),
     )
 
@@ -1098,6 +1130,127 @@ class DecisionSignalFeedbackRecord(Base):
     source = Column(String(16), nullable=False, default='api', index=True)
     created_at = Column(DateTime, default=utc_naive_now, index=True)
     updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+
+class SkillOpinionSampleRecord(Base):
+    """Immutable, low-sensitivity skill opinion sample for Issue #1904 P2 PR1."""
+
+    __tablename__ = 'skill_opinion_samples'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    analysis_history_id = Column(
+        Integer,
+        ForeignKey('analysis_history.id'),
+        nullable=False,
+        index=True,
+    )
+    stock_code = Column(String(16), nullable=False, index=True)
+    skill_id = Column(String(128), nullable=False, index=True)
+    skill_version = Column(String(64), index=True)
+    signal = Column(String(16), nullable=False, index=True)
+    confidence = Column(Float, nullable=False)
+    horizon = Column(String(16), index=True)
+    data_quality_level = Column(String(24), index=True)
+    opinion_created_at = Column(DateTime, index=True)
+    sample_schema_version = Column(String(32), nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'analysis_history_id',
+            'skill_id',
+            'sample_schema_version',
+            name='uix_skill_opinion_sample_key',
+        ),
+        Index(
+            'ix_skill_opinion_sample_skill_horizon_created',
+            'skill_id',
+            'horizon',
+            'created_at',
+        ),
+        Index(
+            'ix_skill_opinion_sample_stock_created',
+            'stock_code',
+            'created_at',
+        ),
+    )
+
+
+class SkillOpinionOutcomeRecord(Base):
+    """Forward outcome for one immutable skill opinion sample and horizon."""
+
+    __tablename__ = 'skill_opinion_outcomes'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_opinion_sample_id = Column(
+        Integer,
+        ForeignKey('skill_opinion_samples.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    horizon = Column(String(16), nullable=False, index=True)
+    engine_version = Column(String(32), nullable=False, index=True)
+    eval_status = Column(String(24), nullable=False, default='pending', index=True)
+    outcome = Column(String(16), index=True)
+    direction_correct = Column(Boolean)
+    unable_reason = Column(String(64), index=True)
+    analysis_date = Column(Date, index=True)
+    start_trade_date = Column(Date, index=True)
+    end_trade_date = Column(Date, index=True)
+    start_price = Column(Float)
+    end_close = Column(Float)
+    stock_return_pct = Column(Float)
+    directional_return_pct = Column(Float)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+    updated_at = Column(DateTime, default=utc_naive_now, onupdate=utc_naive_now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'skill_opinion_sample_id',
+            'horizon',
+            'engine_version',
+            name='uix_skill_opinion_outcome_key',
+        ),
+        CheckConstraint(
+            "horizon IN ('1d', '3d', '5d', '10d')",
+            name='ck_skill_opinion_outcome_horizon',
+        ),
+        CheckConstraint(
+            "eval_status IN ('pending', 'evaluated', 'observational', 'unable')",
+            name='ck_skill_opinion_outcome_eval_status',
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('hit', 'miss', 'observational')",
+            name='ck_skill_opinion_outcome_value',
+        ),
+        CheckConstraint(
+            "(eval_status IN ('pending', 'unable') "
+            "AND outcome IS NULL "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'observational' "
+            "AND outcome = 'observational' "
+            "AND direction_correct IS NULL "
+            "AND directional_return_pct IS NULL) "
+            "OR (eval_status = 'evaluated' "
+            "AND outcome IN ('hit', 'miss') "
+            "AND direction_correct IS NOT NULL "
+            "AND directional_return_pct IS NOT NULL)",
+            name='ck_skill_opinion_outcome_state_fields',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_candidate',
+            'engine_version',
+            'eval_status',
+            'updated_at',
+        ),
+        Index(
+            'ix_skill_opinion_outcome_horizon_status',
+            'engine_version',
+            'horizon',
+            'eval_status',
+        ),
+    )
 
 
 class _DatabaseManagerMeta(type):
@@ -1181,6 +1334,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 创建所有表
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
+            self._ensure_decision_signal_profile_schema()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1227,6 +1381,187 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_decision_signal_profile_schema(self) -> None:
+        """Add and backfill nullable decision_profile for existing SQLite DBs."""
+
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        if not inspector.has_table(DecisionSignalRecord.__tablename__):
+            return
+
+        try:
+            existing = {
+                column["name"]
+                for column in inspector.get_columns(DecisionSignalRecord.__tablename__)
+            }
+        except Exception as exc:
+            logger.error(
+                "[DecisionSignal] failed to inspect decision_profile column; "
+                "profile migration cannot continue safely: %s",
+                exc,
+            )
+            raise
+
+        if "decision_profile" not in existing:
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {DecisionSignalRecord.__tablename__} "
+                        "ADD COLUMN decision_profile VARCHAR(16)"
+                    )
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, "decision_profile"):
+                    raise
+
+        self._ensure_decision_signal_profile_indexes()
+        self._backfill_decision_signal_profile_from_metadata()
+
+    def _ensure_decision_signal_profile_indexes(self) -> None:
+        """Create profile-aware indexes without dropping legacy indexes."""
+
+        expected_indexes = {
+            "ix_decision_signals_decision_profile": ["decision_profile"],
+            "ix_decision_signal_market_stock_profile_created": [
+                "market", "stock_code", "decision_profile", "created_at",
+            ],
+            "ix_decision_signal_report_type_market_stock_profile_action_horizon_phase": [
+                "source_report_id", "source_type", "market", "stock_code",
+                "decision_profile", "action", "horizon", "market_phase",
+            ],
+            "ix_decision_signal_trace_type_market_stock_profile_action_horizon_phase": [
+                "trace_id", "source_type", "market", "stock_code",
+                "decision_profile", "action", "horizon", "market_phase",
+            ],
+        }
+        with self._engine.begin() as connection:
+            for index_name, columns in expected_indexes.items():
+                connection.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} "
+                    f"ON decision_signals ({', '.join(columns)})"
+                )
+
+        actual_indexes = {
+            index["name"]: index["column_names"]
+            for index in inspect(self._engine).get_indexes(
+                DecisionSignalRecord.__tablename__
+            )
+        }
+        for index_name, expected_columns in expected_indexes.items():
+            if actual_indexes.get(index_name) != expected_columns:
+                raise RuntimeError(
+                    "decision_profile index verification failed: "
+                    f"index={index_name} expected={expected_columns} "
+                    f"actual={actual_indexes.get(index_name)}"
+                )
+
+    def _backfill_decision_signal_profile_from_metadata(self) -> None:
+        stats = {
+            "candidate_count": 0,
+            "backfilled_count": 0,
+            "guard_skipped_count": 0,
+            "missing_metadata_count": 0,
+            "missing_profile_count": 0,
+            "invalid_json_count": 0,
+            "non_object_count": 0,
+            "invalid_profile_count": 0,
+            "skipped_existing_profile_count": 0,
+        }
+        with self._engine.begin() as connection:
+            stats["skipped_existing_profile_count"] = connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM decision_signals "
+                    "WHERE decision_profile IS NOT NULL"
+                )
+            ).scalar_one()
+            candidate_rows = [
+                (row["id"], row["metadata_json"])
+                for row in connection.execute(
+                    text(
+                        "SELECT id, metadata_json FROM decision_signals "
+                        "WHERE decision_profile IS NULL ORDER BY id"
+                    )
+                ).mappings()
+            ]
+            stats["candidate_count"] = len(candidate_rows)
+
+            for signal_id, metadata_json in candidate_rows:
+                if metadata_json is None:
+                    stats["missing_metadata_count"] += 1
+                    continue
+                try:
+                    metadata = json.loads(metadata_json)
+                except (TypeError, ValueError, RecursionError):
+                    stats["invalid_json_count"] += 1
+                    continue
+                if not isinstance(metadata, dict):
+                    stats["non_object_count"] += 1
+                    continue
+
+                raw_profile = metadata.get("decision_profile")
+                if raw_profile is None or (
+                    isinstance(raw_profile, str) and not raw_profile.strip()
+                ):
+                    stats["missing_profile_count"] += 1
+                    continue
+                profile = extract_legacy_decision_profile(metadata)
+                if profile is None:
+                    stats["invalid_profile_count"] += 1
+                    continue
+
+                result = connection.execute(
+                    text(
+                        "UPDATE decision_signals "
+                        "SET decision_profile = :decision_profile "
+                        "WHERE id = :signal_id AND decision_profile IS NULL"
+                    ),
+                    {"decision_profile": profile, "signal_id": signal_id},
+                )
+                if result.rowcount == 1:
+                    stats["backfilled_count"] += 1
+                elif result.rowcount == 0:
+                    stats["guard_skipped_count"] += 1
+                else:
+                    raise RuntimeError(
+                        "decision_profile backfill updated an unexpected number "
+                        f"of rows for signal_id={signal_id}: {result.rowcount}"
+                    )
+
+            classified_count = sum(
+                stats[key]
+                for key in (
+                    "backfilled_count",
+                    "guard_skipped_count",
+                    "missing_metadata_count",
+                    "missing_profile_count",
+                    "invalid_json_count",
+                    "non_object_count",
+                    "invalid_profile_count",
+                )
+            )
+            if classified_count != stats["candidate_count"]:
+                raise RuntimeError(
+                    "decision_profile migration stats did not classify every "
+                    f"candidate: candidates={stats['candidate_count']} "
+                    f"classified={classified_count}"
+                )
+        logger.info(
+            "[DecisionSignal] decision_profile migration stats: "
+            "candidate_count=%s backfilled_count=%s guard_skipped_count=%s "
+            "missing_metadata_count=%s missing_profile_count=%s "
+            "invalid_json_count=%s non_object_count=%s invalid_profile_count=%s "
+            "skipped_existing_profile_count=%s",
+            stats["candidate_count"],
+            stats["backfilled_count"],
+            stats["guard_skipped_count"],
+            stats["missing_metadata_count"],
+            stats["missing_profile_count"],
+            stats["invalid_json_count"],
+            stats["non_object_count"],
+            stats["invalid_profile_count"],
+            stats["skipped_existing_profile_count"],
+        )
 
     def _ensure_intelligence_items_unique_index(self) -> None:
         if not self._is_sqlite_engine:
@@ -2191,7 +2526,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         if not ids:
             return 0
 
-        with self.session_scope() as session:
+        def _write(session: Session) -> int:
             existing_ids = sorted(
                 session.execute(
                     select(AnalysisHistory.id).where(AnalysisHistory.id.in_(ids))
@@ -2227,10 +2562,35 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             session.execute(
                 delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(existing_ids))
             )
+            linked_skill_sample_ids = sorted(
+                session.execute(
+                    select(SkillOpinionSampleRecord.id).where(
+                        SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)
+                    )
+                ).scalars().all()
+            )
+            if linked_skill_sample_ids:
+                session.execute(
+                    delete(SkillOpinionOutcomeRecord).where(
+                        SkillOpinionOutcomeRecord.skill_opinion_sample_id.in_(
+                            linked_skill_sample_ids
+                        )
+                    )
+                )
+            session.execute(
+                delete(SkillOpinionSampleRecord).where(
+                    SkillOpinionSampleRecord.analysis_history_id.in_(existing_ids)
+                )
+            )
             result = session.execute(
                 delete(AnalysisHistory).where(AnalysisHistory.id.in_(existing_ids))
             )
             return result.rowcount or 0
+
+        return self._run_write_transaction(
+            "delete analysis history records",
+            _write,
+        )
 
     def get_distinct_stocks_from_history(
         self,

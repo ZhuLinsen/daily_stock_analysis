@@ -51,11 +51,13 @@ class TestAgentConfig(unittest.TestCase):
         self.assertFalse(config.agent_mode)
         self.assertEqual(config.agent_max_steps, AGENT_MAX_STEPS_DEFAULT)
         self.assertEqual(config.agent_skills, [])
+        self.assertEqual(config.agent_skill_concurrency, 3)
 
     @patch.dict(os.environ, {
         'AGENT_MODE': 'true',
         'AGENT_MAX_STEPS': '15',
         'AGENT_SKILLS': 'dragon_head,shrink_pullback,volume_breakout',
+        'AGENT_SKILL_CONCURRENCY': '4',
     }, clear=True)
     def test_agent_config_from_env(self):
         """Agent config should be loaded from environment."""
@@ -65,6 +67,15 @@ class TestAgentConfig(unittest.TestCase):
         self.assertTrue(config.agent_mode)
         self.assertEqual(config.agent_max_steps, 15)
         self.assertEqual(config.agent_skills, ['dragon_head', 'shrink_pullback', 'volume_breakout'])
+        self.assertEqual(config.agent_skill_concurrency, 4)
+
+    @patch.dict(os.environ, {'AGENT_SKILL_CONCURRENCY': '9'}, clear=True)
+    def test_agent_skill_concurrency_is_clamped(self):
+        """Agent skill concurrency should stay within the supported 1-4 range."""
+        from src.config import Config
+        Config._instance = None
+        config = Config._load_from_env()
+        self.assertEqual(config.agent_skill_concurrency, 4)
 
     @patch.dict(os.environ, {'AGENT_MODE': 'false'}, clear=True)
     def test_agent_mode_disabled(self):
@@ -820,6 +831,51 @@ class TestAgentResultConversion(unittest.TestCase):
 
         self.assertEqual(result.action, "hold")
         self.assertEqual(result.action_label, "持有")
+
+    def test_final_action_refresh_keeps_ambiguous_action_fail_closed(self):
+        """Pipeline refresh must not invent an action outside the shared resolver."""
+        pipeline = self._make_pipeline()
+
+        from src.analyzer import AnalysisResult
+        from src.enums import ReportType
+        from src.services.decision_signal_extractor import (
+            build_decision_signal_payload_from_report,
+        )
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=82,
+            trend_prediction="看多",
+            operation_advice="买盘增强，继续观察",
+            decision_type="buy",
+            action=None,
+        )
+
+        direct_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-direct",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+        pipeline._refresh_decision_action_for_final_result(
+            result,
+            report_type=ReportType.SIMPLE.value,
+            previous_operation_advice=result.operation_advice,
+        )
+        refreshed_payload = build_decision_signal_payload_from_report(
+            result,
+            trace_id="q-ambiguous-refreshed",
+            query_source="test",
+            report_type="simple",
+            profile_source="auto_default",
+        )
+
+        self.assertIsNone(result.action)
+        self.assertIsNone(result.action_label)
+        self.assertIsNone(direct_payload)
+        self.assertIsNone(refreshed_payload)
 
     def test_convert_invalid_dashboard_preserves_local_trend_result(self):
         """Invalid Agent dashboard should not erase already-computed trend data."""
@@ -1634,6 +1690,220 @@ class TestPipelineRouting(unittest.TestCase):
 class TestAnalyzeWithAgentStockName(unittest.TestCase):
     """Test stock-name handling in _analyze_with_agent."""
 
+    def test_analyze_with_agent_keeps_high_score_hold_action_consistent_across_outputs(self):
+        """A high-score hold may align to buy, and every public output must use that action."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 2044
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 80,
+                    "trend_prediction": "看多",
+                    "operation_advice": "持有",
+                    "decision_type": "hold",
+                    "analysis_summary": "高分但模型建议持有。",
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-review-hold-to-buy",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.action, "buy")
+            self.assertEqual(result.action_label, "买入")
+
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["pipeline_start_action"], "buy")
+            self.assertEqual(explanation["final_adjustments"], [])
+            self.assertEqual(explanation["final_action"], "buy")
+
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            self.assertEqual(saved_result.action, "buy")
+            self.assertEqual(
+                saved_result.dashboard["agent_disagreement_explanation"]["final_action"],
+                "buy",
+            )
+
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            signal_payload = build_decision_signal_payload_from_report(
+                signal_result,
+                source_report_id=2044,
+                trace_id="q-review-hold-to-buy",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], "buy")
+            self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
+
+    def test_analyze_with_agent_keeps_ambiguous_action_fail_closed_across_outputs(self):
+        """Ambiguous advice must not gain an action through Pipeline ordering."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "zh"
+            mock_config.return_value = mock_cfg
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 2044
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 82,
+                    "trend_prediction": "看多",
+                    "operation_advice": "买盘增强，继续观察",
+                    "decision_type": "buy",
+                    "analysis_summary": "方向偏多，但操作建议仍需观察。",
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.8,
+                        ),
+                    ),
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-review-ambiguous-action",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.decision_type, "buy")
+            self.assertIsNone(result.action)
+            self.assertIsNone(result.action_label)
+            self.assertNotIn("agent_disagreement_explanation", result.dashboard)
+
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            self.assertIsNone(saved_result.action)
+            self.assertNotIn("agent_disagreement_explanation", saved_result.dashboard)
+
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            signal_payload = build_decision_signal_payload_from_report(
+                signal_result,
+                source_report_id=2044,
+                trace_id="q-review-ambiguous-action",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNone(signal_payload)
+
     def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
         """Should use resolved stock name from dashboard for search and DB persistence."""
         with patch('src.core.pipeline.get_config') as mock_config, \
@@ -1744,6 +2014,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             from src.core.pipeline import StockAnalysisPipeline
             from src.agent.executor import AgentResult
+            from src.agent.risk_override import RiskOverrideApplication
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
             from src.enums import ReportType
             from src.stock_analyzer import TrendAnalysisResult, TrendStatus, BuySignal
             pipeline = StockAnalysisPipeline(config=mock_cfg)
@@ -1762,10 +2034,29 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                     },
                 },
                 provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="sell",
+                            confidence=0.8,
+                        ),
+                    ),
+                    risk_override_application=RiskOverrideApplication(
+                        evidence_present=False,
+                        override_enabled=True,
+                        trigger="none",
+                        applied=False,
+                        reason="no_risk_evidence",
+                        post_risk_signal="sell",
+                    ),
+                ),
             )
             mock_executor = MagicMock()
             mock_executor.run.return_value = agent_result
             mock_build_executor.return_value = mock_executor
+            pipeline.db.save_analysis_history.return_value = 1
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
 
             trend_result = TrendAnalysisResult(
                 code="002812",
@@ -1803,6 +2094,41 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertEqual(result.dashboard.get("decision_type"), "hold")
             self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
             self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertEqual(explanation["risk_control"]["post_risk_signal"], "sell")
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["final_action"], result.action)
+            self.assertEqual(
+                explanation["final_adjustments"],
+                [
+                    {
+                        "source": "structure_and_fundamentals",
+                        "from_action": "sell",
+                        "to_action": result.action,
+                    }
+                ],
+            )
+            saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
+            self.assertIs(saved_result, result)
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertIs(signal_result, result)
+            self.assertEqual(signal_result.action, explanation["final_action"])
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+            signal_payload = build_decision_signal_payload_from_report(
+                result,
+                source_report_id=1,
+                trace_id="q-agent-stability",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], explanation["final_action"])
+            self.assertEqual(signal_payload["action"], result.action)
 
     def test_analyze_with_agent_phase_integrity_fills_missing_phase_decision(self):
         """Agent weak integrity should enforce phase_decision when phase context exists."""
@@ -1908,6 +2234,145 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertEqual(phase_decision["watch_conditions"], [])
             self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
             self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
+
+    def test_analyze_with_agent_explains_daily_market_softening_before_risk(self):
+        """A partial result produced before risk must retain its Pipeline start signal."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.core.pipeline.stabilize_decision_with_structure'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.searxng_base_urls = []
+            mock_cfg.searxng_public_instances_enabled = False
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_cfg.report_language = "en"
+            mock_cfg.report_integrity_enabled = False
+            mock_config.return_value = mock_cfg
+
+            from datetime import date
+
+            from src.agent.executor import AgentResult
+            from src.agent.runtime_facts import AgentRuntimeFacts, BaseAgentOpinionFact
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.enums import ReportType
+            from src.services.daily_market_context import DailyMarketContext
+
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.search_service.is_available = False
+            pipeline.db.save_analysis_history.return_value = 1
+            pipeline._extract_decision_signal_after_history_save = MagicMock()
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "sentiment_score": 82,
+                    "trend_prediction": "bullish",
+                    "operation_advice": "Buy now.",
+                    "decision_type": "buy",
+                    "confidence_level": "high",
+                    "analysis_summary": "Strong stock signal.",
+                    "dashboard": {
+                        "core_conclusion": {
+                            "one_sentence": "Buy now and add aggressively.",
+                            "position_advice": {
+                                "no_position": "Buy now.",
+                                "has_position": "Add position.",
+                            },
+                        },
+                        "battle_plan": {
+                            "position_strategy": {
+                                "suggested_position": "Full position",
+                                "entry_plan": "Buy the breakout",
+                                "risk_control": "Add on pullback",
+                            }
+                        },
+                    },
+                },
+                provider="gemini",
+                runtime_facts=AgentRuntimeFacts(
+                    base_agent_opinions=(
+                        BaseAgentOpinionFact(
+                            agent="technical",
+                            signal="buy",
+                            confidence=0.82,
+                        ),
+                    ),
+                    risk_override_application=None,
+                ),
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            result = pipeline._analyze_with_agent(
+                code="AAPL",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-daily-final",
+                stock_name="Apple",
+                realtime_quote=None,
+                chip_data=None,
+                daily_market_context=DailyMarketContext(
+                    region="us",
+                    trade_date=date(2026, 7, 19),
+                    summary="High risk and risk-off; remain conservative.",
+                    risk_tags=["high_risk", "conservative"],
+                    source="test",
+                ),
+            )
+
+            self.assertIsNotNone(result)
+            explanation = result.dashboard["agent_disagreement_explanation"]
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(explanation["risk_control"]["reason"], "not_evaluated")
+            self.assertEqual(explanation["risk_control"]["post_risk_signal"], "buy")
+            self.assertNotIn("final_signal", explanation)
+            self.assertEqual(explanation["final_action"], result.action)
+            self.assertEqual(
+                explanation["final_adjustments"],
+                [
+                    {
+                        "source": "daily_market_context",
+                        "from_action": "buy",
+                        "to_action": result.action,
+                    }
+                ],
+            )
+            signal_result = (
+                pipeline._extract_decision_signal_after_history_save.call_args.kwargs["result"]
+            )
+            self.assertEqual(signal_result.action, explanation["final_action"])
+            from src.services.decision_signal_extractor import (
+                build_decision_signal_payload_from_report,
+            )
+            signal_payload = build_decision_signal_payload_from_report(
+                result,
+                source_report_id=1,
+                trace_id="q-agent-daily-final",
+                query_source="test",
+                report_type="simple",
+                profile_source="auto_default",
+            )
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], explanation["final_action"])
+            self.assertEqual(signal_payload["action"], result.action)
 
     def test_analyze_with_agent_preserves_chip_structure_when_prefetch_missing(self):
         """Agent tool chip metrics should not be cleared when prefetch chip_data is unavailable."""
@@ -2018,8 +2483,10 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_cfg.report_integrity_enabled = False
             mock_config.return_value = mock_cfg
 
+            from src.agent.runtime_facts import AgentRuntimeFacts, SkillOpinionFact
             from src.core.pipeline import StockAnalysisPipeline
             from src.enums import ReportType
+
             pipeline = StockAnalysisPipeline(config=mock_cfg)
             pipeline.search_service.is_available = False
             pipeline._ensure_agent_history = MagicMock()
@@ -2040,11 +2507,21 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             mock_executor.run.return_value = SimpleNamespace(
                 success=True,
                 provider="agent-provider",
+                runtime_facts=AgentRuntimeFacts(
+                    skill_opinions=(
+                        SkillOpinionFact(
+                            skill_id="alpha",
+                            signal="buy",
+                            confidence=0.7,
+                        ),
+                    ),
+                ),
                 dashboard={"stock_name": "科创芯片ETF"},
             )
             with patch('src.agent.factory.build_agent_executor', return_value=mock_executor):
                 mock_diagnostic_snapshot.return_value = {"trace_id": "trace-1391", "query_id": "q-1391"}
                 pipeline.db.save_analysis_history = MagicMock(return_value=1)
+                pipeline._persist_skill_opinion_samples_after_history_save = MagicMock()
 
                 result = pipeline._analyze_with_agent(
                     code="588200",
@@ -2061,6 +2538,20 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             self.assertIn("diagnostics", history_context)
             self.assertEqual(history_context["diagnostics"]["trace_id"], "trace-1391")
             self.assertEqual(history_context["stock_name"], "科创芯片ETF")
+            pipeline._persist_skill_opinion_samples_after_history_save.assert_called_once()
+            sample_kwargs = (
+                pipeline._persist_skill_opinion_samples_after_history_save.call_args.kwargs
+            )
+            self.assertIs(
+                sample_kwargs["runtime_facts"],
+                mock_executor.run.return_value.runtime_facts,
+            )
+            self.assertEqual(sample_kwargs["analysis_history_id"], 1)
+            self.assertEqual(sample_kwargs["stock_code"], "588200")
+            self.assertEqual(
+                sample_kwargs["analysis_context_pack_overview"]["data_quality"]["level"],
+                "poor",
+            )
 
 
 # ============================================================

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -96,6 +97,50 @@ def score_band_metadata(value: Any) -> dict[str, Any]:
         "canonical_action": band.action,
         "canonical_decision_type": band.decision_type,
     }
+
+
+def extract_decision_guardrail_reason(payload: Any) -> Optional[str]:
+    """Extract an applied score/action guardrail reason from a result payload."""
+
+    data = payload if isinstance(payload, Mapping) else {}
+    dashboard = data.get("dashboard") if isinstance(data.get("dashboard"), Mapping) else {}
+    calibration = (
+        dashboard.get("decision_score_calibration")
+        if isinstance(dashboard.get("decision_score_calibration"), Mapping)
+        else {}
+    )
+    stability = (
+        dashboard.get("decision_stability")
+        if isinstance(dashboard.get("decision_stability"), Mapping)
+        else {}
+    )
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
+
+    stability_applied = stability.get("applied")
+    include_stability_reason = stability_applied not in (False, 0, "0", "false", "False")
+    candidates = [
+        data.get("guardrail_reason"),
+        data.get("downgrade_reason"),
+        data.get("decision_score_guardrail_reason"),
+        metadata.get("guardrail_reason"),
+        metadata.get("downgrade_reason"),
+        calibration.get("guardrail_reason"),
+        calibration.get("downgrade_reason"),
+    ]
+    if include_stability_reason:
+        candidates.extend(
+            [
+                stability.get("guardrail_reason"),
+                stability.get("downgrade_reason"),
+                stability.get("reason"),
+            ]
+        )
+
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
 
 
 def score_action_conflicts_without_guardrail(

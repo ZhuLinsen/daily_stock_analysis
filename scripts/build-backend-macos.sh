@@ -47,6 +47,12 @@ log "Checking python-multipart availability..."
 log "Checking AlphaSift adapter availability..."
 "${PYTHON_BIN}" -c "import alphasift.dsa_adapter"
 
+log "Checking Futu SDK availability..."
+"${PYTHON_BIN}" -c "import futu"
+
+log "Checking orjson availability..."
+"${PYTHON_BIN}" -c "import orjson"
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
@@ -92,6 +98,7 @@ hidden_imports=(
   "src.services.alphasift_service"
   "alphasift"
   "alphasift.dsa_adapter"
+  "orjson"
   "uvicorn.logging"
   "uvicorn.loops"
   "uvicorn.loops.auto"
@@ -110,8 +117,9 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "alphasift")
+cmd+=("--collect-all" "futu")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"
@@ -120,27 +128,42 @@ popd >/dev/null
 
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
 
-log "Verifying packaged AlphaSift importability..."
 packaged_root="${ROOT_DIR}/dist/backend/stock_analysis"
 
+log "Removing invalid signatures before the packaged backend is executed..."
+bash "${SCRIPT_DIR}/macos-signature-audit.sh" normalize "${packaged_root}"
+
+log "Verifying packaged runtime imports..."
 packaged_entry="${packaged_root}/stock_analysis"
 if [[ ! -x "${packaged_entry}" ]]; then
   echo "ERROR: packaged backend entrypoint not found or not executable: ${packaged_entry}."
   exit 1
 fi
 
-# 先校验可执行文件可启动（不进入业务流程的参数），再检查冻结产物中是否携带 alphasift.
-if ! "${packaged_entry}" --help >/tmp/alphasift-packaged-help.log 2>&1; then
+# 先校验可执行文件可启动（不进入业务流程的参数），再检查冻结产物中的关键依赖。
+if ! "${packaged_entry}" --help >/tmp/dsa-packaged-help.log 2>&1; then
   echo "ERROR: packaged backend help startup check failed."
-  cat /tmp/alphasift-packaged-help.log
+  cat /tmp/dsa-packaged-help.log
   exit 1
 fi
 
-if DSA_PACKAGED_ALPHASIFT_IMPORT_PROBE=1 "${packaged_entry}" >/tmp/alphasift-packaged-import.log 2>&1; then
-  cat /tmp/alphasift-packaged-import.log
-else
-  echo "ERROR: packaged backend artifact cannot import alphasift.dsa_adapter."
-  cat /tmp/alphasift-packaged-import.log
+for module in alphasift.dsa_adapter futu orjson; do
+  if DSA_PACKAGED_IMPORT_PROBE="${module}" "${packaged_entry}" >/tmp/dsa-packaged-import.log 2>&1; then
+    cat /tmp/dsa-packaged-import.log
+  else
+    echo "ERROR: packaged backend artifact cannot import ${module}."
+    cat /tmp/dsa-packaged-import.log
+    exit 1
+  fi
+done
+
+log "Verifying packaged AkShare calendar data..."
+packaged_akshare_calendar="${packaged_root}/_internal/akshare/file_fold/calendar.json"
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  packaged_akshare_calendar="${packaged_root}/akshare/file_fold/calendar.json"
+fi
+if [[ ! -f "${packaged_akshare_calendar}" ]]; then
+  echo "ERROR: packaged AkShare calendar data not found under ${packaged_root}."
   exit 1
 fi
 

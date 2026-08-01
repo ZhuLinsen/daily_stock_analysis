@@ -34,6 +34,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
 # 可选导入本地股票映射补丁，若缺失则使用空字典兜底
@@ -140,6 +141,16 @@ class YfinanceFetcher(BaseFetcher):
             hk_code = code[2:].lstrip('0') or '0'  # 去除前导0，但保留至少一个0
             hk_code = hk_code.zfill(4)  # 补齐到4位
             logger.debug(f"转换港股代码: {stock_code} -> {hk_code}.HK")
+            return f"{hk_code}.HK"
+
+        # 港股裸码：4-5 位纯数字（如 00700、02513、0001）按港股处理。
+        # A 股代码全部是 6 位，4-5 位裸数字不可能是 A 股或 BSE（BSE 是
+        # 4/8/920xxx 6 位），因此可以先于 .SZ 兜底分流到 .HK，避免 yfinance
+        # 把 02513 这类新港股误判为深市后缀导致 Yahoo 404。详见 issue #2091。
+        if code.isdigit() and 4 <= len(code) <= 5:
+            hk_code = code.lstrip('0') or '0'
+            hk_code = hk_code.zfill(4)
+            logger.debug(f"识别裸港股代码: {stock_code} -> {hk_code}.HK")
             return f"{hk_code}.HK"
 
         # 已经包含后缀的情况
@@ -880,6 +891,10 @@ class YfinanceFetcher(BaseFetcher):
             except Exception:
                 name = STOCK_NAME_MAP.get(symbol, '')
 
+            # 复用上方已获取的 ticker_info，无额外请求
+            pe_ratio = _safe_float(ticker_info.get('trailingPE'))
+            pb_ratio = _safe_float(ticker_info.get('priceToBook'))
+
             missing_fields = [
                 field
                 for field, value in {
@@ -887,8 +902,8 @@ class YfinanceFetcher(BaseFetcher):
                     "prev_close": prev_close,
                     "volume": volume,
                     "amount": None,
-                    "pe_ratio": None,
-                    "pb_ratio": None,
+                    "pe_ratio": pe_ratio,
+                    "pb_ratio": pb_ratio,
                 }.items()
                 if value is None
             ]
@@ -912,8 +927,8 @@ class YfinanceFetcher(BaseFetcher):
                 high=high,
                 low=low,
                 pre_close=prev_close,
-                pe_ratio=None,
-                pb_ratio=None,
+                pe_ratio=pe_ratio,
+                pb_ratio=pb_ratio,
                 total_mv=market_cap,
                 circ_mv=None,
             )

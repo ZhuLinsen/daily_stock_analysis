@@ -69,6 +69,7 @@ const {
   webBuildInfoMock: {
     version: '3.11.0',
     rawVersion: '3.11.0',
+    revision: 'abc123def456',
     buildId: 'build-20260329-021530Z',
     buildTime: '2026-03-29T02:15:30.000Z',
     isFallbackVersion: false,
@@ -158,6 +159,25 @@ vi.mock('../../components/settings', () => ({
       {items.map((item) => `${item.key}=${item.value}`).join('|')}
     </div>
   ),
+  AgentBackendStatusPanel: ({
+    items,
+    selectedBackend,
+    agentArch,
+    onUseSingleAgent,
+  }: {
+    items: Array<{ key: string; value: string }>;
+    selectedBackend: string;
+    agentArch: string;
+    onUseSingleAgent: () => void;
+  }) => (
+    <div data-testid="agent-backend-status-panel-mock">
+      <span data-testid="agent-backend-status-items">
+        {items.map((item) => `${item.key}=${item.value}`).join('|')}
+      </span>
+      <span>{selectedBackend}:{agentArch}</span>
+      <button type="button" onClick={onUseSingleAgent}>切换为单 Agent</button>
+    </div>
+  ),
   NotificationTestPanel: ({ items }: { items: Array<{ key: string; value: string }> }) => (
     <div>通知测试面板:{items.map((item) => item.key).join(',')}</div>
   ),
@@ -205,6 +225,8 @@ vi.mock('../../components/settings', () => ({
   ),
   SettingsField: ({
     item,
+    disabled,
+    issues = [],
   }: {
     item: {
       key: string;
@@ -212,9 +234,15 @@ vi.mock('../../components/settings', () => ({
         description?: string;
         options?: Array<string | { label: string; value: string }>;
       };
-    };
+      };
+    disabled?: boolean;
+    issues?: Array<{ code: string; message: string }>;
   }) => (
-    <div data-testid={`settings-field-${item.key}`}>
+    <div
+      data-testid={`settings-field-${item.key}`}
+      data-disabled={disabled ? 'true' : 'false'}
+      data-issues={issues.map((issue) => issue.code).join(',')}
+    >
       <div>{item.key}</div>
       {item.schema?.description ? <p>{item.schema.description}</p> : null}
       {item.schema?.options?.map((option) => {
@@ -439,6 +467,32 @@ function buildSystemConfigState(overrides: ConfigOverride = {}) {
   };
 }
 
+function buildAgentItem(
+  key: string,
+  value: string,
+  displayOrder: number,
+  uiControl: 'select' | 'number' | 'text' = 'text',
+) {
+  return {
+    key,
+    value,
+    rawValueExists: true,
+    isMasked: false,
+    schema: {
+      key,
+      category: 'agent',
+      dataType: uiControl === 'number' ? 'integer' : 'string',
+      uiControl,
+      isSensitive: false,
+      isRequired: false,
+      isEditable: true,
+      options: uiControl === 'select' ? [] : [],
+      validation: {},
+      displayOrder,
+    },
+  };
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -456,6 +510,7 @@ describe('SettingsPage', () => {
     Object.assign(webBuildInfoMock, {
       version: '3.11.0',
       rawVersion: '3.11.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: false,
@@ -821,7 +876,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
     expect(screen.getByText('3.11.0')).toBeInTheDocument();
-    expect(screen.getByText('build-20260329-021530Z')).toBeInTheDocument();
+    expect(screen.getByText('abc123def456')).toBeInTheDocument();
     expect(screen.getByText('2026-03-29T02:15:30.000Z')).toBeInTheDocument();
   });
 
@@ -883,13 +938,15 @@ describe('SettingsPage', () => {
     expect(screen.queryByText('发现新版本')).not.toBeInTheDocument();
   });
 
-  it('falls back to build identifier when package version is still placeholder', () => {
+  it('uses an explicit development label instead of presenting a build ID as the version', () => {
     expect(resolveWebBuildInfo({
       packageVersion: '0.0.0',
+      revision: 'abc123def456',
       buildTimestamp: '2026-03-29T02:15:30.000Z',
     })).toEqual({
-      version: 'build-20260329-021530Z',
+      version: 'development',
       rawVersion: '0.0.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: true,
@@ -898,8 +955,9 @@ describe('SettingsPage', () => {
 
   it('renders fallback version hint when package version is placeholder', async () => {
     Object.assign(webBuildInfoMock, {
-      version: 'build-20260329-021530Z',
+      version: 'development',
       rawVersion: '0.0.0',
+      revision: 'abc123def456',
       buildId: 'build-20260329-021530Z',
       buildTime: '2026-03-29T02:15:30.000Z',
       isFallbackVersion: true,
@@ -908,8 +966,9 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(await screen.findByRole('heading', { name: '版本信息' })).toBeInTheDocument();
-    expect(screen.getByText(/当前 package\.json 仍为占位版本 0\.0\.0/)).toBeInTheDocument();
-    expect(screen.getAllByText('build-20260329-021530Z')).toHaveLength(2);
+    expect(screen.getByText(/当前构建未提供发布版本/)).toBeInTheDocument();
+    expect(screen.getByText('development')).toBeInTheDocument();
+    expect(screen.getByText('abc123def456')).toBeInTheDocument();
   });
 
   it('resets local drafts from the page header button', () => {
@@ -997,6 +1056,47 @@ describe('SettingsPage', () => {
     expect(screen.getByText('AGENT_DEEP_RESEARCH_BUDGET')).toBeInTheDocument();
     expect(screen.getByText('AGENT_EVENT_MONITOR_ENABLED')).toBeInTheDocument();
     expect(settingsPanelErrorBoundary).toHaveBeenCalledWith('Agent 设置');
+  });
+
+  it('integrates one Agent backend selector and keeps Codex limits editable as unsaved draft actions', () => {
+    const configState = buildSystemConfigState();
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'agent',
+      hasDirty: true,
+      dirtyCount: 2,
+      getChangedItems: () => [
+        { key: 'AGENT_BACKEND', value: 'codex_app_server' },
+        { key: 'AGENT_ARCH', value: 'multi' },
+      ],
+      itemsByCategory: {
+        ...configState.itemsByCategory,
+        agent: [
+          buildAgentItem('AGENT_BACKEND', 'codex_app_server', 1, 'select'),
+          buildAgentItem('AGENT_GENERATION_BACKEND', 'auto', 2, 'select'),
+          buildAgentItem('AGENT_LITELLM_MODEL', 'openai/gpt-4o-mini', 3),
+          buildAgentItem('AGENT_MAX_STEPS', '10', 4, 'number'),
+          buildAgentItem('AGENT_ARCH', 'multi', 5, 'select'),
+          buildAgentItem('AGENT_ORCHESTRATOR_TIMEOUT_S', '600', 6, 'number'),
+        ],
+      },
+    }));
+
+    render(<SettingsPage />);
+
+    expect(screen.getByTestId('settings-field-AGENT_BACKEND')).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-field-AGENT_GENERATION_BACKEND')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-field-AGENT_MAX_STEPS')).toHaveAttribute('data-disabled', 'false');
+    expect(screen.getByTestId('settings-field-AGENT_ARCH')).toHaveAttribute(
+      'data-issues',
+      'unsupported_agent_arch',
+    );
+    expect(screen.getByTestId('agent-backend-status-items')).toHaveTextContent(
+      'AGENT_BACKEND=codex_app_server|AGENT_ARCH=multi',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '切换为单 Agent' }));
+    expect(setDraftValue).toHaveBeenCalledWith('AGENT_ARCH', 'single');
+    expect(save).not.toHaveBeenCalled();
   });
 
   it('renders context compression profile labels and blank preset guidance in agent settings', () => {

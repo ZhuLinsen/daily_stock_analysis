@@ -145,6 +145,56 @@ class _CloseTimeCalendar(_FakeCalendar):
         return pd.Timestamp(local_close).tz_convert("UTC")
 
 
+class HistoricalDailyBarDateTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calendar = _FakeCalendar(
+            sessions=[date(2024, 1, 5), date(2024, 1, 8)],
+            close_hour=15,
+            tz_name="Asia/Shanghai",
+        )
+
+    def _resolve(self, target_date: date, phase: Optional[str]) -> Optional[date]:
+        with patch.object(trading_calendar, "_XCALS_AVAILABLE", True), patch.object(
+            trading_calendar,
+            "xcals",
+            _calendar_namespace(self.calendar),
+            create=True,
+        ):
+            return trading_calendar.resolve_historical_daily_bar_date(
+                "cn",
+                target_date,
+                phase,
+            )
+
+    def test_open_session_phase_uses_previous_session(self):
+        for phase in (
+            "premarket",
+            "intraday",
+            "lunch_break",
+            "closing_auction",
+        ):
+            with self.subTest(phase=phase):
+                self.assertEqual(
+                    self._resolve(date(2024, 1, 8), phase),
+                    date(2024, 1, 5),
+                )
+
+    def test_postmarket_uses_current_session(self):
+        self.assertEqual(
+            self._resolve(date(2024, 1, 8), "postmarket"),
+            date(2024, 1, 8),
+        )
+
+    def test_non_session_and_unprovable_phase_fail_closed(self):
+        self.assertEqual(
+            self._resolve(date(2024, 1, 7), "non_trading"),
+            date(2024, 1, 5),
+        )
+        for phase in (None, "unknown", "postmarket"):
+            with self.subTest(phase=phase):
+                self.assertIsNone(self._resolve(date(2024, 1, 7), phase))
+
+
 class EffectiveTradingDateTestCase(unittest.TestCase):
     def test_weekend_returns_previous_session(self):
         fake_calendar = _FakeCalendar(

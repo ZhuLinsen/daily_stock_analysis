@@ -46,9 +46,10 @@ except Exception:  # pragma: no cover - optional dependency environments
     get_task_list = None
 
 from src.enums import ReportType
+from src.config import Config
 from src.services.analysis_service import AnalysisService
 from src.services.image_stock_extractor import _call_litellm_vision
-from src.services.task_queue import AnalysisTaskQueue, TaskStatus
+from src.services.task_queue import AnalysisTaskQueue, TaskInfo as QueueTaskInfo, TaskStatus
 
 
 def tearDownModule() -> None:
@@ -122,6 +123,27 @@ def _analysis_context_pack_overview() -> dict:
     }
 
 
+def _market_structure_context() -> dict:
+    return {
+        "schema_version": "market-structure-v1",
+        "status": "partial",
+        "market": "cn",
+        "market_theme_context": {
+            "schema_version": "market-theme-v1",
+            "status": "partial",
+            "market": "cn",
+            "active_themes": [{"name": "机器人概念"}],
+        },
+        "stock_market_position": {
+            "schema_version": "stock-market-position-v1",
+            "status": "partial",
+            "stock_code": "300024",
+            "market": "cn",
+            "primary_theme": {"name": "机器人概念"},
+        },
+    }
+
+
 def _market_phase_summary() -> dict:
     return {
         "market": "cn",
@@ -141,13 +163,127 @@ def _market_phase_summary() -> dict:
 
 
 class AnalysisApiContractTestCase(unittest.TestCase):
+    def test_market_review_region_is_authoritative_across_active_task_lifecycle(self) -> None:
+        if (
+            trigger_market_review is None
+            or get_analysis_status is None
+            or get_task_list is None
+            or analysis_endpoint_module is None
+        ):
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        class CapturingExecutor:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.calls.append((fn, args, kwargs))
+                return Future()
+
+        cases = (
+            ("us", None, "us"),
+            ("us", "kr,jp", "jp,kr"),
+        )
+        original_queue_instance = AnalysisTaskQueue._instance
+        try:
+            for configured_region, request_region, expected_region in cases:
+                with self.subTest(
+                    configured_region=configured_region,
+                    request_region=request_region,
+                ):
+                    AnalysisTaskQueue._instance = None
+                    queue = AnalysisTaskQueue(max_workers=1)
+                    executor = CapturingExecutor()
+                    queue._executor = executor
+                    events = []
+                    queue._broadcast_event = (
+                        lambda event_type, data: events.append((event_type, data))
+                    )
+                    request = analysis_endpoint_module.MarketReviewRequest(
+                        send_notification=False,
+                        region=request_region,
+                    )
+                    config = Config(market_review_region=configured_region)
+                    report = SimpleNamespace(
+                        report=f"{expected_region} report",
+                        market_review_payload={
+                            "kind": "market_review",
+                            "region": expected_region,
+                            "sections": [],
+                        },
+                    )
+
+                    with patch.object(
+                        analysis_endpoint_module,
+                        "_try_acquire_market_review_lock",
+                        return_value=object(),
+                    ), patch.object(
+                        analysis_endpoint_module,
+                        "_build_market_review_runtime",
+                        return_value=(MagicMock(), MagicMock(), MagicMock()),
+                    ), patch(
+                        "src.core.market_review.run_market_review",
+                        return_value=report,
+                    ) as run_market_review, patch(
+                        "api.v1.endpoints.analysis.get_task_queue",
+                        return_value=queue,
+                    ), patch.object(
+                        analysis_endpoint_module,
+                        "_release_market_review_lock",
+                    ):
+                        accepted = trigger_market_review(request=request, config=config)
+                        pending = get_analysis_status(accepted.task_id)
+                        task_list = get_task_list(status=None, limit=20)
+                        queue.update_task_progress(
+                            accepted.task_id,
+                            progress=5,
+                            message="queued",
+                        )
+
+                        worker, args, kwargs = executor.calls[0]
+                        worker(*args, **kwargs)
+                        completed = get_analysis_status(accepted.task_id)
+
+                    self.assertEqual(accepted.region, expected_region)
+                    self.assertEqual(pending.status, "pending")
+                    self.assertEqual(pending.region, expected_region)
+                    self.assertEqual(task_list.tasks[0].region, expected_region)
+                    self.assertEqual(completed.status, "completed")
+                    self.assertEqual(completed.region, expected_region)
+                    self.assertEqual(
+                        completed.market_review_payload["region"],
+                        expected_region,
+                    )
+                    self.assertEqual(
+                        run_market_review.call_args.kwargs["override_region"],
+                        expected_region,
+                    )
+                    for event_type in (
+                        "task_created",
+                        "task_progress",
+                        "task_started",
+                        "task_completed",
+                    ):
+                        payload = next(
+                            payload
+                            for current_type, payload in events
+                            if current_type == event_type
+                        )
+                        self.assertEqual(payload["region"], expected_region)
+        finally:
+            AnalysisTaskQueue._instance = original_queue_instance
+
     def test_trigger_market_review_accepts_background_task(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
         task_queue = MagicMock()
         task_queue.submit_background_task.return_value = SimpleNamespace(task_id="market-task-1")
-        request = SimpleNamespace(send_notification=False)
-        config = SimpleNamespace(trading_day_check_enabled=False)
+        request = analysis_endpoint_module.MarketReviewRequest(send_notification=False)
+        config = SimpleNamespace(
+            trading_day_check_enabled=False,
+            report_language="zh",
+            market_review_region="cn",
+        )
         lock_token = object()
 
         with patch.object(
@@ -162,6 +298,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(response.status, "accepted")
         self.assertFalse(response.send_notification)
+        self.assertEqual(response.region, "cn")
         self.assertEqual(response.task_id, "market-task-1")
         task_queue.submit_background_task.assert_called_once()
         args, kwargs = task_queue.submit_background_task.call_args
@@ -169,12 +306,16 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(kwargs["stock_code"], "market_review")
         self.assertEqual(kwargs["stock_name"], "大盘复盘")
         self.assertEqual(kwargs["message"], "大盘复盘任务已提交")
+        self.assertEqual(kwargs["region"], "cn")
 
     def test_trigger_market_review_accepts_request_level_report_language(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
-        request = SimpleNamespace(send_notification=True, report_language="en")
+        request = analysis_endpoint_module.MarketReviewRequest(
+            send_notification=True,
+            report_language="en",
+        )
         config = SimpleNamespace(trading_day_check_enabled=False, report_language="zh", market_review_region="cn")
         lock_token = object()
         task_payload: dict[str, object] = {}
@@ -213,7 +354,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         call_kwargs = run_market_review.call_args.kwargs
         self.assertEqual(call_kwargs["send_notification"], True)
-        self.assertIsNone(call_kwargs["override_region"])
+        self.assertEqual(call_kwargs["override_region"], "cn")
         self.assertEqual(call_kwargs["trigger_source"], "api")
         runtime_config = call_kwargs.get("config")
         self.assertIsNotNone(runtime_config)
@@ -269,13 +410,90 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(getattr(runtime_config, "report_language", None), "en")
         self.assertEqual(call_kwargs["trigger_source"], "api")
 
+    def test_trigger_market_review_passes_canonical_request_region_without_mutating_config(self) -> None:
+        if trigger_market_review is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        request = analysis_endpoint_module.MarketReviewRequest.model_validate({
+            "send_notification": False,
+            "region": " KR, jp, KR ",
+        })
+        config = SimpleNamespace(report_language="zh", market_review_region="cn")
+        task_payload: dict[str, object] = {}
+        task_queue = MagicMock()
+
+        def _capture_background_task(task_fn, **kwargs):
+            task_payload["background_task"] = task_fn
+            return SimpleNamespace(task_id="market-task-region")
+
+        task_queue.submit_background_task.side_effect = _capture_background_task
+
+        with patch.object(
+            analysis_endpoint_module,
+            "_try_acquire_market_review_lock",
+            return_value=object(),
+        ), patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ), patch(
+            "src.core.market_review.run_market_review",
+            return_value="report",
+        ) as run_market_review, patch(
+            "api.v1.endpoints.analysis.get_task_queue",
+            return_value=task_queue,
+        ), patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+            return_value=None,
+        ):
+            response = trigger_market_review(request=request, config=config)
+            task_payload["background_task"]()
+
+        self.assertEqual(response.task_id, "market-task-region")
+        self.assertEqual(response.region, "jp,kr")
+        self.assertEqual(task_queue.submit_background_task.call_args.kwargs["region"], "jp,kr")
+        self.assertEqual(run_market_review.call_args.kwargs["override_region"], "jp,kr")
+        self.assertEqual(config.market_review_region, "cn")
+
+    def test_market_review_background_uses_runtime_region_when_request_omits_override(self) -> None:
+        if analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        runtime_config = SimpleNamespace(market_review_region="us")
+        with patch.object(
+            analysis_endpoint_module,
+            "_build_market_review_runtime",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ), patch(
+            "src.core.market_review.run_market_review",
+            return_value="report",
+        ) as run_market_review, patch.object(
+            analysis_endpoint_module,
+            "_release_market_review_lock",
+        ):
+            analysis_endpoint_module._run_market_review_background(
+                send_notification=False,
+                effective_region="us",
+                config=runtime_config,
+            )
+
+        call_kwargs = run_market_review.call_args.kwargs
+        self.assertIs(call_kwargs["config"], runtime_config)
+        self.assertEqual(call_kwargs["override_region"], "us")
+        self.assertEqual(call_kwargs["config"].market_review_region, "us")
+
     def test_trigger_market_review_rejects_duplicate_submission(self) -> None:
         if trigger_market_review is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         task_queue = MagicMock()
-        request = SimpleNamespace(send_notification=True)
-        config = SimpleNamespace(trading_day_check_enabled=False)
+        request = analysis_endpoint_module.MarketReviewRequest(send_notification=True)
+        config = SimpleNamespace(
+            trading_day_check_enabled=False,
+            report_language="zh",
+            market_review_region="cn",
+        )
 
         with patch.object(
             analysis_endpoint_module,
@@ -304,6 +522,8 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             config = SimpleNamespace(
                 trading_day_check_enabled=False,
                 database_path=str(Path(temp_dir) / "stock_analysis.db"),
+                report_language="zh",
+                market_review_region="cn",
             )
             lock_token = try_acquire_market_review_lock(config)
             self.assertIsNotNone(lock_token)
@@ -313,7 +533,9 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 with patch("api.v1.endpoints.analysis.get_task_queue", return_value=task_queue):
                     with self.assertRaises(Exception) as ctx:
                         trigger_market_review(
-                            request=SimpleNamespace(send_notification=True),
+                            request=analysis_endpoint_module.MarketReviewRequest(
+                                send_notification=True
+                            ),
                             config=config,
                         )
             finally:
@@ -328,7 +550,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         task_queue = MagicMock()
         task_queue.submit_background_task.return_value = SimpleNamespace(task_id="market-task-manual")
-        request = SimpleNamespace(send_notification=True)
+        request = analysis_endpoint_module.MarketReviewRequest(send_notification=True)
         config = SimpleNamespace(trading_day_check_enabled=True, market_review_region="cn")
         lock_token = object()
 
@@ -385,7 +607,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         ), patch("src.core.market_review.run_market_review") as run_market_review:
             analysis_endpoint_module._run_market_review_background(
                 send_notification=False,
-                override_region="cn,us",
+                effective_region="cn,us",
                 lock_token=None,
                 config=config,
             )
@@ -439,12 +661,12 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         ), patch("src.core.market_review.run_market_review", return_value="report") as run_market_review:
             result = analysis_endpoint_module._run_market_review_background(
                 send_notification=False,
-                override_region="cn",
+                effective_region="cn",
                 lock_token=None,
                 config=market_review_config,
             )
 
-        self.assertEqual(result, {"result": "report"})
+        self.assertEqual(result, {"result": "report", "region": "cn"})
         run_market_review.assert_called_once_with(
             notifier=runtime_notifier,
             analyzer=runtime_analyzer,
@@ -500,13 +722,18 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="market-task-1",
+            region="cn,us",
             stock_code="market_review",
             stock_name="大盘复盘",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
             progress=100,
             result={
                 "result": "市场复盘报告示例文本",
-                "market_review_payload": {"kind": "market_review", "sections": []},
+                "market_review_payload": {
+                    "kind": "market_review",
+                    "region": "cn,us",
+                    "sections": [],
+                },
             },
             error=None,
             original_query=None,
@@ -520,6 +747,8 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.status, "completed")
         self.assertEqual(status.market_review_report, "市场复盘报告示例文本")
         self.assertEqual(status.market_review_payload["kind"], "market_review")
+        self.assertEqual(status.market_review_payload["region"], "cn,us")
+        self.assertEqual(status.region, "cn,us")
         self.assertIsNone(status.result)
 
     def test_get_analysis_status_accepts_cancel_states_from_queue(self) -> None:
@@ -534,6 +763,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 queue = MagicMock()
                 queue.get_task.return_value = SimpleNamespace(
                     task_id=f"task-{task_status.value}",
+                    region=None,
                     trace_id=f"trace-{task_status.value}",
                     stock_code="600519",
                     stock_name="贵州茅台",
@@ -562,6 +792,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="task-queue-1",
+            region=None,
             stock_code="600519",
             stock_name="贵州茅台",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
@@ -607,6 +838,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="task-queue-action-conflict",
+            region=None,
             stock_code="600519",
             stock_name="贵州茅台",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
@@ -659,6 +891,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="task-queue-zero-score",
+            region=None,
             stock_code="600519",
             stock_name="贵州茅台",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
@@ -711,6 +944,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="task-queue-zero-score-enriched",
+            region=None,
             stock_code="600519",
             stock_name="贵州茅台",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
@@ -749,7 +983,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch(
                  "api.v1.endpoints.analysis._load_sync_fundamental_sources",
-                 return_value=({}, None),
+                 return_value=({}, None, None),
              ):
             status = get_analysis_status("task-queue-zero-score-enriched")
 
@@ -759,6 +993,146 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["summary"]["action"], "sell")
         self.assertEqual(status.result.report["summary"]["action_label"], "卖出")
 
+    def test_get_analysis_status_enriches_in_memory_market_structure_from_raw_result(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-market-structure-raw",
+            region=None,
+            stock_code="300024",
+            stock_name="机器人",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "300024",
+                "stock_name": "机器人",
+                "report": {
+                    "meta": {
+                        "query_id": "task-queue-market-structure-raw",
+                        "stock_code": "300024",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                    },
+                    "summary": {"analysis_summary": "summary"},
+                    "details": {"news_summary": "news"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(
+                     None,
+                     None,
+                     {
+                         "model_used": "test-model",
+                         "report_language": "zh",
+                         "market_structure_context": market_structure,
+                     },
+                 ),
+             ) as load_sources:
+            status = get_analysis_status("task-queue-market-structure-raw")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            status.result.report["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            status.result.report["details"]["raw_result"],
+        )
+        load_sources.assert_called_once_with(
+            query_id="task-queue-market-structure-raw",
+            stock_code="300024",
+        )
+
+    def test_get_analysis_status_enriches_in_memory_market_structure_without_history_snapshot(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service = AnalysisService()
+        task_result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.1,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=lambda: {
+                    "analysis_summary": "summary",
+                    "operation_advice": "持有",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 80,
+                    "report_language": "zh",
+                    "news_summary": "news",
+                    "technical_analysis": "tech",
+                    "fundamental_analysis": "fundamental",
+                    "risk_warning": "risk",
+                    "market_structure_context": market_structure,
+                },
+            ),
+            "task-in-memory-no-history",
+            report_type="detailed",
+        )
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-in-memory-no-history",
+            region=None,
+            stock_code="300024",
+            stock_name="机器人",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result=task_result,
+            error=None,
+            original_query=None,
+            selection_source=None,
+            analysis_phase="auto",
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(None, None, None),
+             ):
+            status = get_analysis_status("task-in-memory-no-history")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+
     def test_get_analysis_status_preserves_queue_report_created_at_when_enriching(self) -> None:
         if get_analysis_status is None or analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -767,6 +1141,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         queue = MagicMock()
         queue.get_task.return_value = SimpleNamespace(
             task_id="task-queue-2",
+            region=None,
             stock_code="600519",
             stock_name="贵州茅台",
             status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
@@ -790,7 +1165,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
              patch(
                  "api.v1.endpoints.analysis._load_sync_fundamental_sources",
-                 return_value=({}, None),
+                 return_value=({}, None, None),
              ):
             status = get_analysis_status("task-queue-2")
 
@@ -817,7 +1192,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "大盘复盘未返回可持久化报告"):
                 analysis_endpoint_module._run_market_review_background(
                     send_notification=False,
-                    override_region="cn",
+                    effective_region="cn",
                     lock_token=None,
                     config=SimpleNamespace(),
                 )
@@ -838,7 +1213,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 analysis_endpoint_module._run_market_review_background(
                     send_notification=False,
-                    override_region="cn",
+                    effective_region="cn",
                     lock_token=lock_token,
                     config=SimpleNamespace(),
                 )
@@ -868,7 +1243,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             task = queue.submit_background_task(
                 lambda: analysis_endpoint_module._run_market_review_background(
                     send_notification=False,
-                    override_region="cn",
+                    effective_region="cn",
                     lock_token=object(),
                     config=SimpleNamespace(),
                 ),
@@ -942,6 +1317,14 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 name="大盘复盘",
                 report_type="market_review",
                 raw_result={"raw_response": "# 🎯 大盘复盘\n\n复盘正文"},
+                context_snapshot={
+                    "market_review_region": "jp,kr",
+                    "market_review_payload": {
+                        "kind": "market_review",
+                        "region": "jp,kr",
+                        "sections": [],
+                    },
+                },
                 news_content="复盘正文",
                 created_at=None,
             )
@@ -953,6 +1336,8 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.market_review_report, "# 🎯 大盘复盘\n\n复盘正文")
+        self.assertEqual(result.region, "jp,kr")
+        self.assertEqual(result.market_review_payload["region"], "jp,kr")
         self.assertIsNone(result.result)
 
     def test_get_analysis_status_completed_db_snapshot_reads_change_pct_from_raw_when_price_present(self) -> None:
@@ -1179,6 +1564,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                          "market_phase_summary": phase_summary,
                      },
                      None,
+                     None,
                  ),
              ):
             result = _handle_sync_analysis(
@@ -1208,6 +1594,125 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         )
         self.assertNotIn("analysis_context_pack_overview", details["context_snapshot"])
         self.assertNotIn("market_phase_summary", details["context_snapshot"])
+
+    def test_handle_sync_analysis_restores_market_structure_from_raw_result_snapshot(self) -> None:
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = {
+            "stock_code": "300024",
+            "stock_name": "机器人",
+            "report": {
+                "meta": {"stock_code": "300024", "report_language": "zh"},
+                "summary": {"analysis_summary": "summary"},
+                "strategy": {},
+                "details": {"news_summary": "news"},
+            },
+        }
+
+        with patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-market-structure")), \
+             patch("src.services.analysis_service.AnalysisService", return_value=service_instance), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(
+                     None,
+                     None,
+                     {
+                         "model_used": "test-model",
+                         "report_language": "zh",
+                         "market_structure_context": market_structure,
+                     },
+                 ),
+             ):
+            result = _handle_sync_analysis(
+                "300024",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertEqual(
+            result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+
+    def test_handle_sync_analysis_carries_market_structure_from_service_without_fallback(self) -> None:
+        if _handle_sync_analysis is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = _market_structure_context()
+        service = AnalysisService()
+        service_result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.1,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=lambda: {
+                    "analysis_summary": "summary",
+                    "operation_advice": "持有",
+                    "trend_prediction": "震荡",
+                    "sentiment_score": 80,
+                    "report_language": "zh",
+                    "news_summary": "news",
+                    "technical_analysis": "tech",
+                    "fundamental_analysis": "fundamental",
+                    "risk_warning": "risk",
+                    "market_structure_context": market_structure,
+                },
+            ),
+            "q-sync-no-history",
+            report_type="detailed",
+        )
+        service_instance = MagicMock()
+        service_instance.analyze_stock.return_value = service_result
+
+        with patch("uuid.uuid4", return_value=SimpleNamespace(hex="q-sync-no-history")), \
+             patch("src.services.analysis_service.AnalysisService", return_value=service_instance), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=(None, None, None),
+             ):
+            result = _handle_sync_analysis(
+                "300024",
+                SimpleNamespace(
+                    report_type="detailed",
+                    force_refresh=False,
+                    notify=True,
+                    skills=None,
+                    analysis_phase="intraday",
+                ),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            result.report["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            result.report["details"]["raw_result"],
+        )
 
     def test_build_analysis_response_localizes_placeholder_stock_name_for_english(self) -> None:
         service = AnalysisService()
@@ -1291,6 +1796,51 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(
             result["report"]["meta"]["market_phase_summary"]["phase"],
             "intraday",
+        )
+
+    def test_build_analysis_response_includes_market_structure_in_raw_result(self) -> None:
+        service = AnalysisService()
+        market_structure = _market_structure_context()
+
+        def _raw_result() -> dict:
+            return {
+                "analysis_summary": "summary",
+                "operation_advice": "持有",
+                "trend_prediction": "震荡",
+                "sentiment_score": 80,
+                "report_language": "zh",
+                "news_summary": "news",
+                "technical_analysis": "tech",
+                "fundamental_analysis": "fundamental",
+                "risk_warning": "risk",
+                "market_structure_context": market_structure,
+            }
+
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="300024",
+                name="机器人",
+                current_price=999.9,
+                change_pct=1.01,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="持有",
+                trend_prediction="震荡",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                market_structure_context=market_structure,
+                to_dict=_raw_result,
+            ),
+            "q-build-response",
+            report_type="detailed",
+        )
+
+        self.assertEqual(
+            result["report"]["details"]["raw_result"]["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
         )
 
     def test_analysis_service_passes_analysis_phase_to_pipeline(self) -> None:
@@ -1911,7 +2461,17 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         mock_db = MagicMock()
-        mock_db.get_analysis_history.return_value = [SimpleNamespace(context_snapshot=None)]
+        raw_result_payload = {
+            "model_used": "test-model",
+            "report_language": "zh",
+            "market_structure_context": _market_structure_context(),
+        }
+        mock_db.get_analysis_history.return_value = [
+            SimpleNamespace(
+                context_snapshot=None,
+                raw_result=json.dumps(raw_result_payload, ensure_ascii=False),
+            )
+        ]
         fallback_payload = {
             "earnings": {
                 "data": {
@@ -1923,13 +2483,14 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         mock_db.get_latest_fundamental_snapshot.return_value = fallback_payload
 
         with patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
-            context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
+            context_snapshot, fundamental_snapshot, raw_result_snapshot = _load_sync_fundamental_sources(
                 query_id="q_sync_001",
                 stock_code="600519",
             )
 
         self.assertIsNone(context_snapshot)
         self.assertEqual(fundamental_snapshot, fallback_payload)
+        self.assertEqual(raw_result_snapshot, raw_result_payload)
         mock_db.get_analysis_history.assert_called_once_with(
             query_id="q_sync_001",
             code="600519",
@@ -1988,6 +2549,66 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["meta"]["current_price"], 1234.5)
         self.assertEqual(status.result.report["meta"]["change_pct"], 0.0)
         self.assertEqual(status.result.report["meta"]["model_used"], "test-model")
+
+    def test_get_analysis_status_restores_market_structure_from_raw_result_without_snapshot(self) -> None:
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        market_structure = {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+                "active_themes": [{"name": "机器人概念"}],
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+            },
+        }
+        record = SimpleNamespace(
+            id=1,
+            code="300024",
+            name="机器人",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            raw_result=json.dumps(
+                {
+                    "model_used": "test-model",
+                    "report_language": "zh",
+                    "market_structure_context": market_structure,
+                }
+            ),
+            context_snapshot=None,
+            sentiment_score=80,
+            operation_advice="持有",
+            trend_prediction="震荡上行",
+            analysis_summary="summary",
+            ideal_buy=None,
+            secondary_buy=None,
+            stop_loss=None,
+            take_profit=None,
+        )
+        mock_db = MagicMock()
+        mock_db.get_analysis_history.return_value = [record]
+        mock_db.get_latest_fundamental_snapshot.return_value = None
+
+        with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
+             patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
+            queue_mock.return_value.get_task.return_value = None
+            status = get_analysis_status("task_market_structure_raw_1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertEqual(
+            status.result.report["details"]["market_structure"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
 
     def test_get_analysis_status_completed_db_snapshot_includes_agent_snapshot_board_details(self) -> None:
         if get_analysis_status is None:
@@ -2099,7 +2720,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             "analysis_context_pack_overview": overview,
             "market_phase_summary": phase_summary,
         }
-        task = SimpleNamespace(
+        task = QueueTaskInfo(
             task_id="task_agent_snapshot_in_memory_1",
             stock_code="600519",
             stock_name="贵州茅台",
@@ -2182,7 +2803,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
         phase_summary = _market_phase_summary()
-        task = SimpleNamespace(
+        task = QueueTaskInfo(
             task_id="task_no_snapshot_in_memory_1",
             stock_code="600519",
             stock_name="贵州茅台",
@@ -2213,7 +2834,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
              patch(
                  "api.v1.endpoints.analysis._load_sync_fundamental_sources",
-                 return_value=(None, None),
+                 return_value=(None, None, None),
              ) as load_sources:
             queue_mock.return_value.get_task.return_value = task
             status = get_analysis_status("task_no_snapshot_in_memory_1")
@@ -3031,6 +3652,7 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             selection_source="manual",
             analysis_phase="postmarket",
             skills=["growth_quality"],
+            region=None,
         )
         queue = MagicMock()
         queue.list_all_tasks.return_value = [task]

@@ -79,7 +79,52 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("决策仪表盘", out)
         self.assertIn("贵州茅台", out)
+        self.assertIn("买入", out)
+        self.assertIn("🟢买入:1", out)
+
+    def test_render_markdown_preserves_guardrailed_neutral_action(self) -> None:
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "decision_stability": {"applied": True, "reason": "等待回踩确认"},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=True)
+
+        self.assertIsNotNone(out)
         self.assertIn("持有", out)
+        self.assertIn("🟡观望:1", out)
+
+    def test_render_markdown_uses_explicit_avoid_and_alert_text(self) -> None:
+        avoid = _make_result(
+            code="AVOID",
+            name="Avoid Corp",
+            sentiment_score=90,
+            operation_advice="Buy",
+            report_language="en",
+        )
+        avoid.action = "avoid"
+        avoid.action_label = "Avoid"
+        alert = _make_result(
+            code="ALERT",
+            name="Alert Corp",
+            sentiment_score=85,
+            operation_advice="Buy",
+            report_language="en",
+        )
+        alert.action = "alert"
+        alert.action_label = "Alert"
+
+        out = render("markdown", [avoid, alert], summary_only=True)
+
+        self.assertIsNotNone(out)
+        self.assertIn("🟡 **Avoid Corp(AVOID)**: Avoid | Score 90", out)
+        self.assertIn("🔴 **Alert Corp(ALERT)**: Alert | Score 85", out)
+        self.assertIn("**Avoid Corp(AVOID)**: Avoid | Score 90", out)
+        self.assertIn("**Alert Corp(ALERT)**: Alert | Score 85", out)
+        self.assertNotIn("**Avoid Corp(AVOID)**: Buy", out)
+        self.assertNotIn("**Alert Corp(ALERT)**: Buy", out)
 
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""
@@ -90,8 +135,8 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("作战计划", out)
         self.assertNotIn("盘中决策护栏", out)
 
-    def test_render_markdown_keeps_decision_signal_out_of_summary(self) -> None:
-        """Markdown summary stays compact while full details keep DecisionSignal excerpts."""
+    def test_render_markdown_omits_decision_signal_excerpt(self) -> None:
+        """Markdown reports omit the duplicated DecisionSignal excerpt."""
         r = _with_decision_signal_summary(_make_result())
 
         summary_out = render("markdown", [r], summary_only=True)
@@ -100,12 +145,8 @@ class TestReportRenderer(unittest.TestCase):
 
         full_out = render("markdown", [r], summary_only=False)
         self.assertIsNotNone(full_out)
-        summary_section, detail_section = full_out.split("---", 1)
-        self.assertNotIn("AI 决策信号", summary_section)
-        self.assertIn("AI 决策信号", detail_section)
-        self.assertIn("动作: 卖出", detail_section)
-        self.assertIn("周期: 1d", detail_section)
-        self.assertIn("理由: 技术面走弱", detail_section)
+        self.assertNotIn("AI 决策信号", full_out)
+        self.assertNotIn("理由: 技术面走弱", full_out)
 
     def test_render_markdown_phase_decision_section(self) -> None:
         """Markdown renders phase_decision when present."""
@@ -164,8 +205,8 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("贵州茅台", out)
 
-    def test_render_wechat_keeps_decision_signal_out_of_summary(self) -> None:
-        """Wechat summary-only stays compact while full details keep DecisionSignal excerpts."""
+    def test_render_wechat_omits_decision_signal_excerpt(self) -> None:
+        """Wechat reports omit the duplicated DecisionSignal excerpt."""
         r = _with_decision_signal_summary(_make_result())
 
         summary_out = render("wechat", [r], summary_only=True)
@@ -174,10 +215,8 @@ class TestReportRenderer(unittest.TestCase):
 
         full_out = render("wechat", [r], summary_only=False)
         self.assertIsNotNone(full_out)
-        self.assertIn("AI 决策信号", full_out)
-        self.assertIn("动作: 卖出", full_out)
-        self.assertIn("周期: 1d", full_out)
-        self.assertIn("理由: 技术面走弱", full_out)
+        self.assertNotIn("AI 决策信号", full_out)
+        self.assertNotIn("理由: 技术面走弱", full_out)
 
     def test_render_brief(self) -> None:
         """Brief platform renders 3-5 sentence summary."""
@@ -342,6 +381,88 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("**筹码**: 筹码分布未启用或数据源暂不可用，未纳入筹码判断。", out)
         self.assertEqual(out.count("数据缺失，无法判断"), 0)
+
+    def test_render_markdown_renders_strategy_synthesis_with_localized_labels(self) -> None:
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "strategy_synthesis": {
+                    "final_signal": "buy",
+                    "confidence": 0.8,
+                    "conflict_count": 1,
+                    "conflict_severity": "medium",
+                    "consensus_level": "medium",
+                    "summary_key": "strategy_synthesis.with_conflicts",
+                    "summary_params": {
+                        "opinion_count": 2,
+                        "final_signal": "buy",
+                        "consensus_level": "medium",
+                        "conflict_severity": "medium",
+                        "conflict_count": 1,
+                    },
+                    "supporting_skills": [{"skill_id": "bull_trend", "signal": "buy", "confidence": 0.8}],
+                    "opposing_skills": [{"skill_id": "hot_theme", "signal": "sell", "confidence": 0.75}],
+                    "conflicts": [
+                        {
+                            "conflict_type": "directional_opposition",
+                            "severity": "medium",
+                            "description_key": "strategy_conflict.directional_opposition",
+                            "participants": ["bull_trend", "hot_theme"],
+                        }
+                    ],
+                },
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("多策略综合", out)
+        self.assertIn("综合信号: 买入", out)
+        self.assertIn("默认多头趋势/买入/80%", out)
+        self.assertIn("热点题材/卖出/75%", out)
+        self.assertNotIn("bull_trend/买入", out)
+
+    def test_render_templates_handle_legacy_strategy_synthesis_shapes(self) -> None:
+        for platform in ("markdown", "wechat"):
+            for malformed in ("bad-shape", ["bad-shape"], 42, True):
+                result = _make_result(
+                    dashboard={
+                        "core_conclusion": {"one_sentence": "持有观望"},
+                        "intelligence": {},
+                        "battle_plan": {},
+                        "strategy_synthesis": malformed,
+                    }
+                )
+
+                out = render(platform, [result], summary_only=False)
+
+                self.assertIsNotNone(out)
+                self.assertNotIn("多策略综合", out)
+
+            result = _make_result(
+                dashboard={
+                    "core_conclusion": {"one_sentence": "持有观望"},
+                    "intelligence": {},
+                    "battle_plan": {},
+                    "strategy_synthesis": {
+                        "final_signal": "hold",
+                        "consensus_level": "insufficient",
+                        "conflict_severity": "none",
+                        "conflict_count": 0,
+                        "supporting_skills": "bad-shape",
+                        "opposing_skills": ["bad-shape"],
+                        "conflicts": "bad-shape",
+                        "summary_params": {"invalid_opinion_count": "3"},
+                    },
+                }
+            )
+
+            out = render(platform, [result], summary_only=False)
+
+            self.assertIsNotNone(out)
+            self.assertIn("多策略综合", out)
+            self.assertIn("另有 3 个策略解析失败", out)
 
     def test_render_unknown_platform_returns_none(self) -> None:
         """Unknown platform returns None (caller fallback)."""

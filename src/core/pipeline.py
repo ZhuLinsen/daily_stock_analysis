@@ -37,6 +37,7 @@ from src.analyzer import (
     stabilize_decision_with_structure,
 )
 from src.notification import NotificationService, NotificationChannel
+from src.schemas.decision_action import normalize_decision_action
 from src.report_language import (
     get_placeholder_text,
     get_unknown_text,
@@ -51,6 +52,11 @@ from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt
 from src.analysis_context_pack_overview import render_analysis_context_pack_overview
 from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
 from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
+from src.agent.final_explanation import (
+    PipelineActionAdjustment,
+    build_pipeline_final_explanation,
+    capture_pipeline_action_adjustment,
+)
 from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.daily_market_context import (
     DailyMarketContext,
@@ -59,10 +65,12 @@ from src.services.daily_market_context import (
 )
 from src.services.social_sentiment_service import SocialSentimentService
 from src.services.intelligence_service import IntelligenceService
+from src.services.market_hotspot_service import MarketHotspotService
 from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
     PipelineAnalysisArtifacts,
 )
+from src.services.market_structure_service import MarketStructureService
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     current_diagnostic_snapshot,
@@ -74,7 +82,10 @@ from src.services.run_diagnostics import (
     reset_run_diagnostic_context,
     sanitize_diagnostic_text,
 )
-from src.services.decision_signal_extractor import extract_and_persist_from_analysis_result
+from src.services.decision_signal_extractor import (
+    extract_and_persist_from_analysis_result,
+    resolve_decision_signal_action_fields,
+)
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -222,6 +233,14 @@ class StockAnalysisPipeline:
         self.trend_analyzer = StockTrendAnalyzer()  # 技术分析器
         self.analyzer = GeminiAnalyzer(config=self.config, skills=self.analysis_skills)
         self.notifier = NotificationService(source_message=source_message)
+        self.market_structure_service = MarketStructureService(fetcher_manager=self.fetcher_manager)
+        self.market_hotspot_service: Optional[MarketHotspotService] = None
+        try:
+            self.market_hotspot_service = MarketHotspotService(
+                fetcher_manager=self.fetcher_manager,
+            )
+        except Exception as exc:
+            logger.debug("market hotspot service init failed (fail-open): %s", exc)
         self._single_stock_notify_lock = threading.Lock()
         self._daily_market_context_service_lock = threading.Lock()
         self._concept_rankings_cache_lock = threading.Lock()
@@ -495,6 +514,14 @@ class StockAnalysisPipeline:
                 code,
                 fundamental_context,
             )
+            market_structure_context = self._build_market_structure_context(
+                code=code,
+                stock_name=stock_name,
+                market=market,
+                fundamental_context=fundamental_context,
+                trade_date=daily_market_target_date,
+                market_phase_summary=market_phase_summary,
+            )
 
             # P0: write-only snapshot, fail-open, no read dependency on this table.
             try:
@@ -544,6 +571,7 @@ class StockAnalysisPipeline:
                     market_phase_summary=market_phase_summary,
                     daily_market_context=daily_market_context,
                     portfolio_context=portfolio_context,
+                    market_structure_context=market_structure_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -650,6 +678,8 @@ class StockAnalysisPipeline:
             )
             if portfolio_context is not None:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
+            if isinstance(market_structure_context, dict):
+                enhanced_context["market_structure_context"] = market_structure_context
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -770,6 +800,8 @@ class StockAnalysisPipeline:
                     )
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
+                if isinstance(market_structure_context, dict):
+                    result.market_structure_context = market_structure_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
                 self._refresh_decision_action_for_final_result(
@@ -1122,14 +1154,19 @@ class StockAnalysisPipeline:
 
         top_concepts, bottom_concepts = self._get_concept_rankings_for_market(market)
 
-        if top_concepts or bottom_concepts:
-            enriched_context["concept_boards"] = {
-                "status": "ok" if top_concepts and bottom_concepts else "partial",
-                "data": {
-                    "top": top_concepts,
-                    "bottom": bottom_concepts,
-                },
-            }
+        concept_data: Dict[str, Any] = {
+            "top": top_concepts,
+            "bottom": bottom_concepts,
+        }
+        if not top_concepts and not bottom_concepts:
+            # Empty lists are removed while fundamental contexts are merged.
+            # Keep a non-empty internal marker so downstream consumers can
+            # distinguish an attempted empty result from a missing preload.
+            concept_data["fetch_attempted"] = True
+        enriched_context["concept_boards"] = {
+            "status": "ok" if top_concepts and bottom_concepts else "partial",
+            "data": concept_data,
+        }
 
     def _get_concept_rankings_for_market(
         self,
@@ -1138,6 +1175,19 @@ class StockAnalysisPipeline:
         """Fetch market-wide concept rankings once per pipeline run."""
         if market != "cn":
             return [], []
+
+        service = getattr(self, "market_hotspot_service", None)
+        if service is None:
+            try:
+                service = MarketHotspotService(fetcher_manager=self.fetcher_manager)
+            except Exception as exc:
+                logger.debug(
+                    "market hotspot service init failed in concept ranking path (fail-open): %s",
+                    exc,
+                )
+                service = None
+            else:
+                self.market_hotspot_service = service
 
         cache = getattr(self, "_concept_rankings_cache", None)
         if not isinstance(cache, dict):
@@ -1157,20 +1207,60 @@ class StockAnalysisPipeline:
             top_concepts: List[Dict[str, Any]] = []
             bottom_concepts: List[Dict[str, Any]] = []
             try:
-                fetch_rankings = getattr(self.fetcher_manager, "get_concept_rankings", None)
-                if callable(fetch_rankings):
-                    rankings = fetch_rankings(5)
-                    if isinstance(rankings, tuple) and len(rankings) == 2:
-                        raw_top, raw_bottom = rankings
-                        if isinstance(raw_top, list):
-                            top_concepts = list(raw_top)
-                        if isinstance(raw_bottom, list):
-                            bottom_concepts = list(raw_bottom)
+                if service is None:
+                    fetch_rankings = getattr(self.fetcher_manager, "get_concept_rankings", None)
+                    if callable(fetch_rankings):
+                        rankings = fetch_rankings(5)
+                        if isinstance(rankings, tuple) and len(rankings) == 2:
+                            raw_top, raw_bottom = rankings
+                            if isinstance(raw_top, list):
+                                top_concepts = list(raw_top)
+                            if isinstance(raw_bottom, list):
+                                bottom_concepts = list(raw_bottom)
+                else:
+                    top_concepts, bottom_concepts = service.get_concept_rankings(5)
             except Exception as e:
                 logger.debug("attach concept_rankings failed (fail-open): %s", e)
 
             cache[market] = (top_concepts, bottom_concepts)
             return list(top_concepts), list(bottom_concepts)
+
+    def _build_market_structure_context(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        market: str,
+        fundamental_context: Optional[Dict[str, Any]],
+        trade_date: Any = None,
+        market_phase_summary: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build market structure context without blocking the main analysis."""
+        service = getattr(self, "market_structure_service", None)
+        if service is None:
+            try:
+                service = MarketStructureService(fetcher_manager=self.fetcher_manager)
+                self.market_structure_service = service
+            except Exception as exc:
+                logger.debug("market structure service init failed (fail-open): %s", exc)
+                return None
+        try:
+            return service.build_context(
+                code=code,
+                stock_name=stock_name,
+                market=market,
+                fundamental_context=fundamental_context,
+                trade_date=trade_date,
+                market_phase_summary=market_phase_summary,
+            )
+        except Exception as exc:
+            logger.debug(
+                "%s market structure context build failed (fail-open): %s",
+                code,
+                exc,
+                exc_info=True,
+            )
+            return None
 
     def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
         """Ensure at least *min_days* of K-line history is in DB for agent tools."""
@@ -1207,6 +1297,7 @@ class StockAnalysisPipeline:
         market_phase_summary: Optional[Dict[str, Any]] = None,
         daily_market_context: Optional[DailyMarketContext] = None,
         portfolio_context: Optional[Dict[str, Any]] = None,
+        market_structure_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1237,6 +1328,8 @@ class StockAnalysisPipeline:
                 initial_context["skills"] = self.analysis_skills
             if market_phase_context is not None:
                 initial_context["market_phase_context"] = market_phase_context
+            if isinstance(market_structure_context, dict):
+                initial_context["market_structure_context"] = market_structure_context
             self._attach_daily_market_context(
                 initial_context,
                 daily_market_context,
@@ -1377,13 +1470,53 @@ class StockAnalysisPipeline:
 
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
+                pipeline_adjustments: list[PipelineActionAdjustment] = []
+                runtime_facts = getattr(agent_result, "runtime_facts", None)
+                pipeline_start_signal = getattr(result, "decision_type", "hold")
+                risk_application = (
+                    getattr(runtime_facts, "risk_override_application", None)
+                    if runtime_facts is not None
+                    else None
+                )
+                if risk_application is not None:
+                    pipeline_start_signal = risk_application.post_risk_signal.value
+                initial_action_advice = getattr(result, "operation_advice", None)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=initial_action_advice,
+                )
+                pipeline_start_action = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                action_chain_valid = pipeline_start_action is not None
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
                     result.current_price = realtime_data.get("price")
                     result.change_pct = realtime_data.get("change_pct")
-                action_source_advice = getattr(result, "operation_advice", None)
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=advice_before_guardrail,
+                )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="structure_and_fundamentals",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 adjustments = apply_phase_decision_guardrails(
                     result,
                     market_phase_summary=market_phase_summary,
@@ -1393,6 +1526,25 @@ class StockAnalysisPipeline:
                 )
                 if adjustments:
                     logger.info("[phase_decision_guardrail] Applied agent adjustments for %s: %s", code, adjustments)
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=advice_before_guardrail,
+                )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="market_phase",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
+                action_before_guardrail = getattr(result, "action", None)
+                advice_before_guardrail = getattr(result, "operation_advice", None)
                 market_context_adjustments = apply_daily_market_context_guardrail(
                     result,
                     daily_market_context=initial_context.get("daily_market_context"),
@@ -1405,15 +1557,54 @@ class StockAnalysisPipeline:
                         code,
                         market_context_adjustments,
                     )
-                if isinstance(fundamental_context, dict):
-                    result.fundamental_context = fundamental_context
-                result.market_phase_summary = market_phase_summary
-                result.analysis_context_pack_overview = analysis_context_pack_overview
                 self._refresh_decision_action_for_final_result(
                     result,
                     report_type=report_type.value,
-                    previous_operation_advice=action_source_advice,
+                    previous_operation_advice=advice_before_guardrail,
                 )
+                action_after_guardrail = normalize_decision_action(
+                    getattr(result, "action", None)
+                )
+                if action_chain_valid and action_after_guardrail is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="daily_market_context",
+                        before=action_before_guardrail,
+                        after=action_after_guardrail,
+                    )
+                else:
+                    action_chain_valid = False
+                if isinstance(fundamental_context, dict):
+                    result.fundamental_context = fundamental_context
+                if isinstance(market_structure_context, dict):
+                    result.market_structure_context = market_structure_context
+                result.market_phase_summary = market_phase_summary
+                result.analysis_context_pack_overview = analysis_context_pack_overview
+                final_action = normalize_decision_action(getattr(result, "action", None))
+                if isinstance(result.dashboard, dict):
+                    result.dashboard.pop("agent_disagreement_explanation", None)
+                if (
+                    runtime_facts is not None
+                    and action_chain_valid
+                    and pipeline_start_action is not None
+                    and final_action is not None
+                ):
+                    if not isinstance(result.dashboard, dict):
+                        result.dashboard = {}
+                    result.dashboard["agent_disagreement_explanation"] = (
+                        build_pipeline_final_explanation(
+                            runtime_facts=runtime_facts,
+                            pipeline_start_signal=pipeline_start_signal,
+                            pipeline_start_action=pipeline_start_action,
+                            final_action=final_action,
+                            pipeline_adjustments=pipeline_adjustments,
+                            data_quality=(
+                                analysis_context_pack_overview.get("data_quality")
+                                if isinstance(analysis_context_pack_overview, dict)
+                                else None
+                            ),
+                        )
+                    )
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -1477,6 +1668,12 @@ class StockAnalysisPipeline:
                         ),
                     )
                     if valid_saved_history_id:
+                        self._persist_skill_opinion_samples_after_history_save(
+                            runtime_facts=getattr(agent_result, "runtime_facts", None),
+                            analysis_history_id=saved_history_id,
+                            stock_code=code,
+                            analysis_context_pack_overview=analysis_context_pack_overview,
+                        )
                         self._extract_decision_signal_after_history_save(
                             result=result,
                             query_id=query_id,
@@ -1887,16 +2084,21 @@ class StockAnalysisPipeline:
         report_type: Any,
         previous_operation_advice: Any,
     ) -> AnalysisResult:
+        # A guardrail may rewrite the advice after the Agent action was parsed;
+        # discard that stale action before using the same resolver as the
+        # downstream DecisionSignal builder.
         previous_advice = str(previous_operation_advice or "").strip()
         current_advice = str(getattr(result, "operation_advice", None) or "").strip()
-        explicit_action = current_advice if previous_advice != current_advice else None
-        return populate_decision_action_fields(
+        if previous_advice != current_advice:
+            result.action = None
+            result.action_label = None
+        fields = resolve_decision_signal_action_fields(
             result,
-            explicit_action=explicit_action,
-            report_type=report_type,
-            use_existing_action=(previous_advice == current_advice),
-            align_with_score=(previous_advice == current_advice),
+            report_type=str(report_type or ""),
         )
+        result.action = fields["action"]
+        result.action_label = fields["action_label"]
+        return result
 
     @staticmethod
     def _agent_dashboard_value(
@@ -2341,6 +2543,9 @@ class StockAnalysisPipeline:
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+        market_structure_context = enhanced_context.get("market_structure_context")
+        if isinstance(market_structure_context, dict):
+            snapshot["market_structure_context"] = market_structure_context
         if news_content is not None:
             snapshot["news_retrieval_content"] = news_content
         if news_result_count is not None:
@@ -2355,6 +2560,42 @@ class StockAnalysisPipeline:
         if self.analysis_skills is not None:
             snapshot["skills"] = list(self.analysis_skills)
         return snapshot
+
+    def _persist_skill_opinion_samples_after_history_save(
+        self,
+        *,
+        runtime_facts: Any,
+        analysis_history_id: int,
+        stock_code: str,
+        analysis_context_pack_overview: Optional[Dict[str, Any]],
+    ) -> None:
+        """Best-effort persistence for valid individual skill opinions."""
+        opinions = getattr(runtime_facts, "skill_opinions", ()) if runtime_facts else ()
+        if not opinions:
+            return
+
+        quality_level = None
+        if isinstance(analysis_context_pack_overview, dict):
+            quality = analysis_context_pack_overview.get("data_quality")
+            if isinstance(quality, dict):
+                quality_level = quality.get("level")
+
+        try:
+            from src.services.skill_opinion_sample_service import SkillOpinionSampleService
+
+            SkillOpinionSampleService(db_manager=self.db).persist(
+                analysis_history_id=analysis_history_id,
+                stock_code=stock_code,
+                opinions=opinions,
+                data_quality_level=quality_level,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Skill opinion sample persistence skipped after history save: "
+                "stock_code=%s error_type=%s",
+                stock_code,
+                type(exc).__name__,
+            )
 
     def _extract_decision_signal_after_history_save(
         self,
@@ -3352,9 +3593,18 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
+                        def _send_feishu_report() -> bool:
+                            if getattr(self.notifier, "_feishu_send_as_file", False):
+                                date_str = datetime.now().strftime('%Y%m%d')
+                                filepath = self.notifier.save_report_to_file(
+                                    report, filename=f"dashboard_{date_str}.md"
+                                )
+                                return self.notifier.send_feishu_file(filepath)
+                            return self.notifier.send_to_feishu(report)
+
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,
-                            lambda: self.notifier.send_to_feishu(report),
+                            _send_feishu_report,
                         )
                         non_wechat_success = channel_success or non_wechat_success
                         _record_channel_result(

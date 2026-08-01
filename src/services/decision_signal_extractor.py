@@ -66,15 +66,7 @@ def build_decision_signal_payload_from_report(
     )
     raw_action = _raw_action_from_report(result)
     guardrail_reason = _extract_guardrail_reason(result, dashboard, score=score, raw_action=raw_action)
-    action_fields = build_action_fields(
-        operation_advice=getattr(result, "operation_advice", None),
-        explicit_action=getattr(result, "action", None),
-        report_type=report_type,
-        report_language=getattr(result, "report_language", None),
-        sentiment_score=score,
-        guardrail_reason=guardrail_reason,
-        align_with_score=True,
-    )
+    action_fields = resolve_decision_signal_action_fields(result, report_type=report_type)
     action = action_fields.get("action")
     if not action:
         return None
@@ -137,6 +129,9 @@ def build_decision_signal_payload_from_report(
     market_phase_summary = _extract_market_phase_summary(context_snapshot, result)
     if market_phase_summary:
         metadata["market_phase_summary"] = market_phase_summary
+    market_structure_summary = _extract_market_structure_summary(context_snapshot, result)
+    if market_structure_summary:
+        metadata.update(market_structure_summary)
     metadata["holding_state"] = _extract_holding_state(portfolio_context)
 
     payload: Dict[str, Any] = {
@@ -146,6 +141,7 @@ def build_decision_signal_payload_from_report(
         "source_type": "analysis",
         "source_report_id": source_report_id,
         "trace_id": trace_id,
+        "decision_profile": "balanced",
         "market_phase": _extract_market_phase(context_snapshot, result),
         "trigger_source": str(query_source or "").strip() or "system",
         "action": action,
@@ -170,6 +166,36 @@ def build_decision_signal_payload_from_report(
         "report_language": getattr(result, "report_language", None),
     }
     return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def resolve_decision_signal_action_fields(
+    result: AnalysisResult,
+    *,
+    report_type: str,
+) -> Dict[str, Optional[str]]:
+    """Resolve the canonical public action shared by reports and DecisionSignal."""
+    dashboard = _as_mapping(getattr(result, "dashboard", None))
+    score_calibration = _as_mapping(dashboard.get("decision_score_calibration"))
+    score = _effective_signal_score(
+        _score_from_result(getattr(result, "sentiment_score", None)),
+        score_calibration,
+    )
+    raw_action = _raw_action_from_report(result)
+    guardrail_reason = _extract_guardrail_reason(
+        result,
+        dashboard,
+        score=score,
+        raw_action=raw_action,
+    )
+    return build_action_fields(
+        operation_advice=getattr(result, "operation_advice", None),
+        explicit_action=getattr(result, "action", None),
+        report_type=report_type,
+        report_language=getattr(result, "report_language", None),
+        sentiment_score=score,
+        guardrail_reason=guardrail_reason,
+        align_with_score=True,
+    )
 
 
 def extract_and_persist_from_analysis_result(
@@ -363,6 +389,44 @@ def _extract_market_phase_summary(
         if raw_summary.get(field_name) not in (None, "")
     }
     return summary or None
+
+
+def _extract_market_structure_summary(
+    context_snapshot: Optional[Mapping[str, Any]],
+    result: AnalysisResult,
+) -> Optional[Dict[str, Any]]:
+    payload = _as_mapping(getattr(result, "market_structure_context", None))
+    if not payload:
+        snapshot = _as_mapping(context_snapshot)
+        payload = _as_mapping(snapshot.get("market_structure_context"))
+        if not payload:
+            payload = _as_mapping(_as_mapping(snapshot.get("enhanced_context")).get("market_structure_context"))
+    if payload.get("schema_version") != "market-structure-v1":
+        return None
+
+    market_theme = _as_mapping(payload.get("market_theme_context"))
+    stock_position = _as_mapping(payload.get("stock_market_position"))
+    primary_theme = _as_mapping(stock_position.get("primary_theme"))
+    risk_tags = stock_position.get("risk_tags")
+    risk_codes = []
+    if isinstance(risk_tags, list):
+        for item in risk_tags:
+            tag = _as_mapping(item)
+            code = tag.get("code")
+            if code:
+                risk_codes.append(str(code))
+
+    summary = {
+        "market_structure_version": payload.get("schema_version"),
+        "market_theme_version": market_theme.get("schema_version"),
+        "stock_market_position_version": stock_position.get("schema_version"),
+        "market_structure_status": payload.get("status"),
+        "primary_theme": primary_theme.get("name"),
+        "theme_phase": stock_position.get("theme_phase"),
+        "stock_role": stock_position.get("stock_role"),
+        "market_structure_risk_tags": risk_codes or None,
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
 def _extract_data_quality(context_snapshot: Optional[Mapping[str, Any]], result: AnalysisResult) -> Optional[Any]:

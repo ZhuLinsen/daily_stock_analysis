@@ -35,7 +35,7 @@
 
 - Windows 安装包：双击 `.exe`，按提示安装，安装目录用默认位置即可。
 - Windows 免安装包：解压 `.zip`，双击 `Daily Stock Analysis.exe`。
-- macOS：双击 `.dmg`，把应用拖到 `Applications`。如果提示来自未验证开发者，在系统设置的隐私与安全性里允许打开。
+- macOS：双击 `.dmg`，把应用拖到 `Applications`。当前 DMG 未经 Apple Developer 签名和公证，Gatekeeper 仍可能阻止启动；仅对 GitHub Releases 官方附件尝试在“隐私与安全性”中允许打开，完整限制与排查方式见 `docs/desktop-package.md`。
 
 macOS 用户升级前建议先在客户端设置里导出一次配置备份。
 

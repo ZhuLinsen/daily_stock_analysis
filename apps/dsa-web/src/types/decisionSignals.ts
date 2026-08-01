@@ -27,6 +27,7 @@ export interface DecisionSignalItem {
   sourceAgent?: string | null;
   sourceReportId?: number | null;
   traceId?: string | null;
+  decisionProfile?: DecisionProfile | null;
   marketPhase?: MarketPhaseValue | null;
   triggerSource: string;
   action: DecisionAction;
@@ -61,6 +62,7 @@ export interface DecisionSignalCreateRequest {
   sourceAgent?: string | null;
   sourceReportId?: number | null;
   traceId?: string | null;
+  decisionProfile?: DecisionProfile;
   marketPhase?: MarketPhaseValue | null;
   triggerSource: string;
   action: DecisionAction;
@@ -92,6 +94,7 @@ export interface DecisionSignalListParams {
   stockCode?: string;
   action?: DecisionAction;
   marketPhase?: MarketPhaseValue;
+  decisionProfile?: DecisionProfileDisplay;
   sourceType?: DecisionSignalSourceType;
   sourceReportId?: number;
   traceId?: string;
@@ -132,7 +135,7 @@ export interface DecisionSignalWarning {
 export interface DecisionSignalReassessRequest {
   sourceReportId: number;
   decisionProfile: DecisionProfile;
-  persist?: false;
+  persist?: boolean;
 }
 
 export interface DecisionSignalReassessPreview {
@@ -151,12 +154,20 @@ export interface DecisionSignalReassessPreview {
   metadata: Record<string, unknown>;
 }
 
+export type DecisionSignalPersistStatus = 'created' | 'existing' | 'refreshed';
+
 export interface DecisionSignalReassessResponse {
-  preview: DecisionSignalReassessPreview;
+  preview?: DecisionSignalReassessPreview | null;
   item?: DecisionSignalItem | null;
-  created: false;
+  created: boolean;
+  persistStatus?: DecisionSignalPersistStatus | null;
   warnings: DecisionSignalWarning[];
   blockedReason?: string | null;
+}
+
+export interface DecisionSignalReassessBlockedError {
+  blockedReason: string;
+  warnings: DecisionSignalWarning[];
 }
 
 export interface DecisionSignalListResponse {
@@ -247,6 +258,36 @@ export interface DecisionSignalOutcomeStatsBucket {
   unableReasons: Record<string, number>;
 }
 
+export interface DecisionSignalProfileCalibrationBucket {
+  dimensions: Record<string, string>;
+  total: number;
+  completed: number;
+  unable: number;
+  hit: number;
+  miss: number;
+  neutral: number;
+  sampleSufficient: boolean;
+  hitRatePct: number | null;
+  avgStockReturnPct: number | null;
+  missRatePct: number | null;
+  unableRatePct: number | null;
+  maxAdverseExcursionPct: number | null;
+}
+
+export interface DecisionSignalProfileCalibrationBreakdowns {
+  decisionProfile: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileAction: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileHorizon: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileMarketPhase: DecisionSignalProfileCalibrationBucket[];
+  decisionProfileDataQualityLevel: DecisionSignalProfileCalibrationBucket[];
+  profileSource: DecisionSignalProfileCalibrationBucket[];
+}
+
+export interface DecisionSignalProfileCalibration {
+  minimumCompletedSampleSize: number;
+  breakdowns: DecisionSignalProfileCalibrationBreakdowns;
+}
+
 export interface DecisionSignalOutcomeStatsResponse {
   engineVersion: string;
   horizons?: DecisionSignalHorizon[] | null;
@@ -261,6 +302,7 @@ export interface DecisionSignalOutcomeStatsResponse {
   avgStockReturnPct?: number | null;
   unableReasons: Record<string, number>;
   breakdowns: Record<string, DecisionSignalOutcomeStatsBucket[]>;
+  profileCalibration?: DecisionSignalProfileCalibration;
 }
 
 export interface DecisionSignalOutcomeStatsParams {

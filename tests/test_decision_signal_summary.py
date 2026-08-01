@@ -95,6 +95,27 @@ def test_format_decision_signal_excerpt_formats_english_and_redacts_text() -> No
     assert "- Risk: token=[REDACTED]" in excerpt
 
 
+def test_format_decision_signal_excerpt_preserves_complete_sanitized_reason() -> None:
+    reason = (
+        "159516当前处于中期震荡、短期调整阶段。技术面上，价格缩量回踩MA5，乖离率仅1.29%，"
+        "具备洗盘结束的特征。然而，均线系统尚未形成标准多头排列，且大盘环境风险等级较高，"
+        "压制了反弹空间。建议投资者保持谨慎，关注MA5支撑的有效性，切勿盲目追高。"
+    )
+
+    excerpt = format_decision_signal_excerpt({
+        "reason": f"{reason} token=secret-value",
+        "watch_conditions": "观察" * 80,
+        "risk_summary": "风险" * 80,
+    })
+
+    assert f"- 理由: {reason} token=[REDACTED]" in excerpt
+    assert "切勿盲目追高。" in excerpt
+    watch_line = next(line for line in excerpt.splitlines() if line.startswith("- 观察条件: "))
+    risk_line = next(line for line in excerpt.splitlines() if line.startswith("- 风险: "))
+    assert len(watch_line.removeprefix("- 观察条件: ")) == 120
+    assert len(risk_line.removeprefix("- 风险: ")) == 120
+
+
 def test_format_decision_signal_excerpt_returns_empty_for_invalid_input() -> None:
     assert format_decision_signal_excerpt(None) == ""
     assert format_decision_signal_excerpt({}) == ""

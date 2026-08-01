@@ -110,6 +110,7 @@ from api.v1.schemas.alerts import (
     AlertTriggerListResponse,
 )
 from api.v1.schemas.decision_signals import (
+    DecisionProfile,
     DecisionSignalCreateRequest,
     DecisionSignalFeedbackItem,
     DecisionSignalFeedbackRequest,
@@ -122,6 +123,9 @@ from api.v1.schemas.decision_signals import (
     DecisionSignalOutcomeRunResponse,
     DecisionSignalOutcomeStatsBucket,
     DecisionSignalOutcomeStatsResponse,
+    DecisionSignalProfileCalibration,
+    DecisionSignalProfileCalibrationBreakdowns,
+    DecisionSignalProfileCalibrationBucket,
     DecisionSignalStatusUpdateRequest,
 )
 
@@ -221,6 +225,7 @@ __all__ = [
     "AlertTriggerItem",
     "AlertTriggerListResponse",
     # decision signals
+    "DecisionProfile",
     "DecisionSignalCreateRequest",
     "DecisionSignalFeedbackItem",
     "DecisionSignalFeedbackRequest",
@@ -233,5 +238,8 @@ __all__ = [
     "DecisionSignalOutcomeRunResponse",
     "DecisionSignalOutcomeStatsBucket",
     "DecisionSignalOutcomeStatsResponse",
+    "DecisionSignalProfileCalibration",
+    "DecisionSignalProfileCalibrationBreakdowns",
+    "DecisionSignalProfileCalibrationBucket",
     "DecisionSignalStatusUpdateRequest",
 ]

@@ -81,8 +81,10 @@ class _FakeKlinesResource:
 
 
 class _FakeUniverseResource:
-    def __init__(self, data=None):
+    def __init__(self, data=None, list_data=None, batch_data=None):
         self.data = data if data is not None else {"symbols": []}
+        self.list_data = list_data or []
+        self.batch_data = batch_data or {}
         self.calls = []
 
     def get(self, universe_id):
@@ -91,6 +93,12 @@ class _FakeUniverseResource:
             raise self.data
         return self.data
 
+    def list(self):
+        return self.list_data
+
+    def batch(self, ids):
+        return {universe_id: self.batch_data[universe_id] for universe_id in ids}
+
 
 class _FakeInstrumentsResource:
     def get(self, symbol):
@@ -98,10 +106,10 @@ class _FakeInstrumentsResource:
 
 
 class _FakeClient:
-    def __init__(self, symbols_data=None, universe_data=None, daily_data=None, batch_data=None, batch_error=None):
+    def __init__(self, symbols_data=None, universe_data=None, daily_data=None, batch_data=None, batch_error=None, universe_list=None, universe_batch=None):
         self.quotes = _FakeQuotesResource(symbols_data, universe_data)
         self.klines = _FakeKlinesResource(daily_data=daily_data, batch_data=batch_data, batch_error=batch_error)
-        self.universes = _FakeUniverseResource(universe_data)
+        self.universes = _FakeUniverseResource(universe_data, universe_list, universe_batch)
         self.instruments = _FakeInstrumentsResource()
         self.closed = False
 
@@ -353,6 +361,42 @@ class TestTickFlowFetcher(unittest.TestCase):
 
         self.assertIsNone(fetcher.get_market_stats())
         self.assertIsNone(fetcher.get_market_stats())
+        self.assertEqual(len(fetcher._client.quotes.calls), 1)
+
+    def test_get_sector_rankings_aggregates_sw1_universes_and_caches(self):
+        universe_list = [
+            {"id": "CN_Equity_SW1_A", "name": "SW1轻工制造"},
+            {"id": "CN_Equity_SW1_B", "name": "SW1轻工制造"},
+            {"id": "CN_Equity_SW1_C", "name": "SW1银行"},
+            {"id": "CN_Equity_SW2_D", "name": "SW2造纸"},
+        ]
+        universe_batch = {
+            "CN_Equity_SW1_A": {"symbols": ["600103.SH"]},
+            "CN_Equity_SW1_B": {"symbols": ["600103.SH", "002078.SZ"]},
+            "CN_Equity_SW1_C": {"symbols": ["000001.SZ"]},
+        }
+        quotes = [
+            _quote("600103.SH", change_pct=0.02),
+            _quote("002078.SZ", change_pct=0.04),
+            _quote("000001.SZ", change_pct=-0.01),
+        ]
+        fetcher = TickFlowFetcher(api_key="sk-test")
+        fetcher._client = _FakeClient(
+            universe_data=quotes,
+            universe_list=universe_list,
+            universe_batch=universe_batch,
+        )
+
+        top, bottom = fetcher.get_sector_rankings(1)
+        cached_top, cached_bottom = fetcher.get_sector_rankings(1)
+
+        self.assertEqual(top[0]["name"], "轻工制造")
+        self.assertAlmostEqual(top[0]["change_pct"], 3.0)
+        self.assertEqual(top[0]["constituent_count"], 2)
+        self.assertEqual(bottom[0]["name"], "银行")
+        self.assertAlmostEqual(bottom[0]["change_pct"], -1.0)
+        self.assertEqual(cached_top, top)
+        self.assertEqual(cached_bottom, bottom)
         self.assertEqual(len(fetcher._client.quotes.calls), 1)
 
     def test_capability_negative_cache_retries_after_ttl(self):

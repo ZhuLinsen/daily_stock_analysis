@@ -9,9 +9,16 @@ Tools:
 import logging
 from typing import Optional
 
-from src.agent.tools.registry import ToolParameter, ToolDefinition
+from src.agent.tools.registry import ToolParameter, ToolDefinition, ToolPolicy
 
 logger = logging.getLogger(__name__)
+
+_ANALYSIS_READ_POLICY = ToolPolicy.declared(
+    read_only=True,
+    side_effects=["network_read", "db_read"],
+    permissions=["market_data:read"],
+    scope_dimensions=["stock"],
+)
 
 
 def _fetch_trend_data(stock_code: str):
@@ -96,6 +103,7 @@ analyze_trend_tool = ToolDefinition(
     ],
     handler=_handle_analyze_trend,
     category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
 )
 
 
@@ -187,6 +195,7 @@ calculate_ma_tool = ToolDefinition(
     ],
     handler=_handle_calculate_ma,
     category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
 )
 
 
@@ -303,6 +312,7 @@ get_volume_analysis_tool = ToolDefinition(
     ],
     handler=_handle_get_volume_analysis,
     category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
 )
 
 
@@ -509,6 +519,7 @@ analyze_pattern_tool = ToolDefinition(
     ],
     handler=_handle_analyze_pattern,
     category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
 )
 
 

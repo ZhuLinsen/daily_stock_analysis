@@ -172,9 +172,12 @@ should sum to 100; all-zero means no effective signal and must not be faked.
                 "",
             ]
 
-        # Feed prior opinions
+        # Feed prior opinions — Orchestrator已在 _partition_skill_opinions 中完成
+        # skill 观点的分拣，ctx.opinions 中不再含 invalid skill opinion；
+        # invalid skill 观点存于 ctx.meta["invalid_opinions"]。
+        # DecisionAgent 直接消费，不再二次过滤。
         if ctx.opinions:
-            parts.append("## Agent Opinions")
+            parts.append("## Agent Opinions (Evidence Chain)")
             for op in ctx.opinions:
                 parts.append(f"\n### {op.agent_name}")
                 parts.append(f"Signal: {op.signal} | Confidence: {op.confidence:.2f}")
@@ -183,16 +186,48 @@ should sum to 100; all-zero means no effective signal and must not be faked.
                     parts.append(f"Key levels: {json.dumps(op.key_levels)}")
                 if op.raw_data:
                     extra_keys = {k: v for k, v in op.raw_data.items()
-                                  if k not in ("signal", "confidence", "reasoning", "key_levels")}
+                                  if k not in ("signal", "confidence", "reasoning", "key_levels", "invalid_signal")}
                     if extra_keys:
                         parts.append(f"Extra data: {json.dumps(extra_keys, ensure_ascii=False, default=str)}")
                 parts.append("")
+
+        invalid_opinions = ctx.meta.get("invalid_opinions") or []
+        if invalid_opinions:
+            reason_labels = {
+                "skill_timeout": "执行超时",
+                "skill_error": "执行异常或未产出结构化观点",
+                "missing_signal": "signal 缺失",
+                "unrecognized_signal": "signal 无法识别",
+            }
+            reason_counts = {}
+            for item in invalid_opinions:
+                if not isinstance(item, dict):
+                    continue
+                reason = str(item.get("reason") or "unrecognized_signal")
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            reason_summary = "、".join(
+                f"{reason_labels.get(reason, reason)} {count} 个"
+                for reason, count in reason_counts.items()
+            )
+            parts.append("## Invalid Skill Opinions (Diagnostics only — not in evidence chain)")
+            parts.append(
+                f"共 {len(invalid_opinions)} 个 skill 观点未进入证据链"
+                f"（{reason_summary or '原因未分类'}）；"
+                f"仅供你在 data_limitations 中标注，不得作为决策依据。"
+            )
+            parts.append("")
 
         # Feed risk flags
         if ctx.risk_flags:
             parts.append("## Risk Flags")
             for rf in ctx.risk_flags:
                 parts.append(f"- [{rf.get('severity', 'medium')}] {rf.get('category', '')}: {rf.get('description', '')}")
+            parts.append("")
+
+        disagreement_summary = ctx.meta.get("agent_disagreement_summary")
+        if isinstance(disagreement_summary, dict) and disagreement_summary:
+            parts.append("## Agent Disagreement Summary")
+            parts.append(json.dumps(disagreement_summary, ensure_ascii=False, default=str))
             parts.append("")
 
         # Skill meta

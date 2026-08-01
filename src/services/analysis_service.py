@@ -241,7 +241,11 @@ class AnalysisService:
                 "risk_warning": result.risk_warning,
             }
         }
-        
+        if hasattr(result, "to_dict"):
+            raw_result_payload = result.to_dict()
+            if isinstance(raw_result_payload, dict):
+                report["details"]["raw_result"] = raw_result_payload
+
         return {
             "query_id": query_id,
             "trace_id": trace_id,

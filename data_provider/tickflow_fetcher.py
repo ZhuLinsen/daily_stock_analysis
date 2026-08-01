@@ -54,6 +54,7 @@ _CN_MAIN_INDEX_QUOTES = (
 _CN_UNIVERSE_ID = "CN_Equity_A"
 _MAX_SYMBOLS_PER_QUOTE_REQUEST = 5
 _CAPABILITY_NEGATIVE_CACHE_TTL_SECONDS = 900
+_SECTOR_RANKINGS_CACHE_TTL_SECONDS = 300
 _MAX_DAILY_PREFETCH_LOOKBACK_DAYS = 730
 _MIN_DAILY_KLINE_COUNT = 30
 _MAX_DAILY_KLINE_COUNT = 10000
@@ -116,6 +117,10 @@ class TickFlowFetcher(BaseFetcher):
         self._daily_cache_lock = RLock()
         self._quote_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._quote_cache_lock = RLock()
+        self._sector_rankings_cache: Optional[
+            Tuple[float, List[Dict[str, Any]], List[Dict[str, Any]]]
+        ] = None
+        self._sector_rankings_cache_lock = RLock()
 
         self._capability_lock = RLock()
         self._capability_supported: Dict[str, Optional[bool]] = {
@@ -1128,3 +1133,95 @@ class TickFlowFetcher(BaseFetcher):
             return None
 
         return stats
+
+    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+        """Build SW1 industry rankings from TickFlow universes and A-share quotes."""
+        try:
+            limit = max(1, int(n))
+        except (TypeError, ValueError):
+            limit = 5
+
+        now = monotonic()
+        with self._sector_rankings_cache_lock:
+            cached = self._sector_rankings_cache
+            if cached and cached[0] > now:
+                return [dict(row) for row in cached[1][:limit]], [dict(row) for row in cached[2][:limit]]
+
+        client = self._get_client()
+        if client is None or not self._capability_available("universe_quotes"):
+            return None
+
+        try:
+            universes = client.universes.list()
+            sw1_ids = [
+                str(item.get("id"))
+                for item in universes or []
+                if isinstance(item, dict)
+                and str(item.get("id") or "").startswith("CN_Equity_SW1_")
+            ]
+            if not sw1_ids:
+                return None
+            details = client.universes.batch(sw1_ids)
+            quotes = client.quotes.get(universes=[_CN_UNIVERSE_ID])
+            self._mark_capability("universe_quotes", True)
+        except Exception as exc:
+            if self._is_universe_permission_error(exc):
+                self._mark_capability("universe_quotes", False)
+                logger.info("[TickFlowFetcher] SW1 sector rankings are unavailable for current plan")
+                return None
+            raise
+
+        quote_changes: Dict[str, float] = {}
+        for quote in quotes or []:
+            if not isinstance(quote, dict):
+                continue
+            symbol = str(quote.get("symbol") or "").strip().upper()
+            ext = quote.get("ext") or {}
+            change_pct = self._ratio_to_percent(ext.get("change_pct"))
+            if change_pct is None:
+                last_price = self._safe_float(quote.get("last_price"))
+                prev_close = self._safe_float(quote.get("prev_close"))
+                if last_price is not None and prev_close and prev_close > 0:
+                    change_pct = (last_price - prev_close) / prev_close * 100
+            if symbol and change_pct is not None:
+                quote_changes[symbol] = change_pct
+
+        industry_symbols: Dict[str, set[str]] = {}
+        universe_by_id = {
+            str(item.get("id")): item
+            for item in universes or []
+            if isinstance(item, dict) and item.get("id")
+        }
+        for universe_id, detail in (details or {}).items():
+            summary = universe_by_id.get(str(universe_id), {})
+            name = str(summary.get("name") or "").strip()
+            if name.startswith("SW1"):
+                name = name[3:].strip()
+            if not name:
+                continue
+            industry_symbols.setdefault(name, set()).update(self._extract_universe_symbols(detail))
+
+        rows: List[Dict[str, Any]] = []
+        for name, symbols in industry_symbols.items():
+            changes = [quote_changes[symbol] for symbol in symbols if symbol in quote_changes]
+            if changes:
+                rows.append(
+                    {
+                        "name": name,
+                        "change_pct": round(sum(changes) / len(changes), 4),
+                        "source": "tickflow_sw1",
+                        "constituent_count": len(changes),
+                    }
+                )
+        if not rows:
+            return None
+
+        descending = sorted(rows, key=lambda row: row["change_pct"], reverse=True)
+        ascending = sorted(rows, key=lambda row: row["change_pct"])
+        with self._sector_rankings_cache_lock:
+            self._sector_rankings_cache = (
+                now + _SECTOR_RANKINGS_CACHE_TTL_SECONDS,
+                descending,
+                ascending,
+            )
+        return [dict(row) for row in descending[:limit]], [dict(row) for row in ascending[:limit]]

@@ -85,6 +85,10 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.market_review_region, "cn,us,kr")
 
+    def test_market_review_region_keeps_legacy_mixed_both_and_empty_token_compatibility(self) -> None:
+        self.assertEqual(Config._parse_market_review_region("both,us"), "cn,hk,us,jp,kr")
+        self.assertEqual(Config._parse_market_review_region("cn,,us"), "cn,us")
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_market_review_region_falls_back_to_cn_when_no_supported_tokens(
@@ -132,7 +136,25 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.generation_backend, "litellm")
         self.assertEqual(config.generation_fallback_backend, "litellm")
+        self.assertEqual(config.agent_backend, "auto")
         self.assertEqual(config.agent_generation_backend, "auto")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_agent_backend_env_accepts_codex_app_server(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "AGENT_BACKEND": " CODEX_APP_SERVER ",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.agent_backend, "codex_app_server")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
@@ -251,7 +273,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
-        self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
+        self.assertEqual(config.fundamental_fetch_timeout_seconds, 8.0)
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

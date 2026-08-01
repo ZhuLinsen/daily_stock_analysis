@@ -137,12 +137,12 @@ const settingsHelpZhCN: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent 主模型',
     summary: '为问股、策略 Agent 等 Agent 链路单独指定模型。',
-    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。',
+    usage: '使用 provider/model 格式。留空时继承普通分析主模型；裸模型名会按兼容逻辑归一到 openai/<model>。选择 Codex 本地 Agent 时保留该值，但 Codex 问股不使用它。',
     valueNotes: [
       '适合给 Agent 使用推理能力更强或上下文更长的模型。',
       '该字段只影响 Agent 链路，不会改变普通个股分析的主模型。',
     ],
-    impact: ['影响 Agent 问答、策略选择和相关工具调用的模型选择。'],
+    impact: ['影响默认模型问股、策略选择和相关工具调用；不影响 Codex 本地 Agent。'],
     notes: ['请确认该模型存在于已启用渠道、YAML 路由或 legacy provider key 可达范围内。'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -498,6 +498,25 @@ const settingsHelpZhCN: SettingsHelpMap = {
       '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
     ],
   },
+  'settings.notification.DINGTALK_WEBHOOK_URL': {
+    title: '钉钉群机器人 Webhook',
+    summary: '通过普通钉钉群机器人 Webhook 推送通知，与 App/Stream 模式相互独立。',
+    usage: '在钉钉群安全设置中添加自定义机器人，复制以 oapi.dingtalk.com/robot/send 开头的 Webhook 地址。',
+    valueNotes: [
+      'Webhook 包含 access_token，必须按密钥保护。',
+      '若机器人启用了关键词安全模式，通知内容必须包含配置的关键词。',
+    ],
+    impact: ['影响钉钉群机器人通知的送达目标。'],
+    notes: ['不要填写钉钉应用 App Key；App/Stream 模式使用独立配置。'],
+  },
+  'settings.notification.DINGTALK_SECRET': {
+    title: '钉钉群机器人加签密钥',
+    summary: '配置钉钉群机器人安全设置中的 SEC 开头加签密钥。',
+    usage: '仅在机器人启用“加签”安全设置时填写；未启用加签时保持为空。',
+    valueNotes: ['该值属于敏感凭证，Web 设置页仅显示遮罩。'],
+    impact: ['填写后，发送器会为每次 Webhook 请求追加 timestamp 和 sign 参数。'],
+    notes: ['关键词和加签可由钉钉同时要求，需分别满足。'],
+  },
   'settings.notification.webhooks': {
     title: '企业微信 Webhook',
     summary: '配置企业微信群机器人 Webhook，用于把分析报告推送到指定群。',
@@ -559,10 +578,10 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.notification.report_output': {
     title: '报告输出设置',
-    summary: '控制通知报告的详细程度、语言和模板输出。',
-    usage: 'REPORT_TYPE 可选 simple/full/brief，REPORT_LANGUAGE 可选 zh/en。',
-    valueNotes: ['报告语言影响默认模板和通知文案，不等同于前端界面语言。'],
-    impact: ['影响通知正文长度、语言和阅读体验。'],
+    summary: '控制通知报告的详细程度、默认输出语言和模板输出。',
+    usage: 'REPORT_TYPE 可选 simple/full/brief，REPORT_LANGUAGE 可选 zh/en/ko；Agent Chat 只有在未显式传入 context.report_language 时才继承这里的默认语言。',
+    valueNotes: ['报告语言会影响默认模板、通知文案，以及未单独指定语言的 Agent Chat 回复；它不等同于前端界面语言。'],
+    impact: ['影响通知正文长度、语言和未显式指定语言的 Agent Chat 阅读体验。'],
     notes: ['full 报告可能更长，部分平台可能触发分段发送。'],
   },
   'settings.system.WEBUI_HOST': {
@@ -570,7 +589,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制 WebUI 服务绑定在哪个网络地址上。',
     usage: '本机访问通常使用 127.0.0.1；云服务器、Docker 或需要外部访问时通常使用 0.0.0.0。',
     valueNotes: [
-      '当前启动逻辑会在 host 为默认 0.0.0.0 时读取 WEBUI_HOST；即使显式传入 --host 0.0.0.0，也可能被 .env 中的 WEBUI_HOST 覆盖。',
+      '启动时显式传入的 --host 会优先生效；若未传 --host，则会使用运行时配置中的 WEBUI_HOST（或其默认值）。',
       '在设置页保存后，只会写入 .env 并重载运行时配置对象，不会让当前 WebUI/API 进程重新绑定监听地址。',
       'Docker Compose 中通常会在容器内使用 0.0.0.0，宿主机访问还取决于端口映射。',
     ],
@@ -588,6 +607,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制 WebUI 服务监听的端口。',
     usage: '本地默认 8000；如端口冲突可改为其他 1-65535 范围内端口。',
     valueNotes: [
+      '启动时显式传入的 --port 会优先生效；若未传 --port，则会使用运行时配置中的 WEBUI_PORT（或其默认值）。',
       'Docker 或云服务器访问还取决于宿主机端口映射和安全组。',
       '设置页保存只会写入 .env，不会让当前 WebUI/API 进程重新绑定端口。',
     ],
@@ -802,6 +822,26 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响个股分析流程、报告生成质量和 LLM 调用次数。'],
     notes: ['Agent 模式会消耗更多 token 和时间，适合需要深度推理的场景。'],
   },
+  'settings.agent.AGENT_BACKEND': {
+    title: '问股生成方式',
+    showFieldKey: false,
+    summary: '选择问股 Chat 使用默认模型配置，还是调用运行 DSA 设备上的 Codex。',
+    usage: '通常保持“自动（推荐）”。自动模式不会启用实验性的 Codex；只有确认运行 DSA 的设备已安装并登录 Codex 后，才选择 Codex 本地 Agent。',
+    valueNotes: [
+      '“自动（推荐）”与“默认模型配置”都继续使用现有模型和 API 配置。',
+      '“Codex 本地 Agent（实验）”目前只支持单 Agent 问股，不支持 Codex Multi Agent 或 Codex Deep Research。',
+      'Codex 本地 Agent 当前支持 macOS、Linux，以及完整运行于 WSL 的 DSA 后端；暂不支持原生 Windows 后端。',
+      '本地 Agent 不等于离线模型；股票问题和工具结果可能由 Codex 自身配置的服务处理。',
+    ],
+    impact: ['只影响问股 Chat，不改变普通报告、定时分析、现有 Multi Agent 或 Deep Research。'],
+    notes: [
+      'DSA 不读取或保存 Codex 登录凭据，Codex 进程使用自己的登录状态。',
+      '设置页状态只检查配置、Codex 命令和所需协议，不会登录、调用模型或读取股票数据；显示“可以尝试”不代表已验证可用。',
+      '保存后可直接在问股页提问；第一次问题就是第一次真实执行，若 Codex 登录或服务不可用，页面会保留问题并显示原因。',
+      '想恢复原有行为，选择“自动（推荐）”并保存。',
+    ],
+    examples: [],
+  },
   'settings.agent.AGENT_GENERATION_BACKEND': {
     title: '问股生成方式',
     showFieldKey: false,
@@ -821,13 +861,13 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent 最大推理步数',
-    summary: '控制 Agent 推理链路的最大步数上限。',
-    usage: '设为默认值时，每个子 Agent 使用各自预设步数；调高后所有子 Agent 统一提升；调低后会裁剪子 Agent 的预设步数。',
+    summary: '控制默认模型 Agent 的推理步数上限，以及 Codex 单次问股可调用工具的次数上限。',
+    usage: '使用默认模型时，默认值让每个子 Agent 使用各自预设步数；调高后统一提升，调低后裁剪预设步数。使用 Codex 时，这个值限制一次问股最多可以调用多少次数据工具。',
     valueNotes: [
       '步数越高，推理越深入，但耗时和 token 消耗也越大。',
       '部分复杂场景（如多策略编排）可能需要更高步数。',
     ],
-    impact: ['影响 Agent 推理深度、耗时和 token 消耗。'],
+    impact: ['影响默认模型 Agent 的推理深度，或 Codex 单次问股的数据工具调用次数，以及相应耗时和 token 消耗。'],
     notes: ['设为 0 或极低值可能导致推理不完整。'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -890,6 +930,17 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Agent 分析的最大等待时间。'],
     notes: ['超时不影响其他股票的分析流程。'],
   },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: '策略专家并发数',
+    summary: '控制 specialist 模式下最多同时运行多少个策略专家 Agent。',
+    usage: '默认 3，允许范围 1 到 4。调低可减少瞬时模型调用压力，调高可缩短多策略批处理等待时间。',
+    valueNotes: [
+      '该值只限制策略专家 batch 的并发，不改变最终参与综合的策略选择。',
+      '整体 Agent 超时仍是共享预算；并发数低于策略数时，单个策略会按批次数量分摊剩余预算。',
+    ],
+    impact: ['影响 specialist 多策略分析的并发度、耗时和模型调用峰值。'],
+    notes: ['单个策略失败或超时会进入诊断信息，不阻塞其它策略和最终决策。'],
+  },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: '风险 Agent 否决权',
     summary: '允许风险 Agent 在检测到关键风险信号时否决买入信号。',
@@ -919,11 +970,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.agent.AGENT_SKILL_AUTOWEIGHT': {
     title: '策略自动权重',
-    summary: '根据历史回测表现自动调整策略权重。',
-    usage: '开启后，系统按各策略的历史回测准确率加权综合信号。',
-    valueNotes: ['依赖回测数据；回测记录不足时可能无法有效加权。'],
-    impact: ['影响多策略综合时的信号权重分配。'],
-    notes: ['需要先开启回测功能并积累足够的回测数据。'],
+    summary: '基于真实、可归因且样本充足的 Skill Outcome 保守调整策略权重。',
+    usage: '开启后，仅当单个 Skill、周期和评估引擎版本独立达到 30 条 evaluated Outcome 时，系统才使用贝叶斯收缩结果调整综合信号权重。',
+    valueNotes: ['没有真实 Outcome、样本不足或统计异常时保持中性权重 1.0。'],
+    impact: ['影响多策略综合时的相对权重，单个性能因子限制在约 0.833 至 1.2。'],
+    notes: ['不使用全局回测胜率冒充 Skill 表现；当前平均方向收益不参与权重公式。'],
   },
   'settings.agent.AGENT_SKILL_ROUTING': {
     title: '策略路由模式',
@@ -945,6 +996,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     notes: [
       '该功能不处理 provider trace、thinking blocks、tool calls 或 tool results，也不改变同轮工具调用透传。',
       '该配置只影响问股可见历史压缩，不改变 LLM provider、模型、Base URL、保存清理或运行时优先级语义。',
+      '当前该 LLM 压缩只适用于“默认模型”问股；Codex Agent 始终使用最近 20 条用户可见对话，不会调用 Agent 主模型生成摘要。保存的压缩设置不会被清空，切回默认模型后继续生效。',
     ],
   },
   'settings.agent.event_monitor': {
@@ -977,11 +1029,11 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '启用或关闭历史分析回测功能。',
     usage: '开启后，系统会定期将历史分析结果与后续实际走势对比，评估策略准确率。',
     valueNotes: [
-      '回测数据用于策略自动权重（AGENT_SKILL_AUTOWEIGHT）和记忆校准。',
+      '回测记录继续用于历史分析评估和现有记忆校准路径；Skill 自动权重改用独立的可归因 Outcome 数据。',
       '关闭回测不影响已有回测记录，但会停止新回测评估。',
     ],
-    impact: ['影响策略权重校准、记忆校准和回测报告生成。'],
-    notes: ['Agent 策略自动权重功能依赖回测数据。'],
+    impact: ['影响历史回测评估、记忆校准和回测报告生成；不直接控制 Skill Outcome 权重。'],
+    notes: ['AGENT_SKILL_AUTOWEIGHT 不再依赖全局回测胜率。'],
   },
   'settings.backtest.eval_params': {
     title: '回测评估参数',
@@ -1309,9 +1361,9 @@ const settingsHelpEnUS: SettingsHelpMap = {
   'settings.ai_model.AGENT_LITELLM_MODEL': {
     title: 'Agent Primary Model',
     summary: 'Sets a dedicated model for Agent workflows.',
-    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model.',
+    usage: 'Use provider/model format. When empty, Agent inherits the regular primary model. The value is preserved but not used by Codex local Agent Chat.',
     valueNotes: ['Useful when Agent needs stronger reasoning or longer context.', 'Only affects Agent flows.'],
-    impact: ['Affects Agent chat, strategy selection, and Agent tool calls.'],
+    impact: ['Affects default-model Agent chat, strategy selection, and Agent tool calls; it does not affect Codex local Agent.'],
     notes: ['Make sure the model is reachable through enabled channels, YAML routing, or legacy provider keys.'],
   },
   'settings.ai_model.LITELLM_FALLBACK_MODELS': {
@@ -1647,6 +1699,25 @@ const settingsHelpEnUS: SettingsHelpMap = {
       'Do not treat Stream mode and group bot Webhook as the same delivery path.',
     ],
   },
+  'settings.notification.DINGTALK_WEBHOOK_URL': {
+    title: 'DingTalk Group Bot Webhook',
+    summary: 'Delivers notifications through a regular DingTalk group bot webhook, separate from App/Stream mode.',
+    usage: 'Add a custom bot in a DingTalk group and paste the webhook URL beginning with oapi.dingtalk.com/robot/send.',
+    valueNotes: [
+      'The webhook contains an access_token and must be treated as a secret.',
+      'If keyword security is enabled, notification content must include the configured keyword.',
+    ],
+    impact: ['Controls the destination for DingTalk group bot notifications.'],
+    notes: ['Do not enter an App Key here; App/Stream mode uses separate settings.'],
+  },
+  'settings.notification.DINGTALK_SECRET': {
+    title: 'DingTalk Group Bot Signing Secret',
+    summary: 'Configures the SEC-prefixed signing secret from DingTalk group bot security settings.',
+    usage: 'Set this only when signing is enabled for the bot; otherwise leave it empty.',
+    valueNotes: ['This is a sensitive credential and is masked in Web settings.'],
+    impact: ['When set, the sender appends timestamp and sign parameters to each webhook request.'],
+    notes: ['DingTalk may require both keyword and signing security; configure each independently.'],
+  },
   'settings.notification.webhooks': {
     title: 'Enterprise WeChat Webhook',
     summary: 'Configures an Enterprise WeChat group bot webhook for report delivery.',
@@ -1702,10 +1773,10 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.notification.report_output': {
     title: 'Report Output',
-    summary: 'Controls notification detail level, language, and template output.',
-    usage: 'REPORT_TYPE supports simple/full/brief. REPORT_LANGUAGE supports zh/en.',
-    valueNotes: ['Report language affects default report and notification text, not the Web UI language.'],
-    impact: ['Affects notification length, language, and readability.'],
+    summary: 'Controls notification detail level, default output language, and template output.',
+    usage: 'REPORT_TYPE supports simple/full/brief. REPORT_LANGUAGE supports zh/en/ko. Agent Chat inherits this default only when context.report_language is omitted.',
+    valueNotes: ['Report language affects default templates, notification text, and Agent Chat replies that do not explicitly set a language; it does not change the Web UI language.'],
+    impact: ['Affects notification length, language, and the readability of Agent Chat replies that rely on the default language.'],
     notes: ['Full reports can be long and may be split by some platforms.'],
   },
   'settings.system.WEBUI_HOST': {
@@ -1713,7 +1784,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls the network address the WebUI service binds to.',
     usage: 'Use 127.0.0.1 for local-only access. Use 0.0.0.0 for cloud, Docker, or external access.',
     valueNotes: [
-      'Current startup logic reads WEBUI_HOST when the host is the default 0.0.0.0; even an explicit --host 0.0.0.0 can still be overwritten by WEBUI_HOST in .env.',
+      'An explicit --host has higher priority at startup; if --host is not provided, runtime-configured WEBUI_HOST (or its default) is used.',
       'Saving it from the settings page writes .env and reloads runtime config objects, but the running WebUI/API process will not rebind its host.',
       'Docker Compose commonly binds 0.0.0.0 inside the container; host access also depends on port mapping.',
     ],
@@ -1729,6 +1800,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls the port the WebUI service listens on.',
     usage: 'Default is 8000. Use another port in the 1-65535 range when needed.',
     valueNotes: [
+      'An explicit --port has higher priority at startup; if --port is not provided, runtime-configured WEBUI_PORT (or its default) is used.',
       'Docker or cloud access also depends on host port mappings and firewall rules.',
       'Saving from the settings page only writes .env; it does not rebind the running WebUI/API process.',
     ],
@@ -1937,6 +2009,26 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects stock analysis flow, report quality, and LLM call count.'],
     notes: ['Agent mode consumes more tokens and time; best for scenarios requiring deep reasoning.'],
   },
+  'settings.agent.AGENT_BACKEND': {
+    title: 'Ask-Stock Method',
+    showFieldKey: false,
+    summary: 'Choose whether ask-stock Chat uses the default model configuration or Codex on the device running DSA.',
+    usage: 'Keep Auto (recommended) unless Codex is installed and signed in on the device running DSA. Auto never enables the experimental Codex route.',
+    valueNotes: [
+      'Auto (recommended) and Default model settings both keep the existing model and API route.',
+      'Codex local Agent (experimental) currently supports single-agent Chat only, not Codex Multi Agent or Codex Deep Research.',
+      'Codex local Agent currently supports macOS, Linux, and a DSA backend running completely inside WSL; native Windows backends are not supported yet.',
+      'A local Agent is not an offline model; stock questions and tool results may be processed by services configured in Codex.',
+    ],
+    impact: ['Only affects ask-stock Chat. Regular reports, scheduled analysis, existing Multi Agent, and Deep Research stay unchanged.'],
+    notes: [
+      'DSA does not read or store Codex credentials. The Codex process uses its own sign-in state.',
+      'Settings checks only configuration, the Codex command, and the required protocol. It does not sign in, call a model, or read stock data; “Can try” is not a verified-success claim.',
+      'After saving, ask directly in Chat. The first question is the first real execution; if sign-in or the Codex service fails, Chat preserves the question and explains what happened.',
+      'To restore the original behavior, select Auto (recommended) and save.',
+    ],
+    examples: [],
+  },
   'settings.agent.AGENT_GENERATION_BACKEND': {
     title: 'Ask-Stock Generation Method',
     showFieldKey: false,
@@ -1956,13 +2048,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.AGENT_MAX_STEPS': {
     title: 'Agent Max Steps',
-    summary: 'Controls the maximum reasoning-step limit for the Agent.',
-    usage: 'At the default, each sub-agent keeps its preset. Raising it lifts all sub-agents; lowering it caps sub-agents that exceed it.',
+    summary: 'Caps default-model Agent reasoning steps and Codex tool calls per ask-stock turn.',
+    usage: 'With the default-model Agent, the default lets each sub-agent keep its preset; raising the value lifts all sub-agents, while lowering it caps larger presets. With Codex, the value limits how many data-tool calls one ask-stock turn may make.',
     valueNotes: [
       'Higher steps enable deeper reasoning but increase time and token cost.',
       'Complex scenarios (e.g. multi-strategy orchestration) may need higher values.',
     ],
-    impact: ['Affects reasoning depth, duration, and token consumption.'],
+    impact: ['Affects default-model reasoning depth or Codex data-tool calls per turn, together with duration and token consumption.'],
     notes: ['Very low values may cause incomplete reasoning.'],
   },
   'settings.agent.AGENT_SKILLS': {
@@ -2025,6 +2117,17 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects the maximum wait time for Agent analysis.'],
     notes: ['Timeout does not affect other stocks in the analysis pipeline.'],
   },
+  'settings.agent.AGENT_SKILL_CONCURRENCY': {
+    title: 'Strategy Skill Concurrency',
+    summary: 'Controls how many specialist strategy agents can run at the same time in specialist mode.',
+    usage: 'Default is 3, allowed range is 1 to 4. Lower values reduce peak model pressure; higher values can shorten multi-strategy batch latency.',
+    valueNotes: [
+      'This only limits specialist batch concurrency and does not change which strategies participate in synthesis.',
+      'The overall Agent timeout remains a shared budget; when strategy count exceeds concurrency, each skill receives a budget slice based on the number of waves.',
+    ],
+    impact: ['Affects specialist multi-strategy concurrency, latency, and peak model calls.'],
+    notes: ['A single strategy failure or timeout enters diagnostics and does not block other strategies or the final decision.'],
+  },
   'settings.agent.AGENT_RISK_OVERRIDE': {
     title: 'Risk Agent Veto',
     summary: 'Allows the risk agent to veto buy signals when critical risk flags are detected.',
@@ -2054,11 +2157,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.agent.AGENT_SKILL_AUTOWEIGHT': {
     title: 'Auto-Weight Strategies',
-    summary: 'Automatically weights strategy opinions by their historical backtest performance.',
-    usage: 'When enabled, strategies with higher historical accuracy receive more weight in signal aggregation.',
-    valueNotes: ['Depends on backtest data; insufficient records may prevent effective weighting.'],
-    impact: ['Affects signal weight distribution when multiple strategies contribute.'],
-    notes: ['Requires the backtest feature to be enabled with sufficient historical data.'],
+    summary: 'Conservatively weights strategies from real, attributable Skill Outcomes with sufficient samples.',
+    usage: 'When enabled, Bayesian-shrunk performance adjusts signal weights only after one Skill, horizon, and evaluator version independently reaches 30 evaluated Outcomes.',
+    valueNotes: ['Missing Outcomes, insufficient samples, or invalid statistics keep the neutral weight of 1.0.'],
+    impact: ['Affects relative weights in multi-strategy aggregation; each performance factor is bounded to approximately 0.833 through 1.2.'],
+    notes: ['Global backtest win rates never substitute for Skill performance; average directional return is currently descriptive only.'],
   },
   'settings.agent.AGENT_SKILL_ROUTING': {
     title: 'Strategy Routing Mode',
@@ -2080,6 +2183,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'This feature does not process provider traces, thinking blocks, tool calls, or tool results, and does not change same-turn tool passthrough.',
       'It only affects visible ask-stock history compression; it does not change LLM provider, model, Base URL, save cleanup, or runtime priority semantics.',
+      'This LLM compression currently applies only to Default model ask-stock. Codex Agent always uses the 20 most recent user-visible messages and does not call the Agent primary model for summaries. The saved setting is retained and takes effect again after switching back to Default model.',
     ],
   },
   'settings.agent.event_monitor': {
@@ -2112,11 +2216,11 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Enables or disables historical analysis backtesting.',
     usage: 'When enabled, the system periodically compares past analysis results with subsequent actual price movements to evaluate strategy accuracy.',
     valueNotes: [
-      'Backtest data feeds into strategy auto-weighting (AGENT_SKILL_AUTOWEIGHT) and memory calibration.',
+      'Backtest records continue to support historical evaluation and existing memory calibration paths; Skill auto-weighting uses separate attributable Outcome data.',
       'Disabling backtest stops new evaluations but preserves existing records.',
     ],
-    impact: ['Affects strategy weight calibration, memory calibration, and backtest report generation.'],
-    notes: ['The Agent strategy auto-weight feature depends on backtest data.'],
+    impact: ['Affects historical backtesting, memory calibration, and backtest reports; it does not directly control Skill Outcome weights.'],
+    notes: ['AGENT_SKILL_AUTOWEIGHT no longer depends on a global backtest win rate.'],
   },
   'settings.backtest.eval_params': {
     title: 'Backtest Evaluation Parameters',

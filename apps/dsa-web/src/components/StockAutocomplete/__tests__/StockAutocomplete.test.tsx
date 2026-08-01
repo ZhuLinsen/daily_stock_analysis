@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type React from 'react';
 import { StockAutocomplete } from '../StockAutocomplete';
 import type { StockIndexItem, StockSuggestion } from '../../../types/stockIndex';
 
@@ -238,6 +239,19 @@ describe('StockAutocomplete', () => {
     expect(input).toHaveAttribute('role', 'combobox');
   });
 
+  it('applies an accessible label to the autocomplete input', () => {
+    render(
+      <StockAutocomplete
+        value=""
+        onChange={mockOnChange}
+        onSubmit={mockOnSubmit}
+        ariaLabel="当前股票"
+      />
+    );
+
+    expect(screen.getByLabelText('当前股票')).toBeInTheDocument();
+  });
+
   describe('fallback mode', () => {
     it('renders a plain input when index loading fallback is active', () => {
       stockIndexHookImpl = () => ({
@@ -322,6 +336,73 @@ describe('StockAutocomplete', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
 
       expect(mockOnSubmit).toHaveBeenCalledWith('600519');
+    });
+
+    it('applies an accessible label to the fallback input', () => {
+      autocompleteHookImpl = () => ({
+        query: '',
+        setQuery: vi.fn(),
+        suggestions: [],
+        isOpen: false,
+        highlightedIndex: -1,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: vi.fn(),
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: true,
+        error: new Error('Search crashed'),
+      });
+
+      render(
+        <StockAutocomplete
+          value=""
+          onChange={mockOnChange}
+          onSubmit={mockOnSubmit}
+          ariaLabel="当前股票"
+        />
+      );
+
+      expect(screen.getByLabelText('当前股票')).toHaveAttribute('data-autocomplete-mode', 'fallback');
+    });
+
+    it('prevents duplicate form submission when fallback input receives Enter', () => {
+      const formSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
+      autocompleteHookImpl = () => ({
+        query: '',
+        setQuery: vi.fn(),
+        suggestions: [],
+        isOpen: false,
+        highlightedIndex: -1,
+        setHighlightedIndex: vi.fn(),
+        highlightPrevious: vi.fn(),
+        highlightNext: vi.fn(),
+        handleSelect: vi.fn(),
+        close: vi.fn(),
+        reset: vi.fn(),
+        isComposing: false,
+        setIsComposing: vi.fn(),
+        runtimeFallback: true,
+        error: new Error('Search crashed'),
+      });
+
+      render(
+        <form onSubmit={formSubmit}>
+          <StockAutocomplete
+            value="600519"
+            onChange={mockOnChange}
+            onSubmit={mockOnSubmit}
+          />
+        </form>
+      );
+
+      fireEvent.keyDown(screen.getByDisplayValue('600519'), { key: 'Enter' });
+
+      expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+      expect(formSubmit).not.toHaveBeenCalled();
     });
   });
 
@@ -410,7 +491,10 @@ describe('StockAutocomplete', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
 
       expect(mockOnChange).toHaveBeenCalledWith('600519');
-      expect(mockOnSubmit).toHaveBeenCalledWith('600519.SH', '贵州茅台', 'autocomplete');
+      expect(mockOnSubmit).toHaveBeenCalledWith('600519.SH', '贵州茅台', 'autocomplete', {
+        market: 'CN',
+        displayCode: '600519',
+      });
     });
 
     it('submits the highlighted HK suggestion using the canonical .HK code', () => {
@@ -444,7 +528,10 @@ describe('StockAutocomplete', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
 
       expect(mockOnChange).toHaveBeenCalledWith('00700');
-      expect(mockOnSubmit).toHaveBeenCalledWith('00700.HK', '腾讯控股', 'autocomplete');
+      expect(mockOnSubmit).toHaveBeenCalledWith('00700.HK', '腾讯控股', 'autocomplete', {
+        market: 'HK',
+        displayCode: '00700',
+      });
     });
 
     it('submits the highlighted BSE suggestion using the canonical .BJ code', () => {
@@ -478,7 +565,10 @@ describe('StockAutocomplete', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
 
       expect(mockOnChange).toHaveBeenCalledWith('920493');
-      expect(mockOnSubmit).toHaveBeenCalledWith('920493.BJ', '示例北交所股票', 'autocomplete');
+      expect(mockOnSubmit).toHaveBeenCalledWith('920493.BJ', '示例北交所股票', 'autocomplete', {
+        market: 'BSE',
+        displayCode: '920493',
+      });
     });
   });
 

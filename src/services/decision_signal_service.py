@@ -6,12 +6,16 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, get_args
+from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.core.trading_calendar import MarketPhase
-from src.repositories.decision_signal_repo import DecisionSignalRepository
+from src.repositories.decision_signal_repo import (
+    DecisionSignalCreateResult,
+    DecisionSignalRepository,
+)
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.report_language import normalize_report_language
 from src.schemas.decision_action import (
@@ -19,6 +23,13 @@ from src.schemas.decision_action import (
     build_action_fields,
     localize_action_label,
     normalize_decision_action,
+)
+from src.schemas.decision_profile import (
+    DecisionProfileFilter,
+    VALID_DECISION_PROFILES,
+    extract_legacy_decision_profile,
+    normalize_decision_profile,
+    normalize_decision_profile_filter,
 )
 from src.schemas.decision_scale import action_for_score, score_action_conflicts_without_guardrail
 from src.services.portfolio_service import VALID_MARKETS
@@ -66,6 +77,33 @@ class DecisionSignalStorageError(RuntimeError):
     """Raised when persisted decision-signal data is internally inconsistent."""
 
 
+DecisionSignalWriteDisposition = Literal["created", "existing", "refreshed"]
+
+
+@dataclass(frozen=True)
+class DecisionSignalWriteOutcome:
+    """Typed internal result for the single DecisionSignal write path."""
+
+    item: Dict[str, Any]
+    created: bool
+    refreshed: bool
+    duplicate: bool
+
+    def __post_init__(self) -> None:
+        if sum((self.created, self.refreshed, self.duplicate)) != 1:
+            raise DecisionSignalStorageError("invalid DecisionSignal write outcome")
+
+    @property
+    def disposition(self) -> DecisionSignalWriteDisposition:
+        if self.created:
+            return "created"
+        if self.refreshed:
+            return "refreshed"
+        if self.duplicate:
+            return "existing"
+        raise DecisionSignalStorageError("DecisionSignal write outcome has no disposition")
+
+
 class DecisionSignalService:
     """Business logic for DecisionSignal storage, querying, and serialization."""
 
@@ -80,18 +118,74 @@ class DecisionSignalService:
         self.db = db_manager or getattr(self.repo, "db", None) or DatabaseManager.get_instance()
 
     def create_signal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        fields, lifecycle = self._normalize_payload(payload)
-        result = self.repo.create_if_absent(
-            fields,
-            allow_relaxed_horizon_fill=lifecycle["horizon_defaulted"],
-        )
+        outcome = self.create_signal_with_outcome(payload)
+        return {"item": outcome.item, "created": outcome.created}
+
+    def create_signal_with_outcome(self, payload: Dict[str, Any]) -> DecisionSignalWriteOutcome:
+        """Create through the canonical path while preserving repository disposition."""
+
+        result = self._store_signal(payload)
         # Active duplicates can be retries after a prior partial create; rerun invalidation to repair old opposing signals.
         if result.row.status == "active":
             self._invalidate_opposing_active_signals(
                 result.row,
                 reference_at=result.invalidation_reference_at,
             )
-        return {"item": self._serialize(result.row), "created": result.created}
+        return self._write_outcome(result)
+
+    def create_history_bound_signal_with_outcome(
+        self,
+        payload: Dict[str, Any],
+        *,
+        history_created_at: Optional[datetime],
+        market_phase_summary: Any = None,
+    ) -> DecisionSignalWriteOutcome:
+        """Persist a report-derived signal on the source report's timeline."""
+
+        history_payload = dict(payload)
+        self._apply_history_bound_lifecycle(
+            history_payload,
+            created_at=history_created_at,
+            market_phase_summary=market_phase_summary,
+        )
+        result = self._store_signal(history_payload)
+        if result.row.status == "active":
+            if result.row.created_at is None:
+                raise DecisionSignalStorageError(
+                    "history-bound DecisionSignal has no created_at"
+                )
+            self._invalidate_opposing_active_signals(
+                result.row,
+                reference_at=result.row.created_at,
+            )
+            self._invalidate_history_bound_if_superseded(result.row.id)
+
+        final_row = self.repo.get(result.row.id)
+        if final_row is None:
+            raise DecisionSignalStorageError(
+                f"history-bound DecisionSignal disappeared after write: {result.row.id}"
+            )
+        return self._write_outcome(result, row=final_row)
+
+    def _store_signal(self, payload: Dict[str, Any]) -> DecisionSignalCreateResult:
+        fields, lifecycle = self._normalize_payload(payload)
+        return self.repo.create_if_absent(
+            fields,
+            allow_relaxed_horizon_fill=lifecycle["horizon_defaulted"],
+        )
+
+    def _write_outcome(
+        self,
+        result: DecisionSignalCreateResult,
+        *,
+        row: Optional[DecisionSignalRecord] = None,
+    ) -> DecisionSignalWriteOutcome:
+        return DecisionSignalWriteOutcome(
+            item=self._serialize(row if row is not None else result.row),
+            created=result.created,
+            refreshed=result.refreshed,
+            duplicate=result.duplicate,
+        )
 
     def get_signal(self, signal_id: int) -> Dict[str, Any]:
         row = self.repo.get(signal_id)
@@ -106,6 +200,7 @@ class DecisionSignalService:
         market: Optional[str] = None,
         action: Optional[str] = None,
         market_phase: Optional[str] = None,
+        decision_profile: Optional[Any] = None,
         source_type: Optional[str] = None,
         source_report_id: Optional[Any] = None,
         trace_id: Optional[str] = None,
@@ -126,6 +221,7 @@ class DecisionSignalService:
         market_norm = self._normalize_optional_market(market)
         action_norm = self._normalize_optional_action(action)
         market_phase_norm = self._normalize_optional_enum(market_phase, MARKET_PHASES, "market_phase")
+        decision_profile_filter = normalize_decision_profile_filter(decision_profile)
         source_type_norm = self._normalize_optional_enum(source_type, SOURCE_TYPES, "source_type")
         source_report_id_norm = self._optional_int(source_report_id, "source_report_id")
         trace_id_norm = self._optional_identity_text(trace_id, "trace_id", max_length=64)
@@ -178,6 +274,7 @@ class DecisionSignalService:
             market=market_norm,
             action=action_norm,
             market_phase=market_phase_norm,
+            decision_profile_filter=decision_profile_filter,
             source_type=source_type_norm,
             source_report_id=source_report_id_norm,
             trace_id=trace_id_norm,
@@ -195,6 +292,7 @@ class DecisionSignalService:
             market=market_norm,
             action=action_norm,
             market_phase=market_phase_norm,
+            decision_profile_filter=decision_profile_filter,
             source_type=source_type_norm,
             source_report_id=source_report_id_norm,
             trace_id=trace_id_norm,
@@ -214,6 +312,7 @@ class DecisionSignalService:
                 market=market_norm,
                 action=action_norm,
                 market_phase=market_phase_norm,
+                decision_profile_filter=decision_profile_filter,
                 source_type=source_type_norm,
                 source_report_id=source_report_id_norm,
                 trace_id=trace_id_norm,
@@ -264,7 +363,6 @@ class DecisionSignalService:
         replace_metadata: bool = False,
     ) -> Dict[str, Any]:
         status_norm = self._normalize_enum(status, SIGNAL_STATUSES, "status")
-        metadata_json = self._json_dumps(metadata) if replace_metadata else None
         existing = self.repo.get(signal_id)
         if existing is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
@@ -272,6 +370,20 @@ class DecisionSignalService:
             existing.status in TERMINAL_STATUSES or self._is_expired(existing.expires_at)
         ):
             raise ValueError("terminal decision signal cannot be reactivated through status update")
+        metadata_json = None
+        if replace_metadata:
+            if isinstance(metadata, dict):
+                normalized_metadata = dict(metadata)
+                if existing.decision_profile is None:
+                    normalized_metadata.pop("decision_profile", None)
+                else:
+                    normalized_metadata = self._synchronize_metadata_decision_profile(
+                        normalized_metadata,
+                        existing.decision_profile,
+                    )
+                metadata_json = self._json_dumps(normalized_metadata)
+            else:
+                metadata_json = self._json_dumps(metadata)
         row = self.repo.update_status(
             signal_id,
             status=status_norm,
@@ -289,6 +401,7 @@ class DecisionSignalService:
         market: Optional[str],
         action: Optional[str],
         market_phase: Optional[str],
+        decision_profile_filter: DecisionProfileFilter,
         source_type: Optional[str],
         source_report_id: Optional[int],
         trace_id: Optional[str],
@@ -304,6 +417,13 @@ class DecisionSignalService:
         """Only lazy-backfill for the exact report section query used by Web."""
 
         if source_type != "analysis" or source_report_id is None:
+            return False
+        if decision_profile_filter.is_unknown:
+            return False
+        if (
+            not decision_profile_filter.is_all
+            and decision_profile_filter.profile != "balanced"
+        ):
             return False
         return not any(
             value not in (None, "", False)
@@ -376,6 +496,11 @@ class DecisionSignalService:
                 change_pct=self._history_float(raw.get("change_pct")),
                 model_used=raw.get("model_used"),
                 query_id=getattr(record, "query_id", None),
+                market_structure_context=(
+                    raw.get("market_structure_context")
+                    if isinstance(raw.get("market_structure_context"), dict)
+                    else None
+                ),
             )
             payload = build_decision_signal_payload_from_report(
                 result,
@@ -388,14 +513,10 @@ class DecisionSignalService:
             )
             if payload is None:
                 return
-            self._apply_history_backfill_lifecycle(
+            self.create_history_bound_signal_with_outcome(
                 payload,
-                created_at=getattr(record, "created_at", None),
+                history_created_at=getattr(record, "created_at", None),
             )
-            created = self.create_signal(payload)
-            signal_id = created.get("item", {}).get("id")
-            if isinstance(signal_id, int):
-                self._invalidate_history_backfill_if_superseded(signal_id)
         except Exception as exc:
             logger.warning(
                 "Decision signal lazy backfill failed: source_report_id=%s error=%s",
@@ -510,22 +631,36 @@ class DecisionSignalService:
                     return text
         return None
 
-    def _apply_history_backfill_lifecycle(
+    def _apply_history_bound_lifecycle(
         self,
         payload: Dict[str, Any],
         *,
         created_at: Optional[datetime],
+        market_phase_summary: Any = None,
     ) -> None:
-        """Anchor lazy backfill expiry to the report time instead of query time."""
+        """Anchor a history-derived signal to the source report time."""
 
-        if created_at is None:
-            return
+        if not isinstance(created_at, datetime):
+            raise ValueError("source report created_at is required for persistence")
         history_created_at = self._coerce_history_created_at_to_utc_naive(created_at)
-        if history_created_at is None:
-            payload["status"] = "expired"
-            return
 
         payload["_created_at_override"] = history_created_at
+        payload["status"] = "active"
+        payload.pop("expires_at", None)
+        sanitized_phase_summary = self._sanitize_history_market_phase_summary(
+            market_phase_summary
+        )
+        if sanitized_phase_summary:
+            raw_metadata = payload.get("metadata")
+            if raw_metadata is None:
+                metadata: Dict[str, Any] = {}
+            elif isinstance(raw_metadata, dict):
+                metadata = dict(raw_metadata)
+            else:
+                raise ValueError("metadata must be an object")
+            metadata["market_phase_summary"] = sanitized_phase_summary
+            payload["metadata"] = metadata
+
         horizon = payload.get("horizon") or self._default_horizon(
             action=str(payload.get("action") or ""),
             market_phase=payload.get("market_phase"),
@@ -533,7 +668,7 @@ class DecisionSignalService:
         if horizon:
             payload["horizon"] = horizon
 
-        expires_at = self._history_backfill_expires_at(
+        expires_at = self._history_bound_expires_at(
             created_at=history_created_at,
             horizon=horizon,
             market=str(payload.get("market") or ""),
@@ -544,6 +679,22 @@ class DecisionSignalService:
         payload["expires_at"] = expires_at
         if self._is_expired(expires_at):
             payload["status"] = "expired"
+
+    @staticmethod
+    def _sanitize_history_market_phase_summary(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        allowed_fields = (
+            "phase",
+            "session_date",
+            "minutes_to_open",
+            "minutes_to_close",
+        )
+        return {
+            field_name: value[field_name]
+            for field_name in allowed_fields
+            if value.get(field_name) not in (None, "")
+        }
 
     @staticmethod
     def _coerce_history_created_at_to_utc_naive(value: datetime) -> datetime:
@@ -559,7 +710,7 @@ class DecisionSignalService:
         except (OverflowError, OSError):
             return to_utc_naive_datetime(value)
 
-    def _invalidate_history_backfill_if_superseded(self, signal_id: int) -> None:
+    def _invalidate_history_bound_if_superseded(self, signal_id: int) -> None:
         row = self.repo.get(signal_id)
         if row is None or row.status != "active":
             return
@@ -571,6 +722,7 @@ class DecisionSignalService:
             market=row.market,
             stock_code=row.stock_code,
             actions=sorted(opposing_actions),
+            decision_profile=row.decision_profile,
             exclude_signal_id=row.id,
         )
         for newer_row in newer_rows:
@@ -585,7 +737,7 @@ class DecisionSignalService:
             )
             if updated is None:
                 logger.warning(
-                    "Decision signal disappeared before stale backfill invalidation: "
+                    "Decision signal disappeared before history-bound invalidation: "
                     "signal_id=%s invalidated_by=%s",
                     row.id,
                     newer_row.id,
@@ -593,7 +745,7 @@ class DecisionSignalService:
             return
 
     @classmethod
-    def _history_backfill_expires_at(
+    def _history_bound_expires_at(
         cls,
         *,
         created_at: datetime,
@@ -639,6 +791,23 @@ class DecisionSignalService:
         if not action_label:
             action_label = localize_action_label(action, report_language)
 
+        raw_metadata = payload.get("metadata")
+        if raw_metadata is None:
+            metadata: Dict[str, Any] = {}
+        elif isinstance(raw_metadata, dict):
+            metadata = dict(raw_metadata)
+        else:
+            raise ValueError("metadata must be an object")
+
+        if "decision_profile" in payload:
+            decision_profile = normalize_decision_profile(payload.get("decision_profile"))
+            if decision_profile is None:
+                allowed = ", ".join(VALID_DECISION_PROFILES)
+                raise ValueError(f"decision_profile must be one of: {allowed}")
+        else:
+            decision_profile = extract_legacy_decision_profile(metadata) or "balanced"
+        metadata = self._synchronize_metadata_decision_profile(metadata, decision_profile)
+
         confidence = self._optional_float(payload.get("confidence"), "confidence")
         if confidence is not None and not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be between 0.0 and 1.0")
@@ -659,7 +828,7 @@ class DecisionSignalService:
             expires_at = self._default_expires_at(
                 horizon=horizon,
                 market=market,
-                metadata=payload.get("metadata"),
+                metadata=metadata,
             )
         created_at = self._parse_datetime(payload.get("_created_at_override"))
 
@@ -671,6 +840,7 @@ class DecisionSignalService:
             "source_agent": self._optional_public_text(payload.get("source_agent"), "source_agent", max_length=64),
             "source_report_id": self._optional_int(payload.get("source_report_id"), "source_report_id"),
             "trace_id": self._optional_identity_text(payload.get("trace_id"), "trace_id", max_length=64),
+            "decision_profile": decision_profile,
             "market_phase": market_phase,
             "trigger_source": self._normalize_trigger_source(payload.get("trigger_source")),
             "action": action,
@@ -691,7 +861,7 @@ class DecisionSignalService:
             "data_quality_summary_json": self._json_dumps(payload.get("data_quality_summary")),
             "status": self._normalize_optional_enum(payload.get("status"), SIGNAL_STATUSES, "status") or "active",
             "expires_at": expires_at,
-            "metadata_json": self._json_dumps(payload.get("metadata")),
+            "metadata_json": self._json_dumps(metadata),
         }
         if created_at is not None:
             fields["created_at"] = created_at
@@ -792,6 +962,7 @@ class DecisionSignalService:
             market=row.market,
             stock_code=row.stock_code,
             actions=sorted(opposing_actions),
+            decision_profile=row.decision_profile,
             exclude_signal_id=row.id,
         )
         for old_row in old_rows:
@@ -850,7 +1021,21 @@ class DecisionSignalService:
             "invalidated_at": utc_naive_now().isoformat(),
             "previous_status": row.status,
         })
+        if row.decision_profile is not None:
+            metadata = self._synchronize_metadata_decision_profile(
+                metadata,
+                row.decision_profile,
+            )
         return self._json_dumps(metadata)
+
+    @staticmethod
+    def _synchronize_metadata_decision_profile(
+        metadata: Dict[str, Any],
+        decision_profile: str,
+    ) -> Dict[str, Any]:
+        normalized = dict(metadata)
+        normalized["decision_profile"] = decision_profile
+        return normalized
 
     @staticmethod
     def _metadata_for_invalidation(row: DecisionSignalRecord) -> Dict[str, Any]:
@@ -858,11 +1043,12 @@ class DecisionSignalService:
             return {}
         try:
             value = json.loads(row.metadata_json)
-        except json.JSONDecodeError as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             logger.warning(
-                "Replacing invalid decision signal metadata during invalidation: id=%s error=%s",
+                "Replacing invalid decision signal metadata during invalidation: "
+                "id=%s error_type=%s",
                 row.id,
-                exc,
+                type(exc).__name__,
             )
             return {"metadata_replaced_due_to_invalid_json": True}
         if isinstance(value, dict):
@@ -1141,6 +1327,7 @@ class DecisionSignalService:
             "source_agent": row.source_agent,
             "source_report_id": row.source_report_id,
             "trace_id": row.trace_id,
+            "decision_profile": row.decision_profile,
             "market_phase": row.market_phase,
             "trigger_source": row.trigger_source,
             "action": row.action,

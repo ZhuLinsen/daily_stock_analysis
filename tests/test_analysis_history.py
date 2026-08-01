@@ -14,7 +14,9 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # Keep this test runnable when optional LLM runtime deps are not installed.
@@ -26,11 +28,13 @@ except ModuleNotFoundError:
 try:
     from fastapi.testclient import TestClient
     from api.app import create_app
-    from api.v1.endpoints.history import get_history_detail, get_stock_bar
+    from api.v1.endpoints.history import delete_history_by_code, get_history_detail, get_history_list, get_stock_bar
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
+    delete_history_by_code = None
     get_history_detail = None
+    get_history_list = None
     get_stock_bar = None
 
 from src.config import Config
@@ -152,6 +156,88 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             else:
                 os.environ[key] = value
         self._temp_dir.cleanup()
+
+    def test_history_timestamps_include_server_timezone_offset(self) -> None:
+        serialized = HistoryService._serialize_created_at(datetime(2026, 7, 11, 0, 30))
+
+        self.assertIsNotNone(serialized)
+        self.assertRegex(serialized or "", r"[+-]\d{2}:\d{2}$")
+
+    def test_history_query_failure_is_not_returned_as_an_empty_success(self) -> None:
+        db = MagicMock()
+        db.get_analysis_history_paginated.side_effect = RuntimeError("database unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+            HistoryService(db).get_history_list(page=1, limit=20)
+
+        if get_history_list is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        with self.assertRaises(Exception) as raised:
+            get_history_list(
+                stock_code=None,
+                report_type=None,
+                start_date=None,
+                end_date=None,
+                page=1,
+                limit=20,
+                db_manager=db,
+            )
+
+        self.assertEqual(getattr(raised.exception, "status_code", None), 500)
+
+    def test_delete_history_by_code_deletes_more_than_one_lookup_batch(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        remaining = {record_id: SimpleNamespace(id=record_id) for record_id in range(1, 10_002)}
+        db = MagicMock()
+
+        def get_records(*, code, limit=20, offset=0, **_kwargs):
+            records = list(remaining.values())[offset:offset + limit]
+            return records, len(remaining)
+
+        def delete_records(record_ids):
+            deleted = 0
+            for record_id in record_ids:
+                if remaining.pop(record_id, None) is not None:
+                    deleted += 1
+            return deleted
+
+        db.get_analysis_history_paginated.side_effect = get_records
+        db.delete_analysis_history_records.side_effect = delete_records
+
+        response = delete_history_by_code("600519", db_manager=db)
+
+        self.assertEqual(response.deleted, 10_001)
+        self.assertEqual(remaining, {})
+        self.assertEqual(db.get_analysis_history_paginated.call_count, 2)
+
+    def test_delete_history_by_code_rejects_blank_code_before_query(self) -> None:
+        if delete_history_by_code is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        record_id = self._save_history("query_delete_blank_code")
+        with (
+            patch.object(
+                self.db,
+                "get_analysis_history_paginated",
+                wraps=self.db.get_analysis_history_paginated,
+            ) as query,
+            patch.object(
+                self.db,
+                "delete_analysis_history_records",
+                wraps=self.db.delete_analysis_history_records,
+            ) as delete,
+        ):
+            with self.assertRaises(Exception) as raised:
+                delete_history_by_code(" ", db_manager=self.db)
+
+        self.assertEqual(getattr(raised.exception, "status_code", None), 400)
+        query.assert_not_called()
+        delete.assert_not_called()
+        with self.db.get_session() as session:
+            self.assertIsNotNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first())
 
     def _build_result(self) -> AnalysisResult:
         """构造分析结果"""
@@ -663,8 +749,10 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 news_content="大盘复盘正文",
                 context_snapshot={
                     "report_kind": "market_review",
+                    "market_review_region": "jp,kr",
                     "market_review_payload": {
                         "kind": "market_review",
+                        "region": "jp,kr",
                         "sections": [{"title": "复盘", "markdown": "结构化正文"}],
                     },
                 },
@@ -684,8 +772,21 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["stock_code"], "MARKET")
         self.assertEqual(payload["items"][0]["report_type"], "market_review")
+        self.assertEqual(payload["items"][0]["region"], "jp,kr")
         self.assertIsNone(payload["items"][0]["action"])
         self.assertIsNone(payload["items"][0]["action_label"])
+
+        if get_history_list is not None:
+            response = get_history_list(
+                stock_code="MARKET",
+                report_type="market_review",
+                start_date=None,
+                end_date=None,
+                page=1,
+                limit=10,
+                db_manager=self.db,
+            )
+            self.assertEqual(response.items[0].region, "jp,kr")
 
     def test_distinct_stock_bar_excludes_market_review_records_by_default(self) -> None:
         """The stock bar aggregation should not mix MARKET into ordinary stock entries."""
@@ -1537,6 +1638,65 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsNone(report.details.analysis_context_pack_overview)
         self.assertIsNone(report.details.context_snapshot)
 
+    def test_history_detail_restores_market_structure_from_raw_result_without_snapshot(self) -> None:
+        """SAVE_CONTEXT_SNAPSHOT=false should still expose market_structure saved in raw_result."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        market_structure = {
+            "schema_version": "market-structure-v1",
+            "status": "partial",
+            "market": "cn",
+            "market_theme_context": {
+                "schema_version": "market-theme-v1",
+                "status": "partial",
+                "market": "cn",
+                "active_themes": [{"name": "机器人概念"}],
+            },
+            "stock_market_position": {
+                "schema_version": "stock-market-position-v1",
+                "status": "partial",
+                "stock_code": "300024",
+                "market": "cn",
+                "primary_theme": {"name": "机器人概念"},
+            },
+        }
+        result = self._build_result()
+        result.market_structure_context = market_structure
+        query_id = "query_market_structure_snapshot_disabled_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot={"market_structure_context": {"ignored": True}},
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            self.assertIsNone(row.context_snapshot)
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.details.context_snapshot)
+        self.assertEqual(
+            report.details.market_structure["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertEqual(
+            report.details.raw_result["market_structure_context"]["market_theme_context"]["active_themes"][0]["name"],
+            "机器人概念",
+        )
+        self.assertNotIn(
+            "raw_result",
+            report.details.raw_result,
+        )
+
     def test_history_markdown_localizes_english_report_and_placeholder_name(self) -> None:
         """History markdown should preserve report_language for English reports."""
         result = AnalysisResult(
@@ -1594,6 +1754,80 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIn("Core Conclusion", markdown)
         self.assertIn("Unnamed Stock (AAPL)", markdown)
         self.assertNotIn("核心结论", markdown)
+
+    def test_history_markdown_signal_metadata_uses_explicit_avoid_action(self) -> None:
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=90,
+            trend_prediction="Bullish",
+            operation_advice="Hold",
+            analysis_summary="Risk remains elevated.",
+            report_language="en",
+            action="avoid",
+            action_label="Avoid",
+        )
+
+        markdown = HistoryService(self.db)._generate_single_stock_markdown(
+            result,
+            MagicMock(created_at=None),
+        )
+
+        self.assertIn("**🟡 Avoid** | Bullish", markdown)
+        self.assertNotIn("Strong Buy", markdown)
+
+    def test_history_markdown_handles_legacy_strategy_synthesis_shapes(self) -> None:
+        service = HistoryService(self.db)
+        record = MagicMock(created_at=None)
+
+        for malformed in ("bad-shape", ["bad-shape"], 42, True):
+            result = AnalysisResult(
+                code="600519",
+                name="贵州茅台",
+                sentiment_score=50,
+                trend_prediction="震荡",
+                operation_advice="观望",
+                report_language="zh",
+                dashboard={
+                    "core_conclusion": {"one_sentence": "测试"},
+                    "intelligence": {},
+                    "battle_plan": {},
+                    "strategy_synthesis": malformed,
+                },
+            )
+
+            markdown = service._generate_single_stock_markdown(result, record)
+
+            self.assertNotIn("多策略综合", markdown)
+
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=50,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "测试"},
+                "intelligence": {},
+                "battle_plan": {},
+                "strategy_synthesis": {
+                    "final_signal": "hold",
+                    "consensus_level": "insufficient",
+                    "conflict_severity": "none",
+                    "conflict_count": 0,
+                    "supporting_skills": "bad-shape",
+                    "opposing_skills": ["bad-shape"],
+                    "conflicts": "bad-shape",
+                    "summary_params": {"invalid_opinion_count": "3"},
+                },
+            },
+        )
+
+        markdown = service._generate_single_stock_markdown(result, record)
+
+        self.assertIn("多策略综合", markdown)
+        self.assertIn("另有 3 个策略解析失败", markdown)
 
     def test_history_markdown_returns_persisted_market_review_report(self) -> None:
         """Market review history should return the saved Markdown without rebuilding a stock report."""

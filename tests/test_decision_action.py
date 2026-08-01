@@ -5,6 +5,9 @@ import pytest
 
 from src.schemas.decision_action import (
     build_action_fields,
+    display_action_fields_for_result,
+    display_decision_type_for_result,
+    display_operation_advice_for_result,
     localize_action_label,
     normalize_decision_action,
 )
@@ -293,6 +296,23 @@ def test_localize_action_label_uses_report_language() -> None:
     assert localize_action_label("avoid", "en") == "Avoid"
 
 
+@pytest.mark.parametrize(
+    ("action", "expected_label"),
+    [
+        ("buy", "매수"),
+        ("add", "추가 매수"),
+        ("hold", "보유"),
+        ("reduce", "비중축소"),
+        ("sell", "매도"),
+        ("watch", "관망"),
+        ("avoid", "회피"),
+        ("alert", "경고"),
+    ],
+)
+def test_localize_action_label_supports_korean(action: str, expected_label: str) -> None:
+    assert localize_action_label(action, "ko") == expected_label
+
+
 def test_build_action_fields_respects_market_review_exclusion() -> None:
     fields = build_action_fields(
         operation_advice="买入",
@@ -366,3 +386,48 @@ def test_build_action_fields_keeps_neutral_score_conflict_when_guardrail_is_expl
         guardrail_reason="等待回踩确认",
         align_with_score=True,
     ) == {"action": "watch", "action_label": "观望"}
+
+
+def test_display_helpers_share_score_aligned_action_with_report_rows_and_counts() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Hold",
+            "action": None,
+            "action_label": None,
+            "sentiment_score": 72,
+            "decision_type": "hold",
+            "report_language": "en",
+            "dashboard": {},
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {"action": "buy", "action_label": "Buy"}
+    assert display_operation_advice_for_result(result) == "Buy"
+    assert display_decision_type_for_result(result) == "buy"
+
+
+def test_display_helpers_preserve_neutral_action_when_guardrail_was_applied() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "operation_advice": "Hold",
+            "action": "hold",
+            "action_label": "Hold",
+            "sentiment_score": 72,
+            "decision_type": "hold",
+            "report_language": "en",
+            "dashboard": {
+                "decision_stability": {
+                    "applied": True,
+                    "reason": "Wait for confirmation",
+                }
+            },
+        },
+    )()
+
+    assert display_action_fields_for_result(result) == {"action": "hold", "action_label": "Hold"}
+    assert display_operation_advice_for_result(result) == "Hold"
+    assert display_decision_type_for_result(result) == "hold"

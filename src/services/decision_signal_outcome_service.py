@@ -11,9 +11,14 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.core.backtest_engine import BacktestEngine, EvaluationConfig
-from src.repositories.decision_signal_outcome_repo import DecisionSignalOutcomeRepository
+from src.repositories.decision_signal_outcome_repo import (
+    DecisionSignalOutcomeRepository,
+    OutcomeStatsRow,
+)
 from src.repositories.decision_signal_repo import DecisionSignalRepository
 from src.repositories.stock_repo import StockRepository
+from src.schemas.decision_profile import VALID_DECISION_PROFILES
+from src.services.decision_signal_data_quality import normalize_decision_signal_data_quality
 from src.services.decision_signal_service import (
     HORIZONS,
     SIGNAL_STATUSES,
@@ -53,6 +58,24 @@ RETRYABLE_UNABLE_REASONS = frozenset({
     "invalid_end_close",
 })
 BATCH_CANDIDATE_SCAN_PAGE_SIZE = 500
+MIN_PROFILE_CALIBRATION_SAMPLE_SIZE = 30
+PROFILE_SOURCES = frozenset({
+    "auto_default",
+    "backfill_defaulted",
+    "legacy_unknown",
+    "user_selected",
+})
+PROFILE_CALIBRATION_BREAKDOWN_DIMENSIONS = (
+    ("decision_profile", ("decision_profile",)),
+    ("decision_profile_action", ("decision_profile", "action")),
+    ("decision_profile_horizon", ("decision_profile", "horizon")),
+    ("decision_profile_market_phase", ("decision_profile", "market_phase")),
+    (
+        "decision_profile_data_quality_level",
+        ("decision_profile", "data_quality_level"),
+    ),
+    ("profile_source", ("profile_source",)),
+)
 
 
 class DecisionSignalOutcomeService:
@@ -310,11 +333,12 @@ class DecisionSignalOutcomeService:
             if statuses
             else list(DEFAULT_STATS_STATUSES)
         )
-        rows = self.repo.list_stats_rows(
+        stats_rows = self.repo.list_stats_rows(
             engine_version=engine_version_norm,
             horizons=horizons_norm,
             statuses=statuses_norm,
         )
+        rows = [stats_row.outcome for stats_row in stats_rows]
         dimensions = (
             "action",
             "market",
@@ -335,6 +359,7 @@ class DecisionSignalOutcomeService:
             "horizons": horizons_norm,
             "statuses": statuses_norm,
             "breakdowns": breakdowns,
+            "profile_calibration": self._profile_calibration(stats_rows),
         }
 
     def get_feedback(self, signal_id: int) -> Dict[str, Any]:
@@ -502,18 +527,35 @@ class DecisionSignalOutcomeService:
         return self._parse_date(signal.created_at)
 
     def _data_quality_level(self, signal: DecisionSignalRecord) -> str:
-        value = self._json_loads(signal.data_quality_summary_json)
+        raw_summary = signal.data_quality_summary_json
+        if raw_summary and raw_summary.strip():
+            try:
+                summary = json.loads(raw_summary)
+            except json.JSONDecodeError as exc:
+                logger.warning("Invalid decision signal sidecar source JSON: %s", exc)
+                return "unknown"
+            explicit_level = self._explicit_data_quality_level(summary)
+            if explicit_level is not None:
+                return self._short_label(explicit_level)
+        metadata = self._json_loads(signal.metadata_json)
+        if isinstance(metadata, dict):
+            return normalize_decision_signal_data_quality(metadata.get("data_quality_level"))
+        return "unknown"
+
+    @staticmethod
+    def _explicit_data_quality_level(value: Any) -> Optional[Any]:
         if isinstance(value, dict):
             for key in ("level", "quality_level"):
                 level = value.get(key)
                 if level not in (None, ""):
-                    return self._short_label(level)
+                    return level
             nested = value.get("data_quality")
             if isinstance(nested, dict) and nested.get("level") not in (None, ""):
-                return self._short_label(nested.get("level"))
+                return nested.get("level")
+            return None
         if isinstance(value, str) and value.strip():
-            return self._short_label(value)
-        return "unknown"
+            return value
+        return None
 
     def _holding_state(self, signal: DecisionSignalRecord) -> str:
         metadata = self._json_loads(signal.metadata_json)
@@ -669,6 +711,122 @@ class DecisionSignalOutcomeService:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
+
+    def _profile_calibration(self, stats_rows: List[OutcomeStatsRow]) -> Dict[str, Any]:
+        samples: List[Dict[str, Any]] = []
+        for stats_row in stats_rows:
+            outcome = stats_row.outcome
+            samples.append({
+                "outcome": outcome,
+                "decision_profile": self._profile_dimension(stats_row.decision_profile),
+                "action": str(outcome.action or "unknown"),
+                "horizon": str(outcome.horizon or "unknown"),
+                "market_phase": str(outcome.market_phase or "unknown"),
+                "data_quality_level": str(outcome.data_quality_level or "unknown"),
+                "profile_source": self._profile_source(stats_row.metadata_json),
+            })
+        breakdowns = {
+            name: self._profile_calibration_breakdown(samples, dimensions)
+            for name, dimensions in PROFILE_CALIBRATION_BREAKDOWN_DIMENSIONS
+        }
+        return {
+            "minimum_completed_sample_size": MIN_PROFILE_CALIBRATION_SAMPLE_SIZE,
+            "breakdowns": breakdowns,
+        }
+
+    def _profile_calibration_breakdown(
+        self,
+        samples: List[Dict[str, Any]],
+        dimensions: Tuple[str, ...],
+    ) -> List[Dict[str, Any]]:
+        grouped: Dict[Tuple[str, ...], List[DecisionSignalOutcomeRecord]] = defaultdict(list)
+        for sample in samples:
+            key = tuple(str(sample.get(dimension) or "unknown") for dimension in dimensions)
+            grouped[key].append(sample["outcome"])
+
+        buckets = [
+            {
+                "dimensions": dict(zip(dimensions, values)),
+                **self._profile_calibration_aggregate(rows),
+            }
+            for values, rows in grouped.items()
+        ]
+        return sorted(
+            buckets,
+            key=lambda item: (
+                -int(item["total"]),
+                tuple(str(item["dimensions"][dimension]) for dimension in dimensions),
+            ),
+        )
+
+    def _profile_calibration_aggregate(
+        self,
+        rows: List[DecisionSignalOutcomeRecord],
+    ) -> Dict[str, Any]:
+        aggregate = self._aggregate(rows)
+        sample_sufficient = int(aggregate["completed"]) >= MIN_PROFILE_CALIBRATION_SAMPLE_SIZE
+        direction_denominator = int(aggregate["hit"]) + int(aggregate["miss"])
+        adverse_excursions = [
+            value
+            for row in rows
+            if (value := self._row_max_adverse_excursion_pct(row)) is not None
+        ]
+        return {
+            "total": aggregate["total"],
+            "completed": aggregate["completed"],
+            "unable": aggregate["unable"],
+            "hit": aggregate["hit"],
+            "miss": aggregate["miss"],
+            "neutral": aggregate["neutral"],
+            "sample_sufficient": sample_sufficient,
+            "hit_rate_pct": aggregate["hit_rate_pct"] if sample_sufficient else None,
+            "avg_stock_return_pct": aggregate["avg_stock_return_pct"] if sample_sufficient else None,
+            "miss_rate_pct": (
+                round(int(aggregate["miss"]) / direction_denominator * 100, 2)
+                if sample_sufficient and direction_denominator
+                else None
+            ),
+            "unable_rate_pct": (
+                round(int(aggregate["unable"]) / int(aggregate["total"]) * 100, 2)
+                if sample_sufficient and int(aggregate["total"])
+                else None
+            ),
+            "max_adverse_excursion_pct": (
+                round(max(adverse_excursions), 4)
+                if sample_sufficient and adverse_excursions
+                else None
+            ),
+        }
+
+    @classmethod
+    def _row_max_adverse_excursion_pct(
+        cls,
+        row: DecisionSignalOutcomeRecord,
+    ) -> Optional[float]:
+        if not cls._is_positive_finite(row.start_price):
+            return None
+        start_price = float(row.start_price)
+        if row.action in {"buy", "add", "hold", "watch", "alert"}:
+            if not cls._is_positive_finite(row.min_low):
+                return None
+            return max(0.0, (start_price - float(row.min_low)) / start_price * 100)
+        if row.action in {"sell", "reduce", "avoid"}:
+            if not cls._is_positive_finite(row.max_high):
+                return None
+            return max(0.0, (float(row.max_high) - start_price) / start_price * 100)
+        return None
+
+    @staticmethod
+    def _profile_dimension(value: Any) -> str:
+        profile = str(value or "").strip().lower()
+        return profile if profile in VALID_DECISION_PROFILES else "unknown"
+
+    def _profile_source(self, metadata_json: Optional[str]) -> str:
+        metadata = self._json_loads(metadata_json)
+        if not isinstance(metadata, dict):
+            return "unknown"
+        profile_source = str(metadata.get("profile_source") or "").strip().lower()
+        return profile_source if profile_source in PROFILE_SOURCES else "unknown"
 
     def _breakdown(self, rows: List[DecisionSignalOutcomeRecord], dimension: str) -> List[Dict[str, Any]]:
         grouped: Dict[str, List[DecisionSignalOutcomeRecord]] = defaultdict(list)

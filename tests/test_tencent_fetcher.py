@@ -3,11 +3,104 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 
 from data_provider.tencent_fetcher import TencentFetcher, _to_tencent_symbol
+
+
+def _read_priority_from_fresh_process(value: str | None) -> int:
+    env = os.environ.copy()
+    if value is None:
+        env.pop("TENCENT_PRIORITY", None)
+    else:
+        env["TENCENT_PRIORITY"] = value
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from data_provider.tencent_fetcher import TencentFetcher; "
+                "print(TencentFetcher().priority)"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return int(result.stdout.strip().splitlines()[-1])
+
+
+def test_tencent_priority_defaults_to_last_resort_and_allows_override() -> None:
+    assert _read_priority_from_fresh_process(None) == 5
+    assert _read_priority_from_fresh_process("2") == 2
+
+
+def test_tencent_priority_honors_env_set_after_package_import() -> None:
+    env = os.environ.copy()
+    env.pop("TENCENT_PRIORITY", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import data_provider; "
+                "import os; "
+                "os.environ['TENCENT_PRIORITY'] = '0'; "
+                "from data_provider import DataFetcherManager; "
+                "manager = DataFetcherManager(); "
+                "print([(f.name, f.priority) for f in manager._get_fetchers_snapshot() if f.name == 'TencentFetcher'][0][1])"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert int(result.stdout.strip().splitlines()[-1]) == 0
+
+
+def test_tencent_priority_honors_dotenv_when_manager_loads_config_after_package_import(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("TENCENT_PRIORITY=0\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("TENCENT_PRIORITY", None)
+    env["ENV_FILE"] = str(env_file)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import data_provider; "
+                "from data_provider import DataFetcherManager; "
+                "manager = DataFetcherManager(); "
+                "print([(f.name, f.priority) for f in manager._get_fetchers_snapshot() if f.name == 'TencentFetcher'][0][1])"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert int(result.stdout.strip().splitlines()[-1]) == 0
 
 
 def test_tencent_symbol_conversion_supports_a_share_markets() -> None:
