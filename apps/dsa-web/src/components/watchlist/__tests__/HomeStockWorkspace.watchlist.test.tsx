@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { HomeStockWorkspace } from '../HomeStockWorkspace';
 import type { HomeWatchlistRow } from '../HomeStockWorkspace';
-import type { StockBarItem, TaskInfo } from '../../../types/analysis';
+import type { StockBarItem } from '../../../types/analysis';
 
 const baseHistoryItem: StockBarItem = {
   id: 1001,
@@ -11,6 +11,7 @@ const baseHistoryItem: StockBarItem = {
   lastAnalysisTime: '2026-03-21T08:00:00Z',
   sentimentScore: 72,
   action: 'hold',
+  analysisCount: 1,
 };
 
 function makeRow(overrides: Partial<HomeWatchlistRow> = {}): HomeWatchlistRow {
