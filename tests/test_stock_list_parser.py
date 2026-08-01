@@ -236,51 +236,57 @@ class TestContract3PrefixedUnknownDegradesToStock:
         assert target.normalized_code == "AAPL"
 
     @pytest.mark.parametrize(
-        "ticker,expected_canonical_id,expected_prefix,expected_normalized_code",
+        "ticker,expected_canonical_id",
         [
-            # Lowercase bare US tickers whose real symbol begins with ``US``
-            # must NOT be mis-split into ``(us, fd)`` / ``(us, m)`` — those
-            # lose the real ticker shape and silently rewrite to a different
-            # symbol. The normalizer already upper-cases them to ``USFD``/
-            # ``USM`` which fits the ``^[A-Z]{1,5}$`` bare-ticker shape, so
-            # they must round-trip as bare tickers, not as explicit prefixes.
-            ("usfd", "USFD", None, "USFD"),
-            ("usm", "USM", None, "USM"),
-            # Lowercase explicit-prefix forms (lowercase ``us`` + lowercase
-            # base) where the upper-cased token would exceed 5 letters and
-            # so cannot be a bare US ticker. The ``us`` prefix is recognised
-            # and the canonical id is upper-cased so it stays consistent
-            # with bare US ticker resolution (``aapl``→``AAPL``) and with
-            # mixed-case explicit-prefix forms (``usAAPL``→``AAPL``).
-            # ``normalized_code`` is a diagnostic breadcrumb reflecting the
-            # post-split bare token and retains the user's lowercase base;
-            # callers consuming the canonical id see ``AAPL``/``SHOP``.
-            ("usaapl", "AAPL", "us", "aapl"),
-            ("usshop", "SHOP", "us", "shop"),
+            # Phase 1 contract (issue #2063, maintainer clarification
+            # 2026-08-01): the ``us`` exchange prefix is case-insensitive
+            # on the prefix itself, but the ticker base must arrive in the
+            # canonical uppercase US symbol shape. Fully lowercase
+            # ``us``-prefixed tokens are surfaced as ``unsupported`` so
+            # callers can prompt the user to retype in mixed/upper case.
+            # This uniformly rejects bare-US collisions (``usfd``/``usm``,
+            # previously OR-COR-9c3d2c44) and explicit-prefix collisions
+            # (``usibm``/``usamd``/``usge``/``usbk``/``usaapl``/``usshop``,
+            # previously OR-COR-2f0d1a7e) under one consistent contract
+            # rule — no US ticker whitelist or length-dependent heuristic
+            # needed. ``canonical_id`` carries the raw token verbatim so
+            # the caller can echo it back to the user as the offending
+            # input; ``normalized_prefix`` is None because the input was
+            # NOT accepted as an explicit prefix form.
+            ("usfd", "usfd"),
+            ("usm", "usm"),
+            ("usibm", "usibm"),
+            ("usamd", "usamd"),
+            ("usge", "usge"),
+            ("usbk", "usbk"),
+            ("usaapl", "usaapl"),
+            ("usshop", "usshop"),
         ],
     )
-    def test_lowercase_us_ticker_regression(
+    def test_lowercase_us_prefix_is_unsupported(
         self,
         ticker: str,
         expected_canonical_id: str,
-        expected_prefix: Optional[str],
-        expected_normalized_code: str,
     ) -> None:
-        """Regression for PR #2129 review blocker ``OR-COR-9c3d2c44``.
-
-        Lowercase bare US tickers beginning with ``us`` (``usfd``/``usm``)
-        must keep their full uppercase canonical form, and lowercase
-        explicit-prefix inputs (``usaapl``/``usshop``) must produce the
-        uppercase canonical base — consistent with mixed-case explicit
-        prefixes (``usAAPL``→``AAPL``) and bare lowercase tickers
-        (``aapl``→``AAPL``).
+        """Regression for PR #2129 review blockers OR-COR-9c3d2c44 (closed)
+        and OR-COR-2f0d1a7e: fully lowercase ``us``-prefixed tokens are
+        neither bare US tickers nor explicit-prefix stock symbols under
+        the Phase 1 contract from issue #2063 (maintainer clarification
+        2026-08-01). They are surfaced as ``unsupported`` so callers can
+        prompt the user to retype the ticker base in canonical uppercase
+        form (``usAAPL``/``usBRK``/``USFD``). The contract closes both the
+        ``usfd``/``usm`` silent bare-rewrite bloom (OR-COR-9c3d2c44) and
+        the ``usibm``/``usge``/``usbk``/``usaapl`` length-dependent
+        explicit-prefix split bifurcation (OR-COR-2f0d1a7e) under one
+        uniform rule — no US ticker whitelist required.
         """
         target = parse_analysis_target(ticker)
-        assert target.asset_type == ParseStatus.STOCK
+        assert target.asset_type == ParseStatus.UNSUPPORTED
         assert target.exchange == "US"
         assert target.canonical_id == expected_canonical_id
-        assert target.normalized_prefix == expected_prefix
-        assert target.normalized_code == expected_normalized_code
+        assert target.normalized_prefix is None
+        assert target.unsupported_reason is not None
+        assert "uppercase" in target.unsupported_reason
 
 
 # ---------------------------------------------------------------------------

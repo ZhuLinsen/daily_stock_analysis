@@ -448,9 +448,14 @@ def parse_analysis_target(
 
     Args:
         raw_input: A single token from :func:`split_stock_list` (or any
-            user-supplied string you want classified). It may carry a lower
-            or upper-case exchange prefix (``sh``/``sz``/``bj``/``hk``/``us``)
-            or just a bare code.
+            user-supplied string you want classified). The exchange prefix
+            (``sh``/``sz``/``bj``/``hk``/``us``) is case-insensitive, but the
+            ticker base following an ``us`` prefix must be in canonical
+            uppercase US symbol shape — fully lowercase ``us``-prefixed
+            tokens such as ``usfd``/``usibm``/``usaapl`` are surfaced as
+            ``unsupported`` and not silently rewritten. Tokens without
+            any prefix may be bare codes in either case (``AAPL`` or
+            ``aapl``) and the normalizer will upper-case them.
         registry: Optional :class:`IndexRegistry`. Defaults to
             :func:`default_index_registry`. Callers may inject a custom
             registry (e.g. loaded from ``stocks.index.json`` once that file
@@ -498,6 +503,42 @@ def parse_analysis_target(
     # exchange when present), so contract #1/#2/#3 stay intact.
     from .stock_code_utils import _normalize_code_and_exchange
     norm_code, norm_exchange = _normalize_code_and_exchange(raw)
+
+    # Phase 1 contract (issue #2063, maintainer clarification 2026-08-01):
+    # the ``us`` exchange prefix is case-insensitive on the *prefix* itself
+    # but the ticker base must arrive in canonical uppercase US symbol
+    # shape. Fully lowercase ``us``-prefixed tokens — e.g. ``usfd`` /
+    # ``usm`` / ``usibm`` / ``usaapl`` / ``usshop`` — are neither bare US
+    # tickers (silently upper-casing would synthesise ``USFD`` / ``USIBM``,
+    # which are different real or non-existent securities) nor explicit
+    # ``us``-prefix stock symbols (silently splitting would rewrite them
+    # to ``FD`` / ``IBM`` / ``AAPL``, losing the user's original intent).
+    # Reject them up-front as ``unsupported`` regardless of what the
+    # normalizer computed for ``norm_code``, so the caller can prompt the
+    # user to retype with a mixed/uppercase prefix base. This closes both
+    # OR-COR-9c3d2c44 (``usfd``/``usm`` silent bare rewrite) and
+    # OR-COR-2f0d1a7e (``usibm``/``usge``/``usbk``/``usaapl`` length-dependent
+    # split bifurcation) under one consistent contract rule.
+    if (
+        raw.isalpha()
+        and raw.startswith("us")
+        and len(raw) > 2
+        and raw.islower()
+    ):
+        return AnalysisTarget(
+            raw_input=raw_input,
+            asset_type=ParseStatus.UNSUPPORTED,
+            canonical_id=raw,
+            display_code=raw,
+            exchange="US",
+            unsupported_reason=(
+                f"us-prefixed token {raw!r} must use an uppercase ticker "
+                f"base (e.g. 'us{raw[2:].upper()}') or be a bare US "
+                f"ticker in canonical uppercase form"
+            ),
+            normalized_prefix=None,
+            normalized_code=raw,
+        )
 
     # Foreign Yahoo suffix forms (``7203.T``/``005930.KS``/``2330.TW``/)
     # ``6505.TWO``) round-trip through ``_normalize_code_and_exchange`` with
@@ -711,22 +752,18 @@ def parse_analysis_target(
         # ``SHOP``, ``usBRK`` → ``USBRK``). For mixed-case inputs such as
         # ``usBRK`` the normalizer's ``base.isdigit()`` guard in
         # ``_split_explicit_exchange`` prevents ``us`` from being recognised
-        # as an exchange prefix, so we restore the ``us``-prefix split here
-        # — but ONLY when the user originally typed a *mixed-case* ``us``
-        # prefix (``usBRK`` not ``USBRK`` and not ``usbrk``). An
-        # all-uppercase token that happens to begin with ``US`` is a bare US
-        # ticker (``USFD``/``USM``) and must NOT be mis-split into ``(us,
-        # FD)``/``(us, M)`` — that would silently lose the real ticker shape.
-        # A *fully lowercase* token such as ``usfd``/``usm`` is similarly a
-        # bare ticker (the normalizer already upper-cased it to ``USFD``/
-        # ``USM`` which fits the ``^[A-Z]{1,5}$`` bare-ticker shape) — the
-        # lowercase form is the user's typing convenience, NOT an explicit
-        # prefix. The unambiguous signal for an explicit prefix is mixed
-        # case: lowercase ``us`` followed by uppercase base letters.
+        # as an exchange prefix, so we restore the ``us``-prefix split here.
+        # An all-uppercase token that happens to begin with ``US`` is a bare
+        # US ticker (``USFD``/``USM`` ≤5 letters) and must NOT be mis-split
+        # into ``(us, FD)``/``(us, M)`` — that would silently lose the real
+        # ticker shape. Fully lowercase ``us``-prefixed tokens are already
+        # rejected by the early-return guard above (Phase 1 contract from
+        # issue #2063, maintainer clarification 2026-08-01), so the only
+        # tokens reaching this branch are mixed-case or all-uppercase.
         if (
             raw.startswith("us")
             and len(raw) > 2
-            and not raw.islower()
+            and raw.isalpha()
             and not raw.isupper()
         ):
             bare_from_us = raw[2:]
