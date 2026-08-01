@@ -24,14 +24,14 @@ def _bash_path(path: Path) -> str:
     return f"/mnt/{drive}/{relative}"
 
 
-def test_windows_backend_build_script_collects_alphasift_adapter() -> None:
+def test_windows_backend_build_script_collects_builtin_screening_engine() -> None:
     script = _read_text(REPO_ROOT / "scripts" / "build-backend.ps1")
     main_py = _read_text(REPO_ROOT / "main.py")
 
-    assert "Checking AlphaSift adapter availability" in script
-    assert "import alphasift.dsa_adapter" in script
+    assert "Checking built-in screening engine availability" in script
+    assert "import src.services.screening.pipeline" in script
     assert "--collect-all" in script
-    assert "alphasift.dsa_adapter" in script
+    assert "src.services.screening" in script
     assert "hiddenImports" in script
     assert "Verifying packaged runtime imports" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in script
@@ -39,25 +39,30 @@ def test_windows_backend_build_script_collects_alphasift_adapter() -> None:
     assert "$probeProcess.ExitCode" in script
     assert "& $packagedEntry" not in script
     assert "Packaged backend cannot import $module" in script
+    assert "Verifying packaged screening strategies" in script
+    assert "_internal\\src\\services\\screening\\strategies" in script
+    assert "packagedScreeningStrategyCount" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
 
 
-def test_macos_backend_build_script_collects_alphasift_adapter() -> None:
+def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
     script = _read_text(REPO_ROOT / "scripts" / "build-backend-macos.sh")
     main_py = _read_text(REPO_ROOT / "main.py")
 
-    assert "Checking AlphaSift adapter availability..." in script
-    assert "import alphasift.dsa_adapter" in script
+    assert "Checking built-in screening engine availability..." in script
+    assert "import src.services.screening.pipeline" in script
     assert "--collect-all" in script
-    assert "cmd+=(\"--collect-all\" \"alphasift\")" in script
+    assert 'cmd+=("--collect-all" "src.services.screening")' in script
     assert "packaged_entry=\"${packaged_root}/stock_analysis\"" in script
     assert "--help" in script
     assert 'DSA_PACKAGED_IMPORT_PROBE="${module}"' in script
     assert "dsa-packaged-import.log" in script
     assert "PathFinder.find_spec(" not in script
     assert "zipfile" not in script
-    assert 'normalized.startswith("alphasift/dsa_adapter.")' not in script
+    assert "Verifying packaged screening strategies..." in script
+    assert "_internal/src/services/screening/strategies" in script
+    assert "packaged_screening_strategy_count" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
 

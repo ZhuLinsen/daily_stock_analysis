@@ -2323,6 +2323,28 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         self.assertIn("Microsoft", q)
         self.assertNotIn("微软", q)
 
+    def test_search_stock_events_reuses_search_cache(self) -> None:
+        service = SearchService(
+            bocha_keys=["dummy_key"],
+            searxng_public_instances_enabled=False,
+        )
+        provider = SimpleNamespace(
+            is_available=True,
+            name="EventProvider",
+            search=MagicMock(
+                return_value=_response(
+                    [_result("贵州茅台年度报告", datetime.now().date().isoformat())]
+                )
+            ),
+        )
+        service._providers = [provider]
+
+        first = service.search_stock_events("600519", "贵州茅台")
+        second = service.search_stock_events("600519", "贵州茅台")
+
+        self.assertIs(second, first)
+        provider.search.assert_called_once()
+
     def test_stock_english_name_map_is_subset_of_stock_name_map_foreign_keys(self) -> None:
         """Single source of truth invariant (massif-01 blocker 3):
         STOCK_ENGLISH_NAME_MAP keys must be a subset of STOCK_NAME_MAP's

@@ -243,11 +243,11 @@ After configuring any available AI API key, the Web `/chat` page can use strateg
 
 ## 🧩 Related Projects
 
-> DSA focuses on daily analysis reports. These sibling projects cover stock screening, strategy validation, and strategy evolution for users who want to extend the workflow. They are maintained independently today, with candidate import, backtest validation, and report handoff planned as future integration directions.
+> DSA focuses on daily analysis reports. Its built-in screening implementation references AlphaSift, while AlphaEvo covers strategy validation and evolution.
 
 | Project | Focus |
 |---------|-------|
-| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | Multi-factor stock screening and full-market scanning for building candidate watchlists |
+| [AlphaSift](https://github.com/ZhuLinsen/alphasift) | Reference project for DSA's built-in screening engine |
 | [AlphaEvo](https://github.com/ZhuLinsen/alphaevo) | Strategy backtesting and self-evolution experiments for validating rules and iteratively exploring strategy parameters and combinations |
 
 ## 📞 Contact

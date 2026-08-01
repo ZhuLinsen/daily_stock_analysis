@@ -193,7 +193,6 @@ class SystemConfigService:
         }
     }
     _SERVER_MASKED_CONFIG_KEYS: Set[str] = {
-        "ALPHASIFT_INSTALL_SPEC",
         "LLM_HERMES_API_KEY",
         "LLM_HERMES_API_KEYS",
         "LLM_HERMES_EXTRA_HEADERS",

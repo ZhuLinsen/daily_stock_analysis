@@ -4075,6 +4075,15 @@ class SearchService:
         # 构建针对性查询
         event_query = " OR ".join(event_types)
         query = f"{effective_name} ({event_query})"
+        cache_key = self._cache_key(
+            f"stock_events:{query}|target={stock_code}:{stock_name}",
+            5,
+            0,
+        )
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            logger.info("使用缓存事件搜索结果: %s(%s)", stock_name, stock_code)
+            return cached
         
         logger.info(f"搜索股票事件: {stock_name}({stock_code}) - {event_types}")
         
@@ -4086,6 +4095,7 @@ class SearchService:
             response = provider.search(query, max_results=5)
             
             if response.success:
+                self._put_cache(cache_key, response)
                 return response
         
         return SearchResponse(

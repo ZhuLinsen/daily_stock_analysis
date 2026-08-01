@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import StockScreeningPage from '../StockScreeningPage';
 
 const {
-  enableAlphaSift,
-  getAlphaSiftStatus,
+  enableScreening,
+  getScreeningStatus,
   getHotspotDetail,
   getHotspots,
   getStrategies,
@@ -22,7 +22,7 @@ const {
       taskId: 'screen-task-1',
       traceId: 'screen-task-1',
       status: 'pending',
-      message: 'AlphaSift 选股任务已提交',
+      message: 'Screening 选股任务已提交',
       strategy: 'dual_low',
       market: 'cn',
       maxResults: 3,
@@ -40,8 +40,8 @@ const {
     };
   });
   return {
-    enableAlphaSift: vi.fn(),
-    getAlphaSiftStatus: vi.fn(),
+    enableScreening: vi.fn(),
+    getScreeningStatus: vi.fn(),
     getHotspotDetail: vi.fn(),
     getHotspots: vi.fn(),
     getStrategies: vi.fn(),
@@ -63,10 +63,10 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-vi.mock('../../api/alphasift', () => ({
-  alphasiftApi: {
-    enable: () => enableAlphaSift(),
-    getStatus: () => getAlphaSiftStatus(),
+vi.mock('../../api/screening', () => ({
+  screeningApi: {
+    enable: () => enableScreening(),
+    getStatus: () => getScreeningStatus(),
     getHotspotDetail: (payload: unknown) => getHotspotDetail(payload),
     getHotspots: (payload: unknown) => getHotspots(payload),
     getStrategies: () => getStrategies(),
@@ -105,8 +105,8 @@ function createDeferred<T>() {
 
 describe('StockScreeningPage', () => {
   beforeEach(() => {
-    enableAlphaSift.mockReset();
-    getAlphaSiftStatus.mockReset();
+    enableScreening.mockReset();
+    getScreeningStatus.mockReset();
     getHotspotDetail.mockReset();
     getHotspots.mockReset();
     getStrategies.mockReset();
@@ -145,39 +145,36 @@ describe('StockScreeningPage', () => {
     window.sessionStorage.clear();
   });
 
-  it('re-syncs enabled state when AlphaSift availability check fails after config is enabled', async () => {
-    getAlphaSiftStatus
+  it('re-syncs enabled state when Screening availability check fails after config is enabled', async () => {
+    getScreeningStatus
       .mockResolvedValueOnce({
         enabled: false,
         available: false,
-        installSpecIsDefault: true,
       })
       .mockResolvedValueOnce({
         enabled: true,
         available: false,
-        installSpecIsDefault: true,
       });
-    enableAlphaSift.mockRejectedValueOnce(new Error('AlphaSift 适配层不可用。请执行 pip install -r requirements.txt'));
+    enableScreening.mockRejectedValueOnce(new Error('DSA 内建选股引擎不可用，请检查后端日志'));
 
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('选股未开启')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /运行选股/ })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: '开启 AlphaSift' }));
+    fireEvent.click(screen.getByRole('button', { name: '开启选股' }));
 
-    await waitFor(() => expect(getAlphaSiftStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getScreeningStatus).toHaveBeenCalledTimes(2));
     expect(screen.getByText('选股未开启')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /运行选股/ })).toBeDisabled();
-    expect(screen.getByText(/适配层当前不可用/)).toBeInTheDocument();
-    expect(screen.getByText('AlphaSift 适配层不可用。请执行 pip install -r requirements.txt')).toBeInTheDocument();
+    expect(screen.getByText('内建选股引擎不可用')).toBeInTheDocument();
+    expect(screen.getByText('DSA 内建选股引擎不可用，请检查后端日志')).toBeInTheDocument();
   });
 
-  it('loads AlphaSift hotspot themes on demand', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('loads Screening hotspot themes on demand', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -241,16 +238,16 @@ describe('StockScreeningPage', () => {
         stockCode: '300000',
         stockName: '中际旭创',
         autoAnalyze: true,
-        selectionSource: 'alphasift_hotspot',
+        selectionSource: 'screening_hotspot',
+        skills: ['hot_theme'],
       },
     });
   });
 
   it('localizes backend hotspot no-cache hint on initial load', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -258,20 +255,19 @@ describe('StockScreeningPage', () => {
       providerUsed: 'akshare',
       hotspots: [],
       hotspotCount: 0,
-      message: 'No cached AlphaSift hotspot snapshot. Click refresh to fetch live hotspots.',
+      message: 'No cached Screening hotspot snapshot. Click refresh to fetch live hotspots.',
     });
 
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('暂无缓存热点题材，展开后可点击刷新拉取实时数据。')).toBeInTheDocument();
-    expect(screen.queryByText(/No cached AlphaSift hotspot snapshot/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No cached Screening hotspot snapshot/)).not.toBeInTheDocument();
   });
 
   it('shows backend hotspot empty message before raw source diagnostics', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -290,10 +286,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('prefers merged hotspot route summaries over raw timeline items', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -327,10 +322,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('uses prefetched hotspot details from the hotspot list response', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -365,10 +359,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('loads selected hotspot detail once when switching themes', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -411,10 +404,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('clears loaded hotspot detail while loading a different theme', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -492,10 +484,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('ignores stale hotspot detail responses when switching themes', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots.mockResolvedValueOnce({
       enabled: true,
@@ -577,10 +568,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('reloads selected hotspot detail when refreshed themes keep the same topic', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -656,10 +646,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('keeps existing hotspot cards when manual refresh fails', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     getHotspots
       .mockResolvedValueOnce({
@@ -700,10 +689,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('shows input strategy when strategy is not in preset list', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValue({
       enabled: true,
@@ -725,7 +713,7 @@ describe('StockScreeningPage', () => {
     await waitFor(() => expect(screen.getByText(/自定义策略 \(custom_strategy_alpha\)/)).toBeInTheDocument());
   });
 
-  it('uses supported AlphaSift strategy ids and cn market', async () => {
+  it('uses supported Screening strategy ids and cn market', async () => {
     getStrategies.mockResolvedValueOnce({
       enabled: true,
       strategies: [
@@ -737,10 +725,9 @@ describe('StockScreeningPage', () => {
       ],
       strategyCount: 5,
     });
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValue({
       enabled: true,
@@ -783,10 +770,9 @@ describe('StockScreeningPage', () => {
       ],
       strategyCount: 2,
     });
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -818,11 +804,65 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('当前策略：资金热度 · A 股')).toBeInTheDocument();
   });
 
-  it('restores an in-flight screening task after remounting the page', async () => {
-    getAlphaSiftStatus.mockResolvedValue({
+  it('hands a screening candidate to DSA analysis with mapped skills', async () => {
+    getStrategies.mockResolvedValueOnce({
+      enabled: true,
+      strategies: [
+        {
+          id: 'dual_low',
+          name: '双低选股',
+          description: 'desc',
+          category: '价值',
+          analysisSkills: ['growth_quality'],
+        },
+      ],
+      strategyCount: 1,
+    });
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        {
+          rank: 1,
+          code: '600519',
+          name: '贵州茅台',
+          score: 88.5,
+          reason: '候选摘要',
+          raw: {},
+        },
+      ],
+      candidateCount: 1,
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+    const expandButton = screen.queryByRole('button', { name: '展开查看' });
+    if (expandButton) {
+      fireEvent.click(expandButton);
+    }
+    fireEvent.click(screen.getByRole('button', { name: '用 DSA 深度分析' }));
+
+    expect(navigate).toHaveBeenCalledWith('/', {
+      state: {
+        stockCode: '600519',
+        stockName: '贵州茅台',
+        autoAnalyze: true,
+        selectionSource: 'screening_result',
+        skills: ['growth_quality'],
+      },
+    });
+  });
+
+  it('restores an in-flight screening task after remounting the page', async () => {
+    getScreeningStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -844,7 +884,7 @@ describe('StockScreeningPage', () => {
         traceId: 'screen-task-1',
         status: 'processing',
         progress: 35,
-        message: '正在执行 AlphaSift 选股',
+        message: '正在执行 Screening 选股',
         result: null,
       })
       .mockResolvedValueOnce({
@@ -875,23 +915,22 @@ describe('StockScreeningPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
     expect(await screen.findByText('选股运行中')).toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toContain('screen-task-1');
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
 
     firstRender.unmount();
     render(<StockScreeningPage />);
 
     expect(await screen.findByText('恢复后的候选')).toBeInTheDocument();
     expect(screen.getByText('选股完成')).toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toBeNull();
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
   });
 
   it('keeps a restored screening task recoverable when status polling times out', async () => {
-    getAlphaSiftStatus.mockResolvedValue({
+    getScreeningStatus.mockResolvedValue({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
-    window.sessionStorage.setItem('dsa.alphasift.activeScreenTask.v1', JSON.stringify({
+    window.sessionStorage.setItem('dsa.screening.activeScreenTask.v1', JSON.stringify({
       taskId: 'screen-task-1',
       market: 'cn',
       strategy: 'dual_low',
@@ -908,14 +947,13 @@ describe('StockScreeningPage', () => {
     expect(screen.getByText('选股运行中')).toBeInTheDocument();
     expect(screen.getByText('选股任务仍在后台运行，状态轮询暂时超时，将自动重试。')).toBeInTheDocument();
     expect(screen.queryByText(/连接上游服务超时/)).not.toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toContain('screen-task-1');
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
 
-  it('surfaces AlphaSift LLM fallback instead of showing empty LLM fields as normal', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('surfaces Screening LLM fallback instead of showing empty LLM fields as normal', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -955,11 +993,10 @@ describe('StockScreeningPage', () => {
     expect(screen.getAllByText('未返回（LLM 已降级）')).toHaveLength(2);
   });
 
-  it('deduplicates AlphaSift snapshot fallback warnings and source errors', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('deduplicates Screening snapshot fallback warnings and source errors', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -985,16 +1022,15 @@ describe('StockScreeningPage', () => {
     expect(await screen.findByText('选股已开启')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
 
-    expect(await screen.findByText('AlphaSift 提示')).toBeInTheDocument();
+    expect(await screen.findByText('选股提示')).toBeInTheDocument();
     expect(screen.getAllByText('数据源降级：tushare（交易日历暂无可用开市日）')).toHaveLength(1);
     expect(screen.queryByText(/trade_cal returned no open trading days/)).not.toBeInTheDocument();
   });
 
-  it('sanitizes long AlphaSift source diagnostics and keeps the alert constrained', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+  it('sanitizes long Screening source diagnostics and keeps the alert constrained', async () => {
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -1031,10 +1067,9 @@ describe('StockScreeningPage', () => {
   });
 
   it('shows DSA enrichment summary, news, and enrichment metadata', async () => {
-    getAlphaSiftStatus.mockResolvedValueOnce({
+    getScreeningStatus.mockResolvedValueOnce({
       enabled: true,
       available: true,
-      installSpecIsDefault: true,
     });
     screenStocks.mockResolvedValueOnce({
       enabled: true,
@@ -1044,7 +1079,7 @@ describe('StockScreeningPage', () => {
           code: '600519',
           name: '贵州茅台',
           score: 91.2,
-          reason: 'AlphaSift pick',
+          reason: 'Screening pick',
           dsaAnalysisSummary: 'DSA行情：现价 1688，涨跌幅 1.2%；DSA新闻：贵州茅台最新公告',
           dsaNews: [{ title: '贵州茅台最新公告', source: '测试源' }],
           dsaContext: {

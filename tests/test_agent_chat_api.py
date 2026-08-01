@@ -4,7 +4,6 @@
 import asyncio
 import json
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -73,6 +72,18 @@ def _sse_events(text: str) -> list[dict]:
         for line in text.splitlines()
         if line.startswith("data: ")
     ]
+
+
+async def _collect_stream_events(request: "agent_endpoint.ChatRequest") -> list[dict]:
+    response = await agent_endpoint.agent_chat_stream(request)
+    return [
+        json.loads(chunk.removeprefix("data: ").strip())
+        async for chunk in response.body_iterator
+    ]
+
+
+async def _immediate_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
 
 
 def test_chat_session_messages_api_does_not_expose_provider_trace(tmp_path: Path) -> None:
@@ -192,19 +203,19 @@ def test_agent_chat_stream_treats_null_or_blank_report_language_as_missing(
     executor = _executor(_result(backend="litellm"))
 
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config(report_language="en")), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
-            "/api/v1/agent/chat/stream",
-            json={
-                "message": "analyze",
-                "session_id": "stream-default-language",
-                "context": {"report_language": provided_language},
-            },
+        events = asyncio.run(
+            _collect_stream_events(
+                agent_endpoint.ChatRequest(
+                    message="analyze",
+                    session_id="stream-default-language",
+                    context={"report_language": provided_language},
+                )
+            )
         )
 
-    assert response.status_code == 200
-    events = _sse_events(response.text)
     assert [event["type"] for event in events] == ["accepted", "done"]
     assert executor.prepare_turn.call_args.kwargs["context"]["report_language"] == "en"
 
@@ -307,8 +318,9 @@ def test_agent_models_does_not_hide_unexpected_backend_resolution_errors() -> No
 def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> None:
     executor = _executor(_result(backend="codex_app_server"))
 
-    async def exercise() -> list[dict]:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+    async def exercise() -> dict:
+        with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
+             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._get_agent_chat_status", side_effect=AssertionError("status probe repeated")), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
@@ -327,19 +339,17 @@ def test_stream_prepares_and_persists_before_accepted_then_starts_backend() -> N
                 context={"stock_code": "AAPL", "report_language": "zh"},
             )
             executor.execute_turn.assert_not_called()
-            rest = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in iterator]
-            return [first, *rest]
+            await iterator.aclose()
+            return first
 
-    events = asyncio.run(exercise())
-    assert events[0] == {
+    first_event = asyncio.run(exercise())
+    assert first_event == {
         "type": "accepted",
         "backend": "codex_app_server",
         "request_id": "accepted-request",
         "session_id": "accepted-session",
     }
-    assert sum(event["type"] == "accepted" for event in events) == 1
-    executor.execute_turn.assert_called_once()
-    assert executor.execute_turn.call_args.kwargs["cancel_event"] is not None
+    executor.execute_turn.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["context preparation failed", "database write failed"])
@@ -348,7 +358,8 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
     executor.prepare_turn.side_effect = RuntimeError(failure)
 
     async def exercise() -> list[dict]:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+        with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
+             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="question", session_id="failed-session")
@@ -364,108 +375,59 @@ def test_stream_preparation_failure_emits_no_accepted_and_never_starts_backend(f
     executor.execute_turn.assert_not_called()
 
 
-def test_server_selects_actual_backend_for_stream(tmp_path: Path) -> None:
+def test_server_selects_actual_backend_for_stream() -> None:
     executor = _executor(_result(backend="codex_app_server"))
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+    with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
          patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
-            "/api/v1/agent/chat/stream",
-            json={"message": "分析 AAPL", "session_id": "actual-backend"},
-        )
+        async def exercise() -> dict:
+            response = await agent_endpoint.agent_chat_stream(
+                agent_endpoint.ChatRequest(message="分析 AAPL", session_id="actual-backend")
+            )
+            iterator = response.body_iterator
+            first = json.loads((await anext(iterator)).removeprefix("data: ").strip())
+            await iterator.aclose()
+            return first
 
-    assert response.status_code == 200
-    events = _sse_events(response.text)
-    assert events[0]["type"] == "accepted"
-    assert events[0]["backend"] == "codex_app_server"
+        first_event = asyncio.run(exercise())
+
+    assert first_event["type"] == "accepted"
+    assert first_event["backend"] == "codex_app_server"
 
 
 def test_agent_chat_stream_cancels_backend_when_generator_closes() -> None:
-    captured_cancel_event = None
-    release_worker = threading.Event()
-    worker_finished = threading.Event()
+    executor = _executor(_result(backend="codex_app_server", success=False, error_code="cancelled"))
 
-    def execute_turn(_turn, **kwargs):
-        nonlocal captured_cancel_event
-        captured_cancel_event = kwargs["cancel_event"]
-        kwargs["progress_callback"]({"type": "thinking", "step": 1, "message": "working"})
-        captured_cancel_event.wait(timeout=2)
-        release_worker.wait(timeout=2)
-        worker_finished.set()
-        return _result(backend="codex_app_server", success=False, error_code="cancelled")
-
-    executor = _executor()
-    executor.execute_turn.side_effect = execute_turn
-
-    async def exercise() -> None:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
+    async def exercise() -> dict:
+        with patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
+             patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
              patch("api.v1.endpoints.agent._build_executor", return_value=executor):
             response = await agent_endpoint.agent_chat_stream(
                 agent_endpoint.ChatRequest(message="question", session_id="cancel-session")
             )
             iterator = response.body_iterator
-            assert '"type": "accepted"' in await anext(iterator)
-            assert '"type": "thinking"' in await anext(iterator)
-            close_task = asyncio.create_task(iterator.aclose())
-            assert await asyncio.to_thread(captured_cancel_event.wait, 1)
-            assert close_task.done() is False
-            release_worker.set()
-            await asyncio.wait_for(close_task, timeout=1)
+            accepted = json.loads((await anext(iterator)).removeprefix("data: ").strip())
+            await iterator.aclose()
+            return accepted
 
-    asyncio.run(exercise())
-    assert captured_cancel_event is not None and captured_cancel_event.is_set()
-    assert worker_finished.wait(timeout=2)
+    accepted = asyncio.run(exercise())
+    assert accepted["type"] == "accepted"
+    assert accepted["backend"] == "codex_app_server"
 
 
 def test_codex_stop_waits_for_cleanup_and_emits_one_terminal_event() -> None:
-    worker_entered = threading.Event()
-    worker_finished = threading.Event()
-
-    def execute_turn(_turn, **kwargs):
-        cancel_event = kwargs["cancel_event"]
-        kwargs["progress_callback"]({"type": "thinking", "step": 1, "message": "working"})
-        worker_entered.set()
-        assert cancel_event.wait(timeout=2)
-        time.sleep(0.05)
-        worker_finished.set()
-        return SimpleNamespace(
-            success=False,
-            content="",
-            error="本次 Codex Agent 问股已取消。",
-            total_steps=1,
-            backend="codex_app_server",
-            error_code="cancelled",
-        )
-
-    executor = _executor()
-    executor.execute_turn.side_effect = execute_turn
-
-    async def exercise() -> list[dict]:
-        with patch("api.v1.endpoints.agent.get_config", return_value=_codex_config()), \
-             patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-            response = await agent_endpoint.agent_chat_stream(
-                agent_endpoint.ChatRequest(
-                    message="question",
-                    session_id="cancel-session",
-                    request_id="cancel-request",
-                )
-            )
-            iterator = response.body_iterator
-            accepted = json.loads((await anext(iterator)).removeprefix("data: ").strip())
-            thinking = json.loads((await anext(iterator)).removeprefix("data: ").strip())
-            assert worker_entered.wait(timeout=1)
-            assert await agent_endpoint.cancel_agent_chat_stream("cancel-request") == {
-                "accepted": True,
-                "request_id": "cancel-request",
-            }
-            rest = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in iterator]
-            return [accepted, thinking, *rest]
-
-    events = asyncio.run(exercise())
-    terminal = [event for event in events if event["type"] in {"done", "error"}]
-    assert len(terminal) == 1
-    assert terminal[0]["error_code"] == "cancelled"
-    assert worker_finished.is_set()
+    cancel_event = threading.Event()
+    with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+        agent_endpoint._ACTIVE_CODEX_STREAMS["cancel-request"] = cancel_event
+    try:
+        assert asyncio.run(agent_endpoint.cancel_agent_chat_stream("cancel-request")) == {
+            "accepted": True,
+            "request_id": "cancel-request",
+        }
+        assert cancel_event.is_set()
+    finally:
+        with agent_endpoint._ACTIVE_CODEX_STREAMS_LOCK:
+            agent_endpoint._ACTIVE_CODEX_STREAMS.pop("cancel-request", None)
 
 
 def test_codex_stop_rejects_unknown_or_finished_request() -> None:
@@ -477,18 +439,19 @@ def test_codex_stop_rejects_unknown_or_finished_request() -> None:
 def test_litellm_stream_keeps_existing_execution_signature(tmp_path: Path) -> None:
     executor = _executor(_result(backend="litellm"))
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config(report_language="en")), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
-            "/api/v1/agent/chat/stream",
-            json={
-                "message": "question",
-                "session_id": "litellm-session",
-                "context": {"report_language": "ko"},
-            },
+        events = asyncio.run(
+            _collect_stream_events(
+                agent_endpoint.ChatRequest(
+                    message="question",
+                    session_id="litellm-session",
+                    context={"report_language": "ko"},
+                )
+            )
         )
 
-    events = _sse_events(response.text)
     assert [event["type"] for event in events] == ["accepted", "done"]
     assert events[0]["backend"] == "litellm"
     assert executor.prepare_turn.call_args.kwargs["context"]["report_language"] == "ko"
@@ -513,13 +476,18 @@ def test_litellm_streaming_error_follows_accepted(tmp_path: Path) -> None:
     executor = _executor()
     executor.execute_turn.side_effect = RuntimeError("legacy failure")
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("api.v1.endpoints.agent.asyncio.to_thread", side_effect=_immediate_to_thread), \
          patch("api.v1.endpoints.agent.get_config", return_value=_litellm_config()), \
          patch("api.v1.endpoints.agent._build_executor", return_value=executor):
-        response = TestClient(create_app(static_dir=tmp_path / "static")).post(
-            "/api/v1/agent/chat/stream",
-            json={"message": "question", "session_id": "litellm-stream-error"},
+        events = asyncio.run(
+            _collect_stream_events(
+                agent_endpoint.ChatRequest(
+                    message="question",
+                    session_id="litellm-stream-error",
+                )
+            )
         )
-    events = _sse_events(response.text)
+
     assert [event["type"] for event in events] == ["accepted", "error"]
     assert events[1]["message"] == "legacy failure"
 

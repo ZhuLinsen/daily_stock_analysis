@@ -18,7 +18,7 @@ from tests.litellm_stub import ensure_litellm_stub
 
 ensure_litellm_stub()
 
-from src.config import ANSPIRE_LLM_MODEL_DEFAULT, DEFAULT_ALPHASIFT_INSTALL_SPEC, Config
+from src.config import ANSPIRE_LLM_MODEL_DEFAULT, Config
 from src.core.config_manager import ConfigManager
 from src.llm.backend_registry import GENERATION_ONLY_BACKEND_IDS
 from src.services.system_config_service import ConfigConflictError, ConfigImportError, ConfigValidationError, SystemConfigService
@@ -163,19 +163,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(chat_status["available"])
         self.assertFalse(preview_draft["available"])
         self.assertEqual(preview_draft["message"], "no_agent_primary")
-
-    def test_get_config_masks_alphasift_install_spec(self) -> None:
-        self._rewrite_env(
-            "STOCK_LIST=600519,000001",
-            "ALPHASIFT_INSTALL_SPEC=git+https://user:token@example.com/internal/alphasift.git",
-        )
-
-        payload = self.service.get_config(include_schema=True)
-        items = {item["key"]: item for item in payload["items"]}
-
-        self.assertEqual(items["ALPHASIFT_INSTALL_SPEC"]["value"], payload["mask_token"])
-        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["is_masked"])
-        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["schema"]["is_sensitive"])
 
     def test_get_config_masks_hermes_secret_fields(self) -> None:
         self._rewrite_env(
@@ -1789,7 +1776,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
 
-    def test_update_alphasift_enable_does_not_rewrite_llm_fields(self) -> None:
+    def test_update_builtin_screening_enable_does_not_rewrite_llm_fields(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519,000001",
             "LITELLM_MODEL=openai/gpt-4o-mini",
@@ -1801,8 +1788,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             "LLM_OPENAI_API_KEYS=legacy-openai-secret",
             "LLM_OPENAI_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
             "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
-            "ALPHASIFT_ENABLED=false",
-            f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+            "SCREENING_ENABLED=false",
             "LLM_USAGE_HMAC_SECRET=telemetry-secret",
             "LLM_USAGE_HMAC_KEY_VERSION=test-v1",
             "GEMINI_API_KEY=legacy-secret",
@@ -1811,8 +1797,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         response = self.service.update(
             config_version=self.manager.get_config_version(),
             items=[
-                {"key": "ALPHASIFT_ENABLED", "value": "true"},
-                {"key": "ALPHASIFT_INSTALL_SPEC", "value": "******"},
+                {"key": "SCREENING_ENABLED", "value": "true"},
                 {"key": "LLM_USAGE_HMAC_SECRET", "value": "******"},
                 {"key": "GEMINI_API_KEY", "value": "******"},
             ],
@@ -1822,15 +1807,11 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         self.assertEqual(response["applied_count"], 1)
-        self.assertIn("ALPHASIFT_ENABLED", response["updated_keys"])
-        self.assertEqual(response["skipped_masked_count"], 3)
+        self.assertIn("SCREENING_ENABLED", response["updated_keys"])
+        self.assertEqual(response["skipped_masked_count"], 2)
 
         current_map = self.manager.read_config_map()
-        self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
-        self.assertEqual(
-            current_map["ALPHASIFT_INSTALL_SPEC"],
-            DEFAULT_ALPHASIFT_INSTALL_SPEC,
-        )
+        self.assertEqual(current_map["SCREENING_ENABLED"], "true")
         self.assertEqual(current_map["LLM_USAGE_HMAC_SECRET"], "telemetry-secret")
         self.assertEqual(current_map["LLM_USAGE_HMAC_KEY_VERSION"], "test-v1")
         self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
