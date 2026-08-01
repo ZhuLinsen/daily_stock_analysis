@@ -17,18 +17,20 @@
 const CACHE_NAME = "dsa-shell-v1";
 
 // Shell assets precached at install time. We deliberately do NOT include
-// the production hashed JS/CSS bundles here, because:
-//   1. Their filenames change on every build, so a hardcoded list would
-//      never match a future deploy and the cache would carry stale entries.
-//   2. Vite already emits `<link rel="modulepreload">` and `<script type="module">`
-//      tags in index.html; when the user is online the SWR fetch-handler
-//      below caches those responses on first request, and that cached copy
-//      is what makes the offline relaunch work.
-//   3. We also do NOT include "/offline.html" here. The repository's SPA
-//      fallback (api/app.py serve_spa) returns index.html for any unmatched
-//      same-origin path, so cache.add("/offline.html") would overwrite our
-//      synthesised OFFLINE_HTML with the SPA shell, defeating the offline
-//      banner. The synthesised OFFLINE_HTML is written via cache.put only.
+// the production hashed JS/CSS bundles here as static strings, because
+// their filenames change on every build. Instead, the install phase
+// fetches `/` (the SPA index) and parses the served HTML to discover the
+// `<script type="module" src="/assets/...">` and `<link rel="stylesheet"
+// href="/assets/...">` URLs the current deploy actually references. This
+// is the closest analog to workbox's build-time injection manifest that
+// we can do without adopting the workbox build-time plugin (Phase 2 may
+// switch to vite-plugin-pwa/workbox).
+//
+// We also do NOT include "/offline.html" here. The repository's SPA
+// fallback (api/app.py serve_spa) returns index.html for any unmatched
+// same-origin path, so cache.add("/offline.html") would overwrite our
+// synthesised OFFLINE_HTML with the SPA shell, defeating the offline
+// banner. The synthesised OFFLINE_HTML is written via cache.put only.
 const SHELL_ASSETS = [
   "/",
   "/index.html",
@@ -61,6 +63,32 @@ const OFFLINE_HTML =
   '<button onclick="location.reload()">重新连接</button>' +
   "</main></body></html>";
 
+// Parse the served SPA index HTML and extract hashed bundle URLs.
+//
+// Vite's production build emits `<script type="module" crossorigin
+// src="/assets/index-<hash>.js">` and `<link rel="stylesheet" crossorigin
+// href="/assets/index-<hash>.css">` (and modulepreload links). We only
+// pick up same-origin URLs starting with "/assets/" so we never accidentally
+// precache cross-origin CDN bundles or analytics scripts.
+function extractBundleUrlsFromHtml(htmlText) {
+  const urls = new Set();
+  // Match href="..." and src="..." (single-quote tolerant). Vite emits
+  // double-quote attributes but tolerating single-quote edges makes the
+  // parser robust to future templating changes.
+  const attrRegex = /(?:src|href)\s*=\s*(?:"([^"]+)"|'([^']+)')/g;
+  let match;
+  while ((match = attrRegex.exec(htmlText)) !== null) {
+    const url = match[1] || match[2];
+    if (!url) continue;
+    // Skip data: URIs, http(s):// URLs that belong to other origins,
+    // blob:, and any non-asset path.
+    if (url.startsWith("/assets/")) {
+      urls.add(url);
+    }
+  }
+  return Array.from(urls);
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
@@ -72,9 +100,33 @@ self.addEventListener("install", (event) => {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         }),
       );
-      // Best-effort precache remaining shell assets; ignore failures
+      // Best-effort precache remaining static shell assets; ignore failures
       // (e.g. dev server may not have all of them at install time).
       await Promise.allSettled(SHELL_ASSETS.map((url) => cache.add(url)));
+
+      // Discover the hashed bundle URLs referenced by the current deploy's
+      // SPA index and precache them so that the *first* online visit + SW
+      // install leaves a cache that supports an immediate offline relaunch.
+      // Without this, the SWR runtime cache would only populate on the
+      // *second* online visit (because SW only intercepts fetches *after*
+      // it activates), and `index.html` referencing `/assets/index-<hash>.js`
+      // would 404 on the first offline relaunch.
+      try {
+        const indexRes = await fetch("/", { cache: "no-store" });
+        if (indexRes && indexRes.ok) {
+          const htmlText = await indexRes.text();
+          const bundleUrls = extractBundleUrlsFromHtml(htmlText);
+          await Promise.allSettled(
+            bundleUrls.map((url) => cache.add(new Request(url, { credentials: "omit" }))),
+          );
+        }
+      } catch (err) {
+        // Non-fatal: if index fetch fails (e.g. offline at install time),
+        // the SWR runtime cache will still populate on the next online
+        // visit and offline relaunch will work starting the *third* visit.
+        console.warn("[dsa-pwa] install-time index parse failed:", err);
+      }
+
       await self.skipWaiting();
     })(),
   );
@@ -135,9 +187,10 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   // Other same-origin static GETs (incl. hashed /assets/* bundles, icons,
-  // modulepreloaded chunks): stale-while-revalidate. This is what makes the
-  // offline relaunch find the hashed JS/CSS bundles that we intentionally
-  // did NOT precache at install time.
+  // modulepreloaded chunks): stale-while-revalidate. This is the runtime
+  // backstop for any bundle that escaped install-time precache (e.g. a
+  // modulepreload'd chunk the parser missed, or a fresh deploy whose
+  // bundled hash changed after this SW was installed).
   event.respondWith(
     (async () => {
       const cached = await caches.match(req);

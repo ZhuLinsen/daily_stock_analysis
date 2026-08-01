@@ -71,8 +71,10 @@ Service Worker **只在生产构建 + 安全上下文**注册：
 ```bash
 cd apps/dsa-web
 npm run dev
-# 浏览器打开 https://localhost:5173
-# 1. DevTools → Application → Service Workers：不应有 SW 注册
+# 浏览器打开 http://localhost:5173
+# 注：localhost 是 secure context 例外，SW 可在 http 下注册；
+#   非 localhost 的非 HTTPS 环境（如 LAN IP）SW 不可用。
+# 1. DevTools → Application → Service Workers：不应有 SW 注册（dev 模式不注册）
 # 2. Network → 强制 Disable cache：所有请求应正常 200
 
 npm run build && npm run preview
