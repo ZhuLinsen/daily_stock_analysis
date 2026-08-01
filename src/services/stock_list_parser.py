@@ -416,9 +416,16 @@ def _canonicalize_for_stock(
     if exchange == "UNKNOWN":
         return bare.lower(), bare
     if exchange == "US":
-        # US tickers are inherently alphanumeric; preserve case so the
-        # canonical ID doubles as a display code that fetchers accept.
-        return bare, bare
+        # US tickers are inherently alphanumeric; canonical stock codes are
+        # uppercase across ``data_provider`` (``data_provider/base.py``).
+        # All-uppercase bare input (``AAPL``/``USFD``) round-trips unchanged
+        # and lowercase bare input from explicit-prefix forms
+        # (``usaapl``→``(us, aapl)``) is normalized to uppercase so the
+        # canonical ID is consistent with bare US ticker resolution
+        # (``aapl``→``AAPL``). Closes PR #2129 review non-blocking
+        # suggestion ``OR-COR-9c3d2c44``.
+        canonical = bare.upper()
+        return canonical, canonical
     if prefix:
         # If the user already provided sh/sz/hk/... prefix, preserve it.
         canonical = f"{prefix}{bare}"
@@ -701,17 +708,27 @@ def parse_analysis_target(
             )
     elif norm_code and norm_exchange == "":
         # ``_normalize_code_and_exchange`` upper-cases the token (``shop`` →
-        # ``SHOP``, ``usBRK`` → ``USBRK``). For ``usBRK`` the normalizer's
-        # ``base.isdigit()`` guard in ``_split_explicit_exchange`` prevents
-        # ``us`` from being recognised as an exchange prefix, so we restore
-        # the ``us``-prefix split here — but ONLY when the user originally
-        # typed a lowercase ``us`` prefix (``usBRK`` not ``USBRK``). An
+        # ``SHOP``, ``usBRK`` → ``USBRK``). For mixed-case inputs such as
+        # ``usBRK`` the normalizer's ``base.isdigit()`` guard in
+        # ``_split_explicit_exchange`` prevents ``us`` from being recognised
+        # as an exchange prefix, so we restore the ``us``-prefix split here
+        # — but ONLY when the user originally typed a *mixed-case* ``us``
+        # prefix (``usBRK`` not ``USBRK`` and not ``usbrk``). An
         # all-uppercase token that happens to begin with ``US`` is a bare US
         # ticker (``USFD``/``USM``) and must NOT be mis-split into ``(us,
         # FD)``/``(us, M)`` — that would silently lose the real ticker shape.
-        # Case-sensitive ``startswith("us")`` is the unambiguous signal that
-        # the user explicitly wrote the prefix.
-        if raw.startswith("us") and len(raw) > 2:
+        # A *fully lowercase* token such as ``usfd``/``usm`` is similarly a
+        # bare ticker (the normalizer already upper-cased it to ``USFD``/
+        # ``USM`` which fits the ``^[A-Z]{1,5}$`` bare-ticker shape) — the
+        # lowercase form is the user's typing convenience, NOT an explicit
+        # prefix. The unambiguous signal for an explicit prefix is mixed
+        # case: lowercase ``us`` followed by uppercase base letters.
+        if (
+            raw.startswith("us")
+            and len(raw) > 2
+            and not raw.islower()
+            and not raw.isupper()
+        ):
             bare_from_us = raw[2:]
             norm_bare, _ = _normalize_code_and_exchange(bare_from_us)
             if (

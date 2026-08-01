@@ -12,6 +12,8 @@ so PR1 is a strict superset of pre-PR coverage rather than a replacement.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import pytest
 
 from src.services.stock_list_parser import (
@@ -232,6 +234,53 @@ class TestContract3PrefixedUnknownDegradesToStock:
         assert target.canonical_id == "AAPL"
         assert target.normalized_prefix == "us"
         assert target.normalized_code == "AAPL"
+
+    @pytest.mark.parametrize(
+        "ticker,expected_canonical_id,expected_prefix,expected_normalized_code",
+        [
+            # Lowercase bare US tickers whose real symbol begins with ``US``
+            # must NOT be mis-split into ``(us, fd)`` / ``(us, m)`` — those
+            # lose the real ticker shape and silently rewrite to a different
+            # symbol. The normalizer already upper-cases them to ``USFD``/
+            # ``USM`` which fits the ``^[A-Z]{1,5}$`` bare-ticker shape, so
+            # they must round-trip as bare tickers, not as explicit prefixes.
+            ("usfd", "USFD", None, "USFD"),
+            ("usm", "USM", None, "USM"),
+            # Lowercase explicit-prefix forms (lowercase ``us`` + lowercase
+            # base) where the upper-cased token would exceed 5 letters and
+            # so cannot be a bare US ticker. The ``us`` prefix is recognised
+            # and the canonical id is upper-cased so it stays consistent
+            # with bare US ticker resolution (``aapl``→``AAPL``) and with
+            # mixed-case explicit-prefix forms (``usAAPL``→``AAPL``).
+            # ``normalized_code`` is a diagnostic breadcrumb reflecting the
+            # post-split bare token and retains the user's lowercase base;
+            # callers consuming the canonical id see ``AAPL``/``SHOP``.
+            ("usaapl", "AAPL", "us", "aapl"),
+            ("usshop", "SHOP", "us", "shop"),
+        ],
+    )
+    def test_lowercase_us_ticker_regression(
+        self,
+        ticker: str,
+        expected_canonical_id: str,
+        expected_prefix: Optional[str],
+        expected_normalized_code: str,
+    ) -> None:
+        """Regression for PR #2129 review blocker ``OR-COR-9c3d2c44``.
+
+        Lowercase bare US tickers beginning with ``us`` (``usfd``/``usm``)
+        must keep their full uppercase canonical form, and lowercase
+        explicit-prefix inputs (``usaapl``/``usshop``) must produce the
+        uppercase canonical base — consistent with mixed-case explicit
+        prefixes (``usAAPL``→``AAPL``) and bare lowercase tickers
+        (``aapl``→``AAPL``).
+        """
+        target = parse_analysis_target(ticker)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "US"
+        assert target.canonical_id == expected_canonical_id
+        assert target.normalized_prefix == expected_prefix
+        assert target.normalized_code == expected_normalized_code
 
 
 # ---------------------------------------------------------------------------
