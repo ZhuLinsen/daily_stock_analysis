@@ -127,6 +127,16 @@ _KNOWN_PREFIXES_SORTED = tuple(
     sorted(_EXCHANGE_PREFIX_TO_CODE.keys(), key=lambda p: -len(p))
 )
 
+# Canonical US ticker shape: 1-5 uppercase letters optionally followed by
+# a single dot + 1-2 uppercase letters (covers ``AAPL`` / ``BRK.B`` /
+# ``SHOP.US`` / ``HKD`` / ``USFD`` etc.). This mirrors the regex used by
+# ``data_provider/us_index_mapping.py:16-17`` and
+# ``stock_code_utils._normalize_code_and_exchange`` for the US branch.
+# Used by ``parse_analysis_target`` to enforce the Phase 1 contract that
+# ``us``-prefixed tokens must use a valid uppercase US ticker base — see
+# the guard in ``parse_analysis_target`` for the full rationale.
+_US_TICKER_SHAPE_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
+
 
 def _split_prefix(token: str) -> Tuple[Optional[str], str]:
     """Split ``token`` into ``(prefix, bare_code)`` when the leader matches
@@ -507,27 +517,39 @@ def parse_analysis_target(
     # Phase 1 contract (issue #2063, maintainer clarification 2026-08-01):
     # the ``us`` exchange prefix is case-insensitive on the *prefix* itself
     # but the ticker base must arrive in canonical uppercase US symbol
-    # shape. ``us``-prefixed tokens whose base contains any lowercase
-    # letter — e.g. ``usfd`` / ``usm`` / ``usibm`` / ``usaapl`` /
-    # ``usshop`` (all-lowercase) AND ``Usfd`` / ``USibm`` / ``Usaapl``
-    # (mixed-case prefix with lowercase base) — are neither bare US
-    # tickers (silently upper-casing would synthesise ``USFD`` / ``USIBM``,
-    # which are different real or non-existent securities) nor explicit
-    # ``us``-prefix stock symbols (silently splitting would rewrite them
-    # to ``FD`` / ``IBM`` / ``AAPL``, losing the user's original intent).
+    # shape. ``us``-prefixed tokens whose base does NOT match the canonical
+    # US ticker shape ``^[A-Z]{1,5}(\.[A-Z]{1,2})?$`` (the same regex used by
+    # ``data_provider/us_index_mapping.py:16-17`` and
+    # ``stock_code_utils._normalize_code_and_exchange``) — e.g. ``usfd`` /
+    # ``usm`` / ``usibm`` / ``usaapl`` / ``usshop`` (all-lowercase) AND
+    # ``Usfd`` / ``USibm`` / ``Usaapl`` (mixed-case prefix with lowercase
+    # base) AND ``usbrk.b`` / ``usshop.us`` (lowercase base with punctuation)
+    # AND ``us1`` / ``us12345`` (lowercase prefix with non-letter base —
+    # pure digit bases never match the US ticker regex) — are neither bare
+    # US tickers (silently upper-casing would synthesise ``USFD`` / ``USIBM``
+    # / ``USBRK.B`` / ``US1``, which are different real or non-existent
+    # securities, and ``US1`` is not even a valid US symbol shape) nor
+    # explicit ``us``-prefix stock symbols (silently splitting would
+    # rewrite them to ``FD`` / ``IBM`` / ``BRK.B`` / ``1``, losing the
+    # user's original intent, and ``1`` is also not a valid US symbol).
     # Reject them up-front as ``unsupported`` regardless of what the
     # normalizer computed for ``norm_code``, so the caller can prompt
     # the user to retype the ticker base in canonical uppercase form.
     # This closes OR-COR-9c3d2c44 (``usfd``/``usm`` silent bare rewrite),
     # OR-COR-2f0d1a7e (``usibm``/``usge``/``usbk``/``usaapl`` length-dependent
-    # split bifurcation) and OR-COR-7b45f5c1 (``Usfd``/``USibm``/
-    # ``Usaapl`` mixed-case prefix with lowercase base) under one
-    # consistent contract rule.
+    # split bifurcation), OR-COR-7b45f5c1 (``Usfd``/``USibm``/
+    # ``Usaapl`` mixed-case prefix with lowercase base) and
+    # OR-COR-us-prefix-nonalpha-guard-gap (``usbrk.b``/``usshop.us``/
+    # ``us1`` lowercase/non-alphabetic bases bypassed the earlier
+    # ``raw.isalpha()``-gated guard) under one consistent contract rule:
+    # the guard checks ``raw[2:]`` against the canonical US ticker regex
+    # ``_US_TICKER_SHAPE_RE``, so any base that isn't a valid uppercase
+    # US symbol shape is rejected up-front, regardless of case or
+    # character class.
     if (
-        raw.isalpha()
-        and len(raw) > 2
+        len(raw) > 2
         and raw[:2].lower() == "us"
-        and not raw[2:].isupper()
+        and _US_TICKER_SHAPE_RE.match(raw[2:]) is None
     ):
         return AnalysisTarget(
             raw_input=raw_input,
@@ -536,9 +558,10 @@ def parse_analysis_target(
             display_code=raw,
             exchange="US",
             unsupported_reason=(
-                f"us-prefixed token {raw!r} must use an uppercase ticker "
-                f"base (e.g. 'us{raw[2:].upper()}') or be a bare US "
-                f"ticker in canonical uppercase form"
+                f"us-prefixed token {raw!r} must use a canonical uppercase "
+                f"US ticker base matching '^[A-Z]{{1,5}}(.[A-Z]{{1,2}})?$' "
+                f"(e.g. 'usAAPL' / 'usBRK.B' / 'usSHOP.US'), or be a bare "
+                f"US ticker in canonical uppercase form"
             ),
             normalized_prefix=None,
             normalized_code=raw,

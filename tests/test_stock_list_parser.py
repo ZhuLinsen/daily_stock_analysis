@@ -241,8 +241,9 @@ class TestContract3PrefixedUnknownDegradesToStock:
             # Phase 1 contract (issue #2063, maintainer clarification
             # 2026-08-01): the ``us`` exchange prefix is case-insensitive
             # on the prefix itself, but the ticker base must arrive in the
-            # canonical uppercase US symbol shape. ``us``-prefixed tokens
-            # whose base contains any lowercase letter are surfaced as
+            # canonical uppercase US symbol shape (regex
+            # ``^[A-Z]{1,5}(\.[A-Z]{1,2})?$``). ``us``-prefixed tokens
+            # whose base does NOT match that shape are surfaced as
             # ``unsupported`` so callers can prompt the user to retype in
             # mixed/upper case. This uniformly rejects:
             #   - bare-US collisions (``usfd``/``usm``, previously
@@ -251,6 +252,9 @@ class TestContract3PrefixedUnknownDegradesToStock:
             #     /``usbk``/``usaapl``/``usshop``, previously OR-COR-2f0d1a7e)
             #   - mixed-case prefix with lowercase base (``Usfd``/``USibm``/
             #     ``Usaapl``/``uSfd``/``USaapl``, previously OR-COR-7b45f5c1)
+            #   - lowercase/non-alphabetic base bypassing the earlier
+            #     ``raw.isalpha()``-gated guard (``usbrk.b``/``usshop.us``/
+            #     ``us1``, previously OR-COR-us-prefix-nonalpha-guard-gap)
             # under one consistent contract rule — no US ticker whitelist
             # or length-dependent heuristic needed. ``canonical_id`` carries
             # the raw token verbatim so the caller can echo it back to the
@@ -273,6 +277,26 @@ class TestContract3PrefixedUnknownDegradesToStock:
             ("Usaapl", "Usaapl"),
             ("uSfd", "uSfd"),
             ("USaapl", "USaapl"),
+            # Lowercase base with punctuation/digits (OR-COR-us-prefix-
+            # nonalpha-guard-gap): the earlier ``raw.isalpha()``-gated
+            # guard let ``usbrk.b`` / ``usshop.us`` / ``us1`` slip through
+            # to the normalizer, which silently rewrote them to ``BRK.B``
+            # / ``SHOP.US`` / ``1``. The new regex-based guard catches
+            # these regardless of character class — digit-only bases,
+            # lowercase+dotted bases, lowercase+digit bases alike.
+            ("usbrk.b", "usbrk.b"),
+            ("usshop.us", "usshop.us"),
+            ("us1", "us1"),
+            ("us1a", "us1a"),
+            ("us12a", "us12a"),
+            # All-uppercase but invalid US shape (digits in base): ``US1``
+            # contains a digit so it doesn't match ``^[A-Z]{1,5}(\.[A-Z]{1,2})?$``.
+            # Previously ``_split_prefix`` would strip ``US`` and the
+            # normalizer would accept ``1`` as the canonical_id — surfacing
+            # an invalid US symbol to callers. The regex-based guard
+            # rejects it up-front.
+            ("US1", "US1"),
+            ("US12345", "US12345"),
         ],
     )
     def test_lowercase_us_prefix_is_unsupported(
@@ -280,15 +304,18 @@ class TestContract3PrefixedUnknownDegradesToStock:
         ticker: str,
         expected_canonical_id: str,
     ) -> None:
-        """Regression for PR #2129 review blockers OR-COR-9c3d2c44 (closed),
-        OR-COR-2f0d1a7e (closed), and OR-COR-7b45f5c1: ``us``-prefixed
-        tokens whose ticker base contains any lowercase letter — whether
-        the prefix itself is lowercase, mixed-case, or uppercase — are
-        neither bare US tickers nor explicit-prefix stock symbols under
-        the Phase 1 contract from issue #2063 (maintainer clarification
-        2026-08-01). They are surfaced as ``unsupported`` so callers can
-        prompt the user to retype the ticker base in canonical uppercase
-        form (``usAAPL``/``usBRK``/``USFD``). The contract closes three
+        r"""Regression for PR #2129 review blockers OR-COR-9c3d2c44 (closed),
+        OR-COR-2f0d1a7e (closed), OR-COR-7b45f5c1 (closed), and
+        OR-COR-us-prefix-nonalpha-guard-gap: ``us``-prefixed tokens whose
+        ticker base does NOT match the canonical US symbol shape regex
+        ``^[A-Z]{1,5}(\.[A-Z]{1,2})?$`` — whether the prefix itself is
+        lowercase, mixed-case, or uppercase, and whether the base
+        contains lowercase letters, digits, or punctuation — are neither
+        bare US tickers nor explicit-prefix stock symbols under the Phase
+        1 contract from issue #2063 (maintainer clarification 2026-08-01).
+        They are surfaced as ``unsupported`` so callers can prompt the
+        user to retype the ticker base in canonical uppercase form
+        (``usAAPL``/``usBRK.B``/``USFD``). The contract closes four
         prior blockers under one uniform rule — no US ticker whitelist
         required:
             * OR-COR-9c3d2c44: ``usfd``/``usm`` silent bare-rewrite bloom
@@ -296,6 +323,9 @@ class TestContract3PrefixedUnknownDegradesToStock:
               length-dependent explicit-prefix split bifurcation
             * OR-COR-7b45f5c1: ``Usfd``/``USibm``/``Usaapl`` mixed-case
               prefix with lowercase base bypassing the lowercase-only guard
+            * OR-COR-us-prefix-nonalpha-guard-gap: ``usbrk.b``/``usshop.us``/
+              ``us1`` lowercase base with punctuation/digits bypassing the
+              earlier ``raw.isalpha()``-gated guard
         """
         target = parse_analysis_target(ticker)
         assert target.asset_type == ParseStatus.UNSUPPORTED
