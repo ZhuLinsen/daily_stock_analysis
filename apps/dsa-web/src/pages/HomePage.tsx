@@ -59,6 +59,7 @@ type StockAnalysisNavigationState = {
 };
 
 const DUPLICATE_BANNER_AUTO_DISMISS_MS = 5000;
+const NO_HISTORY_HINT_AUTO_DISMISS_MS = 4000;
 const BATCH_ANALYSIS_CHUNK_SIZE = 50;
 const TODAY_ANALYSIS_PAGE_SIZE = 100;
 const SERVER_LOCAL_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
@@ -194,6 +195,29 @@ const HomePage: React.FC = () => {
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
   const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const [duplicateBannerVisible, setDuplicateBannerVisible] = useState(false);
+  // PR #2144 review blocker OR-COR-94f7edc3: HomePage 真实消费 onNoHistoryHint。
+  // HomeStockWorkspace 已暴露 onNoHistoryHint prop 但此前 HomePage 调用时未传，
+  // 导致生产路径下「无历史记录」自选股行激活后落到 noop 默认实现，键盘/点击
+  // 都没反馈，交互闭环未完成。这里加一个本地 banner state + 4s auto-dismiss
+  // timer，由 useHomeDashboardState 已有的 inputError/duplicateError banner
+  // 同等位置渲染。
+  const [noHistoryHint, setNoHistoryHint] = useState<string | null>(null);
+  const noHistoryHintTimer = useRef<number | undefined>(undefined);
+  const handleWatchlistNoHistoryHint = useCallback((code: string) => {
+    if (noHistoryHintTimer.current !== undefined) {
+      window.clearTimeout(noHistoryHintTimer.current);
+    }
+    setNoHistoryHint(t('watchlist.noHistoryHint', { code }));
+    noHistoryHintTimer.current = window.setTimeout(() => {
+      setNoHistoryHint(null);
+      noHistoryHintTimer.current = undefined;
+    }, NO_HISTORY_HINT_AUTO_DISMISS_MS);
+  }, [t]);
+  useEffect(() => () => {
+    if (noHistoryHintTimer.current !== undefined) {
+      window.clearTimeout(noHistoryHintTimer.current);
+    }
+  }, []);
   const [sidebarWorkspaceTab, setSidebarWorkspaceTab] = useState<HomeWorkspaceTab>('history');
   const [isBatchAnalyzingWatchlist, setIsBatchAnalyzingWatchlist] = useState(false);
   const [batchAnalyzeStatus, setBatchAnalyzeStatus] = useState<BatchAnalyzeStatus>(null);
@@ -1245,6 +1269,7 @@ const HomePage: React.FC = () => {
           onHistoryItemClick={handleHistoryItemClick}
           onDeleteStock={handleDeleteStock}
           isDeleting={isDeletingStock}
+          onNoHistoryHint={handleWatchlistNoHistoryHint}
           className="flex-1 overflow-hidden"
         />
       </div>
@@ -1255,6 +1280,7 @@ const HomePage: React.FC = () => {
       handleAnalyzeWatchlist,
       handleDeleteStock,
       handleHistoryItemClick,
+      handleWatchlistNoHistoryHint,
       isBatchAnalyzingWatchlist,
       isDeletingStock,
       isLoadingStockBar,
@@ -1410,7 +1436,7 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
-        {inputError || (duplicateError && duplicateBannerVisible) ? (
+        {inputError || (duplicateError && duplicateBannerVisible) || noHistoryHint ? (
           <div className="px-3 pb-2 md:px-4">
             {inputError ? (
               <InlineAlert
@@ -1435,6 +1461,14 @@ const HomePage: React.FC = () => {
                     <X className="h-4 w-4" aria-hidden="true" />
                   </button>
                 )}
+                className="rounded-xl px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
+            {!inputError && !(duplicateError && duplicateBannerVisible) && noHistoryHint ? (
+              <InlineAlert
+                variant="info"
+                title={t('watchlist.noHistoryHintTitle')}
+                message={noHistoryHint}
                 className="rounded-xl px-3 py-2 text-xs shadow-none"
               />
             ) : null}

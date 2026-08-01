@@ -137,7 +137,16 @@ const WatchlistRowItem: React.FC<{
       onNoHistoryHint(row.code);
     }
   };
+  // issue #2115 / PR #2144 review blocker OR-COR-68a8034a:
+  // 行级键盘激活（Enter / Space）只在焦点位于行容器本身时触发；
+  // 焦点落在嵌套删除按钮上按 Enter / Space 时让按钮原生键盘激活
+  // 自己处理，不要冒泡到行级 handleClick（否则会同时打开详情或
+  // 弹「无历史记录」提示，并且行级 preventDefault() 会干预按钮
+  // 原生键盘激活，导致键盘删除行为不稳定）。
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       handleClick();

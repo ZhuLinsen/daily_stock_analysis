@@ -90,6 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] `redact_diagnostic_text()` 在 `export SENSITIVE_ENV=$(printenv OTHER_SECRET) session_id=...` 形态下不再因第二遍 `$(...)` 扫描与第一遍敏感赋值替换区重叠而吞掉 `session_id` 等尾随非敏感诊断字段；第二遍扫描现以 first-pass 已替换 span 列表为可信跳过表，并对 prior-head / prior-semicolon 分支的 leading regex 加上 `(?:export[ \t]+)?` 前缀，使 `export FOO=$(...)` 与 `FOO=$(...)` 在所有分支行为对齐（关闭 PR #2118 review blocker OR-COR-7c0a5d41）。
 - [修复] LongbridgeFetcher._compute_volume_ratio 调用 history_candlesticks_by_offset 时把 time 与 count 两个位置参数传反，PyO3 转换层抛 argument 'time': 'int' object cannot be converted to 'PyDateTime'，异常被 try/except 静默吞到 DEBUG 日志，导致港股/美股实时行情链路上的量比字段恒为 None 并对外表现为"未获取到数据"；改用 adaptive keyword args 调用，兼容 0.2.74 (forward, time, count) 与 4.x (forward, count, time) 两种 SDK 契约，并按 keyword args 契约覆盖两版本回归测试（fixes #2100）
 - [新功能] 自选股工作区 `WatchlistRowItem` 行点击/Enter/Space 打开最新分析详情；无历史记录时调 `onNoHistoryHint` 回调而非直接 toast，删除按钮 `stopPropagation` 防止误打开详情；新增 `role=button`、`tabIndex=0`、`aria-label` 描述当前状态（fixes #2115 part 1）
+- [改进] `WatchlistRowItem` 行级 `onKeyDown` 在嵌套删除按钮聚焦后不再触发行级 `handleClick`（`event.target !== event.currentTarget` 判断）：删除按钮聚焦后按 Enter/Space 不会被 `preventDefault()` 干预原生键盘激活，避免删除时同时打开详情（PR #2144 round-3 blocker OR-COR-68a8034a）
+- [改进] `HomePage` 渲染 `HomeStockWorkspace` 时传入 `onNoHistoryHint` 回调，无历史记录的自选股行激活后在页面顶部 InlineAlert banner 显示提示并 4 秒后 auto-dismiss；新增 i18n `watchlist.noHistoryHintTitle` 中英 keys（PR #2144 round-3 blocker OR-COR-94f7edc3）
 - [新功能] `TaskPanel` 增加面板级折叠状态：标题栏 `aria-expanded` 折叠按钮 + 折叠态摘要行，折叠状态用 localStorage 持久化（`dsa.taskPanel.collapsed`），父组件重渲染不丢失折叠态；折叠时面板 `shrink-0` 让 watchlist 拿到剩余高度（fixes #2115 part 2）
 
 ## [3.28.0] - 2026-07-26

@@ -175,4 +175,71 @@ describe('HomeStockWorkspace watchlist row click + keyboard accessibility (#2115
     expect(() => fireEvent.click(row)).not.toThrow();
     expect(onHistoryItemClick).not.toHaveBeenCalled();
   });
+
+  // PR #2144 review blocker OR-COR-68a8034a regression:
+  // 删除按钮聚焦后按 Enter / Space 不应冒泡到行级 handleClick — 否则会
+  // 同时打开详情或弹「无历史记录」提示，并且行级 preventDefault() 会
+  // 干预按钮原生键盘激活，导致键盘删除行为不稳定。
+  it('does not trigger row click when Enter is pressed on focused delete button (OR-COR-68a8034a)', () => {
+    const onHistoryItemClick = vi.fn();
+    const onNoHistoryHint = vi.fn();
+    const onRemoveFromWatchlist = vi.fn(async () => {});
+    render(
+      <HomeStockWorkspace
+        {...baseProps}
+        watchlistRows={[makeRow()]}
+        onHistoryItemClick={onHistoryItemClick}
+        onNoHistoryHint={onNoHistoryHint}
+        onRemoveFromWatchlist={onRemoveFromWatchlist}
+      />,
+    );
+
+    const removeButton = screen.getByLabelText('从自选股移除 600519');
+    fireEvent.keyDown(removeButton, { key: 'Enter' });
+
+    expect(onHistoryItemClick).not.toHaveBeenCalled();
+    expect(onNoHistoryHint).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger row click when Space is pressed on focused delete button (OR-COR-68a8034a)', () => {
+    const onHistoryItemClick = vi.fn();
+    const onNoHistoryHint = vi.fn();
+    const onRemoveFromWatchlist = vi.fn(async () => {});
+    render(
+      <HomeStockWorkspace
+        {...baseProps}
+        watchlistRows={[makeRow()]}
+        onHistoryItemClick={onHistoryItemClick}
+        onNoHistoryHint={onNoHistoryHint}
+        onRemoveFromWatchlist={onRemoveFromWatchlist}
+      />,
+    );
+
+    const removeButton = screen.getByLabelText('从自选股移除 600519');
+    fireEvent.keyDown(removeButton, { key: ' ' });
+
+    expect(onHistoryItemClick).not.toHaveBeenCalled();
+    expect(onNoHistoryHint).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger row click when Enter is pressed on focused delete button in no-history row (OR-COR-68a8034a + OR-COR-94f7edc3)', () => {
+    const onHistoryItemClick = vi.fn();
+    const onNoHistoryHint = vi.fn();
+    const onRemoveFromWatchlist = vi.fn(async () => {});
+    render(
+      <HomeStockWorkspace
+        {...baseProps}
+        watchlistRows={[makeRow({ latestItem: undefined, analyzedToday: false })]}
+        onHistoryItemClick={onHistoryItemClick}
+        onNoHistoryHint={onNoHistoryHint}
+        onRemoveFromWatchlist={onRemoveFromWatchlist}
+      />,
+    );
+
+    const removeButton = screen.getByLabelText('从自选股移除 600519');
+    fireEvent.keyDown(removeButton, { key: 'Enter' });
+
+    expect(onNoHistoryHint).not.toHaveBeenCalled();
+    expect(onHistoryItemClick).not.toHaveBeenCalled();
+  });
 });
