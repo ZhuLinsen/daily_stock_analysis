@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def normalize_schedule_times(
     schedule_times: Optional[Union[Sequence[str], str]],
     *,
-    fallback_time: str = "18:00",
+    fallback_time: str = "20:30",
 ) -> List[str]:
     """Return sorted unique HH:MM schedule times with SCHEDULE_TIME fallback."""
     if isinstance(schedule_times, str):
@@ -43,8 +43,8 @@ def normalize_schedule_times(
         if item and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", item)
     }
     if not valid:
-        fallback = (fallback_time or "18:00").strip() or "18:00"
-        valid.add(fallback if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", fallback) else "18:00")
+        fallback = (fallback_time or "20:30").strip() or "20:30"
+        valid.add(fallback if re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", fallback) else "20:30")
     return sorted(valid)
 
 
@@ -91,7 +91,7 @@ class Scheduler:
 
     def __init__(
         self,
-        schedule_time: str = "18:00",
+        schedule_time: str = "20:30",
         schedule_time_provider: Optional[Callable[[], str]] = None,
         schedule_times: Optional[Sequence[str]] = None,
         schedule_times_provider: Optional[Callable[[], Union[Sequence[str], str]]] = None,
@@ -235,7 +235,7 @@ class Scheduler:
         ]
         self._daily_job = self._daily_jobs[0] if self._daily_jobs else None
         self.schedule_times = candidates
-        self.schedule_time = candidates[0] if candidates else "18:00"
+        self.schedule_time = candidates[0] if candidates else "20:30"
 
         if previous_times == candidates:
             logger.info("Daily scheduled jobs configured at: %s", ",".join(self.schedule_times))
@@ -416,7 +416,7 @@ class Scheduler:
 
 def run_with_schedule(
     task: Callable,
-    schedule_time: str = "18:00",
+    schedule_time: str = "20:30",
     run_immediately: bool = True,
     background_tasks: Optional[List[Dict[str, Any]]] = None,
     schedule_time_provider: Optional[Callable[[], str]] = None,

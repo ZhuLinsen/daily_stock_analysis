@@ -3008,13 +3008,13 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "18:00",
+        "default_value": "20:30",
         "options": [],
         "validation": {"pattern": r"^([01]\d|2[0-3]):[0-5]\d$"},
         "display_order": 10,
         "help_key": "settings.system.schedule",
         "examples": [
-            "SCHEDULE_TIME=18:00",
+            "SCHEDULE_TIME=20:30",
             "SCHEDULE_ENABLED=true",
             "SCHEDULE_RUN_IMMEDIATELY=false",
         ],
@@ -3041,8 +3041,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "display_order": 11,
         "help_key": "settings.system.schedule",
         "examples": [
-            "SCHEDULE_TIMES=09:20,12:30,15:10,18:00",
-            "SCHEDULE_TIME=18:00",
+            "SCHEDULE_TIMES=09:20,12:30,15:10,20:30",
+            "SCHEDULE_TIME=20:30",
             "SCHEDULE_ENABLED=true",
         ],
         "docs": [
@@ -3293,7 +3293,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "help_key": "settings.system.schedule",
         "examples": [
             "SCHEDULE_ENABLED=true",
-            "SCHEDULE_TIME=18:00",
+            "SCHEDULE_TIME=20:30",
             "SCHEDULE_RUN_IMMEDIATELY=false",
         ],
         "docs": [

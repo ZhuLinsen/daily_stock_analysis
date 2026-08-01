@@ -204,7 +204,7 @@ class RuntimeSchedulerService:
         config = self._config_provider()
         return normalize_schedule_times(
             getattr(config, "schedule_times", None),
-            fallback_time=getattr(config, "schedule_time", "18:00"),
+            fallback_time=getattr(config, "schedule_time", "20:30"),
         )
 
     def _is_schedule_enabled(self, config: Config) -> bool:
@@ -276,10 +276,10 @@ class RuntimeSchedulerService:
             self.stop()
             times = normalize_schedule_times(
                 getattr(config, "schedule_times", None),
-                fallback_time=getattr(config, "schedule_time", "18:00"),
+                fallback_time=getattr(config, "schedule_time", "20:30"),
             )
             scheduler = Scheduler(
-                schedule_time=getattr(config, "schedule_time", "18:00"),
+                schedule_time=getattr(config, "schedule_time", "20:30"),
                 schedule_times=times,
                 schedule_times_provider=self._current_times,
                 register_signals=False,

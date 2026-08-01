@@ -1026,8 +1026,8 @@ class Config:
     
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
-    schedule_times: List[str] = field(default_factory=lambda: ["18:00"])
+    schedule_time: str = "20:30"              # 每日推送时间（HH:MM 格式）
+    schedule_times: List[str] = field(default_factory=lambda: ["20:30"])
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
@@ -1602,7 +1602,7 @@ class Config:
             )
         schedule_time_value = cls._resolve_env_value(
             'SCHEDULE_TIME',
-            default='18:00',
+            default='20:30',
             prefer_env_file=True,
         )
         schedule_times_value = cls._resolve_env_value(
@@ -1981,10 +1981,10 @@ class Config:
                 default='false',
                 prefer_env_file=True,
             ).lower() == 'true',
-            schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
+            schedule_time=(schedule_time_value or '20:30').strip() or '20:30',
             schedule_times=normalize_schedule_times(
                 schedule_times_value,
-                fallback_time=(schedule_time_value or '18:00').strip() or '18:00',
+                fallback_time=(schedule_time_value or '20:30').strip() or '20:30',
             ),
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
