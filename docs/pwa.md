@@ -27,7 +27,7 @@ DSA Web 前端现在可以作为 PWA 安装到桌面/手机主屏。本 Phase 1 
 | 资源类型                 | 离线可用 | 备注                                                |
 | ------------------------ | -------- | --------------------------------------------------- |
 | 入口 HTML 壳             | ✅       | network-first，失败 fallback cached shell            |
-| 静态资源（含 `/assets/*` 哈希 bundle）| ✅ | stale-while-revalidate，runtime 在线时缓存首次响应 |
+| 静态资源（含 `/assets/*` 哈希 bundle）| ✅ | install 时 fetch `/` 解析当前部署 `/assets/*` bundle 预缓存；运行时 SWR 刷新 |
 | 离线 fallback           | ✅       | `/offline.html`（SW install 时合成，cache.put 写入）|
 | `/api/*`                | ❌       | 永远走网络，不缓存                                  |
 | `/auth/*`               | ❌       | 永远走网络，不缓存                                  |
@@ -36,9 +36,13 @@ DSA Web 前端现在可以作为 PWA 安装到桌面/手机主屏。本 Phase 1 
 | `/stocks.index.json`    | ❌       | 永远走网络，不缓存（即使带 `?_t=<ts>` cache-bust） |
 | 跨域资源                | n/a      | 不接管，浏览器默认处理                              |
 
-注：哈希 JS/CSS bundle 不在 install 时 precache（每次 build hash 变），
-而是靠 SWR 在首次在线访问时被 SW 写入 cache。下次离线 relaunch 时
-`/index.html` 引用的 bundle 已经在 cache storage 中可用。
+注：哈希 JS/CSS bundle 文件名每次 build 都变，install 时不写死 URL 列表；
+SW install 阶段 `fetch('/')` 后解析返回 HTML 中实际引用的
+`<script type="module" src="/assets/...">`、`<link rel="stylesheet" href="/assets/...">`
+与 `<link rel="modulepreload" href="/assets/...">`，把当前部署真正引用的 bundle
+一次性 precache 到 cache storage。这样首次在线访问 + SW install 完成后立刻
+离线 relaunch，不需要 worker 先控制过一次页面请求就能拿到 bundle。运行时
+再 SWR 刷新这些 bundle 的新 hash 版本。
 
 ## 设计契约
 
