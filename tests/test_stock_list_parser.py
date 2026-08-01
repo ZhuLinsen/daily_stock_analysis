@@ -241,18 +241,21 @@ class TestContract3PrefixedUnknownDegradesToStock:
             # Phase 1 contract (issue #2063, maintainer clarification
             # 2026-08-01): the ``us`` exchange prefix is case-insensitive
             # on the prefix itself, but the ticker base must arrive in the
-            # canonical uppercase US symbol shape. Fully lowercase
-            # ``us``-prefixed tokens are surfaced as ``unsupported`` so
-            # callers can prompt the user to retype in mixed/upper case.
-            # This uniformly rejects bare-US collisions (``usfd``/``usm``,
-            # previously OR-COR-9c3d2c44) and explicit-prefix collisions
-            # (``usibm``/``usamd``/``usge``/``usbk``/``usaapl``/``usshop``,
-            # previously OR-COR-2f0d1a7e) under one consistent contract
-            # rule — no US ticker whitelist or length-dependent heuristic
-            # needed. ``canonical_id`` carries the raw token verbatim so
-            # the caller can echo it back to the user as the offending
-            # input; ``normalized_prefix`` is None because the input was
-            # NOT accepted as an explicit prefix form.
+            # canonical uppercase US symbol shape. ``us``-prefixed tokens
+            # whose base contains any lowercase letter are surfaced as
+            # ``unsupported`` so callers can prompt the user to retype in
+            # mixed/upper case. This uniformly rejects:
+            #   - bare-US collisions (``usfd``/``usm``, previously
+            #     OR-COR-9c3d2c44)
+            #   - explicit-prefix collisions (``usibm``/``usamd``/``usge``
+            #     /``usbk``/``usaapl``/``usshop``, previously OR-COR-2f0d1a7e)
+            #   - mixed-case prefix with lowercase base (``Usfd``/``USibm``/
+            #     ``Usaapl``/``uSfd``/``USaapl``, previously OR-COR-7b45f5c1)
+            # under one consistent contract rule — no US ticker whitelist
+            # or length-dependent heuristic needed. ``canonical_id`` carries
+            # the raw token verbatim so the caller can echo it back to the
+            # user as the offending input; ``normalized_prefix`` is None
+            # because the input was NOT accepted as an explicit prefix form.
             ("usfd", "usfd"),
             ("usm", "usm"),
             ("usibm", "usibm"),
@@ -261,6 +264,15 @@ class TestContract3PrefixedUnknownDegradesToStock:
             ("usbk", "usbk"),
             ("usaapl", "usaapl"),
             ("usshop", "usshop"),
+            # Mixed-case prefix + lowercase base (OR-COR-7b45f5c1): the
+            # prefix alone being uppercase (or partially uppercase) is not
+            # sufficient — the base must be all uppercase for the explicit
+            # ``us``-prefix contract to apply.
+            ("Usfd", "Usfd"),
+            ("USibm", "USibm"),
+            ("Usaapl", "Usaapl"),
+            ("uSfd", "uSfd"),
+            ("USaapl", "USaapl"),
         ],
     )
     def test_lowercase_us_prefix_is_unsupported(
@@ -268,17 +280,22 @@ class TestContract3PrefixedUnknownDegradesToStock:
         ticker: str,
         expected_canonical_id: str,
     ) -> None:
-        """Regression for PR #2129 review blockers OR-COR-9c3d2c44 (closed)
-        and OR-COR-2f0d1a7e: fully lowercase ``us``-prefixed tokens are
+        """Regression for PR #2129 review blockers OR-COR-9c3d2c44 (closed),
+        OR-COR-2f0d1a7e (closed), and OR-COR-7b45f5c1: ``us``-prefixed
+        tokens whose ticker base contains any lowercase letter — whether
+        the prefix itself is lowercase, mixed-case, or uppercase — are
         neither bare US tickers nor explicit-prefix stock symbols under
         the Phase 1 contract from issue #2063 (maintainer clarification
         2026-08-01). They are surfaced as ``unsupported`` so callers can
         prompt the user to retype the ticker base in canonical uppercase
-        form (``usAAPL``/``usBRK``/``USFD``). The contract closes both the
-        ``usfd``/``usm`` silent bare-rewrite bloom (OR-COR-9c3d2c44) and
-        the ``usibm``/``usge``/``usbk``/``usaapl`` length-dependent
-        explicit-prefix split bifurcation (OR-COR-2f0d1a7e) under one
-        uniform rule — no US ticker whitelist required.
+        form (``usAAPL``/``usBRK``/``USFD``). The contract closes three
+        prior blockers under one uniform rule — no US ticker whitelist
+        required:
+            * OR-COR-9c3d2c44: ``usfd``/``usm`` silent bare-rewrite bloom
+            * OR-COR-2f0d1a7e: ``usibm``/``usge``/``usbk``/``usaapl``
+              length-dependent explicit-prefix split bifurcation
+            * OR-COR-7b45f5c1: ``Usfd``/``USibm``/``Usaapl`` mixed-case
+              prefix with lowercase base bypassing the lowercase-only guard
         """
         target = parse_analysis_target(ticker)
         assert target.asset_type == ParseStatus.UNSUPPORTED

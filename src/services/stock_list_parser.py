@@ -507,23 +507,27 @@ def parse_analysis_target(
     # Phase 1 contract (issue #2063, maintainer clarification 2026-08-01):
     # the ``us`` exchange prefix is case-insensitive on the *prefix* itself
     # but the ticker base must arrive in canonical uppercase US symbol
-    # shape. Fully lowercase ``us``-prefixed tokens — e.g. ``usfd`` /
-    # ``usm`` / ``usibm`` / ``usaapl`` / ``usshop`` — are neither bare US
+    # shape. ``us``-prefixed tokens whose base contains any lowercase
+    # letter — e.g. ``usfd`` / ``usm`` / ``usibm`` / ``usaapl`` /
+    # ``usshop`` (all-lowercase) AND ``Usfd`` / ``USibm`` / ``Usaapl``
+    # (mixed-case prefix with lowercase base) — are neither bare US
     # tickers (silently upper-casing would synthesise ``USFD`` / ``USIBM``,
     # which are different real or non-existent securities) nor explicit
     # ``us``-prefix stock symbols (silently splitting would rewrite them
     # to ``FD`` / ``IBM`` / ``AAPL``, losing the user's original intent).
     # Reject them up-front as ``unsupported`` regardless of what the
-    # normalizer computed for ``norm_code``, so the caller can prompt the
-    # user to retype with a mixed/uppercase prefix base. This closes both
-    # OR-COR-9c3d2c44 (``usfd``/``usm`` silent bare rewrite) and
+    # normalizer computed for ``norm_code``, so the caller can prompt
+    # the user to retype the ticker base in canonical uppercase form.
+    # This closes OR-COR-9c3d2c44 (``usfd``/``usm`` silent bare rewrite),
     # OR-COR-2f0d1a7e (``usibm``/``usge``/``usbk``/``usaapl`` length-dependent
-    # split bifurcation) under one consistent contract rule.
+    # split bifurcation) and OR-COR-7b45f5c1 (``Usfd``/``USibm``/
+    # ``Usaapl`` mixed-case prefix with lowercase base) under one
+    # consistent contract rule.
     if (
         raw.isalpha()
-        and raw.startswith("us")
         and len(raw) > 2
-        and raw.islower()
+        and raw[:2].lower() == "us"
+        and not raw[2:].isupper()
     ):
         return AnalysisTarget(
             raw_input=raw_input,
@@ -749,22 +753,25 @@ def parse_analysis_target(
             )
     elif norm_code and norm_exchange == "":
         # ``_normalize_code_and_exchange`` upper-cases the token (``shop`` →
-        # ``SHOP``, ``usBRK`` → ``USBRK``). For mixed-case inputs such as
-        # ``usBRK`` the normalizer's ``base.isdigit()`` guard in
-        # ``_split_explicit_exchange`` prevents ``us`` from being recognised
-        # as an exchange prefix, so we restore the ``us``-prefix split here.
-        # An all-uppercase token that happens to begin with ``US`` is a bare
-        # US ticker (``USFD``/``USM`` ≤5 letters) and must NOT be mis-split
-        # into ``(us, FD)``/``(us, M)`` — that would silently lose the real
-        # ticker shape. Fully lowercase ``us``-prefixed tokens are already
-        # rejected by the early-return guard above (Phase 1 contract from
-        # issue #2063, maintainer clarification 2026-08-01), so the only
-        # tokens reaching this branch are mixed-case or all-uppercase.
+        # ``SHOP``, ``usBRK`` → ``USBRK``). For mixed-case prefix inputs such
+        # as ``usBRK`` / ``UsBRK`` / ``uSBRK`` (case-insensitive ``us``
+        # prefix + uppercase base, per Phase 1 contract from issue #2063,
+        # maintainer clarification 2026-08-01) the normalizer's
+        # ``base.isdigit()`` guard in ``_split_explicit_exchange`` prevents
+        # ``us`` from being recognised as an exchange prefix, so we restore
+        # the ``us``-prefix split here. Tokens with a lowercase base were
+        # already rejected by the early-return guard above. An all-uppercase
+        # token ≤5 letters (``USFD``/``USM``) is a bare US ticker and is
+        # short-circuited by ``_split_prefix`` before reaching this branch
+        # (so we do NOT touch it here); an all-uppercase token >5 letters
+        # (``USAAPL``) flows into this branch and is split as an explicit
+        # ``us`` prefix.
         if (
-            raw.startswith("us")
+            raw.isalpha()
             and len(raw) > 2
-            and raw.isalpha()
-            and not raw.isupper()
+            and raw[:2].lower() == "us"
+            and raw[2:].isupper()
+            and not (raw.isupper() and len(raw) <= 5)
         ):
             bare_from_us = raw[2:]
             norm_bare, _ = _normalize_code_and_exchange(bare_from_us)
