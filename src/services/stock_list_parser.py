@@ -167,12 +167,29 @@ def _split_prefix(token: str) -> Tuple[Optional[str], str]:
     """
     if not token:
         return None, ""
-    # Short-circuit bare US tickers (1-5 ASCII uppercase letters) before
-    # scanning _KNOWN_PREFIXES so prefix collisions don't get mis-split.
+    # Short-circuit bare US tickers before scanning _KNOWN_PREFIXES so prefix
+    # collisions don't get mis-split. Two shape families are recognised:
+    #
+    #   1. 1-5 ASCII uppercase letters (``USFD`` / ``SHAK`` / ``AAPL``):
+    #      ``_US_TICKER_SHAPE_RE`` matches the same ``^[A-Z]{1,5}$`` shape
+    #      that ``stock_code_utils.is_code_like`` treats as a bare US code.
+    #   2. dotted US form ``^[A-Z]{1,5}\.[A-Z]{1,2}$`` (``BRK.B`` / ``SHOP.US``
+    #      / ``HKD.US`` / ``BJRI.US`` / ``AAPL.US``) — PR #2129 round-4 review
+    #      blocker ``OR-COR-bare-us-suffix-prefix-collision``: a token like
+    #      ``SHOP.US`` / ``HKD.US`` / ``BJRI.US`` / ``USFD.US`` previously
+    #      fell through the ``isalpha()``-only short-circuit and got split by
+    #      _KNOWN_PREFIXES into ``sh`` + ``OP.US`` / ``hk`` + ``D.US`` /
+    #      ``bj`` + ``RI.US`` / ``us`` + ``FD.US``, returning the wrong
+    #      exchange and a non-canonical stock id. Both dotted and bare forms
+    #      are the same ``_US_TICKER_SHAPE_RE`` regex used throughout the
+    #      parser, so apply the short-circuit uniformly.
+    #
     # Exchange codes (``sh000300``, ``sz399001``) contain digits; explicitly
-    # prefixed US codes (``usAAPL``) are mixed-case — neither matches this
-    # guard, so both still flow through the prefix splitter.
-    if 1 <= len(token) <= 5 and token.isalpha() and token.isascii() and token.isupper():
+    # prefixed US codes (``usAAPL``) are mixed-case — neither matches the
+    # _US_TICKER_SHAPE_RE, so both still flow through the prefix splitter
+    # and contract #3's "prefix supplied → degrade to stock" semantics
+    # remain intact for explicitly-prefixed codes.
+    if _US_TICKER_SHAPE_RE.match(token):
         return None, token
     lower = token.lower()
     for p in _KNOWN_PREFIXES_SORTED:

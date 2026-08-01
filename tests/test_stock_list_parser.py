@@ -509,6 +509,45 @@ class TestReviewBlockerRegressions:
         assert target.normalized_code == ticker
         assert target.matched_index is None
 
+    # ---- OR-COR-bare-us-suffix-prefix-collision ----------------------------
+
+    @pytest.mark.parametrize(
+        "ticker",
+        # Bare ``.US`` suffix US tickers (round-4 blocker
+        # OR-COR-bare-us-suffix-prefix-collision): a token like ``SHOP.US`` /
+        # ``HKD.US`` / ``BJRI.US`` / ``USFD.US`` has the same canonical US
+        # symbol shape ``^[A-Z]{1,5}\.[A-Z]{1,2}$`` as ``BRK.B`` / ``AAPL.US``.
+        # Previously ``_split_prefix`` only short-circuited bare uppercase
+        # letters (``USFD``-form), so dotted ``.US`` codes whose first 2
+        # letters happened to collide with a known exchange prefix
+        # (``sh``/``hk``/``bj``/``us``) were mis-split into
+        # ``(sh, OP.US)`` / ``(hk, D.US)`` / ``(bj, RI.US)`` / ``(us, FD.US)``,
+        # producing wrong market and non-canonical stock id.
+        ["SHOP.US", "HKD.US", "BJRI.US", "USFD.US", "AAPL.US", "BRK.B"],
+    )
+    def test_bare_dotted_us_suffix_collision_is_not_split(self, ticker: str) -> None:
+        r"""Bare ``.US`` / ``.B`` dotted US tickers whose first 1-2 letters
+        collide with a known exchange prefix (``sh`` / ``hk`` / ``bj`` /
+        ``us``) must round-trip as US stock, not be split by the prefix
+        scanner into ``(sh, OP.US)`` / ``(hk, D.US)`` / ``(us, FD.US)`` etc.
+
+        Regression for PR #2129 round-4 review blocker
+        ``OR-COR-bare-us-suffix-prefix-collision``.
+
+        Both bare form (``USFD``) and dotted form (``SHOP.US`` / ``BRK.B``)
+        share the canonical ``_US_TICKER_SHAPE_RE`` regex
+        ``^[A-Z]{1,5}(\.[A-Z]{1,2})?$``, so ``_split_prefix`` now applies
+        the same short-circuit to both families.
+        """
+        target = parse_analysis_target(ticker)
+        assert target.asset_type == ParseStatus.STOCK
+        assert target.exchange == "US"
+        assert target.canonical_id == ticker
+        assert target.display_code == ticker
+        assert target.normalized_prefix is None
+        assert target.normalized_code == ticker
+        assert target.matched_index is None
+
     @pytest.mark.parametrize(
         "ticker,expected_prefix,expected_bare",
         [
