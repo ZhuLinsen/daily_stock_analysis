@@ -19,20 +19,26 @@ DSA Web 前端现在可以作为 PWA 安装到桌面/手机主屏。本 Phase 1 
 
 - 应用以独立窗口启动（无浏览器地址栏）
 - 主屏图标来自 `apps/dsa-web/public/icon-192.png` / `icon-512.png`
-- 应用启动主题色 `#22d3ee`（与 DSA 暗色主题一致）
+- 应用启动主题色 `#0f172a`（与 DSA 暗色主题一致；与 `manifest.webmanifest`
+  和 `index.html` 中 `<meta name="theme-color">` 保持一致）
 
 ## 离线行为（重要）
 
-| 资源类型       | 离线可用 | 备注                                    |
-| -------------- | -------- | --------------------------------------- |
-| 入口 HTML 壳   | ✅       | cache-first                             |
-| 静态资源       | ✅       | stale-while-revalidate                  |
-| 离线 fallback  | ✅       | `/offline.html`（SW 自动接管）          |
-| `/api/*`       | ❌       | 永远走网络，不缓存                      |
-| `/auth/*`      | ❌       | 永远走网络，不缓存                      |
-| `/login`       | ❌       | 永远走网络，不缓存                      |
-| `/logout`      | ❌       | 永远走网络，不缓存                      |
-| 跨域资源       | n/a      | 不接管，浏览器默认处理                  |
+| 资源类型                 | 离线可用 | 备注                                                |
+| ------------------------ | -------- | --------------------------------------------------- |
+| 入口 HTML 壳             | ✅       | network-first，失败 fallback cached shell            |
+| 静态资源（含 `/assets/*` 哈希 bundle）| ✅ | stale-while-revalidate，runtime 在线时缓存首次响应 |
+| 离线 fallback           | ✅       | `/offline.html`（SW install 时合成，cache.put 写入）|
+| `/api/*`                | ❌       | 永远走网络，不缓存                                  |
+| `/auth/*`               | ❌       | 永远走网络，不缓存                                  |
+| `/login`                | ❌       | 永远走网络，不缓存                                  |
+| `/logout`               | ❌       | 永远走网络，不缓存                                  |
+| `/stocks.index.json`    | ❌       | 永远走网络，不缓存（即使带 `?_t=<ts>` cache-bust） |
+| 跨域资源                | n/a      | 不接管，浏览器默认处理                              |
+
+注：哈希 JS/CSS bundle 不在 install 时 precache（每次 build hash 变），
+而是靠 SWR 在首次在线访问时被 SW 写入 cache。下次离线 relaunch 时
+`/index.html` 引用的 bundle 已经在 cache storage 中可用。
 
 ## 设计契约
 

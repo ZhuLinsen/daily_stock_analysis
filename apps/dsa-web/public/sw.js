@@ -4,6 +4,7 @@
 // NEVER cache:
 //   - Auth / session-cookie API (/api/*, /auth/*, /login, /logout)
 //   - Real-time quote / report / config data
+//   - The dynamic stock index (/stocks.index.json, even with ?_t= cache-bust)
 //   - Any response that depends on user credentials or carries Set-Cookie
 //
 // Rationale: financial data is time-sensitive; caching it would silently
@@ -15,11 +16,23 @@
 
 const CACHE_NAME = "dsa-shell-v1";
 
+// Shell assets precached at install time. We deliberately do NOT include
+// the production hashed JS/CSS bundles here, because:
+//   1. Their filenames change on every build, so a hardcoded list would
+//      never match a future deploy and the cache would carry stale entries.
+//   2. Vite already emits `<link rel="modulepreload">` and `<script type="module">`
+//      tags in index.html; when the user is online the SWR fetch-handler
+//      below caches those responses on first request, and that cached copy
+//      is what makes the offline relaunch work.
+//   3. We also do NOT include "/offline.html" here. The repository's SPA
+//      fallback (api/app.py serve_spa) returns index.html for any unmatched
+//      same-origin path, so cache.add("/offline.html") would overwrite our
+//      synthesised OFFLINE_HTML with the SPA shell, defeating the offline
+//      banner. The synthesised OFFLINE_HTML is written via cache.put only.
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
-  "/offline.html",
   "/icon-192.png",
   "/icon-512.png",
   "/apple-touch-icon.png",
@@ -52,15 +65,14 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      // Pre-cache offline.html from a synthesized Response so subsequent
-      // navigations always have a fallback even on first install.
+      // Synthesised offline page — written via cache.put only, never cache.add.
       await cache.put(
         "/offline.html",
         new Response(OFFLINE_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         }),
       );
-      // Best-effort precache the remaining shell assets; ignore failures
+      // Best-effort precache remaining shell assets; ignore failures
       // (e.g. dev server may not have all of them at install time).
       await Promise.allSettled(SHELL_ASSETS.map((url) => cache.add(url)));
       await self.skipWaiting();
@@ -87,12 +99,17 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   // Cross-origin requests (CDN, third-party) — let the browser handle
   if (url.origin !== self.location.origin) return;
-  // NEVER cache auth / API / data endpoints — always go to network
+  // NEVER cache auth / API / data endpoints — always go to network.
+  // Include the dynamic stock index `/stocks.index.json` (with or without
+  // cache-bust query) — the app deliberately appends `?_t=<ts>` to bypass
+  // HTTP caches and the SW must honour the same freshness contract.
+  const pathname = url.pathname;
   if (
-    url.pathname.startsWith("/api/") ||
-    url.pathname.startsWith("/auth/") ||
-    url.pathname === "/login" ||
-    url.pathname === "/logout"
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/auth/") ||
+    pathname === "/login" ||
+    pathname === "/logout" ||
+    pathname === "/stocks.index.json"
   ) {
     return;
   }
@@ -117,7 +134,10 @@ self.addEventListener("fetch", (event) => {
     );
     return;
   }
-  // Other same-origin static GETs: stale-while-revalidate
+  // Other same-origin static GETs (incl. hashed /assets/* bundles, icons,
+  // modulepreloaded chunks): stale-while-revalidate. This is what makes the
+  // offline relaunch find the hashed JS/CSS bundles that we intentionally
+  // did NOT precache at install time.
   event.respondWith(
     (async () => {
       const cached = await caches.match(req);
