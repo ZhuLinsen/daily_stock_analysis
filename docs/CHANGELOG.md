@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - FAQ 补充 macOS 桌面应用被 Gatekeeper quarantine 阻止启动时，对受信任安装包进行临时放行的步骤。
 
+- [修复] 选股结果持久化恢复：选股页新增历史记录区块，任务完成后保留 run_id，刷新页面可从历史 API 恢复上次选股结果（此前刷新后结果丢失）。
+
 ## [3.29.0] - 2026-08-02
 
 ### 发布亮点
