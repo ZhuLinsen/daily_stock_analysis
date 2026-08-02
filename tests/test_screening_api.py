@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import os
 import json
+import multiprocessing
 import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,7 @@ from api.v1.endpoints import screening as screening_endpoint
 from src.config import Config
 from src.services import screening_service
 from src.services.screening import REFERENCE_REVISION
+from src.services.screening.config import Config as ScreeningPipelineConfig
 from src.services.task_queue import TaskInfo, TaskStatus as QueueTaskStatus
 
 
@@ -42,6 +45,12 @@ def _screening_unavailable() -> HTTPException:
 
 def _raise_screening_unavailable() -> None:
     raise _screening_unavailable()
+
+
+def _sleeping_constituent_source(*, symbol: str) -> pd.DataFrame:
+    del symbol
+    time.sleep(5)
+    return pd.DataFrame()
 
 
 def _make_screening_core(
@@ -862,6 +871,114 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(cache_payload["payload"]["details"]["Copper"]["summary"], "Copper summary")
         self.assertEqual(detail_mock.call_count, 2)
 
+    def test_hotspot_refresh_can_run_while_screening_pipeline_is_busy(self) -> None:
+        config = self._config(enabled=True)
+        pipeline_started = threading.Event()
+        release_pipeline = threading.Event()
+        errors: list[BaseException] = []
+
+        def screen_impl(_strategy: str, **_kwargs: Any) -> Dict[str, Any]:
+            pipeline_started.set()
+            release_pipeline.wait(timeout=2)
+            return {"candidates": []}
+
+        def run_screen() -> None:
+            try:
+                screening_service._call_screening_screen(
+                    "dual_low",
+                    "cn",
+                    5,
+                    config,
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced in the test thread.
+                errors.append(exc)
+
+        rows = [{"topic": "AI", "heat_score": 90.0, "change_pct": 3.0}]
+        fake_core = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"SCREENING_DATA_DIR": str(Path(tmpdir) / "screening")}, clear=False),
+                patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", "akshare")),
+                patch(
+                    "src.services.screening_service.screening_hotspot",
+                    new=SimpleNamespace(discover_hotspots=MagicMock(return_value=rows)),
+                ),
+                _patch_screening_core(fake_core),
+            ):
+                worker = threading.Thread(target=run_screen)
+                worker.start()
+                self.assertTrue(pipeline_started.wait(timeout=1))
+                try:
+                    payload = screening_service.ScreeningService(config=config).hotspots(
+                        provider="akshare",
+                        top=1,
+                        refresh=True,
+                    )
+                finally:
+                    release_pipeline.set()
+                    worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(payload["hotspots"][0]["topic"], "AI")
+
+    def test_screening_can_start_while_hotspot_refresh_is_busy(self) -> None:
+        config = self._config(enabled=True)
+        hotspot_started = threading.Event()
+        release_hotspot = threading.Event()
+        pipeline_started = threading.Event()
+        errors: list[BaseException] = []
+
+        def discover_hotspots(**_kwargs: Any) -> list[Dict[str, Any]]:
+            hotspot_started.set()
+            release_hotspot.wait(timeout=2)
+            return [{"topic": "AI", "heat_score": 90.0, "change_pct": 3.0}]
+
+        def screen_impl(_strategy: str, **_kwargs: Any) -> Dict[str, Any]:
+            pipeline_started.set()
+            return {"candidates": []}
+
+        def run_hotspot_refresh() -> None:
+            try:
+                screening_service.ScreeningService(config=config).hotspots(
+                    provider="akshare",
+                    top=1,
+                    refresh=True,
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced in the test thread.
+                errors.append(exc)
+
+        fake_core = _make_screening_core(screen=MagicMock(side_effect=screen_impl))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"SCREENING_DATA_DIR": str(Path(tmpdir) / "screening")}, clear=False),
+                patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", "akshare")),
+                patch(
+                    "src.services.screening_service.screening_hotspot",
+                    new=SimpleNamespace(discover_hotspots=discover_hotspots),
+                ),
+                _patch_screening_core(fake_core),
+            ):
+                worker = threading.Thread(target=run_hotspot_refresh)
+                worker.start()
+                self.assertTrue(hotspot_started.wait(timeout=1))
+                try:
+                    screening_service._call_screening_screen(
+                        "dual_low",
+                        "cn",
+                        5,
+                        config,
+                    )
+                    self.assertTrue(pipeline_started.wait(timeout=0.5))
+                finally:
+                    release_hotspot.set()
+                    worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+
     def test_hotspots_refresh_does_not_replace_richer_cache_with_narrower_request(self) -> None:
         config = self._config(enabled=True)
 
@@ -1188,12 +1305,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             "topic": "钼",
             "summary": "钼 当前涨跌幅 10.00%。",
             "route": [{"title": "当日发酵", "description": "钼板块异动。", "source": "eastmoney_board_change"}],
+            "timeline": [{"title": "原始时间线", "description": "原始详情证据。", "source": "raw_timeline"}],
             "stocks": [],
             "stock_count": 0,
             "source_errors": [],
         })
         search_service = MagicMock()
-        search_service.search_stock_news.return_value = SimpleNamespace(
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
             success=True,
             provider="Bocha",
             results=[
@@ -1217,37 +1335,56 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
                 patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", provider)),
                 patch("src.services.screening_service.screening_hotspot", new=SimpleNamespace()),
-                patch("src.search_service.SearchService", return_value=search_service),
+                patch("src.services.screening_service._get_dsa_search_service", return_value=search_service),
             ):
-                payload = self._hotspot_detail(config=config, provider="akshare", topic="钼")
+                payload = self._hotspot_detail(
+                    config=config,
+                    provider="akshare",
+                    topic="钼",
+                    include_search=True,
+                )
 
         self.assertEqual(payload["route"][0]["source"], "ExampleNews")
-        self.assertEqual(payload["route"][0]["title"], "消息催化")
+        self.assertEqual(payload["route"][0]["title"], "以钼代钨带动小金属行情")
         self.assertEqual(payload["route"][0]["date"], "2026-06-12")
         self.assertEqual(payload["route"][0]["url"], "https://example.com/news")
+        self.assertEqual(payload["timeline"][0]["source"], "ExampleNews")
+        self.assertEqual(payload["timeline"][1]["source"], "raw_timeline")
+        self.assertEqual(payload["timeline"][1]["title"], "原始时间线")
+        self.assertEqual(payload["news_search_status"], "available")
         self.assertLessEqual(len(payload["route"][0]["description"]), 93)
         self.assertNotIn("完整产业链背景", payload["route"][0]["description"])
-        search_service.search_stock_news.assert_called_once()
-
-    def test_hotspot_detail_reuses_screening_litellm_routes_and_temperature_compatibility(self) -> None:
-        config = Config(
-            screening_enabled=True,
-            litellm_model="openai/gpt-5-mini",
-            openai_api_keys=["dsa-openai-key"],
-            openai_base_url="https://openai-compatible.example/v1",
-            llm_model_list=[
-                {
-                    "model_name": "openai/gpt-5-mini",
-                    "litellm_params": {
-                        "model": "openai/gpt-5-mini",
-                        "api_key": "dsa-openai-key",
-                        "api_base": "https://openai-compatible.example/v1",
-                        "extra_headers": {"x-tenant": "dsa"},
-                    },
-                },
-            ],
-            bocha_api_keys=["test-key"],
+        search_service.search_topic_news_bounded.assert_called_once_with(
+            "钼",
+            max_results=3,
+            focus_keywords=['"钼"', "A股", "最新消息", "催化"],
+            timeout_seconds=12.0,
         )
+
+    def test_hotspot_search_keeps_hard_deadline_when_caller_timeout_is_disabled(self) -> None:
+        search_service = MagicMock(is_available=True)
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
+            success=False,
+            results=[],
+        )
+
+        with (
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_SEARCH_TIMEOUT_SEC": "off"}, clear=False),
+            patch("src.services.screening_service._get_dsa_search_service", return_value=search_service),
+        ):
+            result = screening_service._build_hotspot_event_routes_from_search("钼")
+
+        self.assertEqual(result.routes, [])
+        self.assertEqual(result.status, "unavailable")
+        search_service.search_topic_news_bounded.assert_called_once_with(
+            "钼",
+            max_results=3,
+            focus_keywords=['"钼"', "A股", "最新消息", "催化"],
+            timeout_seconds=12.0,
+        )
+
+    def test_hotspot_search_excludes_missing_and_unsafe_links(self) -> None:
+        config = Config(screening_enabled=True, bocha_api_keys=["test-key"])
         provider = screening_service.DsaEastMoneyHotspotProvider()
         provider.hotspot_detail = MagicMock(return_value={
             "topic": "钼",
@@ -1258,7 +1395,166 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             "source_errors": [],
         })
         search_service = MagicMock()
-        search_service.search_stock_news.return_value = SimpleNamespace(
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
+            success=True,
+            provider="Bocha",
+            results=[
+                SimpleNamespace(
+                    title="没有来源链接的消息",
+                    snippet="这条结果不可验证。",
+                    url="",
+                    source="Unknown",
+                    published_date="2026-08-01",
+                ),
+                SimpleNamespace(
+                    title="不安全链接",
+                    snippet="这条结果不能作为外链展示。",
+                    url="javascript:alert(1)",
+                    source="Unknown",
+                    published_date="2026-08-01",
+                ),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"SCREENING_DATA_DIR": str(Path(tmpdir) / "screening")}, clear=False),
+                patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+                patch("src.services.screening_service.screening_hotspot", new=SimpleNamespace()),
+                patch("src.services.screening_service._get_dsa_search_service", return_value=search_service),
+            ):
+                payload = self._hotspot_detail(
+                    config=config,
+                    provider="akshare",
+                    topic="钼",
+                    include_search=True,
+                )
+
+        self.assertEqual(payload["news_search_status"], "no_results")
+        self.assertFalse(any(item.get("search_result") for item in payload["route"]))
+        self.assertEqual(payload["route"][0]["source"], "eastmoney_board_change")
+
+    def test_hotspot_search_reports_operational_failure_without_losing_base_detail(self) -> None:
+        search_service = MagicMock(is_available=True)
+        search_service.search_topic_news_bounded.side_effect = TimeoutError("provider timed out")
+        base_detail = {
+            "topic": "钼",
+            "route": [{"title": "当日发酵", "source": "eastmoney_board_change"}],
+            "timeline": [{"title": "原始时间线", "source": "raw_timeline"}],
+            "stocks": [{"code": "601958", "name": "金钼股份"}],
+        }
+
+        with patch("src.services.screening_service._get_dsa_search_service", return_value=search_service):
+            payload = screening_service._with_hotspot_search_augmentation(base_detail, topic="钼")
+
+        self.assertEqual(payload["news_search_status"], "unavailable")
+        self.assertEqual(payload["route"], base_detail["route"])
+        self.assertEqual(payload["timeline"], base_detail["timeline"])
+        self.assertEqual(payload["stocks"], base_detail["stocks"])
+
+    def test_hotspot_search_skips_invalid_links_before_valid_result(self) -> None:
+        search_service = MagicMock(is_available=True)
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
+            success=True,
+            provider="Bocha",
+            results=[
+                SimpleNamespace(title="无链接", snippet="不可验证", url=""),
+                SimpleNamespace(title="不安全链接", snippet="不可展示", url="javascript:alert(1)"),
+                SimpleNamespace(
+                    title="有效消息",
+                    snippet="有效且可验证的新闻事件。",
+                    url="https://example.com/valid-news",
+                    source="ExampleNews",
+                    published_date="2026-08-01",
+                ),
+            ],
+        )
+
+        with patch("src.services.screening_service._get_dsa_search_service", return_value=search_service):
+            result = screening_service._build_hotspot_event_routes_from_search("钼")
+
+        self.assertEqual(result.status, "available")
+        self.assertEqual(len(result.routes), 1)
+        self.assertEqual(result.routes[0]["title"], "有效消息")
+        self.assertEqual(result.routes[0]["url"], "https://example.com/valid-news")
+
+    def test_hotspot_search_does_not_pollute_or_refresh_shared_detail_cache(self) -> None:
+        config = Config(screening_enabled=True, bocha_api_keys=["test-key"])
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        provider.hotspot_detail = MagicMock(return_value={
+            "topic": "钼",
+            "summary": "钼 当前涨跌幅 10.00%。",
+            "route": [{"title": "当日发酵", "description": "钼板块异动。", "source": "eastmoney_board_change"}],
+            "stocks": [{"code": "601958", "name": "金钼股份"}],
+            "stock_count": 1,
+            "source_errors": [],
+        })
+        search_service = MagicMock()
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
+            success=True,
+            provider="Bocha",
+            results=[
+                SimpleNamespace(
+                    title="钼价上涨带动板块活跃",
+                    snippet="供需偏紧带动钼价上涨，板块关注度提升。",
+                    url="https://example.com/molybdenum",
+                    source="ExampleNews",
+                    published_date="2026-08-01",
+                )
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"SCREENING_DATA_DIR": str(Path(tmpdir) / "screening")}, clear=False),
+                patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
+                patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", provider)),
+                patch("src.services.screening_service.screening_hotspot", new=SimpleNamespace()),
+                patch("src.services.screening_service._get_dsa_search_service", return_value=search_service),
+                patch(
+                    "src.services.screening_service._write_screening_hotspot_detail_cache",
+                    wraps=screening_service._write_screening_hotspot_detail_cache,
+                ) as cache_write,
+            ):
+                searched = self._hotspot_detail(
+                    config=config,
+                    provider="akshare",
+                    topic="钼",
+                    include_search=True,
+                )
+                searched_again = self._hotspot_detail(
+                    config=config,
+                    provider="akshare",
+                    topic="钼",
+                    include_search=True,
+                )
+                plain = self._hotspot_detail(config=config, provider="akshare", topic="钼")
+
+        self.assertTrue(searched["route"][0]["search_result"])
+        self.assertTrue(searched_again["route"][0]["search_result"])
+        self.assertEqual(plain["route"][0]["source"], "eastmoney_board_change")
+        self.assertFalse(any(item.get("search_result") for item in plain["route"]))
+        self.assertNotIn("news_search_requested", plain)
+        self.assertNotIn("news_search_status", plain)
+        self.assertTrue(plain["cache_used"])
+        self.assertEqual(cache_write.call_count, 1)
+        provider.hotspot_detail.assert_called_once_with("钼")
+        self.assertEqual(search_service.search_topic_news_bounded.call_count, 2)
+
+    def test_hotspot_search_summary_does_not_call_llm(self) -> None:
+        config = Config(screening_enabled=True, litellm_model="openai/gpt-5-mini")
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        provider.hotspot_detail = MagicMock(return_value={
+            "topic": "钼",
+            "summary": "钼 当前涨跌幅 10.00%。",
+            "route": [{"title": "当日发酵", "description": "钼板块异动。", "source": "eastmoney_board_change"}],
+            "stocks": [],
+            "stock_count": 0,
+            "source_errors": [],
+        })
+        search_service = MagicMock()
+        search_service.search_topic_news_bounded.return_value = SimpleNamespace(
             success=True,
             provider="Bocha",
             results=[
@@ -1271,66 +1567,26 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                 )
             ],
         )
-        completion_calls: List[Dict[str, Any]] = []
-        env_snapshots: List[Dict[str, Any]] = []
-
-        def completion_impl(**kwargs: Any) -> Any:
-            completion_calls.append(dict(kwargs))
-            env_snapshots.append(
-                {
-                    "LITELLM_MODEL": screening_service.os.environ.get("LITELLM_MODEL"),
-                    "OPENAI_API_KEY": screening_service.os.environ.get("OPENAI_API_KEY"),
-                    "OPENAI_BASE_URL": screening_service.os.environ.get("OPENAI_BASE_URL"),
-                }
-            )
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(content="钼价上行带动小金属与相关产业链发酵。")
-                    )
-                ]
-            )
-
-        fake_litellm = SimpleNamespace(completion=completion_impl)
+        completion = MagicMock(side_effect=AssertionError("hotspot search must not call LLM"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with (
-                patch.dict(
-                    os.environ,
-                    {
-                        "SCREENING_DATA_DIR": str(Path(tmpdir) / "screening"),
-                        "LITELLM_MODEL": "outer/model",
-                        "OPENAI_API_KEY": "outer-openai-key",
-                        "OPENAI_BASE_URL": "https://outer-openai.example/v1",
-                    },
-                    clear=False,
-                ),
-                patch.dict(sys.modules, {"litellm": fake_litellm}, clear=False),
+                patch.dict(os.environ, {"SCREENING_DATA_DIR": str(Path(tmpdir) / "screening")}, clear=False),
+                patch.dict(sys.modules, {"litellm": SimpleNamespace(completion=completion)}, clear=False),
                 patch("src.services.screening_service._get_screening_status_snapshot", return_value=({}, True, {})),
                 patch("src.services.screening_service._resolve_hotspot_provider", return_value=("akshare", provider)),
                 patch("src.services.screening_service.screening_hotspot", new=SimpleNamespace()),
-                patch("src.search_service.SearchService", return_value=search_service),
+                patch("src.services.screening_service._get_dsa_search_service", return_value=search_service),
             ):
-                payload = self._hotspot_detail(config=config, provider="akshare", topic="钼")
-                self.assertEqual(os.environ.get("LITELLM_MODEL"), "outer/model")
-                self.assertEqual(os.environ.get("OPENAI_API_KEY"), "outer-openai-key")
-                self.assertEqual(os.environ.get("OPENAI_BASE_URL"), "https://outer-openai.example/v1")
+                payload = self._hotspot_detail(
+                    config=config,
+                    provider="akshare",
+                    topic="钼",
+                    include_search=True,
+                )
 
-        self.assertEqual(payload["route"][0]["description"], "钼价上行带动小金属与相关产业链发酵。")
-        self.assertEqual(completion_calls[0]["model"], "openai/gpt-5-mini")
-        self.assertEqual(completion_calls[0]["api_key"], "dsa-openai-key")
-        self.assertEqual(
-            completion_calls[0]["api_base"],
-            "https://openai-compatible.example/v1",
-        )
-        self.assertEqual(completion_calls[0]["extra_headers"], {"x-tenant": "dsa"})
-        self.assertNotIn("temperature", completion_calls[0])
-        self.assertEqual(env_snapshots[0]["LITELLM_MODEL"], "openai/gpt-5-mini")
-        self.assertEqual(env_snapshots[0]["OPENAI_API_KEY"], "dsa-openai-key")
-        self.assertEqual(
-            env_snapshots[0]["OPENAI_BASE_URL"],
-            "https://openai-compatible.example/v1",
-        )
+        self.assertIn("小金属", payload["route"][0]["description"])
+        completion.assert_not_called()
 
     def test_hotspot_detail_prefers_timeline_when_engine_route_is_empty(self) -> None:
         config = self._config(enabled=True)
@@ -1494,7 +1750,12 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["topic"], "DRG/DIP")
-        service.hotspot_detail.assert_called_once_with(topic="DRG/DIP", provider="akshare", refresh=False)
+        service.hotspot_detail.assert_called_once_with(
+            topic="DRG/DIP",
+            provider="akshare",
+            refresh=False,
+            include_search=False,
+        )
 
     def test_hotspot_detail_falls_back_when_ths_constituents_fail(self) -> None:
         import pandas as pd
@@ -1565,6 +1826,258 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(list(frame["code"]), ["000001", "000002", "000003"])
         self.assertEqual(provider.stock_board_concept_cons_em("金融").shape[0], 3)
+
+    def test_hotspot_provider_keeps_source_priority_when_secondary_finishes_first(self) -> None:
+        class FakeProvider(screening_service.DsaEastMoneyHotspotProvider):
+            def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
+                time.sleep(0.05)
+                return pd.DataFrame([{"代码": "000001", "名称": "东财名称"}])
+
+            def _fetch_ths_constituents(self, topic: str) -> Any:
+                return pd.DataFrame([
+                    {"code": "000001", "name": "同花顺名称"},
+                    {"code": "000002", "name": "万科A"},
+                ])
+
+            def _fallback_constituents(self, topic: str) -> Any:
+                return pd.DataFrame()
+
+            def _related_hotspot_constituents(self, topic: str) -> Any:
+                return pd.DataFrame()
+
+        frame = FakeProvider().stock_board_concept_cons_em("金融")
+
+        self.assertEqual(list(frame["code"]), ["000001", "000002"])
+        self.assertEqual(frame.iloc[0]["name"], "东财名称")
+
+    def test_hotspot_provider_joins_all_constituent_workers_before_returning(self) -> None:
+        import pandas as pd
+
+        slow_source_finished = threading.Event()
+
+        class FakeProvider(screening_service.DsaEastMoneyHotspotProvider):
+            def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
+                time.sleep(0.08)
+                slow_source_finished.set()
+                return pd.DataFrame()
+
+            def _fetch_ths_constituents(self, topic: str) -> Any:
+                return pd.DataFrame([{"code": "000003", "name": "国农科技"}])
+
+            def _fallback_constituents(self, topic: str) -> Any:
+                return pd.DataFrame()
+
+            def _related_hotspot_constituents(self, topic: str) -> Any:
+                return pd.DataFrame()
+
+        started = time.monotonic()
+        frame = FakeProvider().stock_board_concept_cons_em("金融")
+
+        self.assertLess(time.monotonic() - started, 0.3)
+        self.assertEqual(list(frame["code"]), ["000003"])
+        self.assertTrue(slow_source_finished.is_set())
+        self.assertFalse(any(
+            thread.name.startswith("screening-constituents")
+            for thread in threading.enumerate()
+        ))
+
+    def test_hotspot_provider_caps_and_reuses_constituent_worker_capacity(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        call_count = 0
+        call_lock = threading.Lock()
+
+        class FakeProvider(screening_service.DsaEastMoneyHotspotProvider):
+            _CONSTITUENT_WORKER_SLOTS = threading.BoundedSemaphore(1)
+
+            def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
+                nonlocal call_count
+                with call_lock:
+                    call_count += 1
+                started.set()
+                release.wait(1)
+                return pd.DataFrame([{"code": "000001", "name": "平安银行"}])
+
+        first_provider = FakeProvider()
+        second_provider = FakeProvider()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            first = executor.submit(
+                first_provider._fetch_constituent_sources,
+                "金融",
+                source="industry",
+            )
+            self.assertTrue(started.wait(0.3))
+            skipped = second_provider._fetch_constituent_sources("银行", source="industry")
+            self.assertEqual(skipped, [])
+            release.set()
+            self.assertEqual(len(first.result(timeout=0.5)), 1)
+
+        reused = second_provider._fetch_constituent_sources("银行", source="industry")
+        self.assertEqual(len(reused), 1)
+        self.assertEqual(call_count, 2)
+
+    def test_hotspot_provider_maps_cross_source_topic_alias_to_ths_concept(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        concept_names = pd.DataFrame([
+            {"name": "文化传媒概念", "code": "300806"},
+            {"name": "其他概念", "code": "301000"},
+        ])
+
+        with patch.object(provider, "_fetch_ths_concept_names", return_value=concept_names):
+            code = provider._resolve_ths_concept_code("文字媒体")
+
+        self.assertEqual(code, "300806")
+
+    def test_hotspot_provider_routes_akshare_constituents_through_bounded_process(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        constituents = pd.DataFrame([{"代码": "000001", "名称": "平安银行"}])
+
+        with patch(
+            "data_provider.akshare_fetcher._akshare_call_with_timeout",
+            return_value=constituents,
+        ) as bounded_call:
+            frame = provider._fetch_eastmoney_constituents("金融", source="concept")
+
+        self.assertEqual(frame.iloc[0]["代码"], "000001")
+        self.assertEqual(bounded_call.call_count, 1)
+        self.assertEqual(bounded_call.call_args.kwargs["symbol"], "金融")
+        self.assertEqual(
+            bounded_call.call_args.kwargs["timeout"],
+            provider._AKSHARE_CALL_TIMEOUT_SECONDS,
+        )
+        self.assertIn("stock_board_concept_cons_em", bounded_call.call_args.kwargs["call_name"])
+
+    def test_hotspot_provider_routes_configured_budget_into_hard_deadline(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        rankings = [{
+            "name": "机器人概念",
+            "change_pct": 3.5,
+        }]
+
+        with (
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "0.25"}, clear=False),
+            patch(
+                "data_provider.akshare_fetcher._akshare_call_with_timeout",
+                side_effect=[pd.DataFrame(), (rankings, [])],
+            ) as bounded_call,
+        ):
+            frame = screening_service.screening_hotspot._call_provider_frame(
+                provider,
+                "stock_board_concept_name_em",
+                provider_label="dsa_eastmoney",
+            )
+
+        self.assertIsNotNone(frame)
+        self.assertEqual(frame.iloc[0]["name"], "机器人概念")
+        self.assertEqual(bounded_call.call_count, 2)
+        timeouts = [call.kwargs["timeout"] for call in bounded_call.call_args_list]
+        self.assertTrue(all(0 < timeout <= 0.25 for timeout in timeouts))
+        self.assertLessEqual(timeouts[1], timeouts[0])
+
+    def test_hotspot_provider_detail_fallback_reuses_one_configured_deadline(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        observed_timeouts: List[float] = []
+
+        def record_remaining(value: Any) -> Any:
+            observed_timeouts.append(provider._akshare_timeout_seconds())
+            time.sleep(0.005)
+            return value
+
+        with (
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "0.25"}, clear=False),
+            patch.object(provider, "_find_board_change", side_effect=lambda _topic: record_remaining({})),
+            patch.object(provider, "_is_industry_hotspot", side_effect=lambda _topic: record_remaining(False)),
+            patch.object(
+                provider,
+                "stock_board_concept_cons_em",
+                side_effect=lambda _topic: record_remaining(pd.DataFrame([{
+                    "code": "000001",
+                    "name": "平安银行",
+                }])),
+            ),
+            patch.object(
+                provider,
+                "_fetch_ths_summary_event",
+                side_effect=lambda _topic: record_remaining(""),
+            ),
+            patch.object(provider, "_fetch_ths_info", side_effect=lambda _topic: record_remaining({})),
+            patch("src.services.screening_service._get_dsa_fetcher_manager") as fetcher_manager,
+        ):
+            detail = provider.hotspot_detail("机器人")
+
+        self.assertEqual(detail["leader_stocks"][0]["code"], "000001")
+        self.assertEqual(len(observed_timeouts), 5)
+        self.assertTrue(all(0 < timeout <= 0.25 for timeout in observed_timeouts))
+        self.assertTrue(all(
+            later < earlier
+            for earlier, later in zip(observed_timeouts, observed_timeouts[1:])
+        ))
+        fetcher_manager.assert_not_called()
+
+    def test_hotspot_provider_routes_remaining_budget_into_http_timeout(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        response = MagicMock()
+        response.json.return_value = {
+            "data": {"diff": [{"f14": "机器人概念", "f3": 3.5}]},
+        }
+        provider._session.get = MagicMock(return_value=response)
+
+        with (
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "0.25"}, clear=False),
+            patch.object(provider, "_fetch_board_changes_with_fallback", return_value=pd.DataFrame()),
+            patch.object(provider, "_fetch_rankings_with_fallback", return_value=pd.DataFrame()),
+        ):
+            frame = provider.stock_board_concept_name_em()
+
+        self.assertEqual(frame.iloc[0]["板块名称"], "机器人概念")
+        timeout = provider._session.get.call_args.kwargs["timeout"]
+        self.assertGreater(timeout[0], 0)
+        self.assertGreater(timeout[1], 0)
+        self.assertLessEqual(sum(timeout), 0.25)
+
+    def test_hotspot_provider_disabled_outer_budget_keeps_source_hard_deadline(self) -> None:
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        board_changes = pd.DataFrame([{
+            "板块名称": "机器人",
+            "涨跌幅": 3.5,
+            "板块异动总次数": 20,
+        }])
+
+        with (
+            patch.dict(os.environ, {"SCREENING_HOTSPOT_CALL_TIMEOUT_SEC": "off"}, clear=False),
+            patch(
+                "data_provider.akshare_fetcher._akshare_call_with_timeout",
+                return_value=board_changes,
+            ) as bounded_call,
+        ):
+            frame = screening_service.screening_hotspot._call_provider_frame(
+                provider,
+                "stock_board_concept_name_em",
+                provider_label="dsa_eastmoney",
+            )
+
+        self.assertIsNotNone(frame)
+        self.assertEqual(
+            bounded_call.call_args.kwargs["timeout"],
+            provider._AKSHARE_CALL_TIMEOUT_SECONDS,
+        )
+
+    def test_hotspot_provider_reaps_timed_out_constituent_process(self) -> None:
+        import akshare as ak
+
+        provider = screening_service.DsaEastMoneyHotspotProvider()
+        provider._AKSHARE_CALL_TIMEOUT_SECONDS = 0.05
+        started = time.monotonic()
+
+        with patch.object(ak, "stock_board_concept_cons_em", new=_sleeping_constituent_source):
+            with self.assertRaises(TimeoutError):
+                provider._fetch_eastmoney_constituents("金融", source="concept")
+
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertFalse(any(
+            process.name == "akshare-screening.stock_board_concept_cons_em"
+            for process in multiprocessing.active_children()
+        ))
 
     def test_hotspot_provider_adds_related_metal_leaders_for_narrow_topic(self) -> None:
         import pandas as pd
@@ -1751,20 +2264,12 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             },
         ])
 
-        class _MockAkshare:
-            calls = 0
-
-            @staticmethod
-            def stock_board_change_em():
-                _MockAkshare.calls += 1
-                return board_changes
-
         provider = screening_service.DsaEastMoneyHotspotProvider()
-        with patch.dict("sys.modules", {"akshare": _MockAkshare()}):
+        with patch.object(provider, "_fetch_board_changes_raw", return_value=board_changes) as fetch_raw:
             frame = provider._fetch_board_changes()
             summary = provider._find_board_change("AI算力")
 
-        self.assertEqual(_MockAkshare.calls, 1)
+        self.assertGreaterEqual(fetch_raw.call_count, 1)
         self.assertEqual(frame.iloc[0]["name"], "AI算力")
         self.assertEqual(frame.iloc[0]["stage"], "加速发酵")
         self.assertGreater(frame.iloc[0]["trend_score"], 0)
@@ -1786,7 +2291,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             def stock_board_concept_summary_ths():
                 return summary
 
-        with patch.dict("sys.modules", {"akshare": _MockAkshare()}):
+        with (
+            patch.dict("sys.modules", {"akshare": _MockAkshare()}),
+            patch(
+                "data_provider.akshare_fetcher._akshare_call_with_timeout",
+                return_value=summary,
+            ),
+        ):
             text = provider._fetch_ths_summary_event("MLCC")
 
         self.assertEqual(text, "")
@@ -1831,7 +2342,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 424)
         self.assertEqual(caught.exception.detail["error"], "screening_unavailable")
         self.assertEqual(caught.exception.detail.get("diagnostics", {}).get("reason"), "unexpected_exception")
-        self.assertIn("内建选股引擎初始化失败", caught.exception.detail["message"])
+        self.assertIn("选股功能初始化失败", caught.exception.detail["message"])
 
     def test_start_screen_task_submits_background_work(self) -> None:
         config = self._config(enabled=True)
@@ -1864,12 +2375,24 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload.max_results, 3)
         fake_queue.submit_background_task.assert_called_once()
         self.assertEqual(fake_queue.submit_background_task.call_args.kwargs["report_type"], "screening_screen")
-        screen_mock.assert_called_once_with(strategy="dual_low", market="cn", max_results=3)
+        screen_mock.assert_called_once_with(
+            strategy="dual_low",
+            market="cn",
+            max_results=3,
+            selection_seed="",
+            progress_callback=ANY,
+        )
+        screen_mock.call_args.kwargs["progress_callback"](66, "正在执行 LLM 候选重排")
         self.assertEqual(result["candidate_count"], 0)
         fake_queue.update_task_progress.assert_any_call(
             "screen-task-1",
             20,
-            "正在执行内建选股，外部数据源较慢时会持续后台运行",
+            "正在执行选股，外部数据源较慢时会持续后台运行",
+        )
+        fake_queue.update_task_progress.assert_any_call(
+            "screen-task-1",
+            66,
+            "正在执行 LLM 候选重排",
         )
 
     def test_screen_task_status_returns_screening_result(self) -> None:
@@ -1923,6 +2446,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                     "after_filter_count": 5,
                     "llm_ranked": True,
                     "llm_coverage": 1.0,
+                    "llm_model_used": "openai/gpt-4.1",
+                    "llm_attempted_models": ["deepseek/deepseek-chat", "openai/gpt-4.1"],
+                    "llm_failure_reason": "",
+                    "ranking_mode": "llm",
                     "warnings": "fallback",
                     "degradation": ["Snapshot source fallback: em_datacenter: retry from cache"],
                     "source_errors": "sina timeout",
@@ -1934,6 +2461,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
                     "risk_enabled": True,
                     "portfolio_diversity_enabled": True,
                     "portfolio_concentration_notes": ["sector concentration adjusted"],
+                    "result_variant_applied": True,
+                    "result_variant_pool_size": 4,
+                    "result_variant_rotated_slots": 1,
                     "candidates": [
                         {
                             "code": "600519",
@@ -1953,7 +2483,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         )
 
         with _patch_screening_core(fake_module):
-            payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
+            payload = self._screen(
+                config,
+                market="cn",
+                strategy="dual_low",
+                max_results=5,
+                variant_seed="browser-a",
+            )
 
         fake_module.screen.assert_called_once_with(
             "dual_low",
@@ -1961,6 +2497,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             max_output=5,
             use_llm=True,
             context=ANY,
+            selection_seed="browser-a",
+            config=ANY,
+            progress_callback=None,
+            daily_history_fetcher=ANY,
         )
         self.assertEqual(fake_module.screen.call_args.kwargs["context"]["llm"]["model"], "")
         self.assertEqual(payload["run_id"], "run123")
@@ -1969,6 +2509,12 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["after_filter_count"], 5)
         self.assertEqual(payload["llm_ranked"], True)
         self.assertEqual(payload["llm_coverage"], 1.0)
+        self.assertEqual(payload["llm_model_used"], "openai/gpt-4.1")
+        self.assertEqual(
+            payload["llm_attempted_models"],
+            ["deepseek/deepseek-chat", "openai/gpt-4.1"],
+        )
+        self.assertEqual(payload["ranking_mode"], "llm")
         self.assertEqual(
             payload["warnings"],
             ["fallback", "Snapshot source fallback: em_datacenter: retry from cache"],
@@ -1984,6 +2530,9 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(payload["daily_enriched"], True)
         self.assertEqual(payload["daily_enrich_count"], 12)
         self.assertEqual(payload["portfolio_concentration_notes"], ["sector concentration adjusted"])
+        self.assertEqual(payload["result_variant_applied"], True)
+        self.assertEqual(payload["result_variant_pool_size"], 4)
+        self.assertEqual(payload["result_variant_rotated_slots"], 1)
         self.assertEqual(payload["candidates"][0]["code"], "600519")
         self.assertEqual(payload["candidates"][0]["llm_score"], 90.0)
         self.assertEqual(payload["candidates"][0]["llm_thesis"], "LLM likes the setup")
@@ -2000,7 +2549,8 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: Dict[str, Any] = {}
 
         def screen_with_daily_fetch(strategy: str, **kwargs: Any) -> Dict[str, Any]:
-            daily_df = daily_module.fetch_daily_history(
+            daily_fetcher = kwargs["daily_history_fetcher"]
+            daily_df = daily_fetcher(
                 "600519",
                 lookback_days=20,
                 source="akshare",
@@ -2321,27 +2871,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def screen_impl(_strategy: str, **kwargs):
-            captured["env"] = {
-                "LITELLM_MODEL": screening_service.os.environ.get("LITELLM_MODEL"),
-                "LITELLM_FALLBACK_MODELS": screening_service.os.environ.get("LITELLM_FALLBACK_MODELS"),
-                "LLM_CHANNELS": screening_service.os.environ.get("LLM_CHANNELS"),
-                "LLM_GEMINI_PROTOCOL": screening_service.os.environ.get("LLM_GEMINI_PROTOCOL"),
-                "LLM_GEMINI_API_KEYS": screening_service.os.environ.get("LLM_GEMINI_API_KEYS"),
-                "LLM_GEMINI_EXTRA_HEADERS": screening_service.os.environ.get("LLM_GEMINI_EXTRA_HEADERS"),
-                "GEMINI_API_KEY": screening_service.os.environ.get("GEMINI_API_KEY"),
-                "LLM_CANDIDATE_CONTEXT_ENABLED": screening_service.os.environ.get("LLM_CANDIDATE_CONTEXT_ENABLED"),
-                "LLM_CANDIDATE_CONTEXT_PROVIDERS": screening_service.os.environ.get("LLM_CANDIDATE_CONTEXT_PROVIDERS"),
-                "LLM_CANDIDATE_MULTIPLIER": screening_service.os.environ.get("LLM_CANDIDATE_MULTIPLIER"),
-                "LLM_MAX_CANDIDATES": screening_service.os.environ.get("LLM_MAX_CANDIDATES"),
-                "DAILY_SOURCE": screening_service.os.environ.get("DAILY_SOURCE"),
-                "DAILY_FETCH_RETRIES": screening_service.os.environ.get("DAILY_FETCH_RETRIES"),
-                "DAILY_FETCH_MAX_WORKERS": screening_service.os.environ.get("DAILY_FETCH_MAX_WORKERS"),
-                "SNAPSHOT_SOURCE_PRIORITY": screening_service.os.environ.get("SNAPSHOT_SOURCE_PRIORITY"),
-                "SCREENING_DATA_DIR": screening_service.os.environ.get("SCREENING_DATA_DIR"),
-                "SCREENING_FALLBACK_SNAPSHOT_PATH": screening_service.os.environ.get("SCREENING_FALLBACK_SNAPSHOT_PATH"),
-                "SCREENING_DAILY_HISTORY_CACHE_DIR": screening_service.os.environ.get("SCREENING_DAILY_HISTORY_CACHE_DIR"),
-                "SCREENING_INDUSTRY_PROVIDER_CACHE_DIR": screening_service.os.environ.get("SCREENING_INDUSTRY_PROVIDER_CACHE_DIR"),
-            }
+            captured["config"] = kwargs.get("config")
             captured["context"] = kwargs.get("context")
             return {"candidates": []}
 
@@ -2367,35 +2897,35 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
             self.assertEqual(screening_service.os.environ.get("GEMINI_API_KEY"), "outer-key")
 
-        runtime_env = captured["env"]
-        self.assertIsInstance(runtime_env, dict)
-        self.assertEqual(runtime_env["LITELLM_MODEL"], "gemini/gemini-2.5-flash")
-        self.assertEqual(runtime_env["LITELLM_FALLBACK_MODELS"], "deepseek/deepseek-chat")
-        self.assertEqual(runtime_env["LLM_CHANNELS"], "gemini")
-        self.assertEqual(runtime_env["LLM_GEMINI_PROTOCOL"], "gemini")
-        self.assertEqual(runtime_env["LLM_GEMINI_API_KEYS"], "dsa-gemini-key")
-        self.assertEqual(runtime_env["LLM_GEMINI_EXTRA_HEADERS"], '{"x-tenant": "dsa"}')
-        self.assertEqual(runtime_env["GEMINI_API_KEY"], "dsa-gemini-key")
-        self.assertEqual(runtime_env["LLM_CANDIDATE_CONTEXT_ENABLED"], "false")
-        self.assertEqual(runtime_env["LLM_CANDIDATE_CONTEXT_PROVIDERS"], "news,fund_flow,announcement,quote")
-        self.assertEqual(runtime_env["LLM_CANDIDATE_MULTIPLIER"], "2")
-        self.assertEqual(runtime_env["LLM_MAX_CANDIDATES"], "10")
-        self.assertEqual(runtime_env["DAILY_SOURCE"], "auto")
-        self.assertEqual(runtime_env["DAILY_FETCH_RETRIES"], "3")
-        self.assertEqual(runtime_env["DAILY_FETCH_MAX_WORKERS"], "1")
-        self.assertEqual(runtime_env["SNAPSHOT_SOURCE_PRIORITY"], "sina,efinance,akshare_em,em_datacenter")
-        self.assertEqual(runtime_env["SCREENING_DATA_DIR"], str(screening_service.DSA_SCREENING_DATA_DIR))
+        pipeline_config = captured["config"]
+        self.assertIsInstance(pipeline_config, ScreeningPipelineConfig)
+        self.assertEqual(pipeline_config.llm_model, "gemini/gemini-2.5-flash")
+        self.assertEqual(pipeline_config.llm_fallback_models, ["deepseek/deepseek-chat"])
+        self.assertEqual(pipeline_config.llm_channels[0]["name"], "gemini")
+        self.assertEqual(pipeline_config.llm_channels[0]["protocol"], "gemini")
+        self.assertEqual(pipeline_config.llm_channels[0]["api_keys"], ["dsa-gemini-key"])
+        self.assertFalse(pipeline_config.llm_candidate_context_enabled)
+        self.assertEqual(pipeline_config.llm_candidate_multiplier, 2)
+        self.assertEqual(pipeline_config.llm_max_candidates, 10)
+        self.assertEqual(pipeline_config.daily_source, "auto")
+        self.assertEqual(pipeline_config.daily_fetch_retries, 3)
+        self.assertEqual(pipeline_config.daily_fetch_max_workers, 1)
         self.assertEqual(
-            runtime_env["SCREENING_FALLBACK_SNAPSHOT_PATH"],
-            str(screening_service.DSA_SCREENING_DATA_DIR / "snapshot.last_good.json"),
+            pipeline_config.snapshot_source_priority,
+            ["sina", "efinance", "akshare_em", "em_datacenter"],
+        )
+        self.assertEqual(pipeline_config.data_dir, screening_service.DSA_SCREENING_DATA_DIR)
+        self.assertEqual(
+            pipeline_config.fallback_snapshot_path,
+            screening_service.DSA_SCREENING_DATA_DIR / "snapshot.last_good.json",
         )
         self.assertEqual(
-            runtime_env["SCREENING_DAILY_HISTORY_CACHE_DIR"],
-            str(screening_service.DSA_SCREENING_DATA_DIR / "daily_history"),
+            pipeline_config.daily_history_cache_dir,
+            screening_service.DSA_SCREENING_DATA_DIR / "daily_history",
         )
         self.assertEqual(
-            runtime_env["SCREENING_INDUSTRY_PROVIDER_CACHE_DIR"],
-            str(screening_service.DSA_SCREENING_DATA_DIR / "industry_provider_cache"),
+            pipeline_config.industry_provider_cache_dir,
+            screening_service.DSA_SCREENING_DATA_DIR / "industry_provider_cache",
         )
         context = captured["context"]
         self.assertIsInstance(context, dict)
@@ -2469,12 +2999,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def screen_impl(_strategy: str, **kwargs):
-            captured["env"] = {
-                "OPENAI_API_KEY": screening_service.os.environ.get("OPENAI_API_KEY"),
-                "OPENAI_API_KEYS": screening_service.os.environ.get("OPENAI_API_KEYS"),
-                "OPENAI_BASE_URL": screening_service.os.environ.get("OPENAI_BASE_URL"),
-                "LITELLM_MODEL": screening_service.os.environ.get("LITELLM_MODEL"),
-            }
+            captured["config"] = kwargs.get("config")
             captured["context"] = kwargs.get("context")
             return {"candidates": []}
 
@@ -2495,12 +3020,11 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             self.assertEqual(screening_service.os.environ.get("OPENAI_API_KEY"), "outer-openai-key")
             self.assertEqual(screening_service.os.environ.get("OPENAI_BASE_URL"), "https://outer-openai.example/v1")
 
-        runtime_env = captured["env"]
-        self.assertIsInstance(runtime_env, dict)
-        self.assertEqual(runtime_env["OPENAI_API_KEY"], "dsa-openai-key")
-        self.assertEqual(runtime_env["OPENAI_API_KEYS"], "dsa-openai-key")
-        self.assertEqual(runtime_env["OPENAI_BASE_URL"], "https://openai-compatible.example/v1")
-        self.assertEqual(runtime_env["LITELLM_MODEL"], "openai/gpt-4o-mini")
+        pipeline_config = captured["config"]
+        self.assertIsInstance(pipeline_config, ScreeningPipelineConfig)
+        self.assertEqual(pipeline_config.llm_api_key, "dsa-openai-key")
+        self.assertEqual(pipeline_config.llm_base_url, "https://openai-compatible.example/v1")
+        self.assertEqual(pipeline_config.llm_model, "openai/gpt-4o-mini")
 
         context = captured["context"]
         self.assertIsInstance(context, dict)
@@ -2589,14 +3113,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def screen_impl(_strategy: str, **kwargs: Dict[str, Any]) -> dict[str, object]:
-            captured["env"] = {
-                "OPENAI_BASE_URL": screening_service.os.environ.get("OPENAI_BASE_URL"),
-                "OPENAI_API_KEY": screening_service.os.environ.get("OPENAI_API_KEY"),
-                "OPENAI_API_KEYS": screening_service.os.environ.get("OPENAI_API_KEYS"),
-                "LLM_CHANNELS": screening_service.os.environ.get("LLM_CHANNELS"),
-                "LLM_OPENAI_BASE_URL": screening_service.os.environ.get("LLM_OPENAI_BASE_URL"),
-                "LLM_OPENAI_API_KEYS": screening_service.os.environ.get("LLM_OPENAI_API_KEYS"),
-            }
+            captured["config"] = kwargs.get("config")
             captured["context"] = kwargs.get("context")
             fake_litellm.completion(
                 model="openai/gpt-4o-mini",
@@ -2622,12 +3139,13 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
 
         self.assertEqual(payload["candidate_count"], 0)
         self.assertEqual(len(completion_calls), 2)
-        self.assertEqual(captured["env"]["OPENAI_BASE_URL"], "https://primary-openai.example/v1")
-        self.assertEqual(captured["env"]["OPENAI_API_KEYS"], "dsa-openai-primary")
-        self.assertEqual(captured["env"]["OPENAI_API_KEY"], "dsa-openai-primary")
-        self.assertEqual(captured["env"]["LLM_CHANNELS"], "openai")
-        self.assertEqual(captured["env"]["LLM_OPENAI_BASE_URL"], "https://primary-openai.example/v1")
-        self.assertEqual(captured["env"]["LLM_OPENAI_API_KEYS"], "dsa-openai-primary")
+        pipeline_config = captured["config"]
+        self.assertIsInstance(pipeline_config, ScreeningPipelineConfig)
+        self.assertEqual(pipeline_config.llm_base_url, "https://primary-openai.example/v1")
+        self.assertEqual(pipeline_config.llm_api_key, "dsa-openai-primary")
+        self.assertEqual(pipeline_config.llm_channels[0]["name"], "openai")
+        self.assertEqual(pipeline_config.llm_channels[0]["base_url"], "https://primary-openai.example/v1")
+        self.assertEqual(pipeline_config.llm_channels[0]["api_keys"], ["dsa-openai-primary"])
         self.assertEqual(completion_calls[0]["extra_headers"], {"x-route": "primary", "x-tenant": "dsa"})
         self.assertEqual(completion_calls[1]["extra_headers"], {"x-route": "primary", "x-tenant": "dsa"})
         context = captured["context"]
@@ -2870,9 +3388,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         with (
             patch.object(daily_module, "fetch_daily_history", new=fallback_fetch),
             patch("src.services.screening_service.get_dsa_daily_history", side_effect=RuntimeError("dsa unavailable")),
-            screening_service._screening_dsa_daily_history_provider(),
         ):
-            result = daily_module.fetch_daily_history(
+            daily_fetcher = screening_service._build_screening_dsa_daily_history_fetcher()
+            self.assertIsNotNone(daily_fetcher)
+            result = daily_fetcher(
                 "000001",
                 lookback_days=90,
                 source="auto",
@@ -2888,6 +3407,38 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(captured["retries"], 4)
         self.assertEqual(captured["cache_dir"], Path("data/screening/daily_history"))
         self.assertEqual(captured["cache_ttl_seconds"], 321.0)
+
+    def test_dsa_daily_history_fetchers_are_request_local_when_calls_overlap(self) -> None:
+        import src.services.screening.daily as daily_module
+
+        builtin_fetch = daily_module.fetch_daily_history
+        barrier = threading.Barrier(2)
+        fallback_fetch = MagicMock(side_effect=lambda code, **_kwargs: f"fallback:{code}")
+
+        def unavailable_dsa(code: str, *, lookback_days: int = 120):
+            barrier.wait(timeout=5)
+            raise RuntimeError(f"dsa unavailable for {code}:{lookback_days}")
+
+        with (
+            patch.object(daily_module, "fetch_daily_history", new=fallback_fetch),
+            patch("src.services.screening_service.get_dsa_daily_history", side_effect=unavailable_dsa) as dsa_mock,
+        ):
+            first_fetcher = screening_service._build_screening_dsa_daily_history_fetcher()
+            second_fetcher = screening_service._build_screening_dsa_daily_history_fetcher()
+            self.assertIsNotNone(first_fetcher)
+            self.assertIsNotNone(second_fetcher)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_future = executor.submit(first_fetcher, "000001", lookback_days=30)
+                second_future = executor.submit(second_fetcher, "000002", lookback_days=30)
+
+            self.assertEqual(first_future.result(), "fallback:000001")
+            self.assertEqual(second_future.result(), "fallback:000002")
+            self.assertIs(daily_module.fetch_daily_history, fallback_fetch)
+            self.assertEqual(dsa_mock.call_count, 2)
+            self.assertEqual(fallback_fetch.call_count, 2)
+
+        self.assertIs(daily_module.fetch_daily_history, builtin_fetch)
 
     def test_fetch_daily_history_wraps_tencent_and_sina_with_daily_timeout(self) -> None:
         import src.services.screening.daily as daily_module
@@ -2977,9 +3528,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             ),
             patch.object(daily_module, "_daily_history_cache_path", return_value=cache_path) as cache_path_mock,
             patch.object(daily_module, "_write_daily_history_cache") as cache_write_mock,
-            screening_service._screening_dsa_daily_history_provider(),
         ):
-            result = daily_module.fetch_daily_history(
+            daily_fetcher = screening_service._build_screening_dsa_daily_history_fetcher()
+            self.assertIsNotNone(daily_fetcher)
+            result = daily_fetcher(
                 "000001",
                 lookback_days=90,
                 source="auto",
@@ -3120,11 +3672,7 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def screen_impl(_strategy: str, **kwargs):
-            captured["env"] = {
-                "LITELLM_MODEL": screening_service.os.environ.get("LITELLM_MODEL"),
-                "LITELLM_FALLBACK_MODELS": screening_service.os.environ.get("LITELLM_FALLBACK_MODELS"),
-                "LLM_CHANNELS": screening_service.os.environ.get("LLM_CHANNELS"),
-            }
+            captured["config"] = kwargs.get("config")
             captured["context"] = kwargs.get("context")
             return {"candidates": []}
 
@@ -3133,11 +3681,14 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
         with _patch_screening_core(fake_module):
             payload = self._screen(config, market="cn", strategy="dual_low", max_results=5)
 
-        runtime_env = captured["env"]
-        self.assertIsInstance(runtime_env, dict)
-        self.assertEqual(runtime_env["LITELLM_MODEL"], "gemini/gemini-3-flash-preview")
-        self.assertEqual(runtime_env["LITELLM_FALLBACK_MODELS"], "deepseek/deepseek-chat")
-        self.assertEqual(runtime_env["LLM_CHANNELS"], "gemini,deepseek")
+        pipeline_config = captured["config"]
+        self.assertIsInstance(pipeline_config, ScreeningPipelineConfig)
+        self.assertEqual(pipeline_config.llm_model, "gemini/gemini-3-flash-preview")
+        self.assertEqual(pipeline_config.llm_fallback_models, ["deepseek/deepseek-chat"])
+        self.assertEqual(
+            [channel["name"] for channel in pipeline_config.llm_channels],
+            ["gemini", "deepseek"],
+        )
         context = captured["context"]
         self.assertIsInstance(context, dict)
         self.assertEqual(context["llm"]["fallback_models"], ["deepseek/deepseek-chat"])
@@ -3203,6 +3754,10 @@ class ScreeningOpportunitiesApiTestCase(unittest.TestCase):
             max_output=5,
             use_llm=True,
             context=ANY,
+            selection_seed="",
+            config=ANY,
+            progress_callback=None,
+            daily_history_fetcher=ANY,
         )
         self.assertEqual(payload["candidates"], [])
         self.assertEqual(payload["candidate_count"], 0)

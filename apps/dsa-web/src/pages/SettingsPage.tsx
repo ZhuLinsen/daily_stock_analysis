@@ -1045,10 +1045,10 @@ const SettingsPage: React.FC = () => {
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
   const firstSetupStockCode = parseSetupStockList(getConfigItem(itemsByCategory.base || [], 'STOCK_LIST')?.value)[0] || '';
-  const screeningItem = (itemsByCategory.data_source || []).find((item) => item.key === 'SCREENING_ENABLED');
+  const screeningItem = (itemsByCategory.base || []).find((item) => item.key === 'SCREENING_ENABLED');
   const screeningEnabled = String(screeningItem?.value ?? '').trim().toLowerCase() === 'true';
   const shouldShowFirstRunSetup = activeCategory === 'base';
-  const shouldShowScreeningSettings = activeCategory === 'data_source' && Boolean(screeningItem);
+  const shouldShowScreeningSettings = activeCategory === 'base' && Boolean(screeningItem);
   const hasConfiguredChannels = Boolean((rawActiveItemMap.get('LLM_CHANNELS') || '').trim());
   const hasLitellmConfig = Boolean((rawActiveItemMap.get('LITELLM_CONFIG') || '').trim());
   const hasRuntimeSchedulerMismatch =
@@ -1103,12 +1103,14 @@ const SettingsPage: React.FC = () => {
     'ADMIN_AUTH_ENABLED',
     ...SCHEDULER_SETTING_KEYS,
   ]);
-  const DATA_SOURCE_HIDDEN_KEYS = new Set([
+  const BASE_HIDDEN_KEYS = new Set([
     'SCREENING_ENABLED',
   ]);
   const AGENT_HIDDEN_KEYS = new Set(['AGENT_GENERATION_BACKEND']);
   const activeItems =
-    activeCategory === 'ai_model'
+    activeCategory === 'base'
+      ? rawActiveItems.filter((item) => !BASE_HIDDEN_KEYS.has(item.key))
+    : activeCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
         if (hasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
           return false;
@@ -1120,8 +1122,6 @@ const SettingsPage: React.FC = () => {
       })
       : activeCategory === 'system'
         ? rawActiveItems.filter((item) => !SYSTEM_HIDDEN_KEYS.has(item.key))
-      : activeCategory === 'data_source'
-        ? rawActiveItems.filter((item) => !DATA_SOURCE_HIDDEN_KEYS.has(item.key))
       : activeCategory === 'agent'
         ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
@@ -1582,13 +1582,6 @@ const SettingsPage: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="settings-secondary"
-                      onClick={() => setActiveCategory('data_source')}
-                    >
-                      {t('settings.viewConfigItems')}
-                    </Button>
                     <Button
                       type="button"
                       variant={screeningEnabled ? 'settings-secondary' : 'settings-primary'}

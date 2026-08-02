@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from typing import Callable
 
 import pandas as pd
 import requests
@@ -68,11 +69,14 @@ def enrich_daily_features(
     cache_dir: str | Path | None = None,
     cache_ttl_seconds: float | None = None,
     max_workers: int | None = None,
+    history_fetcher: Callable[..., pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Attach daily technical features to the first ``max_rows`` candidates.
 
     This intentionally runs after broad snapshot filtering; it is not a full
-    market historical-data pass.
+    market historical-data pass. ``history_fetcher`` is a request-scoped
+    override; callers can reuse host data capabilities without replacing this
+    module's process-global ``fetch_daily_history`` function.
     """
     if df.empty or max_rows <= 0:
         return df.copy()
@@ -84,6 +88,7 @@ def enrich_daily_features(
     daily_source_order_notes: list[str] = []
     daily_source_health: dict[str, object] = {}
     success_count = 0
+    fetch_history = history_fetcher or fetch_daily_history
     selected_index = list(result.index[:max_rows])
     fetch_requests: list[tuple[object, str]] = []
     for idx in selected_index:
@@ -96,7 +101,7 @@ def enrich_daily_features(
     def fetch_one(request: tuple[object, str]) -> tuple[object, dict[str, object], str | None, dict[str, object]]:
         idx, code = request
         try:
-            hist = fetch_daily_history(
+            hist = fetch_history(
                 code,
                 lookback_days=lookback_days,
                 source=source,

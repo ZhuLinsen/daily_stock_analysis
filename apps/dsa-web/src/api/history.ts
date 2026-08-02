@@ -83,6 +83,17 @@ export const historyApi = {
   },
 
   /**
+   * 生成历史报告分享图片
+   * @param recordId 分析历史记录主键 ID
+   */
+  getShareImage: async (recordId: number): Promise<Blob> => {
+    const response = await apiClient.get<Blob>(`/api/v1/history/${recordId}/share-image`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
+  /**
    * 获取历史报告运行诊断摘要
    * @param recordId 分析历史记录主键 ID
    */

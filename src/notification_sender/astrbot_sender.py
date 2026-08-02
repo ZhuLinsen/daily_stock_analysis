@@ -14,7 +14,7 @@ from typing import Optional
 import requests
 
 from src.config import Config
-from src.formatters import markdown_to_html_document
+from src.formatters import markdown_to_html_document, strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,8 @@ class AstrbotSender:
             是否发送成功
         """
 
-        html_content = markdown_to_html_document(content)
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
+        html_content = markdown_to_html_document(sanitized_content)
 
         try:
             payload = {

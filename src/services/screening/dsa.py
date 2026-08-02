@@ -45,7 +45,12 @@ def analyze_picks_with_dsa(
     force_refresh: bool = False,
     notify: bool = False,
 ) -> tuple[list[Pick], list[str]]:
-    """Run DSA deep analysis for the top picks and attach results in place."""
+    """Run DSA deep analysis for up to ``max_picks`` candidates in place.
+
+    This low-level helper only records attempted candidates. The post-analysis
+    orchestrator records an explicit ``skipped`` status for candidates beyond
+    the configured cap so downstream selection cannot treat them as analyzed.
+    """
     if not api_url:
         raise ValueError("DSA_API_URL is required when deep_analysis=True")
     if max_picks <= 0:
@@ -57,7 +62,7 @@ def analyze_picks_with_dsa(
 
     for idx, pick in enumerate(picks):
         if idx >= analyze_count:
-            pick.deep_analysis_status = "skipped"
+            # The post-analysis orchestrator owns the explicit skipped status.
             continue
 
         try:

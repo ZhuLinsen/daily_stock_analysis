@@ -324,13 +324,13 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
     notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
   },
-  'settings.data_source.SCREENING_ENABLED': {
-    title: '内建选股',
-    summary: '控制是否启用 DSA 内建选股页；实现参考 AlphaSift。',
-    usage: '默认关闭。设为 true 后显示选股入口并启用内建策略。',
+  'settings.base.SCREENING_ENABLED': {
+    title: '选股',
+    summary: '控制是否启用选股页；实现参考 AlphaSift。',
+    usage: '默认关闭。设为 true 后显示选股入口并启用选股策略。',
     valueNotes: ['选股结果仅用于研究辅助，不构成投资建议。'],
-    impact: ['影响 Web 选股入口、内建策略读取和选股 API。'],
-    notes: ['内建引擎初筛候选，DSA 补充行情、基本面和新闻上下文；关闭时不影响原有分析、报告和通知流程。'],
+    impact: ['影响 Web 选股入口、策略读取和选股 API。'],
+    notes: ['关闭时不影响原有分析、报告和通知流程。'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: '实时行情源优先级',
@@ -1522,13 +1522,13 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
     notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
   },
-  'settings.data_source.SCREENING_ENABLED': {
-    title: 'Built-in Screening',
-    summary: 'Controls the built-in DSA screening page, implemented with reference to AlphaSift.',
-    usage: 'Disabled by default. Set it to true to show Screening and enable the built-in strategies.',
+  'settings.base.SCREENING_ENABLED': {
+    title: 'Screening',
+    summary: 'Controls the Screening page, implemented with reference to AlphaSift.',
+    usage: 'Disabled by default. Set it to true to show Screening and enable screening strategies.',
     valueNotes: ['Screening output is for research support only and is not investment advice.'],
-    impact: ['Affects the Web screening entry, built-in strategy loading, and screening API.'],
-    notes: ['The built-in engine generates candidates and DSA enriches them with quote, fundamental, and news context; disabling it does not affect existing analysis, reports, or notifications.'],
+    impact: ['Affects the Web screening entry, strategy loading, and screening API.'],
+    notes: ['Disabling it does not affect existing analysis, reports, or notifications.'],
   },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: 'Realtime Source Priority',

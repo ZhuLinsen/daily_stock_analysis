@@ -68,6 +68,7 @@ def fetch_snapshot_with_fallback(
     required_columns: list[str] | None = None,
     fallback_snapshot_path: str | Path | None = None,
     fallback_max_age_hours: float | None = None,
+    cache_ttl_seconds: float = 0.0,
     market: str = "cn",
 ) -> pd.DataFrame:
     """Try live sources, optionally falling back to the last-good snapshot."""
@@ -76,6 +77,18 @@ def fetch_snapshot_with_fallback(
 
     errors = []
     required = required_columns or []
+    if cache_ttl_seconds > 0:
+        cached = _read_last_good_snapshot(
+            fallback_snapshot_path,
+            required_columns=required,
+            source_errors=[],
+            max_age_hours=cache_ttl_seconds / 3600.0,
+            fresh=True,
+            requested_snapshot_sources=sources,
+        )
+        if cached is not None:
+            return cached
+
     for source in sources:
         disabled_reason = _source_disabled_reason(source)
         if disabled_reason:
@@ -95,7 +108,11 @@ def fetch_snapshot_with_fallback(
                 df.attrs["fallback_used"] = False
                 df.attrs["stale"] = False
                 df.attrs["stale_age_hours"] = None
-                _write_last_good_snapshot(fallback_snapshot_path, df)
+                _write_last_good_snapshot(
+                    fallback_snapshot_path,
+                    df,
+                    source_priority=sources,
+                )
                 _record_source_success(source, rows=len(df))
                 logger.info("Snapshot fetched from %s: %d rows", source, len(df))
                 return df
@@ -229,6 +246,8 @@ def snapshot_source_health_snapshot(
 def _write_last_good_snapshot(
     path_like: str | Path | None,
     df: pd.DataFrame,
+    *,
+    source_priority: list[str] | None = None,
 ) -> None:
     if path_like is None:
         return
@@ -240,6 +259,11 @@ def _write_last_good_snapshot(
             "created_at": datetime.now(timezone.utc).isoformat(),
             "metadata": {
                 "snapshot_source": str(df.attrs.get("snapshot_source", "")),
+                "source_priority": [
+                    str(source).strip()
+                    for source in (source_priority or [])
+                    if str(source).strip()
+                ],
                 "row_count": int(len(df)),
                 "columns": list(df.columns),
             },
@@ -260,6 +284,8 @@ def _read_last_good_snapshot(
     required_columns: list[str],
     source_errors: list[str],
     max_age_hours: float | None = None,
+    fresh: bool = False,
+    requested_snapshot_sources: list[str] | None = None,
 ) -> pd.DataFrame | None:
     if path_like is None:
         return None
@@ -273,6 +299,39 @@ def _read_last_good_snapshot(
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("version") != _SNAPSHOT_CACHE_VERSION:
             raise ValueError("unsupported cache version")
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("missing cache metadata")
+        cached_snapshot_source = str(metadata.get("snapshot_source", "")).strip()
+        if fresh and requested_snapshot_sources is not None:
+            requested_priority = [
+                str(source).strip()
+                for source in requested_snapshot_sources
+                if str(source).strip()
+            ]
+            cached_priority_raw = metadata.get("source_priority")
+            cached_priority = (
+                [str(source).strip() for source in cached_priority_raw if str(source).strip()]
+                if isinstance(cached_priority_raw, list)
+                else []
+            )
+            if cached_priority:
+                if cached_priority != requested_priority:
+                    raise ValueError(
+                        "cached snapshot priority "
+                        f"{','.join(cached_priority)} does not match requested priority "
+                        f"{','.join(requested_priority)}"
+                    )
+            elif not requested_priority or cached_snapshot_source != requested_priority[0]:
+                # Legacy cache entries did not persist the configured chain.
+                # Reuse them only when their actual provider is still the
+                # current primary source; a new live fetch will upgrade the
+                # metadata and allow same-chain fallback reuse afterwards.
+                raise ValueError(
+                    "legacy cached snapshot source "
+                    f"{cached_snapshot_source or '<missing>'} does not match requested primary "
+                    f"{requested_priority[0] if requested_priority else '<missing>'}"
+                )
         frame = payload.get("frame")
         if not isinstance(frame, dict):
             raise ValueError("missing cached frame")
@@ -299,21 +358,29 @@ def _read_last_good_snapshot(
         return None
 
     cached.attrs["snapshot_source"] = "last_good_cache"
-    cached.attrs["fallback_used"] = True
-    cached.attrs["stale"] = True
+    cached.attrs["fallback_used"] = not fresh
+    cached.attrs["cache_used"] = True
+    cached.attrs["stale"] = not fresh
     cached.attrs["stale_age_hours"] = stale_age_hours
     cached.attrs["source_errors"] = list(source_errors)
-    metadata = payload.get("metadata")
-    if isinstance(metadata, dict):
-        cached.attrs["last_good_snapshot_source"] = str(
-            metadata.get("snapshot_source", "")
-        )
-        cached.attrs["last_good_created_at"] = str(payload.get("created_at", ""))
-    logger.warning(
-        "Using last-good snapshot cache %s after live source failures: %s",
-        path,
-        "; ".join(source_errors),
+    cached.attrs["last_good_snapshot_source"] = str(
+        metadata.get("snapshot_source", "")
     )
+    if isinstance(metadata, dict):
+        cached.attrs["last_good_created_at"] = str(payload.get("created_at", ""))
+    if fresh:
+        logger.info(
+            "Using fresh snapshot cache %s: age_hours=%s rows=%d",
+            path,
+            stale_age_hours,
+            len(cached),
+        )
+    else:
+        logger.warning(
+            "Using last-good snapshot cache %s after live source failures: %s",
+            path,
+            "; ".join(source_errors),
+        )
     return cached
 
 
@@ -365,7 +432,9 @@ def _fetch_sina() -> pd.DataFrame:
     """
     url = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
     page = 1
-    page_size = 80
+    # Sina caps this endpoint at 100 rows. Use the cap to reduce full-market
+    # pagination round trips without changing the response contract.
+    page_size = 100
     all_items = []
     while True:
         resp = requests.get(

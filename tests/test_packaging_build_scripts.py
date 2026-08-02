@@ -3,6 +3,7 @@
 
 import json
 import os
+import runpy
 import shlex
 import subprocess
 from pathlib import Path
@@ -39,6 +40,8 @@ def test_windows_backend_build_script_collects_builtin_screening_engine() -> Non
     assert "$probeProcess.ExitCode" in script
     assert "& $packagedEntry" not in script
     assert "Packaged backend cannot import $module" in script
+    assert "pyinstaller_runtime_compat.py" in script
+    assert "--runtime-hook" in script
     assert "Verifying packaged screening strategies" in script
     assert "_internal\\src\\services\\screening\\strategies" in script
     assert "packagedScreeningStrategyCount" in script
@@ -58,6 +61,7 @@ def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
     assert "--help" in script
     assert 'DSA_PACKAGED_IMPORT_PROBE="${module}"' in script
     assert "dsa-packaged-import.log" in script
+    assert '--runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py"' in script
     assert "PathFinder.find_spec(" not in script
     assert "zipfile" not in script
     assert "Verifying packaged screening strategies..." in script
@@ -65,6 +69,19 @@ def test_macos_backend_build_script_collects_builtin_screening_engine() -> None:
     assert "packaged_screening_strategy_count" in script
     assert "DSA_PACKAGED_IMPORT_PROBE" in main_py
     assert "importlib.import_module(_packaged_import_probe)" in main_py
+
+
+def test_pyinstaller_runtime_hook_disables_incompatible_nltk_guard(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("NLTK_DISABLE_IMPORT_SECURITY", raising=False)
+
+    runpy.run_path(
+        str(REPO_ROOT / "scripts" / "pyinstaller_runtime_compat.py"),
+        run_name="__pyinstaller_runtime_compat__",
+    )
+
+    assert os.environ["NLTK_DISABLE_IMPORT_SECURITY"] == "1"
 
 
 def test_macos_unsigned_packaging_contract_is_explicit() -> None:

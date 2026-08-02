@@ -69,3 +69,17 @@ class TestDingtalkSender(unittest.TestCase):
         mock_post.side_effect = Exception("Network Error")
         result = self.sender.send_to_dingtalk("Test content")
         self.assertFalse(result)
+
+    @patch("src.notification_sender.dingtalk_sender.requests.post")
+    def test_send_strips_hidden_market_region_metadata(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"errcode": 0, "errmsg": "ok"}
+        mock_post.return_value = mock_response
+
+        result = self.sender.send_to_dingtalk("[dsa-market-region]: # (cn)\n\n# 🎯 Market Review\n\nBody")
+
+        self.assertTrue(result)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertNotIn("[dsa-market-region]", payload["markdown"]["text"])
+        self.assertIn("# 🎯 Market Review", payload["markdown"]["text"])
+        self.assertIn("Body", payload["markdown"]["text"])

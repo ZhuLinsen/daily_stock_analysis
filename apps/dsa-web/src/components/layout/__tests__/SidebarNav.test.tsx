@@ -37,7 +37,7 @@ vi.mock('../../theme/ThemeToggle', () => ({
 
 describe('SidebarNav', () => {
   it('hides the screening navigation item while Screening is disabled', () => {
-    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: false, available: false });
+    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: false, available: true });
 
     render(
       <MemoryRouter initialEntries={['/']}>
@@ -48,8 +48,8 @@ describe('SidebarNav', () => {
     expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
   });
 
-  it('shows the screening navigation item when Screening is enabled', async () => {
-    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: true, available: false });
+  it('shows screening directly after chat when Screening is enabled', async () => {
+    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
 
     render(
       <MemoryRouter initialEntries={['/']}>
@@ -58,26 +58,14 @@ describe('SidebarNav', () => {
     );
 
     expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
-  });
-
-  it('places screening directly after chat when Screening is enabled', async () => {
-    mockGetScreeningStatus.mockResolvedValueOnce({ enabled: true, available: false });
-
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <SidebarNav />
-      </MemoryRouter>,
-    );
-
-    await screen.findByRole('link', { name: '选股' });
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
     expect(hrefs.slice(0, 5)).toEqual(['/', '/chat', '/screening', '/portfolio', '/decision-signals']);
   });
 
-  it('refreshes the screening navigation item after any config save event', async () => {
+  it('refreshes the controlled screening entry after config changes', async () => {
     mockGetScreeningStatus
-      .mockResolvedValueOnce({ enabled: false, available: false })
-      .mockResolvedValueOnce({ enabled: true, available: false });
+      .mockResolvedValueOnce({ enabled: false, available: true })
+      .mockResolvedValueOnce({ enabled: true, available: true });
 
     render(
       <MemoryRouter initialEntries={['/']}>
@@ -86,7 +74,7 @@ describe('SidebarNav', () => {
     );
 
     expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
-    window.dispatchEvent(new Event('dsa-system-config-changed'));
+    window.dispatchEvent(new Event('screening-config-changed'));
 
     expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
     await waitFor(() => expect(mockGetScreeningStatus.mock.calls.length).toBeGreaterThanOrEqual(2));

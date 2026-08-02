@@ -154,9 +154,21 @@ class TestScreeningFieldsRegistered(unittest.TestCase):
     def test_builtin_screening_toggle_is_registered(self):
         field = get_field_definition("SCREENING_ENABLED")
 
+        self.assertEqual(field["category"], "base")
         self.assertFalse(field["is_sensitive"])
         self.assertEqual(field["ui_control"], "switch")
+        self.assertEqual(field["help_key"], "settings.base.SCREENING_ENABLED")
         self.assertIn("built-in", field["description"].lower())
+
+    def test_builtin_screening_toggle_is_grouped_under_base_settings(self):
+        schema = build_schema_response()
+        categories = {
+            category["category"]: {field["key"] for field in category["fields"]}
+            for category in schema["categories"]
+        }
+
+        self.assertIn("SCREENING_ENABLED", categories["base"])
+        self.assertNotIn("SCREENING_ENABLED", categories["data_source"])
 
 
 class TestLLMUsageHMACFieldsRegistered(unittest.TestCase):

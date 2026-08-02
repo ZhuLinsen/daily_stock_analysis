@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pandas as pd
 from fastapi import FastAPI
@@ -15,6 +15,7 @@ from api.v1.router import router
 from src.services.screening import REFERENCE_REVISION
 from src.services.screening.dsa_provider import apply_dsa_provider_context
 from src.services.screening import pipeline as screening_pipeline
+from src.services.screening import post_analysis as screening_post_analysis
 from src.services.screening.filter import apply_hard_filters
 from src.services.screening.config import Config as ScreeningRuntimeConfig
 from src.services.screening.models import HardFilterConfig, Pick, ScreeningConfig, Strategy
@@ -110,6 +111,17 @@ screening:
     assert [item.name for item in strategies] == ["custom_demo"]
 
 
+def test_screening_config_reads_snapshot_cache_ttl() -> None:
+    with patch.dict(
+        os.environ,
+        {"SCREENING_SNAPSHOT_CACHE_TTL_SEC": "120"},
+        clear=False,
+    ):
+        config = ScreeningRuntimeConfig.from_env()
+
+    assert config.snapshot_cache_ttl_seconds == 120.0
+
+
 def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch) -> None:
     snapshot_df = pd.DataFrame(
         [
@@ -176,11 +188,175 @@ def test_pipeline_passes_daily_history_cache_settings_to_enrichment(monkeypatch)
     monkeypatch.setattr(screening_pipeline, "apply_portfolio_overlay", lambda picks, **kwargs: (picks, []))
     monkeypatch.setattr(screening_pipeline, "run_post_analyzers", lambda picks, **kwargs: (picks, []))
 
-    result = screening_pipeline.screen("demo", use_llm=False, config=config)
+    history_fetcher = lambda *_args, **_kwargs: pd.DataFrame()
+    result = screening_pipeline.screen(
+        "demo",
+        use_llm=False,
+        config=config,
+        daily_history_fetcher=history_fetcher,
+    )
 
     assert captured["cache_dir"] == Path("/tmp/daily-history-cache")
     assert captured["cache_ttl_seconds"] == 6 * 60 * 60
+    assert captured["history_fetcher"] is history_fetcher
     assert result.daily_enriched is True
+
+
+def test_dsa_post_analyzer_records_attempted_and_capped_statuses(monkeypatch) -> None:
+    picks = [
+        Pick(
+            rank=index,
+            code=f"00000{index}",
+            name=f"Stock {index}",
+            final_score=90.0 - index,
+            screen_score=90.0 - index,
+        )
+        for index in range(1, 5)
+    ]
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies",
+        dsa_api_url="https://dsa.example",
+    )
+
+    def fake_analyze(candidates, **_kwargs):
+        candidates[0].deep_analysis_status = "completed"
+        candidates[0].deep_analysis_summary = "completed"
+        candidates[1].deep_analysis_status = "failed"
+        candidates[1].deep_analysis_summary = "failed"
+        return candidates, ["one failure"]
+
+    monkeypatch.setattr(screening_post_analysis, "analyze_picks_with_dsa", fake_analyze)
+    # A completed remote overlay can move an attempted pick below an
+    # unattempted one. Status ownership must follow the original attempted
+    # objects, not the post-overlay list positions.
+    monkeypatch.setattr(
+        screening_post_analysis,
+        "apply_dsa_overlay",
+        lambda candidates: [candidates[2], candidates[0], candidates[3], candidates[1]],
+    )
+
+    analyzed, degradation = screening_post_analysis.run_post_analyzers(
+        picks,
+        analyzer_names=["dsa"],
+        run_id="run-1",
+        config=config,
+        max_picks=2,
+    )
+
+    status_by_code = {
+        pick.code: pick.post_analysis_status.get("dsa")
+        for pick in analyzed
+    }
+    assert status_by_code == {
+        "000001": "completed",
+        "000002": "failed",
+        "000003": "skipped",
+        "000004": "skipped",
+    }
+    assert degradation == ["one failure"]
+
+
+def test_scorecard_reranks_before_capped_dsa_analyzer(monkeypatch) -> None:
+    picks = [
+        Pick(
+            rank=index,
+            code=f"00000{index}",
+            name=f"Stock {index}",
+            final_score=91.0 - index,
+            screen_score=91.0 - index,
+            factor_scores={"value": 50.0, "stability": 50.0},
+        )
+        for index in range(1, 5)
+    ]
+    # The original fourth candidate crosses the remote Top-3 cutoff after the
+    # full-pool scorecard applies its value/quality bonus.
+    picks[3].factor_scores = {"value": 100.0, "stability": 100.0}
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies",
+        dsa_api_url="https://dsa.example",
+    )
+    attempted_codes: list[str] = []
+
+    def fake_analyze(candidates, *, max_picks, **_kwargs):
+        attempted = candidates[:max_picks]
+        attempted_codes.extend(pick.code for pick in attempted)
+        for pick in attempted:
+            pick.deep_analysis_status = "completed"
+        return candidates, []
+
+    monkeypatch.setattr(screening_post_analysis, "analyze_picks_with_dsa", fake_analyze)
+    monkeypatch.setattr(screening_post_analysis, "apply_dsa_overlay", lambda candidates: candidates)
+
+    analyzed, degradation = screening_post_analysis.run_post_analyzers(
+        picks,
+        analyzer_names=["scorecard", "dsa"],
+        run_id="run-1",
+        config=config,
+        max_picks=3,
+    )
+
+    assert attempted_codes == ["000001", "000004", "000002"]
+    assert {
+        pick.code: pick.post_analysis_status.get("dsa")
+        for pick in analyzed
+    } == {
+        "000004": "completed",
+        "000001": "completed",
+        "000002": "completed",
+        "000003": "skipped",
+    }
+    assert degradation == []
+
+
+def test_external_post_analyzer_rejects_results_beyond_remote_cap(monkeypatch) -> None:
+    picks = [
+        Pick(
+            rank=index,
+            code=f"00000{index}",
+            name=f"Stock {index}",
+            final_score=90.0 - index,
+            screen_score=90.0 - index,
+        )
+        for index in range(1, 4)
+    ]
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies",
+        post_analyzer_url="https://analyzer.example/rank",
+    )
+    captured = {}
+
+    def fake_post(_url, *, json, timeout):
+        captured["payload"] = json
+        captured["timeout"] = timeout
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: [
+                {"code": "000001", "score_delta": 1.0, "risk_flags": ["submitted"]},
+                {"code": "000001", "score_delta": 50.0, "risk_flags": ["duplicate"]},
+                {"code": "000003", "score_delta": 50.0, "risk_flags": ["not-submitted"]},
+            ],
+        )
+
+    monkeypatch.setattr(screening_post_analysis.requests, "post", fake_post)
+
+    analyzed, degradation = screening_post_analysis.run_post_analyzers(
+        picks,
+        analyzer_names=["external_http"],
+        run_id="run-1",
+        config=config,
+        max_picks=2,
+    )
+
+    by_code = {pick.code: pick for pick in analyzed}
+    assert [item["code"] for item in captured["payload"]["candidates"]] == ["000001", "000002"]
+    assert by_code["000001"].final_score == 90.0
+    assert by_code["000001"].risk_flags == ["submitted"]
+    assert by_code["000001"].post_analysis_status["external_http"] == "completed"
+    assert by_code["000002"].post_analysis_status["external_http"] == "failed"
+    assert by_code["000003"].final_score == 87.0
+    assert by_code["000003"].risk_flags == []
+    assert by_code["000003"].post_analysis_status["external_http"] == "skipped"
+    assert degradation == []
 
 
 def test_pipeline_uses_ranker_success_flag_instead_of_partial_llm_scores(monkeypatch) -> None:
@@ -254,6 +430,84 @@ def test_pipeline_uses_ranker_success_flag_instead_of_partial_llm_scores(monkeyp
     assert result.picks[0].llm_score is None
     assert result.picks[0].final_score == result.picks[0].screen_score
     assert "LLM ranking failed: fell back to screen_score" in result.degradation
+
+
+def test_default_scorecard_scores_full_pool_before_seeded_rotation(monkeypatch) -> None:
+    snapshot_df = pd.DataFrame([
+        {
+            "code": f"00000{index}",
+            "name": f"Stock {index}",
+            "price": 10.0,
+            "change_pct": 1.0,
+            "amount": 200_000_000.0,
+            "raw_score": score,
+        }
+        for index, score in enumerate([84.2, 84.1, 84.0, 83.9, 83.8], start=1)
+    ])
+    snapshot_df.attrs.update({
+        "snapshot_source": "sina",
+        "source_errors": [],
+        "fallback_used": False,
+    })
+    strategy = Strategy(
+        name="demo",
+        display_name="Demo",
+        description="demo",
+        screening=ScreeningConfig(
+            enabled=True,
+            market_scope=["cn"],
+            hard_filters=HardFilterConfig(),
+            factor_weights={"value": 1.0},
+            max_output=3,
+        ),
+    )
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies",
+        post_analyzers=["scorecard"],
+        post_analysis_max_picks=3,
+        llm_candidate_multiplier=2,
+        llm_max_candidates=10,
+        risk_enabled=False,
+        portfolio_diversity_enabled=False,
+    )
+    observed_statuses: list[list[str | None]] = []
+    original_variant = screening_pipeline.apply_seeded_selection_variant
+
+    def capture_variant(picks, **kwargs):
+        observed_statuses.append([
+            pick.post_analysis_status.get("scorecard") for pick in picks
+        ])
+        return original_variant(picks, **kwargs)
+
+    run_ids = iter(f"{index:012d}" for index in range(20))
+    monkeypatch.setattr(screening_pipeline, "load_all_strategies", lambda _path: {"demo": strategy})
+    monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *args, **kwargs: snapshot_df.copy())
+    monkeypatch.setattr(screening_pipeline, "apply_hard_filters", lambda df, _filters: df.copy())
+    monkeypatch.setattr(
+        screening_pipeline,
+        "compute_screen_scores",
+        lambda df, _screening: df.assign(screen_score=df["raw_score"]),
+    )
+    monkeypatch.setattr(screening_pipeline, "apply_dsa_provider_context", lambda picks, _context: [])
+    monkeypatch.setattr(screening_pipeline, "apply_seeded_selection_variant", capture_variant)
+    monkeypatch.setattr(screening_pipeline.uuid, "uuid4", lambda: SimpleNamespace(hex=next(run_ids)))
+
+    variants = {
+        tuple(
+            pick.code
+            for pick in screening_pipeline.screen(
+                "demo",
+                max_output=3,
+                use_llm=False,
+                selection_seed="browser-a",
+                config=config,
+            ).picks
+        )
+        for _ in range(20)
+    }
+
+    assert all(statuses == ["completed"] * 5 for statuses in observed_statuses)
+    assert len(variants) >= 2
 
 
 def test_dsa_provider_context_respects_host_max_candidates_setting() -> None:
@@ -421,3 +675,143 @@ def test_em_datacenter_timeout_falls_back_to_last_good_snapshot(tmp_path, monkey
     assert result.attrs["fallback_used"] is True
     assert result.attrs["snapshot_source"] == "last_good_cache"
     assert result.loc[0, "code"] == "000001"
+
+
+def test_fresh_snapshot_cache_skips_live_sources(tmp_path, monkeypatch) -> None:
+    cached = pd.DataFrame(
+        [{"code": "000001", "name": "Ping An", "price": 10.0, "volume_ratio": 1.5}]
+    )
+    cached.attrs["snapshot_source"] = "sina"
+    cache_path = tmp_path / "snapshot-cache.json"
+    screening_snapshot._write_last_good_snapshot(cache_path, cached)
+    live_fetch = patch.object(
+        screening_snapshot,
+        "fetch_cn_snapshot",
+        side_effect=AssertionError("fresh cache should avoid live snapshot calls"),
+    )
+
+    with live_fetch as fetch_mock:
+        result = screening_snapshot.fetch_snapshot_with_fallback(
+            ["sina"],
+            required_columns=["volume_ratio"],
+            fallback_snapshot_path=cache_path,
+            cache_ttl_seconds=300,
+        )
+
+    fetch_mock.assert_not_called()
+    assert result.attrs["snapshot_source"] == "last_good_cache"
+    assert result.attrs["cache_used"] is True
+    assert result.attrs["fallback_used"] is False
+    assert result.attrs["stale"] is False
+    assert result.attrs["last_good_snapshot_source"] == "sina"
+
+
+def test_fresh_snapshot_cache_ignores_mismatched_source(tmp_path, monkeypatch) -> None:
+    cached = pd.DataFrame(
+        [{"code": "000001", "name": "Ping An", "price": 10.0, "volume_ratio": 1.5}]
+    )
+    cached.attrs["snapshot_source"] = "sina"
+    cache_path = tmp_path / "snapshot-cache.json"
+    screening_snapshot._write_last_good_snapshot(cache_path, cached)
+
+    live = pd.DataFrame(
+        [{"code": "000002", "name": "Vanke", "price": 11.0, "volume_ratio": 2.0}]
+    )
+    live.attrs["snapshot_source"] = "tushare"
+    live_fetch = patch.object(
+        screening_snapshot,
+        "fetch_cn_snapshot",
+        autospec=True,
+        return_value=live,
+    )
+
+    with live_fetch as fetch_mock:
+        result = screening_snapshot.fetch_snapshot_with_fallback(
+            ["tushare"],
+            required_columns=["volume_ratio"],
+            fallback_snapshot_path=cache_path,
+            cache_ttl_seconds=300,
+        )
+
+    fetch_mock.assert_called_once_with("tushare")
+    assert result.loc[0, "code"] == "000002"
+    assert result.attrs["snapshot_source"] == "tushare"
+    assert result.attrs["fallback_used"] is False
+    assert result.attrs["stale"] is False
+
+
+def test_fresh_snapshot_cache_ignores_non_primary_source(tmp_path, monkeypatch) -> None:
+    cached = pd.DataFrame(
+        [{"code": "000001", "name": "Ping An", "price": 10.0, "volume_ratio": 1.5}]
+    )
+    cached.attrs["snapshot_source"] = "sina"
+    cache_path = tmp_path / "snapshot-cache.json"
+    screening_snapshot._write_last_good_snapshot(cache_path, cached)
+
+    live = pd.DataFrame(
+        [{"code": "000002", "name": "Vanke", "price": 11.0, "volume_ratio": 2.0}]
+    )
+    live.attrs["snapshot_source"] = "tushare"
+    live_fetch = patch.object(
+        screening_snapshot,
+        "fetch_cn_snapshot",
+        autospec=True,
+        return_value=live,
+    )
+
+    with live_fetch as fetch_mock:
+        result = screening_snapshot.fetch_snapshot_with_fallback(
+            ["tushare", "sina"],
+            required_columns=["volume_ratio"],
+            fallback_snapshot_path=cache_path,
+            cache_ttl_seconds=300,
+        )
+
+    fetch_mock.assert_called_once_with("tushare")
+    assert result.loc[0, "code"] == "000002"
+    assert result.attrs["snapshot_source"] == "tushare"
+    assert result.attrs["fallback_used"] is False
+    assert result.attrs["stale"] is False
+
+
+def test_fresh_snapshot_cache_reuses_fallback_from_same_source_chain(tmp_path, monkeypatch) -> None:
+    cache_path = tmp_path / "snapshot-cache.json"
+    live = pd.DataFrame(
+        [{"code": "000002", "name": "Vanke", "price": 11.0, "volume_ratio": 2.0}]
+    )
+    live.attrs["snapshot_source"] = "sina"
+
+    first_fetch = patch.object(
+        screening_snapshot,
+        "fetch_cn_snapshot",
+        autospec=True,
+        side_effect=[RuntimeError("tushare unavailable"), live],
+    )
+    with first_fetch as fetch_mock:
+        first = screening_snapshot.fetch_snapshot_with_fallback(
+            ["tushare", "sina"],
+            required_columns=["volume_ratio"],
+            fallback_snapshot_path=cache_path,
+            cache_ttl_seconds=300,
+        )
+
+    assert fetch_mock.call_args_list == [call("tushare"), call("sina")]
+    assert first.attrs["snapshot_source"] == "sina"
+
+    second_fetch = patch.object(
+        screening_snapshot,
+        "fetch_cn_snapshot",
+        side_effect=AssertionError("same-chain fresh cache should avoid live calls"),
+    )
+    with second_fetch as fetch_mock:
+        second = screening_snapshot.fetch_snapshot_with_fallback(
+            ["tushare", "sina"],
+            required_columns=["volume_ratio"],
+            fallback_snapshot_path=cache_path,
+            cache_ttl_seconds=300,
+        )
+
+    fetch_mock.assert_not_called()
+    assert second.attrs["snapshot_source"] == "last_good_cache"
+    assert second.attrs["last_good_snapshot_source"] == "sina"
+    assert second.attrs["fallback_used"] is False

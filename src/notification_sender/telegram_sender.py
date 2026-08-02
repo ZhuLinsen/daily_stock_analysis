@@ -13,6 +13,7 @@ import time
 import re
 
 from src.config import Config
+from src.formatters import strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -84,14 +85,19 @@ class TelegramSender:
             # Telegram 消息最大长度 4096 字符
             max_length = 4096
 
-            telegram_content = self._convert_to_telegram_markdown(content)
+            sanitized_content = strip_hidden_markdown_metadata(content).strip()
+            if not sanitized_content:
+                logger.warning("Telegram 消息内容为空，跳过推送")
+                return False
+
+            telegram_content = self._convert_to_telegram_markdown(sanitized_content)
 
             if len(telegram_content) <= max_length:
                 # 单条消息发送
                 return self._send_telegram_message(
                     api_url,
                     chat_id,
-                    content,
+                    sanitized_content,
                     message_thread_id,
                     timeout_seconds=timeout_seconds,
                 )
@@ -367,7 +373,7 @@ class TelegramSender:
         - 使用 *bold* 而非 **bold**
         - 使用 _italic_
         """
-        result = text
+        result = strip_hidden_markdown_metadata(text)
 
         # 移除 # 标题标记（Telegram 不支持）
         result = re.sub(r'^#{1,6}\s+', '', result, flags=re.MULTILINE)

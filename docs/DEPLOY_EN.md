@@ -61,7 +61,7 @@ The default `docker/docker-compose.yml` sets `limits.memory: 1G` and `reservatio
 
 - Minimum trial: `512M`, only for lightweight Web/API usage, single-stock runs, and low concurrency. Set `MAX_WORKERS=1`.
 - Recommended: `1G`, suitable for normal analysis when running either `server` or `analyzer`.
-- Heavy workloads: `2G+`, suitable when running `server + analyzer` together, multi-stock analysis, default `MAX_WORKERS=3`, market review, news expansion, image reports, or built-in screening.
+- Heavy workloads: `2G+`, suitable when running `server + analyzer` together, multi-stock analysis, default `MAX_WORKERS=3`, market review, news expansion, image reports, or screening.
 
 If you can only use `512M`, avoid starting both `server` and `analyzer`, and disable non-essential market review, news expansion, and image report features.
 
@@ -298,7 +298,7 @@ rm /opt/stock-analyzer/data/*.lock
 
 ### 4. Insufficient memory
 
-The default Compose recommendation is already `1G`. If the container still hits OOM or is killed by the platform, raise the memory limit in `docker-compose.yml`; use `2G+` when running `server + analyzer` together, multi-stock analysis, market review, image reports, or built-in screening:
+The default Compose recommendation is already `1G`. If the container still hits OOM or is killed by the platform, raise the memory limit in `docker-compose.yml`; use `2G+` when running `server + analyzer` together, multi-stock analysis, market review, image reports, or screening:
 ```yaml
 deploy:
   resources:

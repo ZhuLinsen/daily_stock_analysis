@@ -17,12 +17,14 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -30,19 +32,9 @@ from pydantic import BaseModel, Field
 from src.config import Config, get_configured_llm_models
 from src.services.screening import REFERENCE_PROJECT, REFERENCE_REVISION, __version__ as SCREENING_VERSION
 from src.services.screening import hotspot as screening_hotspot
+from src.services.screening.config import Config as ScreeningPipelineConfig
 from src.services.screening.pipeline import screen as run_screening_pipeline
-from src.services.screening.ranker import (
-    _apply_screening_litellm_generation_params as apply_screening_litellm_generation_params,
-)
-from src.services.screening.ranker import (
-    _build_litellm_attempts as build_screening_litellm_attempts,
-)
-from src.services.screening.ranker import (
-    _call_litellm_router as call_screening_litellm_router,
-)
-from src.services.screening.ranker import (
-    _call_screening_litellm_completion as call_screening_litellm_completion,
-)
+from src.services.screening.source_guard import parse_source_timeout_seconds
 from src.services.screening.strategy import list_strategies as load_screening_strategies
 from src.storage import DatabaseManager
 
@@ -66,6 +58,8 @@ DSA_SCREENING_MIN_HOTSPOT_CACHE_COUNT = 3
 DSA_SCREENING_HOTSPOT_DETAIL_CACHE_TTL_SECONDS = 30 * 60
 DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS = 90
 DSA_SCREENING_HOTSPOT_PREFETCH_DETAIL_COUNT = 8
+DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS = 8
+DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS = 12
 DSA_SCREENING_HOTSPOT_UNAVAILABLE_CODE = "eastmoney_hotspot_unavailable"
 DSA_SCREENING_HOTSPOT_UNAVAILABLE_MESSAGE = "热点源连接中断，暂无可用缓存。"
 DSA_SCREENING_HOTSPOT_CONNECTIVITY_ERROR_MARKERS = (
@@ -88,6 +82,10 @@ _DSA_FETCHER_MANAGER: Any = None
 _FUNDAMENTAL_BLOCKS = ("valuation", "growth", "earnings", "institution", "capital_flow", "boards")
 _SCREENING_LITELLM_COMPLETION_ROUTES: ContextVar[Optional[Tuple[Dict[str, Any], ...]]] = ContextVar(
     "screening_litellm_completion_routes",
+    default=None,
+)
+_DSA_HOTSPOT_CALL_DEADLINE: ContextVar[Optional[float]] = ContextVar(
+    "dsa_hotspot_call_deadline",
     default=None,
 )
 _SCREENING_LITELLM_COMPLETION_ATTR = "_screening_litellm_completion_bridge"
@@ -152,6 +150,22 @@ def _parse_cache_datetime(value: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _strip_hotspot_search_augmentation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the cacheable hotspot detail without request-scoped search data."""
+    base = dict(payload)
+    for key in ("route", "timeline"):
+        rows = base.get(key)
+        if isinstance(rows, list):
+            base[key] = [
+                item
+                for item in rows
+                if not (isinstance(item, dict) and bool(item.get("search_result")))
+            ]
+    base.pop("news_search_requested", None)
+    base.pop("news_search_status", None)
+    return base
+
+
 def _load_screening_hotspot_detail_cache(
     *,
     provider: str,
@@ -179,7 +193,9 @@ def _load_screening_hotspot_detail_cache(
     if stale and not allow_stale:
         return None
 
-    cached = _ensure_hotspot_detail_compat_fields(dict(payload))
+    cached = _ensure_hotspot_detail_compat_fields(
+        _strip_hotspot_search_augmentation(payload)
+    )
     cached.update({
         "enabled": True,
         "provider": provider or cached.get("provider") or "akshare",
@@ -197,7 +213,11 @@ def _write_screening_hotspot_detail_cache(*, provider: str, topic: str, payload:
     cache_path = _screening_hotspot_detail_cache_path(provider=provider, topic=topic)
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cleaned = _remove_non_finite_json_values(_ensure_hotspot_detail_compat_fields(dict(payload)))
+        cleaned = _remove_non_finite_json_values(
+            _ensure_hotspot_detail_compat_fields(
+                _strip_hotspot_search_augmentation(payload)
+            )
+        )
         cached_at = _utc_now_iso()
         cache_path.write_text(
             json.dumps(
@@ -315,111 +335,117 @@ def _normalize_screening_hotspot_cache_payload(raw: Any) -> Optional[Dict[str, A
     }
 
 
-def _hotspot_route_has_external_event(route: Any) -> bool:
-    if not isinstance(route, list):
-        return False
-    generated_sources = {"", "eastmoney_board_change", "fallback", "dsa_topic_catalyst", "ths_info"}
-    for item in route:
-        if not isinstance(item, dict):
-            continue
-        source = _env_text(item.get("source"))
-        if source and source not in generated_sources:
-            return True
-    return False
+@dataclass(frozen=True)
+class _HotspotSearchAugmentation:
+    routes: List[Dict[str, Any]]
+    status: str
 
 
-def _has_configured_hotspot_news_source(config: Config) -> bool:
-    fields = (
-        "bocha_api_keys",
-        "tavily_api_keys",
-        "anspire_api_keys",
-        "brave_api_keys",
-        "serpapi_api_keys",
-        "minimax_api_keys",
-        "searxng_base_urls",
-    )
-    return any(bool(getattr(config, field, None)) for field in fields)
-
-
-def _build_hotspot_event_routes_from_search(topic: str, config: Config) -> List[Dict[str, Any]]:
+def _build_hotspot_event_routes_from_search(topic: str) -> _HotspotSearchAugmentation:
     topic_text = _env_text(topic)
-    if not topic_text or not _has_configured_hotspot_news_source(config):
-        return []
+    if not topic_text:
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
     try:
-        from src.search_service import SearchService
-
-        service = SearchService(
-            bocha_keys=getattr(config, "bocha_api_keys", None),
-            tavily_keys=getattr(config, "tavily_api_keys", None),
-            anspire_keys=getattr(config, "anspire_api_keys", None),
-            brave_keys=getattr(config, "brave_api_keys", None),
-            serpapi_keys=getattr(config, "serpapi_api_keys", None),
-            minimax_keys=getattr(config, "minimax_api_keys", None),
-            searxng_base_urls=getattr(config, "searxng_base_urls", None),
-            searxng_public_instances_enabled=False,
-            news_max_age_days=int(getattr(config, "news_max_age_days", 3) or 3),
-            news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+        service = _get_dsa_search_service()
+        if not getattr(service, "is_available", False):
+            return _HotspotSearchAugmentation(routes=[], status="unavailable")
+        configured_timeout = parse_source_timeout_seconds(
+            "SCREENING_HOTSPOT_SEARCH_TIMEOUT_SEC",
+            default=DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS,
         )
-        response = service.search_stock_news(
-            topic_text,
+        response = service.search_topic_news_bounded(
             topic_text,
             max_results=3,
-            focus_keywords=[topic_text, "A股", "题材", "催化", "涨价"],
+            focus_keywords=[f'"{topic_text}"', "A股", "最新消息", "催化"],
+            # Bounded search owns a killable subprocess and therefore always
+            # needs a concrete hard deadline. Disabling the caller-side
+            # screening guard falls back to this safety ceiling.
+            timeout_seconds=(
+                configured_timeout
+                if configured_timeout is not None
+                else float(DSA_SCREENING_HOTSPOT_SEARCH_TIMEOUT_SECONDS)
+            ),
         )
     except Exception as exc:
         logger.info("Screening hotspot event search skipped for %s: %s", topic_text, exc)
-        return []
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
 
     if not bool(getattr(response, "success", False)):
-        return []
+        return _HotspotSearchAugmentation(routes=[], status="unavailable")
     today = datetime.now().date().isoformat()
-    event_parts: List[str] = []
-    sources: List[str] = []
-    first_url = ""
-    first_date = ""
-    first_published = ""
-    for result in list(getattr(response, "results", []) or [])[:2]:
+    routes: List[Dict[str, Any]] = []
+    for result in list(getattr(response, "results", []) or []):
         title = _env_text(getattr(result, "title", ""))
         snippet = _env_text(getattr(result, "snippet", ""))
         if not title and not snippet:
             continue
-        event_text = _compact_hotspot_news_text(title=title, snippet=snippet)
-        if event_text:
-            event_parts.append(event_text)
+        url = _normalize_external_http_url(getattr(result, "url", ""))
+        if not url:
+            continue
         published = _env_text(getattr(result, "published_date", ""))
         source = _env_text(getattr(result, "source", "")) or _env_text(getattr(response, "provider", "")) or "news_search"
-        if source and source not in sources:
-            sources.append(source)
-        if not first_url:
-            first_url = _env_text(getattr(result, "url", ""))
-        if not first_date:
-            first_date = _extract_date_text(published) or _extract_date_text(event_text)
-        if not first_published:
-            first_published = published
-    if not event_parts:
-        return []
-    description = _summarize_hotspot_news_event(
-        topic=topic_text,
-        title="",
-        snippet="；".join(event_parts),
-        config=config,
+        description = _summarize_hotspot_news_event(
+            topic=topic_text,
+            title=title,
+            snippet=snippet,
+        )
+        if not description:
+            continue
+        date = _extract_date_text(published) or _extract_date_text(description) or today
+        routes.append({
+            "title": _truncate_text(title, 48) or "消息催化",
+            "description": description,
+            "source": source,
+            "date": date,
+            "published_at": published or date,
+            "url": url,
+            "search_result": True,
+        })
+        if len(routes) >= 2:
+            break
+    return _HotspotSearchAugmentation(
+        routes=routes,
+        status="available" if routes else "no_results",
     )
-    date = first_date or _extract_date_text(description) or today
-    return [{
-        "title": "消息催化",
-        "description": description,
-        "source": ",".join(sources) if sources else "news_search",
-        "date": date,
-        "published_at": first_published or date,
-        "url": first_url,
-    }]
 
 
-def _summarize_hotspot_news_event(*, topic: str, title: str, snippet: str, config: Config) -> str:
+def _normalize_external_http_url(value: Any) -> str:
+    """Accept only absolute HTTP(S) links for user-visible search events."""
+    text = _env_text(value)
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return text
+
+
+def _with_hotspot_search_augmentation(payload: Dict[str, Any], *, topic: str) -> Dict[str, Any]:
+    """Attach opt-in search results to one response without changing its base detail."""
+    augmented = _strip_hotspot_search_augmentation(payload)
+    search_result = _build_hotspot_event_routes_from_search(topic)
+    search_routes = search_result.routes
+    if search_routes:
+        route = augmented.get("route")
+        existing_routes = route if isinstance(route, list) else []
+        timeline = augmented.get("timeline")
+        existing_timeline = timeline if isinstance(timeline, list) else []
+        combined_routes = [*search_routes, *existing_routes]
+        augmented["route"] = combined_routes
+        # Search is an additive response-only augmentation. Keep raw timeline
+        # records under their existing field instead of replacing them with the
+        # display-oriented route summaries.
+        augmented["timeline"] = [*search_routes, *existing_timeline]
+    augmented["news_search_requested"] = True
+    augmented["news_search_status"] = search_result.status
+    return _remove_non_finite_json_values(augmented)
+
+
+def _summarize_hotspot_news_event(*, topic: str, title: str, snippet: str) -> str:
     compact_text = _compact_hotspot_news_text(title=title, snippet=snippet)
-    llm_summary = _summarize_hotspot_news_event_with_llm(topic=topic, text=compact_text, config=config)
-    if llm_summary:
-        return _truncate_text(llm_summary, DSA_SCREENING_HOTSPOT_EVENT_SUMMARY_MAX_CHARS)
     return _summarize_hotspot_news_event_locally(topic=topic, text=compact_text)
 
 
@@ -527,105 +553,6 @@ def _truncate_text(text: str, max_chars: int) -> str:
     if summary:
         return summary.rstrip("，,；;：: ")[:max_chars].rstrip("，,；;：: ") + "..."
     return text[: max(0, max_chars - 3)].rstrip("，,；;：: ") + "..."
-
-
-def _summarize_hotspot_news_event_with_llm(*, topic: str, text: str, config: Config) -> str:
-    model, fallback_models = _resolve_screening_llm_models(config)
-    if not _env_text(model) or not text:
-        return ""
-    try:
-        import litellm
-
-        prompt = (
-            "请把下面新闻压缩成一句 A 股热点题材催化摘要。"
-            "要求：不超过 70 个中文字符，只保留事件、影响方向和相关链条；"
-            "不要输出完整报道、股票价格流水、免责声明或投资建议。\n\n"
-            f"题材：{topic}\n新闻：{text}"
-        )
-        messages = [
-            {"role": "system", "content": "你是A股题材事件摘要助手，只输出一句短摘要。"},
-            {"role": "user", "content": prompt},
-        ]
-        channels = _normalize_dsa_llm_channels(config)
-        model_list = _build_screening_litellm_model_list(config, channels)
-        model_chain = _dedupe_strings([model, *(fallback_models or [])])
-        config_path = _env_text(config.litellm_config_path)
-        with _screening_litellm_headers(config):
-            if config_path:
-                router_result = call_screening_litellm_router(
-                    litellm,
-                    config_path=config_path,
-                    model_chain=model_chain,
-                    messages=messages,
-                    temperature=0.2,
-                    json_mode=False,
-                    timeout_sec=8,
-                    max_tokens=120,
-                )
-                if router_result:
-                    return _clean_hotspot_llm_summary(router_result)
-            response = None
-            last_error: Exception | None = None
-            for candidate_model in model_chain:
-                for kwargs in _build_hotspot_summary_litellm_attempts(
-                    candidate_model,
-                    config=config,
-                    channels=channels,
-                    model_list=model_list,
-                ):
-                    kwargs["messages"] = messages
-                    kwargs["timeout"] = 8
-                    kwargs["num_retries"] = 0
-                    kwargs["max_tokens"] = 120
-                    kwargs = apply_screening_litellm_generation_params(
-                        kwargs,
-                        model=candidate_model,
-                        temperature=0.2,
-                        model_list=model_list or None,
-                    )
-                    try:
-                        response = call_screening_litellm_completion(
-                            lambda request_kwargs: litellm.completion(**request_kwargs),
-                            model=candidate_model,
-                            call_kwargs=kwargs,
-                            model_list=model_list or None,
-                        )
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                        if "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
-                            raise
-                        continue
-                if response is not None:
-                    break
-            if response is None:
-                if last_error is not None:
-                    raise last_error
-                raise RuntimeError("No LLM model configured")
-        return _clean_hotspot_llm_summary(_extract_litellm_message_content(response))
-    except Exception as exc:
-        logger.info("Screening hotspot LLM event summary skipped for %s: %s", topic, exc)
-        return ""
-
-
-def _extract_litellm_message_content(response: Any) -> str:
-    try:
-        choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
-        if choices:
-            choice = choices[0]
-            message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
-            if isinstance(message, dict):
-                return _env_text(message.get("content"))
-            return _env_text(getattr(message, "content", ""))
-    except Exception:
-        return ""
-    return ""
-
-
-def _clean_hotspot_llm_summary(text: str) -> str:
-    summary = _normalize_inline_text(text).strip(" 　\"'“”‘’")
-    summary = re.sub(r"^(摘要|总结|消息催化|事件催化)\s*[:：]\s*", "", summary)
-    return summary
 
 
 def _extract_date_text(text: str) -> str:
@@ -950,7 +877,7 @@ class ScreeningStrategyResponse(BaseModel):
 
 
 class ScreeningService:
-    """Coordinate the built-in screening engine with DSA-owned capabilities."""
+    """Coordinate stock screening with DSA-owned capabilities."""
 
     def __init__(self, config: Config, db_manager: Optional[DatabaseManager] = None):
         self.config = config
@@ -1059,13 +986,16 @@ class ScreeningService:
             )
 
         try:
-            with _screening_runtime_env(self.config):
-                raw = screening_hotspot.discover_hotspots(
-                    provider=provider_arg,
-                    top=cache_top_count,
-                    history_path=_screening_hotspot_history_path(),
-                    fallback_cache_path=_screening_hotspot_cache_path(),
-                )
+            # Hotspot providers receive their runtime inputs explicitly. Do not
+            # hold the process-wide Screening environment lock during network
+            # I/O, otherwise a hotspot refresh that starts first can delay a
+            # concurrent stock-screening request for the full source timeout.
+            raw = screening_hotspot.discover_hotspots(
+                provider=provider_arg,
+                top=cache_top_count,
+                history_path=_screening_hotspot_history_path(),
+                fallback_cache_path=_screening_hotspot_cache_path(),
+            )
         except HTTPException:
             raise
         except Exception as exc:
@@ -1177,7 +1107,14 @@ class ScreeningService:
             attached["source_errors"] = source_errors
         return attached
 
-    def hotspot_detail(self, *, topic: str, provider: str = "", refresh: bool = False) -> Dict[str, Any]:
+    def hotspot_detail(
+        self,
+        *,
+        topic: str,
+        provider: str = "",
+        refresh: bool = False,
+        include_search: bool = False,
+    ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
         topic_text = _env_text(topic)
@@ -1191,7 +1128,9 @@ class ScreeningService:
             provider_arg = DsaEastMoneyHotspotProvider()
         cached = None if refresh else _load_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text)
         if cached is not None:
-            return cached
+            if not include_search:
+                return cached
+            return _with_hotspot_search_augmentation(cached, topic=topic_text)
         normalized: Dict[str, Any] = {}
         hotspot_helper_error: str = ""
         try:
@@ -1199,37 +1138,36 @@ class ScreeningService:
                 get_hotspot_detail = screening_hotspot.get_hotspot_detail
             except Exception:
                 get_hotspot_detail = None
-            with _screening_runtime_env(self.config):
-                if callable(get_hotspot_detail) and type(provider_arg) is DsaEastMoneyHotspotProvider:
-                    try:
-                        detail = get_hotspot_detail(
-                            topic_text,
-                            provider=provider_arg,
-                            top_stocks=30,
-                            history_path=_screening_hotspot_history_path(),
-                            fallback_cache_path=_screening_hotspot_cache_path(),
-                        )
-                        normalized = _normalize_screening_hotspot_detail(
-                            detail,
-                            provider=provider_name,
-                            requested_topic=topic_text,
-                        )
-                        normalized = _merge_provider_hotspot_route_fallback(
-                            normalized,
-                            provider=provider_arg,
-                            topic=topic_text,
-                        )
-                    except Exception as exc:
-                        hotspot_helper_error = f"{exc}"
-                        logger.warning(
-                            "Screening hotspot helper fallback to provider for topic=%s: %s",
-                            topic_text,
-                            hotspot_helper_error,
-                        )
-                else:
-                    normalized = provider_arg.hotspot_detail(topic_text)
-                if not normalized:
-                    normalized = provider_arg.hotspot_detail(topic_text)
+            if callable(get_hotspot_detail) and type(provider_arg) is DsaEastMoneyHotspotProvider:
+                try:
+                    detail = get_hotspot_detail(
+                        topic_text,
+                        provider=provider_arg,
+                        top_stocks=30,
+                        history_path=_screening_hotspot_history_path(),
+                        fallback_cache_path=_screening_hotspot_cache_path(),
+                    )
+                    normalized = _normalize_screening_hotspot_detail(
+                        detail,
+                        provider=provider_name,
+                        requested_topic=topic_text,
+                    )
+                    normalized = _merge_provider_hotspot_route_fallback(
+                        normalized,
+                        provider=provider_arg,
+                        topic=topic_text,
+                    )
+                except Exception as exc:
+                    hotspot_helper_error = f"{exc}"
+                    logger.warning(
+                        "Screening hotspot helper fallback to provider for topic=%s: %s",
+                        topic_text,
+                        hotspot_helper_error,
+                    )
+            else:
+                normalized = provider_arg.hotspot_detail(topic_text)
+            if not normalized:
+                normalized = provider_arg.hotspot_detail(topic_text)
         except Exception as exc:
             stale_cached = _load_screening_hotspot_detail_cache(
                 provider=provider_name,
@@ -1241,6 +1179,8 @@ class ScreeningService:
                 source_errors.append(f"screening_hotspot_detail_stale_cache: {exc}")
                 stale_cached["source_errors"] = source_errors
                 stale_cached["fallback_used"] = True
+                if include_search:
+                    return _with_hotspot_search_augmentation(stale_cached, topic=topic_text)
                 return stale_cached
             raise HTTPException(
                 status_code=424,
@@ -1252,27 +1192,44 @@ class ScreeningService:
             normalized["source_errors"] = source_errors
             normalized["fallback_used"] = True
             normalized["provider"] = provider_name
-        if not _hotspot_route_has_external_event(normalized.get("route")):
-            with _screening_runtime_env(self.config):
-                search_routes = _build_hotspot_event_routes_from_search(topic_text, self.config)
-            if search_routes:
-                route = normalized.get("route")
-                normalized["route"] = search_routes + (route if isinstance(route, list) else [])
         normalized = _ensure_hotspot_detail_compat_fields(normalized)
         normalized["enabled"] = True
         normalized["provider"] = provider_name
-        cleaned = _remove_non_finite_json_values(normalized)
-        _write_screening_hotspot_detail_cache(provider=provider_name, topic=topic_text, payload=cleaned)
-        return cleaned
+        base_detail = _remove_non_finite_json_values(
+            _strip_hotspot_search_augmentation(normalized)
+        )
+        _write_screening_hotspot_detail_cache(
+            provider=provider_name,
+            topic=topic_text,
+            payload=base_detail,
+        )
+        if include_search:
+            return _with_hotspot_search_augmentation(base_detail, topic=topic_text)
+        return base_detail
 
-    def screen(self, *, strategy: str, market: str, max_results: int) -> Dict[str, Any]:
+    def screen(
+        self,
+        *,
+        strategy: str,
+        market: str,
+        max_results: int,
+        selection_seed: str = "",
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> Dict[str, Any]:
         _ensure_screening_enabled(self.config)
         _ensure_screening_available_for_use()
         _ensure_supported_market(market)
         _ensure_supported_strategy(strategy)
 
         try:
-            raw = _call_screening_screen(strategy, market, max_results, self.config)
+            raw = _call_screening_screen(
+                strategy,
+                market,
+                max_results,
+                self.config,
+                selection_seed=selection_seed,
+                progress_callback=progress_callback,
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
@@ -1298,6 +1255,11 @@ class ScreeningService:
 
         candidates = _normalize_candidates(raw_data)
         selected = candidates[:max_results]
+        _emit_screening_progress(
+            progress_callback,
+            92,
+            "正在补充入选股票的新闻与事件",
+        )
         selected, dsa_enrichment = _enrich_candidates_with_dsa(selected)
         warnings = _collect_screening_warning_messages(raw_data)
         response = {
@@ -1316,6 +1278,12 @@ class ScreeningService:
             "llm_portfolio_risk": raw_data.get("llm_portfolio_risk") or "",
             "llm_coverage": raw_data.get("llm_coverage"),
             "llm_parse_errors": _list_text_values(raw_data.get("llm_parse_errors")),
+            "llm_model_used": raw_data.get("llm_model_used") or "",
+            "llm_attempted_models": _list_text_values(raw_data.get("llm_attempted_models")),
+            "llm_failure_reason": raw_data.get("llm_failure_reason") or "",
+            "ranking_mode": raw_data.get("ranking_mode") or (
+                "llm" if raw_data.get("llm_ranked") else "factor"
+            ),
             "degradation": _list_text_values(raw_data.get("degradation")),
             "warnings": warnings,
             "source_errors": _list_text_values(raw_data.get("source_errors")),
@@ -1327,10 +1295,26 @@ class ScreeningService:
             "risk_enabled": raw_data.get("risk_enabled"),
             "portfolio_diversity_enabled": raw_data.get("portfolio_diversity_enabled"),
             "portfolio_concentration_notes": raw_data.get("portfolio_concentration_notes") or [],
+            "result_variant_applied": bool(raw_data.get("result_variant_applied")),
+            "result_variant_pool_size": raw_data.get("result_variant_pool_size") or 0,
+            "result_variant_rotated_slots": raw_data.get("result_variant_rotated_slots") or 0,
         }
         if self.db_manager is not None:
             self.db_manager.save_screening_run(response)
         return response
+
+
+def _emit_screening_progress(
+    callback: Callable[[int, str], None] | None,
+    progress: int,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(progress, message)
+    except Exception as exc:  # noqa: BLE001 - progress reporting must not fail screening.
+        logger.debug("Screening service progress callback failed: %s", exc)
 
 
 def _normalize_screening_hotspot_detail(detail: Any, *, provider: str, requested_topic: str) -> Dict[str, Any]:
@@ -1481,19 +1465,16 @@ def _has_meaningful_hotspot_route(route: Any) -> bool:
 
 def _build_screening_hotspot_summary_text(summary: Dict[str, Any], *, topic: str, canonical_topic: str) -> str:
     display_topic = canonical_topic or topic
-    quality = _env_text(summary.get("quality_status"))
     heat = _safe_float(summary.get("heat_score"))
     stage = _env_text(summary.get("stage"))
     leaders = summary.get("leaders") if isinstance(summary.get("leaders"), list) else []
-    parts = [f"{display_topic} 当前热点详情"]
+    parts = [display_topic]
     if heat is not None:
         parts.append(f"热度 {heat:.1f}")
     if stage:
         parts.append(f"阶段 {stage}")
     if leaders:
         parts.append("核心股 " + "、".join(_env_text(item) for item in leaders[:3] if _env_text(item)))
-    if quality:
-        parts.append(f"质量状态 {quality}")
     return "，".join(part for part in parts if part) + "。"
 
 
@@ -1511,7 +1492,7 @@ def _ensure_screening_available_for_use() -> None:
         return
     normalized_diagnostics = _include_screening_diagnostic_suffix(diagnostics)
     raise _screening_unavailable_exception(
-        "DSA 内建选股引擎初始化失败，请检查策略文件、依赖和服务端日志。",
+        "选股功能初始化失败，请检查策略文件、依赖和服务端日志。",
         diagnostics=normalized_diagnostics,
     )
 
@@ -1572,7 +1553,7 @@ def _call_screening_status() -> Dict[str, Any]:
     except Exception as exc:
         diagnostics = _log_unexpected_screening_exception("strategy_load", exc)
         raise _screening_unavailable_exception(
-            f"内建选股引擎状态检查失败：{exc}",
+            f"选股功能状态检查失败：{exc}",
             diagnostics=diagnostics,
         ) from exc
     return {
@@ -1619,7 +1600,7 @@ def _list_strategies() -> List[Dict[str, Any]]:
     if not isinstance(raw, list):
         raise HTTPException(
             status_code=424,
-            detail={"error": "screening_invalid_result", "message": "内建选股策略列表结构非法。"},
+            detail={"error": "screening_invalid_result", "message": "选股策略列表结构非法。"},
         )
 
     normalized: List[Dict[str, Any]] = []
@@ -1741,21 +1722,37 @@ def _ensure_supported_strategy(strategy: str) -> None:
     if strategy in ids:
         return
 
-    # 策略参数由内建引擎执行最终校验，这里保持透传以支持自定义策略。
+    # 策略参数由选股引擎执行最终校验，这里保持透传以支持自定义策略。
 
 
-def _call_screening_screen(strategy: str, market: str, max_results: int, config: Config) -> Any:
-    with (
-        _screening_runtime_env(config, max_results=max_results),
-        _screening_dsa_daily_history_provider(),
-        _screening_litellm_headers(config),
-    ):
+def _call_screening_screen(
+    strategy: str,
+    market: str,
+    max_results: int,
+    config: Config,
+    *,
+    selection_seed: str = "",
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> Any:
+    # Environment bridging is process-global, so keep it brief: materialize an
+    # immutable pipeline config while holding the lock, then release it before
+    # any network or LLM work. Hotspot refreshes can then run alongside screening.
+    with _screening_runtime_env(config, max_results=max_results):
+        pipeline_config = ScreeningPipelineConfig.from_env()
+        pipeline_context = _build_screening_context(config, max_results=max_results)
+
+    daily_history_fetcher = _build_screening_dsa_daily_history_fetcher()
+    with _screening_litellm_headers(config):
         return run_screening_pipeline(
             strategy,
             market=market,
             max_output=max_results,
             use_llm=True,
-            context=_build_screening_context(config, max_results=max_results),
+            selection_seed=selection_seed,
+            context=pipeline_context,
+            config=pipeline_config,
+            progress_callback=progress_callback,
+            daily_history_fetcher=daily_history_fetcher,
         )
 
 
@@ -1780,18 +1777,21 @@ def _screening_runtime_env(config: Config, *, max_results: Optional[int] = None)
                     os.environ[key] = value  # type: ignore[assignment]
 
 
-@contextmanager
-def _screening_dsa_daily_history_provider() -> Iterator[None]:
+def _build_screening_dsa_daily_history_fetcher() -> Optional[Callable[..., Any]]:
+    """Build one request-local DSA-first daily-history fetcher.
+
+    The returned closure captures the bundled Screening fetcher as its
+    fallback. It never replaces ``daily.fetch_daily_history``, so overlapping
+    screening requests cannot restore stale wrappers or build wrapper chains.
+    """
     try:
         daily_module = importlib.import_module("src.services.screening.daily")
     except Exception:
-        yield
-        return
+        return None
 
     original_fetch = getattr(daily_module, "fetch_daily_history", None)
     if not callable(original_fetch):
-        yield
-        return
+        return None
 
     def fetch_daily_history_with_dsa(
         code: str,
@@ -1852,12 +1852,7 @@ def _screening_dsa_daily_history_provider() -> Iterator[None]:
             cache_ttl_seconds=cache_ttl_seconds,
         )
 
-    with _SCREENING_RUNTIME_ENV_LOCK:
-        setattr(daily_module, "fetch_daily_history", fetch_daily_history_with_dsa)
-        try:
-            yield
-        finally:
-            setattr(daily_module, "fetch_daily_history", original_fetch)
+    return fetch_daily_history_with_dsa
 
 
 def _resolve_screening_snapshot_source_priority(config: Config) -> str:
@@ -1965,8 +1960,11 @@ def _resolve_hotspot_provider(provider: str) -> Tuple[str, Any]:
 class DsaEastMoneyHotspotProvider:
     """Minimal EastMoney board provider for Screening hotspot scoring."""
 
+    _screening_source_calls_bounded = True
     _BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
-    _HTTP_TIMEOUT_SECONDS = 8
+    _AKSHARE_CALL_TIMEOUT_SECONDS = 4.0
+    _CONSTITUENT_HTTP_TIMEOUT = (1.0, 2.0)
+    _CONSTITUENT_WORKER_SLOTS = threading.BoundedSemaphore(4)
     _COMMON_PARAMS = {
         "pn": "1",
         "po": "1",
@@ -2063,6 +2061,9 @@ class DsaEastMoneyHotspotProvider:
         "白银": "贵金属",
         "贵金属": "贵金属",
     }
+    _THS_TOPIC_ALIASES = {
+        "文字媒体": ("文化传媒概念", "文化传媒"),
+    }
 
     def __init__(self) -> None:
         import requests
@@ -2075,17 +2076,71 @@ class DsaEastMoneyHotspotProvider:
         self._last_request_ts = 0.0
         self._min_request_interval = 0.25
 
+    @contextmanager
+    def _source_call_budget(self) -> Iterator[None]:
+        """Apply one configured budget to a board, constituent, or detail call.
+
+        The provider uses killable subprocesses for AkShare and socket
+        timeouts for direct HTTP, so it must not be wrapped in the generic
+        daemon-thread timeout. Nested public calls reuse the same deadline to
+        prevent fallback steps from each receiving a fresh full budget.
+        """
+        if _DSA_HOTSPOT_CALL_DEADLINE.get() is not None:
+            yield
+            return
+        timeout = parse_source_timeout_seconds(
+            "SCREENING_HOTSPOT_CALL_TIMEOUT_SEC",
+            default=DSA_SCREENING_HOTSPOT_CALL_TIMEOUT_SECONDS,
+        )
+        if timeout is None:
+            yield
+            return
+        token = _DSA_HOTSPOT_CALL_DEADLINE.set(time.monotonic() + timeout)
+        try:
+            yield
+        finally:
+            _DSA_HOTSPOT_CALL_DEADLINE.reset(token)
+
+    def _remaining_source_timeout(self, fallback: float) -> float:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is None:
+            return float(fallback)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        return remaining
+
+    def _akshare_timeout_seconds(self) -> float:
+        return self._remaining_source_timeout(self._AKSHARE_CALL_TIMEOUT_SECONDS)
+
+    def _http_timeout(self) -> Tuple[float, float]:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is None:
+            return self._CONSTITUENT_HTTP_TIMEOUT
+        remaining = self._remaining_source_timeout(sum(self._CONSTITUENT_HTTP_TIMEOUT))
+        connect = min(self._CONSTITUENT_HTTP_TIMEOUT[0], max(remaining / 2.0, 0.001))
+        read = max(remaining - connect, 0.001)
+        return connect, read
+
+    def _sleep_within_source_budget(self, seconds: float) -> None:
+        deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+        if deadline is not None and self._remaining_source_timeout(seconds) <= seconds:
+            raise TimeoutError("screening hotspot provider call exceeded its configured timeout")
+        time.sleep(seconds)
+
     def _eastmoney_get_once(self, url: str, **kwargs: Any) -> Any:
         with self._request_lock:
             elapsed = time.monotonic() - self._last_request_ts
             if elapsed < self._min_request_interval:
-                time.sleep(self._min_request_interval - elapsed)
+                self._sleep_within_source_budget(self._min_request_interval - elapsed)
+            kwargs["timeout"] = self._http_timeout()
             try:
                 return self._session.get(url, **kwargs)
             finally:
                 self._last_request_ts = time.monotonic()
 
     def _eastmoney_get(self, url: str, **kwargs: Any) -> Any:
+        """Retry short-lived EastMoney failures without extending each socket wait."""
         import requests
 
         retryable_errors = (
@@ -2107,34 +2162,37 @@ class DsaEastMoneyHotspotProvider:
                     attempt + 1,
                     exc,
                 )
-                time.sleep(delays[attempt])
+                self._sleep_within_source_budget(delays[attempt])
         assert last_error is not None
         raise last_error
 
     def stock_board_concept_name_em(self) -> Any:
-        frame = self._fetch_board_changes_with_fallback()
-        if frame is not None and not frame.empty:
-            return frame
-        frame = self._fetch_rankings_with_fallback("concept")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:3 f:!50")
+        with self._source_call_budget():
+            frame = self._fetch_board_changes_with_fallback()
+            if frame is not None and not frame.empty:
+                return frame
+            frame = self._fetch_rankings_with_fallback("concept")
+            if frame is not None and not frame.empty:
+                return frame
+            return self._fetch_board_names(source_fs="m:90 t:3 f:!50")
 
     def stock_board_industry_name_em(self) -> Any:
-        concept_frame = self._fetch_board_changes_with_fallback()
-        if concept_frame is not None and not concept_frame.empty:
-            import pandas as pd
+        with self._source_call_budget():
+            concept_frame = self._fetch_board_changes_with_fallback()
+            if concept_frame is not None and not concept_frame.empty:
+                import pandas as pd
 
-            return pd.DataFrame()
-        frame = self._fetch_rankings_with_fallback("industry")
-        if frame is not None and not frame.empty:
-            return frame
-        return self._fetch_board_names(source_fs="m:90 t:2 f:!50")
+                return pd.DataFrame()
+            frame = self._fetch_rankings_with_fallback("industry")
+            if frame is not None and not frame.empty:
+                return frame
+            return self._fetch_board_names(source_fs="m:90 t:2 f:!50")
 
     def hotspot_rows(self, *, top: int = 12) -> List[Dict[str, Any]]:
         import pandas as pd
 
-        frame = self.stock_board_concept_name_em()
+        with self._source_call_budget():
+            frame = self.stock_board_concept_name_em()
         df = pd.DataFrame(frame)
         if df.empty:
             return []
@@ -2181,36 +2239,97 @@ class DsaEastMoneyHotspotProvider:
         return rows
 
     def stock_board_concept_cons_em(self, symbol: str = "") -> Any:
-        cached = self._get_constituent_cache("concept", symbol)
-        if cached is not None:
-            return cached
-        frames = [self._fetch_eastmoney_constituents(symbol, source="concept")]
-        try:
-            frames.append(self._fetch_ths_constituents(symbol))
-        except Exception as exc:
-            logger.warning(
-                "Screening THS constituent fetch failed for %s; falling back to alternative sources: %s",
-                symbol,
-                exc,
-            )
-        frames.append(self._fallback_constituents(symbol))
-        frames.append(self._related_hotspot_constituents(symbol))
-        frame = self._merge_constituent_frames(frames)
-        self._set_constituent_cache("concept", symbol, frame)
-        return frame
+        with self._source_call_budget():
+            cached = self._get_constituent_cache("concept", symbol)
+            if cached is not None:
+                return cached
+            frames = self._fetch_constituent_sources(symbol, source="concept")
+            frames.append(self._fallback_constituents(symbol))
+            frames.append(self._related_hotspot_constituents(symbol))
+            frame = self._merge_constituent_frames(frames)
+            self._set_constituent_cache("concept", symbol, frame)
+            return frame
 
     def stock_board_industry_cons_em(self, symbol: str = "") -> Any:
-        cached = self._get_constituent_cache("industry", symbol)
-        if cached is not None:
-            return cached
-        frame = self._merge_constituent_frames([
-            self._fetch_eastmoney_constituents(symbol, source="industry"),
-            self._fallback_constituents(symbol),
-        ])
-        self._set_constituent_cache("industry", symbol, frame)
-        return frame
+        with self._source_call_budget():
+            cached = self._get_constituent_cache("industry", symbol)
+            if cached is not None:
+                return cached
+            frames = self._fetch_constituent_sources(symbol, source="industry")
+            frames.append(self._fallback_constituents(symbol))
+            frame = self._merge_constituent_frames(frames)
+            self._set_constituent_cache("industry", symbol, frame)
+            return frame
+
+    def _fetch_constituent_sources(self, topic: str, *, source: str) -> List[Any]:
+        """Fetch independent sources in parallel without orphan workers.
+
+        AkShare calls run in DSA's killable timeout subprocess; direct HTTP
+        calls have connect/read timeouts. A process-wide semaphore prevents
+        repeated upstream failures from creating unbounded active tasks, and
+        the executor joins every admitted worker before this method returns.
+        """
+        fetchers: List[Tuple[str, Callable[[], Any]]] = [
+            ("eastmoney", lambda: self._fetch_eastmoney_constituents(topic, source=source)),
+        ]
+        if source == "concept":
+            fetchers.append(("ths", lambda: self._fetch_ths_constituents(topic)))
+
+        source_deadline = _DSA_HOTSPOT_CALL_DEADLINE.get()
+
+        def run(fetch: Callable[[], Any]) -> Any:
+            token = (
+                _DSA_HOTSPOT_CALL_DEADLINE.set(source_deadline)
+                if source_deadline is not None
+                else None
+            )
+            try:
+                return fetch()
+            finally:
+                if token is not None:
+                    _DSA_HOTSPOT_CALL_DEADLINE.reset(token)
+                self._CONSTITUENT_WORKER_SLOTS.release()
+
+        frames_by_source: Dict[str, Any] = {}
+        with ThreadPoolExecutor(
+            max_workers=len(fetchers),
+            thread_name_prefix="screening-constituents",
+        ) as executor:
+            futures = {}
+            for label, fetch in fetchers:
+                if not self._CONSTITUENT_WORKER_SLOTS.acquire(blocking=False):
+                    logger.info(
+                        "Screening %s constituent source skipped for %s: worker capacity exhausted",
+                        label,
+                        topic,
+                    )
+                    continue
+                try:
+                    futures[executor.submit(run, fetch)] = label
+                except BaseException:  # noqa: BLE001 - release capacity if submission fails.
+                    self._CONSTITUENT_WORKER_SLOTS.release()
+                    raise
+            for future in as_completed(futures):
+                label = futures[future]
+                try:
+                    payload = future.result()
+                except BaseException as exc:  # noqa: BLE001 - external source failures are isolated.
+                    logger.info("Screening %s constituent source failed for %s: %s", label, topic, exc)
+                    continue
+                if payload is None or bool(getattr(payload, "empty", False)):
+                    continue
+                frames_by_source[label] = payload
+        return [
+            frames_by_source[label]
+            for label, _fetch in fetchers
+            if label in frames_by_source
+        ]
 
     def hotspot_detail(self, topic: str) -> Dict[str, Any]:
+        with self._source_call_budget():
+            return self._hotspot_detail(topic)
+
+    def _hotspot_detail(self, topic: str) -> Dict[str, Any]:
         try:
             summary = self._find_board_change(topic)
         except Exception as exc:
@@ -2224,7 +2343,6 @@ class DsaEastMoneyHotspotProvider:
             stocks = self._normalize_constituent_records(self.stock_board_industry_cons_em(topic))
         else:
             stocks = self._normalize_constituent_records(self.stock_board_concept_cons_em(topic))
-        stocks = self._enrich_constituent_quotes(stocks)
         route = self._build_hotspot_route(topic, summary)
         info = self._fetch_ths_info(topic)
         if info:
@@ -2300,10 +2418,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_board_changes_raw(self) -> Any:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         if self._board_changes_raw_cache is not None:
             return self._board_changes_raw_cache.copy()
-        df = ak.stock_board_change_em()
+        df = _akshare_call_with_timeout(
+            ak.stock_board_change_em,
+            timeout=self._akshare_timeout_seconds(),
+            call_name="screening.stock_board_change_em",
+        )
         self._board_changes_raw_cache = df
         return df.copy() if df is not None else df
 
@@ -2321,10 +2444,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_rankings(self, source: str) -> Any:
         import pandas as pd
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        manager = _get_dsa_fetcher_manager()
-        fetch = manager.get_concept_rankings if source == "concept" else manager.get_sector_rankings
-        top, _bottom = fetch(100)
+        top, _bottom = _akshare_call_with_timeout(
+            _fetch_dsa_hotspot_rankings,
+            source,
+            100,
+            timeout=self._akshare_timeout_seconds(),
+            call_name=f"screening.dsa_{source}_rankings",
+        )
         rows = []
         for index, item in enumerate(top or []):
             name = _env_text((item or {}).get("name"))
@@ -2354,7 +2482,7 @@ class DsaEastMoneyHotspotProvider:
         response = self._eastmoney_get(
             self._BASE_URL,
             params=params,
-            timeout=self._HTTP_TIMEOUT_SECONDS,
+            timeout=self._http_timeout(),
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
         )
         response.raise_for_status()
@@ -2559,17 +2687,17 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_ths_summary_event(self, topic: str) -> str:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         try:
-            df = ak.stock_board_concept_summary_ths()
+            df = _akshare_call_with_timeout(
+                ak.stock_board_concept_summary_ths,
+                timeout=self._akshare_timeout_seconds(),
+                call_name="screening.stock_board_concept_summary_ths",
+            )
         except Exception:
             return ""
-        if df is None or df.empty:
-            return ""
-        if "概念名称" not in df.columns:
-            logger.warning(
-                "Screening THS summary missing required column '概念名称'; skip enrichment.",
-            )
+        if df is None or df.empty or "概念名称" not in df.columns:
             return ""
         rows = df[df["概念名称"].astype(str) == topic]
         if rows.empty:
@@ -2583,9 +2711,15 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_ths_info(self, topic: str) -> Dict[str, str]:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
         try:
-            df = ak.stock_board_concept_info_ths(symbol=topic)
+            df = _akshare_call_with_timeout(
+                ak.stock_board_concept_info_ths,
+                symbol=topic,
+                timeout=self._akshare_timeout_seconds(),
+                call_name="screening.stock_board_concept_info_ths",
+            )
         except Exception:
             return {}
         if df is None or df.empty or "项目" not in df.columns or "值" not in df.columns:
@@ -2598,13 +2732,19 @@ class DsaEastMoneyHotspotProvider:
 
     def _fetch_eastmoney_constituents(self, topic: str, *, source: str) -> Any:
         import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
 
-        try:
-            if source == "industry":
-                return ak.stock_board_industry_cons_em(symbol=topic)
-            return ak.stock_board_concept_cons_em(symbol=topic)
-        except Exception:
-            return None
+        fetch = (
+            ak.stock_board_industry_cons_em
+            if source == "industry"
+            else ak.stock_board_concept_cons_em
+        )
+        return _akshare_call_with_timeout(
+            fetch,
+            symbol=topic,
+            timeout=self._akshare_timeout_seconds(),
+            call_name=f"screening.{fetch.__name__}",
+        )
 
     def _fetch_ths_constituents(self, topic: str) -> Any:
         import pandas as pd
@@ -2613,11 +2753,10 @@ class DsaEastMoneyHotspotProvider:
         code = self._resolve_ths_concept_code(topic)
         if not code:
             return pd.DataFrame()
-        url = f"http://q.10jqka.com.cn/gn/detail/code/{code}/"
         response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "http://q.10jqka.com.cn/gn/"},
-            timeout=self._HTTP_TIMEOUT_SECONDS,
+            f"https://q.10jqka.com.cn/gn/detail/code/{code}/",
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://q.10jqka.com.cn/gn/"},
+            timeout=self._http_timeout(),
         )
         response.raise_for_status()
         html = response.content.decode("gbk", "ignore")
@@ -2635,23 +2774,34 @@ class DsaEastMoneyHotspotProvider:
         return pd.DataFrame(rows)
 
     def _resolve_ths_concept_code(self, topic: str) -> str:
-        import akshare as ak
-
-        try:
-            df = ak.stock_board_concept_name_ths()
-        except Exception:
-            return ""
+        df = self._fetch_ths_concept_names()
         if df is None or df.empty:
             return ""
-        rows = df[df["name"].astype(str) == topic]
-        if rows.empty:
-            rows = df[df["name"].astype(str).str.contains(re.escape(topic), case=False, na=False)]
-        if rows.empty and topic.endswith("概念"):
-            base = topic[:-2]
-            rows = df[df["name"].astype(str).str.contains(re.escape(base), case=False, na=False)]
-        if rows.empty:
-            return ""
-        return _env_text(rows.iloc[0].get("code"))
+        names = df["name"].map(_env_text)
+        candidates = _dedupe_strings([topic, *self._THS_TOPIC_ALIASES.get(topic, ())])
+        for candidate in candidates:
+            rows = df[names == candidate]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        for candidate in candidates:
+            rows = df[names.str.contains(re.escape(candidate), case=False, na=False)]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        if topic.endswith("概念"):
+            rows = df[names.str.contains(re.escape(topic[:-2]), case=False, na=False)]
+            if not rows.empty:
+                return _env_text(rows.iloc[0].get("code"))
+        return ""
+
+    def _fetch_ths_concept_names(self) -> Any:
+        import akshare as ak
+        from data_provider.akshare_fetcher import _akshare_call_with_timeout
+
+        return _akshare_call_with_timeout(
+            ak.stock_board_concept_name_ths,
+            timeout=self._akshare_timeout_seconds(),
+            call_name="screening.stock_board_concept_name_ths",
+        )
 
     def _fallback_constituents(self, topic: str) -> Any:
         import pandas as pd
@@ -2755,46 +2905,6 @@ class DsaEastMoneyHotspotProvider:
                 record.setdefault("name", name)
                 merged.append(record)
         return pd.DataFrame(merged)
-
-    def _enrich_constituent_quotes(self, stocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        codes = [str(item.get("code") or "").strip() for item in stocks if item.get("code")]
-        codes = [code for code in codes if code][:12]
-        if len(codes) < 4:
-            return stocks
-        try:
-            manager = _get_dsa_fetcher_manager()
-            manager.prefetch_realtime_quotes(codes)
-        except Exception as exc:
-            logger.debug("Screening hotspot quote prefetch skipped: %s", exc)
-            return stocks
-        quote_by_code: Dict[str, Any] = {}
-        for code in codes:
-            try:
-                quote = manager.get_realtime_quote(code, log_final_failure=False)
-            except Exception:
-                quote = None
-            if quote is not None:
-                quote_by_code[code] = quote
-        if not quote_by_code:
-            return stocks
-        enriched: List[Dict[str, Any]] = []
-        for item in stocks:
-            next_item = dict(item)
-            code = str(next_item.get("code") or "").strip()
-            quote = quote_by_code.get(code)
-            if quote is not None:
-                if next_item.get("change_pct") is None:
-                    next_item["change_pct"] = _safe_float(getattr(quote, "change_pct", None))
-                if next_item.get("amount") is None:
-                    next_item["amount"] = _safe_float(getattr(quote, "amount", None))
-                if next_item.get("turnover_rate") is None:
-                    next_item["turnover_rate"] = _safe_float(getattr(quote, "turnover_rate", None))
-                if next_item.get("volume_ratio") is None:
-                    next_item["volume_ratio"] = _safe_float(getattr(quote, "volume_ratio", None))
-                if next_item.get("hot_stock_score") in (None, 0.0):
-                    next_item["hot_stock_score"] = min(99.0, max(1.0, abs(next_item.get("change_pct") or 0.0) * 8.0))
-            enriched.append(next_item)
-        return enriched
 
     def _normalize_constituent_records(self, frame: Any) -> List[Dict[str, Any]]:
         import pandas as pd
@@ -3050,71 +3160,6 @@ def _resolve_screening_llm_models(config: Config) -> Tuple[str, List[str]]:
     return primary, fallback_models
 
 
-def _build_hotspot_summary_litellm_attempts(
-    model: str,
-    *,
-    config: Config,
-    channels: List[Dict[str, Any]],
-    model_list: List[Dict[str, Any]],
-) -> List[Dict[str, object]]:
-    attempts: List[Dict[str, object]] = []
-    for entry in model_list:
-        if not isinstance(entry, dict):
-            continue
-        params = entry.get("litellm_params")
-        if not isinstance(params, dict):
-            continue
-        names = _dedupe_strings([entry.get("model_name"), params.get("model")])
-        if not _screening_model_route_matches(model, names):
-            continue
-        kwargs: Dict[str, object] = {"model": model}
-        api_key = _env_text(params.get("api_key"))
-        api_base = _env_text(params.get("api_base") or params.get("base_url"))
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_base:
-            kwargs["api_base"] = api_base
-        attempts.append(kwargs)
-    attempts.extend(
-        build_screening_litellm_attempts(
-            model,
-            api_key=_env_text(getattr(config, "llm_api_key", "")),
-            base_url=_env_text(getattr(config, "llm_base_url", "")),
-            channels=channels,
-        )
-    )
-    return _unique_hotspot_summary_litellm_attempts(attempts)
-
-
-def _screening_model_route_matches(model: str, route_models: List[str]) -> bool:
-    normalized_model = _env_text(model)
-    if not normalized_model:
-        return False
-    normalized_routes = {_env_text(item) for item in route_models if _env_text(item)}
-    if normalized_model in normalized_routes:
-        return True
-    model_suffix = normalized_model.split("/", 1)[-1]
-    return any(model_suffix == route_model.split("/", 1)[-1] for route_model in normalized_routes)
-
-
-def _unique_hotspot_summary_litellm_attempts(
-    attempts: List[Dict[str, object]],
-) -> List[Dict[str, object]]:
-    result: List[Dict[str, object]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for attempt in attempts:
-        key = (
-            _env_text(attempt.get("model")),
-            _env_text(attempt.get("api_key")),
-            _env_text(attempt.get("api_base")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(attempt)
-    return result
-
-
 def _is_managed_litellm_model(model: str) -> bool:
     text = _env_text(model)
     if not text:
@@ -3222,6 +3267,13 @@ def _get_dsa_fetcher_manager() -> Any:
 
                 _DSA_FETCHER_MANAGER = DataFetcherManager()
     return _DSA_FETCHER_MANAGER
+
+
+def _fetch_dsa_hotspot_rankings(source: str, limit: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Load DSA's ranking fallback inside the caller's killable subprocess."""
+    manager = _get_dsa_fetcher_manager()
+    fetch = manager.get_concept_rankings if source == "concept" else manager.get_sector_rankings
+    return fetch(limit)
 
 
 def _get_dsa_search_service() -> Any:
@@ -3662,7 +3714,7 @@ def _ensure_supported_market(market: str) -> None:
             detail={
                 "error": "screening_invalid_market",
                 "message": (
-                    f"市场 {market} 不在内建选股引擎支持范围内"
+                    f"市场 {market} 不在选股功能支持范围内"
                     f"（支持市场：{', '.join(map(str, normalized)) or '未知'}）。"
                 ),
             },

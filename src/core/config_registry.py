@@ -877,7 +877,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "SCREENING_ENABLED": {
         "title": "Built-in Stock Screening",
         "description": "Enable DSA's built-in stock screening tab. The implementation is based on AlphaSift and maintained as part of DSA. Disabled by default.",
-        "category": "data_source",
+        "category": "base",
         "data_type": "boolean",
         "ui_control": "switch",
         "is_sensitive": False,
@@ -887,7 +887,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 17,
-        "help_key": "settings.data_source.SCREENING_ENABLED",
+        "help_key": "settings.base.SCREENING_ENABLED",
         "examples": [
             "SCREENING_ENABLED=false",
             "SCREENING_ENABLED=true",
@@ -906,7 +906,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "href": "https://platform.openai.com/docs/api-reference/authentication",
             },
             {
-                "label": "内建选股说明",
+                "label": "选股说明",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/screening-engine.md",
             },
         ],

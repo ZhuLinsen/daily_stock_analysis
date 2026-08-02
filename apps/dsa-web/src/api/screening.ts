@@ -4,6 +4,8 @@ import { toCamelCase } from './utils';
 
 const SCREENING_SCREEN_TIMEOUT_MS = 180000;
 const SCREENING_REQUEST_TIMEOUT_MS = 300000;
+const SCREENING_VARIANT_SEED_KEY = 'dsa.screening.variantSeed.v1';
+let screeningVariantSessionSeed = '';
 export const SCREENING_CONFIG_CHANGED_EVENT = 'screening-config-changed';
 export const SYSTEM_CONFIG_CHANGED_EVENT = 'dsa-system-config-changed';
 
@@ -120,6 +122,9 @@ export type ScreeningHotspot = {
   stage?: string;
   sampleStockCount?: number | null;
   leaders?: string[];
+  leaderStocks?: ScreeningHotspotStock[];
+  qualityStatus?: 'available' | 'partial' | 'stale' | 'failed' | string;
+  missingFields?: string[];
   providerUsed?: string;
   fallbackUsed?: boolean;
   cacheUsed?: boolean;
@@ -137,6 +142,7 @@ export type ScreeningHotspotRouteItem = {
   time?: string;
   publishedAt?: string;
   url?: string;
+  searchResult?: boolean;
 };
 
 export type ScreeningHotspotStock = {
@@ -176,6 +182,8 @@ export type ScreeningHotspotDetail = {
   cacheUsed?: boolean;
   cachedAt?: string | null;
   resolverCandidates?: Record<string, unknown>[];
+  newsSearchRequested?: boolean;
+  newsSearchStatus?: 'available' | 'no_results' | 'unavailable' | string;
 };
 
 export type ScreeningHotspotsResponse = {
@@ -209,6 +217,10 @@ export type ScreeningScreenResponse = {
   llmPortfolioRisk?: string;
   llmCoverage?: number | null;
   llmParseErrors?: string[];
+  llmModelUsed?: string;
+  llmAttemptedModels?: string[];
+  llmFailureReason?: 'invalid_response' | 'timeout' | 'call_failed' | 'no_model_configured' | string;
+  rankingMode?: 'llm' | 'factor' | string;
   warnings?: string[];
   sourceErrors?: string[];
   dsaEnrichment?: {
@@ -225,6 +237,9 @@ export type ScreeningScreenResponse = {
   riskEnabled?: boolean | null;
   portfolioDiversityEnabled?: boolean | null;
   portfolioConcentrationNotes?: string[];
+  resultVariantApplied?: boolean;
+  resultVariantPoolSize?: number;
+  resultVariantRotatedSlots?: number;
 };
 
 export type ScreeningScreenAccepted = {
@@ -294,6 +309,36 @@ export function notifySystemConfigChanged(): void {
   window.dispatchEvent(new Event(SYSTEM_CONFIG_CHANGED_EVENT));
 }
 
+export function getScreeningVariantSeed(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  try {
+    const existing = window.localStorage.getItem(SCREENING_VARIANT_SEED_KEY)?.trim();
+    if (existing) {
+      screeningVariantSessionSeed = existing;
+      return existing;
+    }
+  } catch {
+    // Storage may be disabled by browser privacy settings. Fall through to the
+    // module-level session seed so all screening entry points stay consistent.
+  }
+  if (screeningVariantSessionSeed) {
+    return screeningVariantSessionSeed;
+  }
+  const generated = typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  screeningVariantSessionSeed = generated;
+  try {
+    window.localStorage.setItem(SCREENING_VARIANT_SEED_KEY, generated);
+  } catch {
+    // Best-effort persistence only. The module-level value remains stable for
+    // the current page session when Web Storage is unavailable.
+  }
+  return generated;
+}
+
 async function setScreeningEnabled(value: 'true' | 'false'): Promise<void> {
   const config = await systemConfigApi.getConfig(false);
   await systemConfigApi.update({
@@ -316,6 +361,7 @@ export const screeningApi = {
       market: payload.market,
       strategy: payload.strategy,
       max_results: payload.maxResults,
+      variant_seed: getScreeningVariantSeed(),
     }, { timeout: SCREENING_SCREEN_TIMEOUT_MS });
     return toCamelCase<ScreeningScreenResponse>(response.data);
   },
@@ -325,6 +371,7 @@ export const screeningApi = {
       market: payload.market,
       strategy: payload.strategy,
       max_results: payload.maxResults,
+      variant_seed: getScreeningVariantSeed(),
     });
     return toCamelCase<ScreeningScreenAccepted>(response.data);
   },
@@ -368,7 +415,7 @@ export const screeningApi = {
         provider: payload.provider || 'akshare',
         top: payload.top ?? 12,
         refresh: payload.refresh ?? false,
-        include_details: payload.includeDetails ?? true,
+        include_details: payload.includeDetails ?? false,
       },
       timeout: SCREENING_REQUEST_TIMEOUT_MS,
     });
@@ -385,11 +432,20 @@ export const screeningApi = {
     return normalized;
   },
 
-  async getHotspotDetail(payload: { topic: string; provider?: string; refresh?: boolean }): Promise<ScreeningHotspotDetail> {
+  async getHotspotDetail(payload: {
+    topic: string;
+    provider?: string;
+    refresh?: boolean;
+    includeSearch?: boolean;
+  }): Promise<ScreeningHotspotDetail> {
     const response = await apiClient.get<Record<string, unknown>>(
       `/api/v1/screening/hotspots/${encodeURIComponent(payload.topic)}`,
       {
-        params: { provider: payload.provider || 'akshare', refresh: payload.refresh ?? false },
+        params: {
+          provider: payload.provider || 'akshare',
+          refresh: payload.refresh ?? false,
+          include_search: payload.includeSearch ?? false,
+        },
         timeout: SCREENING_REQUEST_TIMEOUT_MS,
       },
     );
@@ -401,8 +457,7 @@ export const screeningApi = {
     try {
       const status = await screeningApi.getStatus();
       if (!status.available) {
-        const reason = status.diagnostics?.reason ? `（${status.diagnostics.reason}）` : '';
-        throw new Error(`DSA 内建选股引擎不可用${reason}。请检查策略文件、后端依赖和服务日志。`);
+        throw new Error('选股功能不可用。请检查策略配置、数据依赖和服务日志。');
       }
     } catch (error) {
       try {

@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 
 from src.config import Config
-from src.formatters import chunk_content_by_max_bytes  # <-- 引入项目内置的切片器
+from src.formatters import chunk_content_by_max_bytes, strip_hidden_markdown_metadata  # <-- 引入项目内置的切片器
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ class DingtalkSender:
         """发送 Markdown 消息到钉钉群 (Send DingTalk Markdown message)"""
         if not self.webhook_url:
             return False
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         # 1. 签名逻辑 (Security Signature)
         if self.secret:
@@ -45,7 +46,7 @@ class DingtalkSender:
         # 3. 切片逻辑 (Chunking for DingTalk's 20,000 byte limit)
         # 预留 1000 bytes 的安全预算，用于 JSON 结构、标题和分页后缀的额外开销
         safe_max_bytes = 19000
-        chunks = chunk_content_by_max_bytes(content, max_bytes=safe_max_bytes)
+        chunks = chunk_content_by_max_bytes(sanitized_content, max_bytes=safe_max_bytes)
         all_success = True
 
         for index, chunk in enumerate(chunks):
