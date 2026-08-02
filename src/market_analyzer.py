@@ -11,6 +11,7 @@
 """
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -36,6 +37,13 @@ from src.services.intelligence_service import IntelligenceService
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 _ENGLISH_SECTION_PATTERNS = {
@@ -597,14 +605,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             新闻列表
         """
+        all_news = self._get_free_market_news()
+        if all_news and _env_flag("MARKET_NEWS_FREE_SOURCE_ONLY_WHEN_AVAILABLE", True):
+            logger.info(
+                "[å¤§ç›˜] %s action=search_market_news status=skipped reason=free_source_available count=%d",
+                self._log_context(),
+                len(all_news),
+            )
+            return all_news
         if not self.search_service:
             logger.warning(
                 "[大盘] %s action=search_market_news status=skipped reason=no_search_service",
                 self._log_context(),
             )
-            return []
-        
-        all_news = []
+            return all_news
 
         # 按 region 使用不同的新闻搜索词
         search_queries = self.profile.news_queries
@@ -647,6 +661,39 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             logger.error("[大盘] %s action=search_market_news status=failed error=%s", self._log_context(), e)
         
         return all_news
+
+    def _get_free_market_news(self) -> List[Dict[str, str]]:
+        """Fetch zero-key market news for A-share review as fail-open evidence."""
+        if self.region != "cn":
+            return []
+        try:
+            rows = self.data_manager.get_free_market_news(page_size=5)
+        except Exception as exc:
+            logger.debug("[大盘] %s action=free_market_news status=failed error=%s", self._log_context(), exc)
+            return []
+        news: List[Dict[str, str]] = []
+        for item in rows[:5]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            news.append(
+                {
+                    "title": title,
+                    "snippet": str(item.get("content") or "").strip(),
+                    "source": str(item.get("source") or "cls").strip(),
+                    "published_date": str(item.get("time") or "").strip(),
+                    "url": str(item.get("url") or "").strip(),
+                }
+            )
+        if news:
+            logger.info(
+                "[大盘] %s action=free_market_news status=success count=%d",
+                self._log_context(),
+                len(news),
+            )
+        return news
     
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
         """

@@ -15,6 +15,7 @@
 """
 
 import logging
+import os
 import random
 import time
 from threading import BoundedSemaphore, RLock, Thread
@@ -34,6 +35,17 @@ from .realtime_types import CircuitBreaker
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _prefer_non_eastmoney_market_sources() -> bool:
+    return _env_flag("FREE_A_STOCK_LOW_NOISE_MODE", True)
 
 
 # === 标准化列名定义 ===
@@ -1497,6 +1509,73 @@ class DataFetcherManager:
     def available_fetchers(self) -> List[str]:
         """返回可用数据源名称列表"""
         return [f.name for f in self._get_fetchers_snapshot()]
+
+    def _get_a_stock_free_fetcher(self):
+        """Lazily create the zero-key A-share intelligence fetcher.
+
+        The free-source provider is intentionally kept outside the daily K-line
+        fetcher list because it returns news, hot reasons, and announcements
+        rather than OHLCV data.
+        """
+        fetcher = getattr(self, "_a_stock_free_fetcher", None)
+        if fetcher is None:
+            from .a_stock_free_fetcher import AStockFreeFetcher
+
+            fetcher = AStockFreeFetcher()
+            self._a_stock_free_fetcher = fetcher
+        return fetcher
+
+    def get_free_market_news(self, page_size: int = 50) -> List[Dict[str, Any]]:
+        """Fetch zero-key market news from CLS."""
+        try:
+            return self._get_a_stock_free_fetcher().cls_telegraph(page_size=page_size)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] CLS telegraph failed: %s", exc)
+            return []
+
+    def get_free_hot_reasons(
+        self,
+        date: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch zero-key THS hot-stock reason tags."""
+        try:
+            return self._get_a_stock_free_fetcher().ths_hot_reason(date=date, limit=limit)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] THS hot reasons failed: %s", exc)
+            return []
+
+    def get_free_announcements(self, stock_code: str, page_size: int = 30) -> List[Dict[str, Any]]:
+        """Fetch zero-key CNINFO announcements for a stock."""
+        try:
+            return self._get_a_stock_free_fetcher().cninfo_announcements(stock_code, page_size=page_size)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] CNINFO announcements failed for %s: %s", stock_code, exc)
+            return []
+
+    def get_fallback_fund_flow(self, stock_code: str, days: int = 60) -> List[Dict[str, Any]]:
+        """Fetch Sina daily fund-flow fallback rows for an A-share stock."""
+        try:
+            return self._get_a_stock_free_fetcher().sina_fund_flow_backup(stock_code, days=days)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] Sina fund-flow fallback failed for %s: %s", stock_code, exc)
+            return []
+
+    def get_fallback_dragon_tiger(self, trade_date: str) -> Dict[str, Any]:
+        """Fetch official SSE/SZSE dragon-tiger fallback data."""
+        try:
+            return self._get_a_stock_free_fetcher().official_dragon_tiger_backup(trade_date)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] Official dragon-tiger fallback failed for %s: %s", trade_date, exc)
+            return {"date": trade_date, "source": "official_exchange", "sse_raw": "", "szse": []}
+
+    def get_fallback_announcements(self, stock_code: str, page_size: int = 20) -> List[Dict[str, Any]]:
+        """Fetch SZSE/Eastmoney announcement fallback rows for an A-share stock."""
+        try:
+            return self._get_a_stock_free_fetcher().announcement_fallback(stock_code, page_size=page_size)
+        except Exception as exc:
+            logger.warning("[AStockFreeFetcher] Announcement fallback failed for %s: %s", stock_code, exc)
+            return []
     
     def prefetch_realtime_quotes(self, stock_codes: List[str]) -> int:
         """
@@ -2142,6 +2221,10 @@ class DataFetcherManager:
 
         config = get_config()
 
+        if _prefer_non_eastmoney_market_sources():
+            logger.info("[chip_distribution] %s skipped reason=low_noise_mode", stock_code)
+            return None
+
         # 如果筹码分布功能被禁用，直接返回 None
         if not config.enable_chip_distribution:
             logger.debug(f"[筹码分布] 功能已禁用，跳过 {stock_code}")
@@ -2476,6 +2559,9 @@ class DataFetcherManager:
         for fetcher in self._fetchers:
             if region == "cn" and fetcher.name == "TickFlowFetcher":
                 continue
+            if region == "cn" and fetcher.name == "EfinanceFetcher" and _prefer_non_eastmoney_market_sources():
+                logger.info("[EfinanceFetcher] skip get_main_indices reason=low_noise_mode")
+                continue
             try:
                 data = fetcher.get_main_indices(region=region)
                 if data:
@@ -2521,6 +2607,13 @@ class DataFetcherManager:
 
         for fetcher in self._fetchers:
             if fetcher.name == "TickFlowFetcher":
+                continue
+            if fetcher.name == "EfinanceFetcher" and _prefer_non_eastmoney_market_sources():
+                logger.info(
+                    "[MarketStats] component=market_stats action=provider_skipped "
+                    "purpose=%s provider=EfinanceFetcher reason=low_noise_mode",
+                    purpose,
+                )
                 continue
             started_at = time.monotonic()
             try:
@@ -3598,6 +3691,17 @@ class DataFetcherManager:
 
             # 直接遍历管理器已经按 priority 排好序的数据源列表
             for fetcher in self._fetchers:
+                if fetcher.name == "EfinanceFetcher" and _prefer_non_eastmoney_market_sources():
+                    source_chain.append(
+                        {
+                            "provider": fetcher.name,
+                            "result": "skipped",
+                            "duration_ms": 0,
+                            "error": "low_noise_mode",
+                        }
+                    )
+                    logger.info("[EfinanceFetcher] skip get_sector_rankings reason=low_noise_mode")
+                    continue
                 if not hasattr(fetcher, 'get_sector_rankings'):
                     continue
 
@@ -3668,6 +3772,10 @@ class DataFetcherManager:
         if normalized_n <= 0:
             normalized_n = 5
 
+        if _prefer_non_eastmoney_market_sources():
+            logger.info("[concept_rankings] skipped reason=low_noise_mode n=%s", normalized_n)
+            return [], []
+
         last_error = ""
         now = time.monotonic()
 
@@ -3680,6 +3788,10 @@ class DataFetcherManager:
             top: List[Dict] = []
             bottom: List[Dict] = []
             for fetcher in self._get_fetchers_snapshot():
+                if fetcher.name == "EfinanceFetcher" and _prefer_non_eastmoney_market_sources():
+                    last_error = "EfinanceFetcher skipped by low_noise_mode"
+                    logger.info("[EfinanceFetcher] skip get_concept_rankings reason=low_noise_mode")
+                    continue
                 try:
                     data = fetcher.get_concept_rankings(normalized_n)
                     if data and (data[0] or data[1]):

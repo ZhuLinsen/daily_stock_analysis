@@ -60,6 +60,26 @@ RealtimeQuote = UnifiedRealtimeQuote
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag with conservative parsing."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _prefer_non_eastmoney_market_sources() -> bool:
+    """
+    Prefer non-Eastmoney routes for broad market-review data.
+
+    Eastmoney remains available for unique datasets, but market breadth and
+    sector rankings have working Sina/Akshare fallbacks. In residential/WSL
+    networks Eastmoney often returns RemoteDisconnected after bursts, so broad
+    review paths default to the lower-noise route.
+    """
+    return _env_flag("FREE_A_STOCK_LOW_NOISE_MODE", True)
+
 SINA_REALTIME_ENDPOINT = "hq.sinajs.cn/list"
 TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
@@ -1686,6 +1706,10 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
+        if _prefer_non_eastmoney_market_sources():
+            logger.info("[Akshare] ak.stock_cyq_em skipped reason=low_noise_mode stock_code=%s", stock_code)
+            return None
+
         # 美股没有筹码分布数据（Akshare 不支持）
         if _is_us_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是美股，无筹码分布数据")
@@ -1866,7 +1890,14 @@ class AkshareFetcher(BaseFetcher):
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
                 "api=ak.stock_zh_a_spot_em action=request_start"
             )
-            df = ak.stock_zh_a_spot_em()
+            if _prefer_non_eastmoney_market_sources():
+                logger.info(
+                    "[MarketStats] component=market_stats provider=AkshareFetcher "
+                    "api=ak.stock_zh_a_spot_em action=skipped reason=low_noise_mode"
+                )
+                df = None
+            else:
+                df = ak.stock_zh_a_spot_em()
             elapsed = time.monotonic() - started_at
             logger.info(
                 "[MarketStats] component=market_stats provider=AkshareFetcher "
@@ -2041,7 +2072,11 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
 
             logger.info("[API调用] ak.stock_board_industry_name_em() 获取板块排行...")
-            df = ak.stock_board_industry_name_em()
+            if _prefer_non_eastmoney_market_sources():
+                logger.info("[APIè°ƒç”¨] ak.stock_board_industry_name_em() skipped reason=low_noise_mode")
+                df = None
+            else:
+                df = ak.stock_board_industry_name_em()
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
                 name = '板块名称'
@@ -2070,6 +2105,10 @@ class AkshareFetcher(BaseFetcher):
     def get_concept_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """获取概念/题材涨跌榜。"""
         import akshare as ak
+
+        if _prefer_non_eastmoney_market_sources():
+            logger.info("[APIè°ƒç”¨] ak.stock_board_concept_name_em() skipped reason=low_noise_mode")
+            return None
 
         try:
             self._set_random_user_agent()
