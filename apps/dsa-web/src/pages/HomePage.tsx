@@ -17,6 +17,7 @@ import { MarketReviewRegionSelector } from '../components/market-review/MarketRe
 import { ReportSummary } from '../components/report/ReportSummary';
 import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
+import { useTaskPanelCollapsed } from '../hooks/useTaskPanelCollapsed';
 import {
   HomeStockWorkspace,
   type HomeWatchlistRow,
@@ -1241,10 +1242,19 @@ const HomePage: React.FC = () => {
     });
   }, [marketReviewHistoryItems, stockBarItems, t]);
 
+  // 折叠态提升到 HomePage，让桌面侧栏实例与移动抽屉实例共享同一状态源，
+  // 避免响应式切换后折叠偏好漂移（PR #2144 OR-COR-1fd4ac89）。
+  const taskPanelCollapsed = useTaskPanelCollapsed();
+
   const sidebarContent = useMemo(
     () => (
       <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
-        <TaskPanel tasks={activeTasks} onOpenRunFlow={openTaskRunFlow} />
+        <TaskPanel
+          tasks={activeTasks}
+          onOpenRunFlow={openTaskRunFlow}
+          isCollapsed={taskPanelCollapsed.isCollapsed}
+          onCollapsedChange={taskPanelCollapsed.setCollapsed}
+        />
         <HomeStockWorkspace
           activeTab={sidebarWorkspaceTab}
           onTabChange={setSidebarWorkspaceTab}
@@ -1285,13 +1295,15 @@ const HomePage: React.FC = () => {
       isDeletingStock,
       isLoadingStockBar,
       isLoadingTodayAnalysisItems,
-      todayAnalysisLoadFailed,
-      mergedStockBarItems,
       openTaskRunFlow,
       selectedReport?.meta.id,
       selectedReport?.meta.stockCode,
       sidebarWorkspaceTab,
+      taskPanelCollapsed.isCollapsed,
+      taskPanelCollapsed.setCollapsed,
       todayAnalysisItems,
+      todayAnalysisLoadFailed,
+      mergedStockBarItems,
       watchlistAnalyzedTodayCount,
       watchlistRows,
       watchlistState.actionMessage,

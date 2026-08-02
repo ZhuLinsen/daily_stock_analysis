@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TaskPanel } from '../TaskPanel';
+import { useTaskPanelCollapsed } from '../../../hooks/useTaskPanelCollapsed';
 import type { TaskInfo } from '../../../types/analysis';
 
 const baseTask: TaskInfo = {
@@ -268,6 +269,60 @@ describe('TaskPanel', () => {
 
     // 折叠态保留：摘要仍可见
     expect(screen.getByTestId('task-panel-collapsed-summary')).toBeInTheDocument();
+
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+  });
+
+  it('synchronizes collapsed state across dual instances through the controlled hook (PR #2144 OR-COR-1fd4ac89)', () => {
+    // 模拟 HomePage 同时挂载桌面侧栏 + 移动抽屉两个 TaskPanel 实例，
+    // 它们应共享同一份 hook state，任一实例折叠后另一实例同步切换。
+    localStorage.removeItem('dsa.taskPanel.collapsed');
+
+    function DualInstanceHarness() {
+      const collapsed = useTaskPanelCollapsed();
+      const tasks = [{ ...baseTask }];
+      return (
+        <div>
+          {/* 桌面侧栏实例（始终挂载） */}
+          <div data-testid="desktop-sidebar">
+            <TaskPanel
+              tasks={tasks}
+              isCollapsed={collapsed.isCollapsed}
+              onCollapsedChange={collapsed.setCollapsed}
+            />
+          </div>
+          {/* 移动抽屉实例（同样挂载在测试里以验证同步） */}
+          <div data-testid="mobile-drawer">
+            <TaskPanel
+              tasks={tasks}
+              isCollapsed={collapsed.isCollapsed}
+              onCollapsedChange={collapsed.setCollapsed}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    render(<DualInstanceHarness />);
+
+    // 两个实例初始都展开
+    const desktopToggle = screen
+      .getAllByTestId('task-panel-collapse-toggle')[0];
+    const drawerToggle = screen
+      .getAllByTestId('task-panel-collapse-toggle')[1];
+    expect(desktopToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(drawerToggle).toHaveAttribute('aria-expanded', 'true');
+
+    // 在移动抽屉实例里点击折叠
+    fireEvent.click(drawerToggle);
+    // 桌面侧栏实例的 toggle 应同步变为折叠态，体现提升后的单一来源
+    expect(desktopToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(drawerToggle).toHaveAttribute('aria-expanded', 'false');
+
+    // 在桌面侧栏实例里再点击恢复展开
+    fireEvent.click(desktopToggle);
+    expect(desktopToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(drawerToggle).toHaveAttribute('aria-expanded', 'true');
 
     localStorage.removeItem('dsa.taskPanel.collapsed');
   });

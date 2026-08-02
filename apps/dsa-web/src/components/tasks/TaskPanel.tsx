@@ -1,43 +1,12 @@
 import type React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import { ChevronDown, RefreshCw, Workflow } from 'lucide-react';
 import { Badge, Button, Card, StatusDot, Tooltip } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 import { getRequestedPhaseLabel } from '../../utils/marketPhase';
 import { useUiLanguage } from '../../contexts/UiLanguageContext';
-
-/**
- * 折叠状态 localStorage key。
- *
- * 折叠状态在 issue #2115 中是「稳定的本地 UI state」需求：用户希望任务
- * 面板可以折叠为一行摘要，刷新页面后保留偏好。仓库没有现成的 useLocalStorage
- * 抽象（参考 utils/uiLanguage.ts 的 getUiLanguageStorage 模式），这里就近用
- * 同样的 try/catch 模式避免 SSR/隐私模式抛错。
- */
-const TASK_PANEL_COLLAPSED_STORAGE_KEY = 'dsa.taskPanel.collapsed';
-
-function readCollapsedFromStorage(): boolean {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  try {
-    return window.localStorage.getItem(TASK_PANEL_COLLAPSED_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeCollapsedToStorage(collapsed: boolean): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    window.localStorage.setItem(TASK_PANEL_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0');
-  } catch {
-    // Ignore storage failures; in-memory state still updates.
-  }
-}
+import { useTaskPanelCollapsed } from '../../hooks/useTaskPanelCollapsed';
 
 /**
  * 任务项组件属性
@@ -191,6 +160,19 @@ interface TaskPanelProps {
   className?: string;
   /** 打开运行流面板 */
   onOpenRunFlow?: (task: TaskInfo) => void;
+  /**
+   * 受控折叠态。传入即视为受控模式，HomePage 在桌面侧栏与移动抽屉
+   * 双实例场景下应传入同一份 collapsed，避免各自维护 state 在响应式
+   * 切换后产生漂移（PR #2144 review blocker OR-COR-1fd4ac89）。
+   * 不传时 TaskPanel 走内部 useTaskPanelCollapsed 兜底，保持 issue
+   * #2115 的「不需要外部管理时也可独立使用」语义。
+   */
+  isCollapsed?: boolean;
+  /**
+   * 折叠态变更回调，受控模式下与 isCollapsed 配套使用。
+   * 非受控模式下不传即可，hook 内部自管。
+   */
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 /**
@@ -203,20 +185,26 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   title,
   className = '',
   onOpenRunFlow,
+  isCollapsed: controlledCollapsed,
+  onCollapsedChange,
 }) => {
   const { t } = useUiLanguage();
-  // 折叠状态：稳定的本地 UI state，刷新后保留偏好（issue #2115）
-  // 初始值懒读取 localStorage，避免 SSR 不一致；useEffect 在挂载后再写回，
-  // 与 utils/uiLanguage.ts 的 persistUiLanguage 同 pattern。
-  const [isCollapsed, setIsCollapsed] = useState<boolean>(readCollapsedFromStorage);
-
-  useEffect(() => {
-    writeCollapsedToStorage(isCollapsed);
-  }, [isCollapsed]);
-
+  // 受控 / 非受控适配：
+  // - HomePage 在 sidebarContent useMemo 里调用 useTaskPanelCollapsed 并把
+  //   isCollapsed / toggleCollapsed 注入到桌面侧栏 + 移动抽屉两个 TaskPanel
+  //   实例，让两侧共享同一份折叠态，避免移动抽屉里折叠后切到桌面布局时
+  //   桌面实例仍展开（PR #2144 OR-COR-1fd4ac89）。
+  // - 不传 isCollapsed 时落到 hook 自管，保持 issue #2115 的独立可用性。
+  const localCollapsed = useTaskPanelCollapsed();
+  const isCollapsed =
+    controlledCollapsed === undefined ? localCollapsed.isCollapsed : controlledCollapsed;
   const toggleCollapsed = useCallback(() => {
-    setIsCollapsed((prev) => !prev);
-  }, []);
+    if (controlledCollapsed === undefined) {
+      localCollapsed.toggleCollapsed();
+      return;
+    }
+    onCollapsedChange?.(!controlledCollapsed);
+  }, [controlledCollapsed, localCollapsed, onCollapsedChange]);
 
   // 筛选活跃任务（pending / processing / cancel requested）
   const activeTasks = tasks.filter(
