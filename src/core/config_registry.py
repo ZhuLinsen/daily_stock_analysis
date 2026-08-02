@@ -906,7 +906,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "href": "https://platform.openai.com/docs/api-reference/authentication",
             },
             {
-                "label": "内建选股说明",
+                "label": "选股说明",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/screening-engine.md",
             },
         ],

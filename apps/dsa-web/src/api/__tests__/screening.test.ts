@@ -28,6 +28,8 @@ describe('screeningApi', () => {
     post.mockReset();
     getConfig.mockReset();
     updateConfig.mockReset();
+    window.localStorage.clear();
+    window.localStorage.setItem('dsa.screening.variantSeed.v1', 'browser-seed');
   });
 
   it('enables the config and checks built-in screening availability', async () => {
@@ -83,7 +85,7 @@ describe('screeningApi', () => {
       },
     });
 
-    await expect(screeningApi.enable()).rejects.toThrow('DSA 内建选股引擎不可用');
+    await expect(screeningApi.enable()).rejects.toThrow('选股功能不可用');
 
     expect(updateConfig).toHaveBeenNthCalledWith(1, {
       configVersion: 'v1',
@@ -158,7 +160,7 @@ describe('screeningApi', () => {
     const result = await screeningApi.getHotspots({ provider: 'akshare', top: 12, refresh: true });
 
     expect(get).toHaveBeenCalledWith('/api/v1/screening/hotspots', {
-      params: { provider: 'akshare', top: 12, refresh: true, include_details: true },
+      params: { provider: 'akshare', top: 12, refresh: true, include_details: false },
       timeout: 300000,
     });
     expect(result.providerUsed).toBe('akshare');
@@ -188,8 +190,17 @@ describe('screeningApi', () => {
       },
     });
 
-    const result = await screeningApi.getHotspots({ provider: 'akshare', top: 12, refresh: false });
+    const result = await screeningApi.getHotspots({
+      provider: 'akshare',
+      top: 12,
+      refresh: false,
+      includeDetails: true,
+    });
 
+    expect(get).toHaveBeenCalledWith('/api/v1/screening/hotspots', {
+      params: { provider: 'akshare', top: 12, refresh: false, include_details: true },
+      timeout: 300000,
+    });
     expect(result.details?.['Moly Theme']?.stockCount).toBe(0);
   });
 
@@ -210,13 +221,37 @@ describe('screeningApi', () => {
     const result = await screeningApi.getHotspotDetail({ topic: '玻璃基板', provider: 'akshare' });
 
     expect(get).toHaveBeenCalledWith('/api/v1/screening/hotspots/%E7%8E%BB%E7%92%83%E5%9F%BA%E6%9D%BF', {
-      params: { provider: 'akshare', refresh: false },
+      params: { provider: 'akshare', refresh: false, include_search: false },
       timeout: 300000,
     });
     expect(result.topic).toBe('玻璃基板');
     expect(result.stockCount).toBe(1);
     expect(result.stocks[0].name).toBe('戈碧迦');
     expect(result.leaderStocks?.[0].name).toBe('戈碧迦');
+  });
+
+  it('can explicitly enrich hotspot detail with native news search', async () => {
+    get.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        provider: 'akshare',
+        topic: '玻璃基板',
+        route: [],
+        stocks: [],
+        stock_count: 0,
+        news_search_requested: true,
+        news_search_status: 'available',
+      },
+    });
+
+    const result = await screeningApi.getHotspotDetail({ topic: '玻璃基板', includeSearch: true });
+
+    expect(get).toHaveBeenCalledWith('/api/v1/screening/hotspots/%E7%8E%BB%E7%92%83%E5%9F%BA%E6%9D%BF', {
+      params: { provider: 'akshare', refresh: false, include_search: true },
+      timeout: 300000,
+    });
+    expect(result.newsSearchRequested).toBe(true);
+    expect(result.newsSearchStatus).toBe('available');
   });
 
   it('uses a long timeout for LLM-backed screening', async () => {
@@ -233,7 +268,7 @@ describe('screeningApi', () => {
 
     expect(post).toHaveBeenCalledWith(
       '/api/v1/screening/screen',
-      { market: 'cn', strategy: 'dual_low', max_results: 3 },
+      { market: 'cn', strategy: 'dual_low', max_results: 3, variant_seed: 'browser-seed' },
       { timeout: 180000 }
     );
   });
@@ -255,10 +290,64 @@ describe('screeningApi', () => {
 
     expect(post).toHaveBeenCalledWith(
       '/api/v1/screening/screen/tasks',
-      { market: 'cn', strategy: 'dual_low', max_results: 3 }
+      { market: 'cn', strategy: 'dual_low', max_results: 3, variant_seed: 'browser-seed' }
     );
     expect(result.taskId).toBe('screen-task-1');
     expect(result.maxResults).toBe(3);
+  });
+
+  it('keeps one opaque screening variant seed per browser', async () => {
+    window.localStorage.removeItem('dsa.screening.variantSeed.v1');
+    vi.resetModules();
+    const isolatedScreening = await import('../screening');
+
+    const first = isolatedScreening.getScreeningVariantSeed();
+    const second = isolatedScreening.getScreeningVariantSeed();
+
+    expect(first).not.toBe('');
+    expect(second).toBe(first);
+    expect(window.localStorage.getItem('dsa.screening.variantSeed.v1')).toBe(first);
+  });
+
+  it('reuses one session seed across sync and async requests when browser storage rejects access', async () => {
+    window.localStorage.removeItem('dsa.screening.variantSeed.v1');
+    vi.resetModules();
+    const isolatedScreening = await import('../screening');
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('storage disabled');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('storage disabled');
+    });
+    post
+      .mockResolvedValueOnce({ data: { enabled: true, candidates: [], candidate_count: 0 } })
+      .mockResolvedValueOnce({
+        data: {
+          task_id: 'screen-task-storage-disabled',
+          trace_id: 'screen-task-storage-disabled',
+          status: 'pending',
+          message: '选股任务已提交',
+          strategy: 'dual_low',
+          market: 'cn',
+          max_results: 3,
+        },
+      });
+
+    try {
+      const first = isolatedScreening.getScreeningVariantSeed();
+      const second = isolatedScreening.getScreeningVariantSeed();
+      expect(first).not.toBe('');
+      expect(second).toBe(first);
+
+      await isolatedScreening.screeningApi.screen({ market: 'cn', strategy: 'dual_low', maxResults: 3 });
+      await isolatedScreening.screeningApi.startScreen({ market: 'cn', strategy: 'dual_low', maxResults: 3 });
+
+      expect(post.mock.calls[0]?.[1]).toMatchObject({ variant_seed: first });
+      expect(post.mock.calls[1]?.[1]).toMatchObject({ variant_seed: first });
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
   });
 
   it('loads async screening task status', async () => {

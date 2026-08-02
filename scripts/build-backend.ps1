@@ -124,6 +124,7 @@ $hiddenImports = @(
   'uvicorn.lifespan.on'
 )
 $hiddenImportArgs = $hiddenImports | ForEach-Object { "--hidden-import=$_" }
+$runtimeHook = Join-Path $PSScriptRoot 'pyinstaller_runtime_compat.py'
 
 $pyInstallerArgs = @(
   '-m', 'PyInstaller',
@@ -131,8 +132,10 @@ $pyInstallerArgs = @(
   '--onedir',
   '--noconfirm',
   '--noconsole',
+  '--runtime-hook', $runtimeHook,
   '--add-data', 'static;static',
   '--add-data', 'strategies;strategies',
+  '--add-data', 'src/assets/share_image;src/assets/share_image',
   '--collect-data', 'litellm',
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',

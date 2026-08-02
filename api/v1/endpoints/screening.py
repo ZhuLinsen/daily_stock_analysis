@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Built-in stock screening routes."""
+"""Stock screening routes."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class ScreeningScreenRequest(BaseModel):
     market: str = Field("cn", min_length=1, max_length=16)
     strategy: str = Field("dual_low", min_length=1, max_length=64)
     max_results: int = Field(20, ge=1, le=100)
+    variant_seed: str = Field("", max_length=128)
 
 
 class ScreeningStrategyResponse(BaseModel):
@@ -112,10 +113,21 @@ def screening_hotspot_detail(
     topic: str,
     provider: str = Query("", max_length=32),
     refresh: bool = Query(False),
+    include_search: bool = Query(False),
     config: Config = Depends(get_config_dep),
 ) -> Dict[str, Any]:
     refresh_value = refresh if isinstance(refresh, bool) else bool(getattr(refresh, "default", False))
-    return _service(config).hotspot_detail(topic=topic, provider=provider, refresh=refresh_value)
+    include_search_value = (
+        include_search
+        if isinstance(include_search, bool)
+        else bool(getattr(include_search, "default", False))
+    )
+    return _service(config).hotspot_detail(
+        topic=topic,
+        provider=provider,
+        refresh=refresh_value,
+        include_search=include_search_value,
+    )
 
 
 @router.post("/screen/tasks", status_code=202, response_model=ScreeningScreenAccepted)
@@ -132,16 +144,22 @@ def screening_start_screen_task(
         task_queue.update_task_progress(
             task_id,
             20,
-            "正在执行内建选股，外部数据源较慢时会持续后台运行",
+            "正在执行选股，外部数据源较慢时会持续后台运行",
         )
+
+        def report_progress(progress: int, message: str) -> None:
+            task_queue.update_task_progress(task_id, progress, message)
+
         result = _service(config, db_manager).screen(
             strategy=request.strategy,
             market=request.market,
             max_results=request.max_results,
+            selection_seed=request.variant_seed,
+            progress_callback=report_progress,
         )
         task_queue.update_task_progress(
             task_id,
-            90,
+            98,
             f"选股已完成，正在整理 {result.get('candidate_count', 0)} 条候选",
         )
         return result
@@ -151,7 +169,7 @@ def screening_start_screen_task(
         stock_code="screening_screen",
         stock_name=f"{request.strategy} / {request.market}",
         report_type="screening_screen",
-        message="内建选股任务已提交",
+        message="选股任务已提交",
         task_id=task_id,
         trace_id=task_id,
     )
@@ -159,7 +177,7 @@ def screening_start_screen_task(
         task_id=task.task_id,
         trace_id=task.trace_id or task.task_id,
         status=task.status.value if isinstance(task.status, QueueTaskStatus) else str(task.status),
-        message=task.message or "内建选股任务已提交",
+        message=task.message or "选股任务已提交",
         strategy=request.strategy,
         market=request.market,
         max_results=request.max_results,
@@ -195,6 +213,7 @@ def screening_screen(
         strategy=request.strategy,
         market=request.market,
         max_results=request.max_results,
+        selection_seed=request.variant_seed,
     )
 
 

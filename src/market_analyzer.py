@@ -792,6 +792,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             "kind": "market_review",
             "region": self.region,
             "language": language,
+            "color_scheme": getattr(
+                getattr(self, "config", None),
+                "market_review_color_scheme",
+                "green_up",
+            ),
             "title": title,
             "generated_at": datetime.now().isoformat(),
             "date": overview.date,
@@ -955,39 +960,57 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _build_stats_block(self, overview: MarketOverview) -> str:
         """Build market statistics block."""
         has_stats = overview.up_count or overview.down_count or overview.total_amount
-        if not has_stats:
+        has_market_signal = bool(self._supports_market_light() and (overview.indices or has_stats))
+        if not has_stats and not has_market_signal:
             return ""
+        light = self.build_market_light_snapshot(overview) if has_market_signal else None
         if self._get_review_language() == "en":
-            light = self.build_market_light_snapshot(overview)
-            return "\n".join(
-                [
-                    f"- **Market Signal**: {light['score']}/100 "
-                    f"({light['temperature_label']}, {light['label']})",
-                    f"- **Drivers**: {'; '.join(light['reasons'])}",
-                    f"- **Guidance**: {light['guidance']}",
-                    "",
+            lines = []
+            if isinstance(light, dict):
+                lines.extend(
+                    [
+                        f"- **Market Signal**: {light['score']}/100 "
+                        f"({light['temperature_label']}, {light['label']})",
+                        f"- **Drivers**: {'; '.join(light['reasons'])}",
+                        f"- **Guidance**: {light['guidance']}",
+                    ]
+                )
+            if has_stats:
+                if lines:
+                    lines.append("")
+                lines.append(
                     f"- **Breadth**: Advancers {overview.up_count} / Decliners {overview.down_count} / "
                     f"Flat {overview.flat_count}; "
                     f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
-                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})",
-                ]
-            )
-        light = self.build_market_light_snapshot(overview)
-        score, label = light["score"], light["temperature_label"]
+                    f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
+                )
+            return "\n".join(lines)
+        lines = []
+        score = light["score"] if isinstance(light, dict) else None
+        label = light["temperature_label"] if isinstance(light, dict) else ""
         participation = overview.up_count + overview.down_count
         up_ratio = overview.up_count / participation if participation else 0.0
         limit_spread = overview.limit_up_count - overview.limit_down_count
-        lines = [
-            f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
-            f"- **信号依据**：{'；'.join(light['reasons'])}",
-            f"- **操作建议**：{light['guidance']}",
-            "",
-            "| 指标 | 数值 | 观察 |",
-            "|------|------|------|",
-            f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
-            f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
-            f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
-        ]
+        if isinstance(light, dict) and score is not None:
+            lines.extend(
+                [
+                    f"- **盘面信号**：{score}/100（{label}，{light['label']}）",
+                    f"- **信号依据**：{'；'.join(light['reasons'])}",
+                    f"- **操作建议**：{light['guidance']}",
+                ]
+            )
+        if has_stats:
+            if lines:
+                lines.append("")
+            lines.extend(
+                [
+                    "| 指标 | 数值 | 观察 |",
+                    "|------|------|------|",
+                    f"| 上涨/下跌/平盘 | {overview.up_count} / {overview.down_count} / {overview.flat_count} | 上涨占比(不含平盘) {up_ratio:.1%} |",
+                    f"| 涨停/跌停 | {overview.limit_up_count} / {overview.limit_down_count} | 涨跌停差 {limit_spread:+d} |",
+                    f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
+                ]
+            )
         return "\n".join(lines)
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
@@ -1660,8 +1683,8 @@ Output the report content directly, no extra commentary.
         # 指数行情（简洁格式）
         indices_text = ""
         for idx in overview.indices[:4]:
-            direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
-            indices_text += f"- **{idx.name}**: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+            marker = self._get_index_change_arrow(idx.change_pct)
+            indices_text += f"- **{idx.name}**: {idx.current:.2f} ({marker} {idx.change_pct:+.2f}%)\n"
         
         # 板块信息
         separator = ", " if template_language == "en" else "、"
@@ -1672,16 +1695,12 @@ Output the report content directly, no extra commentary.
 
         if template_language == "en":
             stats_section = ""
-            if self.profile.has_market_stats:
-                stats_section = f"""
+            if self._supports_market_light() or self.profile.has_market_stats:
+                stats_block = self._build_stats_block(overview)
+                if stats_block:
+                    stats_section = f"""
 ### 3. Breadth & Liquidity
-| Metric | Value |
-|--------|-------|
-| Advancers | {overview.up_count} |
-| Decliners | {overview.down_count} |
-| Limit-up | {overview.limit_up_count} |
-| Limit-down | {overview.limit_down_count} |
-| Turnover ({self._get_turnover_unit_label()}) | {overview.total_amount:.0f} |
+{stats_block}
 """
             sector_section = ""
             if self.profile.has_sector_rankings and (top_text or bottom_text or top_concept_text or bottom_concept_text):
@@ -1720,7 +1739,11 @@ Market conditions can change quickly. The data above is for reference only and d
 
         market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股"}
         market_label = market_labels.get(self.region, "A股")
-        dashboard_block = self._build_stats_block(overview) if self.profile.has_market_stats else ""
+        dashboard_block = (
+            self._build_stats_block(overview)
+            if self._supports_market_light() or self.profile.has_market_stats
+            else ""
+        )
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview) if self.profile.has_sector_rankings else ""
         summary_focus = (

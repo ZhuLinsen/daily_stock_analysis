@@ -33,7 +33,7 @@ flowchart TD
 
     S --> D[个股日线与技术面]
     S --> R[实时行情]
-    S --> A[内建选股/热点]
+    S --> A[选股/热点]
     S --> M[大盘复盘]
 
     D --> C[本地 stock_daily 缓存]
@@ -99,7 +99,9 @@ flowchart TD
 
     API --> SCREEN{screen}
     SCREEN --> ENV[注入 DSA LLM 与数据源运行环境]
-    ENV --> SNAP[内建 snapshot 源优先级]
+    ENV --> CACHE{5 分钟内有成功快照?}
+    CACHE -->|yes| RESULT
+    CACHE -->|no| SNAP[内建 snapshot 源优先级]
     SNAP --> TS{TUSHARE_TOKEN?}
     TS -->|yes| SP1[tushare -> sina -> efinance -> akshare_em -> em_datacenter]
     TS -->|no| SP2[sina -> efinance -> akshare_em -> em_datacenter]
@@ -107,11 +109,11 @@ flowchart TD
     DAILY --> DFM[DataFetcherManager: Tushare/Efinance/Tencent/AkShare/Pytdx/Baostock/YFinance]
     DFM --> RESULT[候选股 + source_errors/warnings/llm_parse_errors]
 
-    API --> HOT{hotspots}
+    API --> HOT{hotspots，与 screen 并行}
     HOT --> HP{provider specified?}
     HP -->|no| EM[DSA EastMoney provider]
     HP -->|yes| CUSTOM[指定 provider/env provider]
-    EM --> LIVE[实时热点题材]
+    EM --> LIVE[实时热点榜单，详情按需加载]
     LIVE -->|成功| HCACHE[写入热点 last-good cache]
     LIVE -->|失败| OLD[读取 hotspots.json / hotspot_details]
     OLD -->|无缓存| EMPTY[稳定空态 + eastmoney_hotspot_unavailable]
@@ -139,7 +141,7 @@ TICKFLOW_API_KEY=your_tickflow_key
 REALTIME_SOURCE_PRIORITY=tickflow,tushare,tencent,akshare_sina,efinance,akshare_em
 SNAPSHOT_SOURCE_PRIORITY=tushare,sina,efinance,akshare_em,em_datacenter
 
-# 内建选股运行期默认值；显式配置时会保留你的值
+# 选股运行期默认值；显式配置时会保留你的值
 DAILY_FETCH_RETRIES=3
 DAILY_FETCH_MAX_WORKERS=1
 ```

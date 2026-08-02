@@ -83,6 +83,25 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         kwargs = mock_search.call_args[1]
         self.assertEqual(kwargs["days"], 3)
 
+    def test_search_topic_news_reuses_provider_and_freshness_without_stock_identity_filter(self) -> None:
+        today = datetime.now().date().isoformat()
+        service, mock_search = self._create_service_with_mock_provider(
+            response=_response([
+                _result(
+                    "影视传媒订单与政策催化",
+                    today,
+                    snippet="板块近期出现新订单。",
+                )
+            ]),
+        )
+
+        response = service.search_topic_news("影视传媒", max_results=2)
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.results[0].title, "影视传媒订单与政策催化")
+        self.assertIn('"影视传媒"', mock_search.call_args.args[0])
+        self.assertEqual(mock_search.call_args.kwargs["days"], 3)
+
     def test_invalid_profile_falls_back_to_short(self) -> None:
         """Invalid profile should fallback to short (3 days)."""
         service, mock_search = self._create_service_with_mock_provider(

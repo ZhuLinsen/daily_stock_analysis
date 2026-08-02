@@ -49,10 +49,15 @@ class LLMRankingResult:
     portfolio_risk: str = ""
     coverage: float = 0.0
     errors: list[str] | None = None
+    model_used: str = ""
+    attempted_models: list[str] | None = None
+    failure_reason: str = ""
 
     def __post_init__(self) -> None:
         if self.errors is None:
             self.errors = []
+        if self.attempted_models is None:
+            self.attempted_models = []
 
 
 def rank_candidates(
@@ -136,9 +141,15 @@ def rank_candidates_with_metadata(
         degradation=degradation,
     )
 
-    try:
-        last_errors: list[str] = []
-        parsed: RankingParseResult | None = None
+    model_chain = _dedupe([llm_model, *(fallback_models or [])])
+    attempted_models: list[str] = []
+    all_errors: list[str] = []
+    last_coverage = 0.0
+    failure_reason = "no_model_configured"
+
+    for candidate_model in model_chain:
+        attempted_models.append(candidate_model)
+        model_errors: list[str] = []
         for attempt in range(max_retries + 1):
             attempt_prompt = prompt
             if attempt:
@@ -146,52 +157,79 @@ def rank_candidates_with_metadata(
                     "\n\n上一次输出没有满足结构化覆盖率要求。"
                     "请重新返回严格 JSON，并覆盖尽可能多的候选代码。"
                 )
-            response = _call_llm(
-                attempt_prompt,
-                llm_api_key,
-                llm_model,
-                llm_base_url,
-                fallback_models=fallback_models or [],
-                temperature=temperature,
-                json_mode=json_mode,
-                silent=silent,
-                channels=channels or [],
-                config_path=config_path,
-                timeout_sec=timeout_sec,
-                max_tokens=max_tokens,
-            )
-            parsed = _parse_ranking_response_detail(response, candidates)
-            last_errors = parsed.errors
-            if parsed.coverage >= min_coverage:
+            try:
+                # Keep transport/provider retries scoped to one model here. A
+                # syntactically successful but unusable response must also
+                # advance to the configured fallback model chain.
+                response = _call_llm(
+                    attempt_prompt,
+                    llm_api_key,
+                    candidate_model,
+                    llm_base_url,
+                    fallback_models=[],
+                    temperature=temperature,
+                    json_mode=json_mode,
+                    silent=silent,
+                    channels=channels or [],
+                    config_path=config_path,
+                    timeout_sec=timeout_sec,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                failure_reason = "timeout" if _is_timeout_error(exc) else "call_failed"
+                model_errors.append(f"{failure_reason}:{exc.__class__.__name__}")
                 break
-        if parsed is None or parsed.coverage < min_coverage:
-            raise ValueError(
-                "LLM ranking response coverage below threshold: "
-                f"{0 if parsed is None else parsed.coverage:.2f}; "
-                f"errors={last_errors}"
+
+            parsed = _parse_ranking_response_detail(response, candidates)
+            last_coverage = parsed.coverage
+            model_errors.extend(parsed.errors)
+            if parsed.coverage < min_coverage:
+                failure_reason = "invalid_response"
+                continue
+
+            ranked = parsed.picks
+            for i, pick in enumerate(ranked):
+                pick.rank = i + 1
+                if pick.llm_score is None:
+                    pick.llm_score = 100.0 - i * (100.0 / max(len(ranked), 1))
+                weight = min(max(rank_weight, 0.0), 1.0)
+                pick.final_score = pick.screen_score * (1 - weight) + (pick.llm_score or 0) * weight
+            ranked.sort(key=lambda item: item.final_score, reverse=True)
+            for i, pick in enumerate(ranked, start=1):
+                pick.rank = i
+            return LLMRankingResult(
+                picks=ranked,
+                ranked=True,
+                market_view=parsed.market_view,
+                selection_logic=parsed.selection_logic,
+                portfolio_risk=parsed.portfolio_risk,
+                coverage=parsed.coverage,
+                errors=parsed.errors,
+                model_used=candidate_model,
+                attempted_models=attempted_models,
             )
-        ranked = parsed.picks
-        for i, pick in enumerate(ranked):
-            pick.rank = i + 1
-            if pick.llm_score is None:
-                pick.llm_score = 100.0 - i * (100.0 / max(len(ranked), 1))
-            weight = min(max(rank_weight, 0.0), 1.0)
-            pick.final_score = pick.screen_score * (1 - weight) + (pick.llm_score or 0) * weight
-        ranked.sort(key=lambda item: item.final_score, reverse=True)
-        for i, pick in enumerate(ranked, start=1):
-            pick.rank = i
-        return LLMRankingResult(
-            picks=ranked,
-            ranked=True,
-            market_view=parsed.market_view,
-            selection_logic=parsed.selection_logic,
-            portfolio_risk=parsed.portfolio_risk,
-            coverage=parsed.coverage,
-            errors=parsed.errors,
+
+        all_errors.extend(f"{candidate_model}:{error}" for error in _dedupe(model_errors))
+        logger.warning(
+            "LLM ranking model=%s returned no usable ranking; trying next fallback; errors=%s",
+            candidate_model,
+            model_errors,
         )
-    except Exception as e:
-        logger.warning("LLM ranking failed, falling back to screen_score: %s", e)
-        return LLMRankingResult(picks=candidates, errors=[str(e)])
+
+    logger.warning(
+        "LLM ranking failed after models=%s; reason=%s; coverage=%.2f; errors=%s",
+        attempted_models,
+        failure_reason,
+        last_coverage,
+        all_errors,
+    )
+    return LLMRankingResult(
+        picks=candidates,
+        coverage=last_coverage,
+        errors=_dedupe(all_errors),
+        attempted_models=attempted_models,
+        failure_reason=failure_reason,
+    )
 
 
 def _build_ranking_prompt(
@@ -539,7 +577,7 @@ def _call_llm(
                     model=candidate_model,
                     call_kwargs=kwargs,
                 )
-                return response.choices[0].message.content or ""
+                return _extract_completion_text(response)
             except Exception as exc:
                 last_error = exc
                 if _is_timeout_error(exc):
@@ -549,6 +587,84 @@ def _call_llm(
     if last_error is not None:
         raise last_error
     raise RuntimeError("No LLM model configured")
+
+
+def _extract_completion_text(response: object) -> str:
+    """Normalize text returned by OpenAI-compatible and reasoning gateways."""
+    try:
+        choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices")
+        choice = choices[0]
+        message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message")
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return ""
+
+    def field(name: str) -> object:
+        if isinstance(message, dict):
+            return message.get(name)
+        value = getattr(message, name, None)
+        if value is not None:
+            return value
+        extra = getattr(message, "model_extra", None)
+        return extra.get(name) if isinstance(extra, dict) else None
+
+    content = _coerce_completion_content(field("content"))
+    if content.strip():
+        return content
+
+    # If provider returns segmented blocks (LiteLLM, MiniMax, etc.), prefer
+    # extracting text from content_blocks before treating the response as empty.
+    content_blocks = None
+    for owner in (choice, message):
+        if isinstance(owner, dict):
+            cb = owner.get("content_blocks")
+        else:
+            cb = getattr(owner, "content_blocks", None)
+        if cb:
+            content_blocks = cb
+            break
+    if content_blocks is not None:
+        content = _coerce_completion_content(content_blocks)
+        if content.strip():
+            return content
+
+    # Do NOT fall back to internal 'reasoning_content' (chain-of-thought) as the
+    # model's final output. Treat absence of final content as empty to allow
+    # higher-level fallback logic (try next model or use factor ranking).
+    return ""
+
+
+def _coerce_completion_content(value: object) -> str:
+    """Coerce various completion content shapes into joined text.
+
+    Filter out non-final provider blocks (thinking/draft) by honoring the
+    block 'type' field. This prevents earlier thinking blocks from overriding
+    the model's final output when both are present.
+    """
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        # Determine block type and preferred text field robustly for dicts and
+        # provider objects.
+        if isinstance(item, dict):
+            block_type = str(item.get("type") or "").strip().lower()
+            text = item.get("text") or item.get("content")
+        else:
+            block_type = str(getattr(item, "type", None) or "").strip().lower()
+            text = getattr(item, "text", None) or getattr(item, "content", None)
+        # Skip thinking/diagnostic blocks; only accept final textual blocks.
+        if block_type and block_type not in {"text", "output_text"}:
+            continue
+        if isinstance(text, str):
+            parts.append(text)
+    # Join without adding characters to avoid inserting raw newlines inside
+    # JSON strings when providers segment content across blocks.
+    return "".join(parts)
 
 
 def _is_json_mode_unsupported(exc: Exception) -> bool:
@@ -846,7 +962,7 @@ def _call_litellm_router(
                     call_kwargs=kwargs,
                     model_list=model_list,
                 )
-                return response.choices[0].message.content or ""
+                return _extract_completion_text(response)
             except Exception:
                 raise
     except Exception as exc:

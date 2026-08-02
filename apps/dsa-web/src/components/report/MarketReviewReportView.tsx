@@ -14,6 +14,7 @@ import { getReportText, normalizeReportLanguage } from '../../utils/reportLangua
 import { Card } from '../common';
 import { Tooltip } from '../common/Tooltip';
 import { ReportMarkdownBody } from './ReportMarkdownBody';
+import { ShareImageButton } from './ShareImageButton';
 
 interface MarketReviewReportViewProps {
   report?: AnalysisReport;
@@ -473,7 +474,7 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
   return (
     <div className={`animate-fade-in space-y-4 pb-8 ${className}`}>
       <Card variant="gradient" padding="md" className="home-report-hero text-left">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="mb-2 inline-flex items-center gap-2 text-xs font-semibold text-secondary-text">
               <BarChart3 className="h-4 w-4" aria-hidden="true" />
@@ -491,6 +492,11 @@ export const MarketReviewReportView: React.FC<MarketReviewReportViewProps> = ({
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            <ShareImageButton
+              recordId={recordId}
+              reportTitle={displayTitle}
+              reportLanguage={reportLanguage}
+            />
             {canOpenRunFlow ? (
               <Tooltip content={runFlowText['runFlow.open']}>
                 <span className="inline-flex">

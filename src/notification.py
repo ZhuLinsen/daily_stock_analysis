@@ -62,6 +62,7 @@ from src.schemas.decision_action import (
 )
 from bot.models import BotMessage
 from src.utils.sanitize import sanitize_diagnostic_text
+from src.formatters import strip_hidden_markdown_metadata
 from src.utils.data_processing import (
     signal_attribution_has_content,
     signal_attribution_weight_items,
@@ -733,7 +734,8 @@ class NotificationService(
         feishu_info = self._extract_feishu_reply_info()
         if feishu_info:
             try:
-                if self._send_feishu_stream_reply(feishu_info["chat_id"], content):
+                sanitized_content = strip_hidden_markdown_metadata(content).strip()
+                if self._send_feishu_stream_reply(feishu_info["chat_id"], sanitized_content):
                     logger.info("已通过飞书会话（Stream）推送报告")
                     success = True
                 else:
@@ -787,6 +789,7 @@ class NotificationService(
 
             # 飞书文本消息有长度限制，需要分批发送
             max_bytes = getattr(config, 'feishu_max_bytes', 20000)
+            content = strip_hidden_markdown_metadata(content).strip()
             content_bytes = len(content.encode('utf-8'))
 
             if content_bytes > max_bytes:
@@ -2522,6 +2525,7 @@ class NotificationService(
         route_type: Optional[str] = None,
     ) -> bool:
         use_image = self._should_use_image_for_channel(channel, image_bytes)
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
         if channel == NotificationChannel.WECHAT:
             if use_image:
                 return self._send_wechat_image(image_bytes)
@@ -2530,12 +2534,12 @@ class NotificationService(
             if getattr(self, "_feishu_send_as_file", False) and route_type == "report":
                 date_str = datetime.now().strftime('%Y%m%d')
                 filepath = self.save_report_to_file(
-                    content, filename=f"report_{date_str}.md"
+                    sanitized_content, filename=f"report_{date_str}.md"
                 )
                 return self.send_feishu_file(filepath)
-            return self.send_to_feishu(content)
+            return self.send_to_feishu(sanitized_content)
         if channel == NotificationChannel.DINGTALK:
-            return self.send_to_dingtalk(content)
+            return self.send_to_dingtalk(sanitized_content)
         if channel == NotificationChannel.TELEGRAM:
             if use_image:
                 return self._send_telegram_photo(image_bytes)
@@ -2548,21 +2552,24 @@ class NotificationService(
                 receivers = self.get_receivers_for_stocks(email_stock_codes)
             if use_image:
                 return self._send_email_with_inline_image(image_bytes, receivers=receivers)
-            return self.send_to_email(content, receivers=receivers)
+            return self.send_to_email(
+                sanitized_content,
+                receivers=receivers,
+            )
         if channel == NotificationChannel.PUSHOVER:
             return self.send_to_pushover(content)
         if channel == NotificationChannel.NTFY:
-            return self.send_to_ntfy(content)
+            return self.send_to_ntfy(sanitized_content)
         if channel == NotificationChannel.GOTIFY:
-            return self.send_to_gotify(content)
+            return self.send_to_gotify(sanitized_content)
         if channel == NotificationChannel.PUSHPLUS:
-            return self.send_to_pushplus(content)
+            return self.send_to_pushplus(sanitized_content)
         if channel == NotificationChannel.SERVERCHAN3:
-            return self.send_to_serverchan3(content)
+            return self.send_to_serverchan3(sanitized_content)
         if channel == NotificationChannel.CUSTOM:
             if use_image:
                 return self._send_custom_webhook_image(image_bytes, fallback_content=content)
-            return self.send_to_custom(content)
+            return self.send_to_custom(sanitized_content)
         if channel == NotificationChannel.DISCORD:
             return self.send_to_discord(content)
         if channel == NotificationChannel.SLACK:
@@ -2570,7 +2577,7 @@ class NotificationService(
                 return self._send_slack_image(image_bytes, fallback_content=content)
             return self.send_to_slack(content)
         if channel == NotificationChannel.ASTRBOT:
-            return self.send_to_astrbot(content)
+            return self.send_to_astrbot(sanitized_content)
         logger.warning(f"不支持的通知渠道: {channel}")
         return False
 
@@ -2583,6 +2590,7 @@ class NotificationService(
         severity: Optional[str] = None,
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
+        structured_payload: Optional[Dict[str, Any]] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2603,6 +2611,7 @@ class NotificationService(
             severity: 通知严重级别；未设置时按路由类型推断
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
+            structured_payload: 可选的个股或市场结构化结果，仅用于图片模板精确填充
 
         Returns:
             Structured dispatch diagnostics.
@@ -2698,7 +2707,9 @@ class NotificationService(
         if channels_needing_image:
             from src.md2img import markdown_to_image
             image_bytes = markdown_to_image(
-                content, max_chars=self._markdown_to_image_max_chars
+                content,
+                max_chars=self._markdown_to_image_max_chars,
+                structured_payload=structured_payload,
             )
             if image_bytes:
                 logger.info("Markdown 已转换为图片，将向 %s 发送图片",
@@ -2797,6 +2808,7 @@ class NotificationService(
         severity: Optional[str] = None,
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
+        structured_payload: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -2812,6 +2824,7 @@ class NotificationService(
             severity=severity,
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
+            structured_payload=structured_payload,
         )
         return bool(result.success)
 
@@ -2866,7 +2879,10 @@ class NotificationService(
         Returns:
             Whether the Feishu file upload succeeded.
         """
-        filepath = self.save_report_to_file(content, filename=filename)
+        filepath = self.save_report_to_file(
+            strip_hidden_markdown_metadata(content).strip(),
+            filename=filename,
+        )
         logger.info("将上传文件到飞书: %s", filepath)
         return self.send_feishu_file(filepath)
 

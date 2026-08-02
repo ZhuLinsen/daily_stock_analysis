@@ -181,6 +181,7 @@ class Config:
     fallback_snapshot_path: Path | None = (
         _PROJECT_ROOT / "data" / "snapshot.last_good.json"
     )
+    snapshot_cache_ttl_seconds: float = 300.0
 
     # Strategy directory
     strategies_dir: Path = field(default_factory=_default_strategies_dir)
@@ -309,6 +310,10 @@ class Config:
             llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "2048"))),
             snapshot_source_priority=_resolve_snapshot_source_priority(),
             fallback_snapshot_path=fallback_snapshot_path,
+            snapshot_cache_ttl_seconds=max(
+                0.0,
+                _parse_float_env("SCREENING_SNAPSHOT_CACHE_TTL_SEC", 300.0),
+            ),
             snapshot_fallback_max_age_hours=_parse_optional_float_env(
                 "SNAPSHOT_FALLBACK_MAX_AGE_HOURS"
             ),

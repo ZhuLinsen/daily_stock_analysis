@@ -1496,7 +1496,7 @@ describe('SettingsPage', () => {
     const { rerender } = render(<SettingsPage />);
 
     expect(await screen.findByRole('heading', { name: '首次启动配置检查' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '内建选股' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
 
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'ai_model',
@@ -1508,7 +1508,7 @@ describe('SettingsPage', () => {
     rerender(<SettingsPage />);
 
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '内建选股' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '选股' })).not.toBeInTheDocument();
 
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'data_source',
@@ -1519,7 +1519,7 @@ describe('SettingsPage', () => {
     }));
     rerender(<SettingsPage />);
 
-    expect(await screen.findByRole('heading', { name: '内建选股' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '选股' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '首次启动配置检查' })).not.toBeInTheDocument();
   });
 

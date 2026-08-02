@@ -216,6 +216,10 @@ class ScreenResult:
     llm_portfolio_risk: str = ""
     llm_coverage: float | None = None
     llm_parse_errors: list[str] = field(default_factory=list)
+    llm_model_used: str = ""
+    llm_attempted_models: list[str] = field(default_factory=list)
+    llm_failure_reason: str = ""
+    ranking_mode: str = "factor"
     degradation: list[str] = field(default_factory=list)
     snapshot_source: str = ""
     source_errors: list[str] = field(default_factory=list)
@@ -226,6 +230,9 @@ class ScreenResult:
     risk_enabled: bool = True
     portfolio_diversity_enabled: bool = True
     portfolio_concentration_notes: list[str] = field(default_factory=list)
+    result_variant_applied: bool = False
+    result_variant_pool_size: int = 0
+    result_variant_rotated_slots: int = 0
     saved_path: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 

@@ -12,6 +12,7 @@ from datetime import datetime
 import re
 
 from src.config import Config
+from src.formatters import strip_hidden_markdown_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class Serverchan3Sender:
         if title is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
             title = f"📈 股票分析报告 - {date_str}"
+        sanitized_content = strip_hidden_markdown_metadata(content).strip()
 
         try:
             # 根据 sendkey 格式构造 URL
@@ -85,7 +87,7 @@ class Serverchan3Sender:
             # 构建请求参数
             params = {
                 'title': title,
-                'desp': content,
+                'desp': sanitized_content,
                 'options': {}
             }
 

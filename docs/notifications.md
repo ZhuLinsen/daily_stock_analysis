@@ -115,6 +115,17 @@ Der mitgelieferte `.github/workflows/00-daily-analysis.yml` importiert nur expli
 
 Der Standard-Workflow bildet `MARKDOWN_TO_IMAGE_CHANNELS` und `MERGE_EMAIL_NOTIFICATION` weiterhin nicht ab. Sie sind Schalter für die Sendeform bzw. das Aggregationsverhalten und keine Kanal-Anmeldeinformationen; ein automatisches Einlesen gleichnamiger Secrets/Variablen in Actions würde zusätzliche Verhaltensänderungen einführen.
 
+## Bildbericht-Share-Template
+
+Nach der Konfiguration von `MARKDOWN_TO_IMAGE_CHANNELS` nutzen Einzelaktien-Analyse, Aggregatberichte und Marktrückblick den bestehenden Benachrichtigungs-Routing und verwenden in der Bildumwandlungsphase die 1080 px breite Marken-Share-Vorlage. Für eine einzelne Aktie wird eine Entscheidungskarte nach „Schlussfolgerung — Punkte — Technik — Risiko — Position" generiert, für den Gesamtmarkt eine Rückblick-Karte nach „Signale — Indizes — Breite — Starke/Schwache-Sektoren — Kapitalbeobachtung — Wichtige Nachverfolgung — Strategie — Risiko"; Mehr-Aktien-Berichte behalten das Aggregat-Layout. Am unteren Rand werden die GitHub-Repository-Adresse, ein optionaler Bereich für den Xiaohongshu-Account und der Risikohinweis „Nur zu Forschungs- und Austauschzwecken, keine Anlageberatung" angezeigt.
+
+- Die Xiaohongshu-URL, der Account, die ID und der QR-Code-Pfad werden über `SHARE_IMAGE_XIAOHONGSHU_*` konfiguriert; wenn alle leer sind, wird dieser Bereich nicht angezeigt. Der QR-Code wird beim Umwandeln als HTML eingebettet und hängt nicht von externen Bilddiensten oder dem Laufzeit-Netz ab.
+- Die Vorlage zeigt nur die vorhandenen 0–100-Scores, Acht-Zustands-Aktionen und `battle_plan.sniper_points`-Punkte des Berichts; ideale/suboptimale Kaufpunkte, Stop-Loss und Zielwerte verwenden eine eigene hochkontrastreiche Handelskarte; es werden keine zusätzlichen Scores oder Long/Short-Anteile erzeugt.
+- Strukturierte Felder, Verhalten bei fehlenden Werten, Einzelaktien-/Gesamtmarkt-Zuordnung und lokale Vorschau-Beispiele siehe [Vorlage für geteilte Bildberichte und Datenbefüllung](share-images.md#vorlage-für-geteilte-bildberichte-und-datenbefüllung).
+- `wkhtmltoimage`, `markdown-to-file` und `playwright` verwenden dasselbe Poster-HTML; die bestehenden `MD2IMG_ENGINE`, `MARKDOWN_TO_IMAGE_MAX_CHARS` und das Verhalten des Text-Fallbacks bei Umwandlungsfehlern bleiben unverändert. Im Playwright-Modus müssen zuerst die Web-Abhängigkeiten installiert und `npx playwright install chromium` ausgeführt werden.
+- Die Vorlage erzeugt ein langes Bild entsprechend der Länge des Haupttexts und schneidet den Bericht nicht an ein festes Seitenverhältnis an. Wenn der Inhalt `MARKDOWN_TO_IMAGE_MAX_CHARS` überschreitet, wird die Bildumwandlung weiterhin übersprungen.
+- GitHub Actions ordnet `MARKDOWN_TO_IMAGE_CHANNELS` standardmäßig weiterhin nicht zu; um es in einem Fork-Workflow zu aktivieren, sollte die Umgebungsvariablen-Zuordnung explizit ergänzt und das gewählte Umwandlungstool installiert werden.
+
 ## CLI-Diagnose
 
 ```bash
