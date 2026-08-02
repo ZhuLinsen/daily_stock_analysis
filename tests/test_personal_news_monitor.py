@@ -134,6 +134,33 @@ def test_llm_invalid_json_retries_once() -> None:
     assert len(calls) == 2
 
 
+def test_llm_prompt_is_conservative_and_risk_first() -> None:
+    calls = []
+
+    def fake_completion(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=analysis().model_dump_json()))]
+        )
+
+    config = SimpleNamespace(
+        litellm_model="openai/test",
+        openai_model="test",
+        openai_api_key="fake",
+        openai_base_url="https://example.test/v1",
+    )
+    analyzer = LiteLLMNewsAnalyzer(config, completion_fn=fake_completion)
+    analyzer.analyze(candidate(), data_time=datetime.now(timezone.utc))
+
+    system_prompt = calls[0]["messages"][0]["content"]
+    user_prompt = calls[0]["messages"][1]["content"]
+    assert "风险优先、偏保守" in system_prompt
+    assert "不要把利好新闻直接等同于买入机会" in system_prompt
+    assert "默认优先考虑 WAIT_FOR_CONFIRMATION、NO_ACTION 或 INSUFFICIENT_EVIDENCE" in system_prompt
+    assert "不得写成直接买入、加仓或追涨指令" in user_prompt
+    assert calls[0]["temperature"] == 0.1
+
+
 def test_llm_rejects_hallucinated_source_urls_after_retry() -> None:
     invalid = analysis().model_copy(update={"source_urls": ["https://invented.example/fact"]})
     calls = []

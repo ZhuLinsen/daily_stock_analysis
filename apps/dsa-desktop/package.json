@@ -1,10 +1,11 @@
 {
   "name": "daily-stock-analysis-desktop",
-  "version": "3.21.0",
+  "version": "3.21.1",
   "private": true,
   "main": "main.js",
   "scripts": {
     "dev": "electron .",
+    "prebuild": "node scripts/preparePersonalNewsBundle.js",
     "build": "electron-builder",
     "test": "node --test tests/*.test.js"
   },
@@ -33,12 +34,23 @@
         "to": ".env.example"
       },
       {
+        "from": "../../dist/desktop-bundle/.env.initial",
+        "to": ".env.initial"
+      },
+      {
         "from": "../../dist/backend/stock_analysis",
         "to": "backend/stock_analysis"
       }
     ],
     "win": {
-      "target": "nsis",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "artifactName": "daily-stock-analysis-windows-installer-v${version}.${ext}",
       "publish": [
         {
@@ -52,6 +64,9 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
       "include": "installer.nsh"
     },
     "mac": {

@@ -1,5 +1,8 @@
 # 环境变量文件（包含敏感信息，禁止提交）
 .env
+.env.personal-news-bundle
+/.electron-builder-cache/
+/stock_analysis.spec
 .env.*
 *.env
 *.env.local

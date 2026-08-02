@@ -1,6 +1,8 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
 
+const PERSONAL_NEWS_API_PATH = '/api/v1/personal-news';
+
 export type NewsAnalysis = {
   summary: string;
   direction: 'POSITIVE' | 'NEGATIVE' | 'MIXED' | 'UNCERTAIN';
@@ -58,35 +60,35 @@ export type RefreshStatus = {
 
 export const personalNewsApi = {
   async list(): Promise<PersonalNewsItem[]> {
-    const response = await apiClient.get('/personal-news', { params: { limit: 100 } });
+    const response = await apiClient.get(PERSONAL_NEWS_API_PATH, { params: { limit: 100 } });
     return toCamelCase<PersonalNewsItem[]>(response.data);
   },
   async get(newsId: string): Promise<PersonalNewsItem> {
-    const response = await apiClient.get(`/personal-news/${encodeURIComponent(newsId)}`);
+    const response = await apiClient.get(`${PERSONAL_NEWS_API_PATH}/${encodeURIComponent(newsId)}`);
     return toCamelCase<PersonalNewsItem>(response.data);
   },
   async providers(): Promise<ProviderStatus[]> {
-    const response = await apiClient.get('/personal-news/providers');
+    const response = await apiClient.get(`${PERSONAL_NEWS_API_PATH}/providers`);
     return toCamelCase<ProviderStatus[]>(response.data);
   },
   async watchlist(): Promise<WatchlistItem[]> {
-    const response = await apiClient.get('/personal-news/watchlist');
+    const response = await apiClient.get(`${PERSONAL_NEWS_API_PATH}/watchlist`);
     return toCamelCase<WatchlistItem[]>(response.data);
   },
   async addWatchlist(symbols: string): Promise<{ items: WatchlistItem[]; added: string[]; refresh: RefreshStatus | null }> {
-    const response = await apiClient.post('/personal-news/watchlist', { symbols });
+    const response = await apiClient.post(`${PERSONAL_NEWS_API_PATH}/watchlist`, { symbols });
     return toCamelCase(response.data);
   },
   async deleteWatchlist(symbol: string): Promise<WatchlistItem[]> {
-    const response = await apiClient.delete(`/personal-news/watchlist/${encodeURIComponent(symbol)}`);
+    const response = await apiClient.delete(`${PERSONAL_NEWS_API_PATH}/watchlist/${encodeURIComponent(symbol)}`);
     return toCamelCase<WatchlistItem[]>(response.data);
   },
   async refresh(trigger: 'page_open' | 'manual' = 'manual'): Promise<RefreshStatus> {
-    const response = await apiClient.post('/personal-news/refresh', { trigger });
+    const response = await apiClient.post(`${PERSONAL_NEWS_API_PATH}/refresh`, { trigger });
     return toCamelCase<RefreshStatus>(response.data);
   },
   async refreshStatus(): Promise<RefreshStatus> {
-    const response = await apiClient.get('/personal-news/refresh/status');
+    const response = await apiClient.get(`${PERSONAL_NEWS_API_PATH}/refresh/status`);
     return toCamelCase<RefreshStatus>(response.data);
   },
 };

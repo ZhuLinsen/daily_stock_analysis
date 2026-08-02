@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] 个人新闻 AI 分析改为风险优先的保守提示词，默认倾向等待确认、暂无行动或证据不足，避免把利好直接写成买入、加仓或追涨建议。
+- [新功能] 复用现有 Electron/PyInstaller/NSIS 链路生成可转发的个人新闻 Windows 安装器与免安装 ZIP，支持私有构建配置、首次启动自动填充、桌面快捷方式、一键启动新闻任务并直达 `/news`。
+- [测试] 新增个人新闻发行配置白名单、私有值覆盖、新闻模式启动参数、直达页面和 NSIS 快捷方式契约测试。
 - [改进] 个人股票新闻 Demo 改为 Web 自选股管理、每会话打开异步刷新及 10 分钟后端冷却，并固定在北京时间 08:00、20:00 调度且启动不扫描。
 - [改进] 仅对新增资讯按重要性分析 Top 5，同轮合并为一条飞书摘要；无新增不调用 AI 或推送，分析新增失效条件和中文观察策略。
 - [测试] 扩展个人新闻雷达测试，覆盖规范代码、SQLite 自选股、冷却与并发锁、Top 5 AI、单摘要、重启去重、来源隔离和 PWA 产物。

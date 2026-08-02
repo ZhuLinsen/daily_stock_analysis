@@ -17,18 +17,22 @@
 - 确定性 0–100 重要性评分；LLM 不参与打分。
 - 复用现有 SearchService、LiteLLM、企业微信、飞书、FastAPI 与 React WebUI 的专用编排。
 - 严格 Pydantic JSON 输出、一次修复重试、无来源拒绝和无效分析禁止推送。
+- AI 新闻解释采用风险优先、偏保守的提示词，证据不足时优先等待确认、暂无行动或明确标记证据不足，不输出直接买入、加仓或追涨指令。
 - `python main.py --news-watch` 在北京时间 08:00、20:00 调度，启动不扫描；单进程非重入、单轮失败隔离和优雅 Ctrl+C 停止。
 - `/api/v1/personal-news` 列表、详情、Provider、SQLite 自选股管理、异步刷新和刷新状态 API。
 - `/news` 支持批量维护 A/港/美股、每会话首次打开异步刷新、刷新状态、最新观察、重要新增、历史详情和原始来源链接。
 - 仅新增新闻进入 AI，单轮按重要性最多 5 条；无新增不调用 AI、不推送，同轮最多发送一条飞书摘要。
 - manifest、192/512 SVG 图标、standalone PWA 和历史新闻简单离线缓存。
+- 可转发的 Windows NSIS 安装器与免安装 ZIP；首次启动自动填充私有发行配置、启动新闻任务并直达 `/news`。
 
 ## 验证结果
 
-- `pytest tests/test_personal_news_monitor.py -q`：15 passed。
+- `pytest tests/test_personal_news_monitor.py -q`：16 passed。
 - `npm run lint`：通过。
 - `npm test -- --run src/pages/__tests__/NewsPage.test.tsx`：1 passed。
 - `npm run build`：通过，生成 `static/`，包含 `NewsPage` 独立 chunk 与 PWA 公共文件。
+- 桌面端 Node 测试：51 passed；PyInstaller 后端导入探测、Electron 打包与 NSIS 安装器生成通过。
+- 最终安装器和免安装 ZIP 已验证包内 `.env.initial` 的必填字段存在且非空，并生成 SHA-256 校验文件；未在本机执行真实安装或发送测试飞书消息。
 - 初始仓库新闻测试未重跑完整套件，原因见“基线”。
 
 ## 外部阻挡与限制

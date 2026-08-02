@@ -347,3 +347,11 @@ Windows 分发现在有两种方式：
 1. 解压文件夹
 2. 编辑 `.env` 配置 API Key 和股票列表
 3. 双击 `Daily Stock Analysis.exe` 启动
+
+### 个人新闻预配置发行包
+
+个人新闻 Demo 使用同一个桌面安装器，不维护第二套客户端。`scripts/build-personal-news-installer.ps1` 会先生成后端和 Electron 安装器，再把安装版、免安装 ZIP 与安装说明集中到 `dist/personal-news-release/`。构建时可通过仓库根目录、已被 Git 忽略的 `.env.personal-news-bundle`，或 `-ConfigPath` 指定的仓库外文件注入模型、博查和飞书配置。
+
+发行配置以 `packaging/personal-news.env.template` 为非敏感基线，并只接受个人新闻所需的白名单字段。安装后首次启动从包内 `.env.initial` 生成用户 `.env`；如果 `.env` 已存在则绝不覆盖。个人新闻发行模式会以 `--news-watch` 启动后端并直接打开 `/news`，安装向导创建桌面/开始菜单快捷方式并在结束后启动应用。
+
+嵌入式凭据不等于加密凭据。即使构建日志不打印值，安装包接收者仍有能力提取其中的 API Key 和 Webhook；只可使用专用、限额、可吊销的凭据并限制分发范围。

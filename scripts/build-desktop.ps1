@@ -76,13 +76,38 @@ Write-Host 'Building Electron desktop app...'
 Push-Location (Join-Path $repoRoot 'apps\dsa-desktop')
 Ensure-DesktopDependencies
 
+Write-Host 'Preparing personal-news first-run configuration...'
+node 'scripts\preparePersonalNewsBundle.js'
+if ($LASTEXITCODE -ne 0) {
+  throw 'Personal-news initial configuration preparation failed.'
+}
+
+function Remove-DesktopBuildDirectory {
+  param([string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+  $fullPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
+  $allowedRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'apps\dsa-desktop\dist'))
+  if (-not $fullPath.StartsWith($allowedRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to remove desktop build path outside $allowedRoot`: $fullPath"
+  }
+  try {
+    Remove-Item -LiteralPath $fullPath -Recurse -Force -ErrorAction Stop
+  } catch {
+    $longPath = if ($fullPath.StartsWith('\\?\')) { $fullPath } else { "\\?\$fullPath" }
+    [System.IO.Directory]::Delete($longPath, $true)
+  }
+}
+
 Write-Host 'Stopping running app (if any)...'
 Get-Process -Name "Daily Stock Analysis" -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-Process -Name "stock_analysis" -ErrorAction SilentlyContinue | Stop-Process -Force
 
 if (Test-Path 'dist\win-unpacked') {
   Write-Host 'Cleaning dist\win-unpacked...'
-  Remove-Item -Recurse -Force 'dist\win-unpacked'
+  Remove-DesktopBuildDirectory 'dist\win-unpacked'
 }
 
 $appBuilderPath = 'node_modules\app-builder-bin\win\x64\app-builder.exe'

@@ -174,8 +174,12 @@ class LiteLLMNewsAnalyzer:
             {
                 "role": "system",
                 "content": (
-                    "你是谨慎的股票新闻解释器。只能使用输入事实，不得补充未经来源支持的事实、行情或财务数字。"
-                    "禁止使用必涨、必跌、稳赚、满仓或确定性目标价。必须输出符合给定 schema 的单个 JSON 对象。"
+                    "你是风险优先、偏保守的股票新闻解释器。只能使用输入事实，不得补充未经来源支持的事实、"
+                    "行情或财务数字。不要把利好新闻直接等同于买入机会，也不要主动鼓励追涨、抄底、加仓或重仓。"
+                    "行动判断默认优先考虑 WAIT_FOR_CONFIRMATION、NO_ACTION 或 INSUFFICIENT_EVIDENCE；"
+                    "只有证据清晰、相互印证且主要风险已充分说明时，才可以使用 WATCH_NOW 或 POTENTIAL_OPPORTUNITY。"
+                    "建议必须以观察条件、风险、失效条件和不确定性为中心，措辞保持克制，不得使用强烈推荐、"
+                    "必涨、必跌、稳赚、满仓或确定性目标价。必须输出符合给定 schema 的单个 JSON 对象。"
                 ),
             },
             {"role": "user", "content": prompt},
@@ -212,7 +216,8 @@ class LiteLLMNewsAnalyzer:
         schema = NewsAnalysis.model_json_schema()
         return (
             "根据 evidence 解释可能影响，同时列出正面与负面因素。证据不足时 action 必须为 "
-            "INSUFFICIENT_EVIDENCE。source_urls 只能复制 evidence 中的 URL。\n"
+            "INSUFFICIENT_EVIDENCE。即使信息偏正面，也应先说明风险、尚待确认的信息和可能失效的条件；"
+            "action_reason 不得写成直接买入、加仓或追涨指令。source_urls 只能复制 evidence 中的 URL。\n"
             f"evidence={json.dumps(payload, ensure_ascii=False)}\n"
             f"json_schema={json.dumps(schema, ensure_ascii=False)}"
         )

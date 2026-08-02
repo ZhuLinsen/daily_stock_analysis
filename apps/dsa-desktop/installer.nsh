@@ -4,6 +4,20 @@
   StrCpy $isForceCurrentInstall 1
 !macroend
 
+!macro customInit
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_OK|MB_ICONSTOP "本应用最低支持 Windows 10 64 位。Windows 7、8 和 8.1 无法运行。"
+    SetErrorLevel 3
+    Quit
+  ${EndIf}
+
+  ${IfNot} ${RunningX64}
+    MessageBox MB_OK|MB_ICONSTOP "本应用仅支持 64 位 Windows。"
+    SetErrorLevel 3
+    Quit
+  ${EndIf}
+!macroend
+
 !macro _dsaRetryQuotedOldUninstall ROOT_KEY SUFFIX
   ${if} $R0 == 0
     Return

@@ -17,6 +17,7 @@ let lastPromptedInstallVersion = '';
 let electronAutoUpdater = undefined;
 let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
+let personalNewsBundleMode = false;
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
@@ -398,6 +399,13 @@ function resolveEnvExamplePath() {
     return path.join(process.resourcesPath, '.env.example');
   }
   return path.join(appRootDev, '.env.example');
+}
+
+function resolveInitialEnvPath() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, '.env.initial');
+  }
+  return path.join(appRootDev, 'dist', 'desktop-bundle', '.env.initial');
 }
 
 function resolvePackagedExeDir() {
@@ -846,9 +854,9 @@ function buildBackendUrl(host, port, pathname = '/') {
   return url.toString();
 }
 
-function buildBackendArgs({ host, port }) {
+function buildBackendArgs({ host, port, personalNewsMode = false }) {
   return [
-    '--serve-only',
+    personalNewsMode ? '--news-watch' : '--serve-only',
     '--host',
     normalizeBackendBindHost(host, DESKTOP_BACKEND_DEFAULT_HOST),
     '--port',
@@ -967,6 +975,12 @@ function resolvePythonPath() {
 
 function ensureEnvFile(envPath) {
   if (fs.existsSync(envPath)) {
+    return;
+  }
+
+  const initialEnv = resolveInitialEnvPath();
+  if (fs.existsSync(initialEnv)) {
+    fs.copyFileSync(initialEnv, envPath);
     return;
   }
 
@@ -1160,7 +1174,7 @@ function waitForHealth(
   });
 }
 
-function startBackend({ port, envFile, dbPath, logDir, host = null }) {
+function startBackend({ port, envFile, dbPath, logDir, host = null, personalNewsMode = false }) {
   const backendPath = resolveBackendPath();
   backendStartError = null;
   const launchStartedAt = Date.now();
@@ -1171,7 +1185,7 @@ function startBackend({ port, envFile, dbPath, logDir, host = null }) {
 
   const env = buildBackendEnvironment({ envFile, dbPath, logDir, port, host: bindHost });
 
-  const args = buildBackendArgs({ host: bindHost, port });
+  const args = buildBackendArgs({ host: bindHost, port, personalNewsMode });
   let launchMode = '';
   let launchCommand = '';
   let launchCwd = '';
@@ -1329,8 +1343,8 @@ function resolveDesktopVersion() {
   return String(app.getVersion() || '').trim();
 }
 
-function buildMainPageUrl(port, timestamp = Date.now(), host = DESKTOP_BACKEND_DEFAULT_HOST) {
-  const url = new URL(buildBackendUrl(host, port, '/'));
+function buildMainPageUrl(port, timestamp = Date.now(), host = DESKTOP_BACKEND_DEFAULT_HOST, pathname = '/') {
+  const url = new URL(buildBackendUrl(host, port, pathname));
   url.searchParams.set('desktop_version', resolveDesktopVersion() || 'unknown');
   url.searchParams.set('cache_bust', String(timestamp));
   return url.toString();
@@ -1366,7 +1380,40 @@ function getElectronAutoUpdater() {
 }
 
 function canUseElectronAutoUpdater() {
-  return Boolean(getElectronAutoUpdater());
+  return !personalNewsBundleMode && Boolean(getElectronAutoUpdater());
+}
+
+function buildPersonalNewsUpdateState() {
+  return buildUpdateState({
+    status: UPDATE_STATUS.UP_TO_DATE,
+    updateMode: UPDATE_MODE.MANUAL,
+    currentVersion: resolveDesktopVersion(),
+    checkedAt: new Date().toISOString(),
+    message: '个人新闻定制版已关闭官方自动更新，请使用定制安装包升级。',
+  });
+}
+
+async function clearPersonalNewsDesktopCache(webContents, pageUrl) {
+  const electronSession = webContents?.session;
+  if (!electronSession || typeof electronSession.clearStorageData !== 'function') {
+    return false;
+  }
+
+  let origin;
+  try {
+    origin = new URL(pageUrl).origin;
+  } catch (_error) {
+    return false;
+  }
+
+  await electronSession.clearStorageData({
+    origin,
+    storages: ['serviceworkers', 'cachestorage'],
+  });
+  if (typeof electronSession.clearCache === 'function') {
+    await electronSession.clearCache();
+  }
+  return true;
 }
 
 function resolveReleasePageUrlForVersion(version) {
@@ -1463,6 +1510,9 @@ async function maybePromptDesktopUpdate(state) {
 }
 
 async function installDownloadedUpdate() {
+  if (personalNewsBundleMode) {
+    throw new Error('个人新闻定制版不能安装官方更新，请使用定制安装包升级。');
+  }
   const updater = getElectronAutoUpdater();
   if (!updater) {
     throw new Error('当前运行模式不支持自动安装更新。');
@@ -1562,6 +1612,9 @@ async function maybePromptInstallDownloadedUpdate(state) {
 }
 
 function configureElectronAutoUpdater() {
+  if (personalNewsBundleMode) {
+    return null;
+  }
   const updater = getElectronAutoUpdater();
   if (!updater || electronAutoUpdaterConfigured) {
     return updater;
@@ -1690,6 +1743,12 @@ async function performElectronUpdaterCheck({ manual = false } = {}) {
 }
 
 async function performDesktopUpdateCheck({ manual = false, notify = false } = {}) {
+  if (personalNewsBundleMode) {
+    const nextState = setDesktopUpdateState(buildPersonalNewsUpdateState());
+    logLine('[update] skipped official update channel for personal news bundle');
+    return nextState;
+  }
+
   if (canUseElectronAutoUpdater()) {
     return performElectronUpdaterCheck({ manual, notify });
   }
@@ -1815,6 +1874,9 @@ async function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     logStartup(`WebContents did-finish-load (+${Date.now() - webViewStartedAt}ms after events attached)`);
   });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    logLine(`[renderer:${level}] ${message} (${sourceId || 'unknown'}:${line || 0})`);
+  });
   mainWindow.webContents.on(
     'did-fail-load',
     (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -1833,6 +1895,12 @@ async function createWindow() {
   const envPath = path.join(appDir, '.env');
   ensureEnvFile(envPath);
   logStartup(`Env file ready: ${envPath}`);
+  const personalNewsMode = /^(1|true|yes|on)$/i.test(readEnvFileValue(envPath, 'PERSONAL_NEWS_BUNDLE'));
+  personalNewsBundleMode = personalNewsMode;
+  if (personalNewsMode) {
+    setDesktopUpdateState(buildPersonalNewsUpdateState());
+  }
+  logStartup(`Personal news bundle mode=${personalNewsMode}`);
 
   const backendBindHost = resolveBackendBindHost({ envFile: envPath });
   const backendConnectHost = resolveDesktopConnectHost(backendBindHost);
@@ -1847,7 +1915,14 @@ async function createWindow() {
   const logDir = path.join(appDir, 'logs');
 
   try {
-    const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir, host: backendBindHost });
+    const launchInfo = startBackend({
+      port,
+      envFile: envPath,
+      dbPath,
+      logDir,
+      host: backendBindHost,
+      personalNewsMode,
+    });
     logStartup(`Backend launch mode=${launchInfo.mode}`);
     logStartup(`Backend launch command=${launchInfo.command}`);
     logStartup(`Backend launch cwd=${launchInfo.cwd}`);
@@ -1924,11 +1999,20 @@ async function createWindow() {
     );
     logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
     const mainPageStartedAt = Date.now();
-    const mainPageUrl = buildMainPageUrl(port, Date.now(), backendConnectHost);
+    const mainPageUrl = buildMainPageUrl(
+      port,
+      Date.now(),
+      backendConnectHost,
+      personalNewsMode ? '/news' : '/',
+    );
+    if (personalNewsMode) {
+      const cacheCleared = await clearPersonalNewsDesktopCache(mainWindow.webContents, mainPageUrl);
+      logStartup(`Personal news desktop cache cleared=${cacheCleared}`);
+    }
     await mainWindow.loadURL(mainPageUrl);
     logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms url=${mainPageUrl}`);
     logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
-    if (!restoreFailed) {
+    if (!restoreFailed && !personalNewsMode) {
       void performDesktopUpdateCheck({ notify: true });
     }
   } catch (error) {
@@ -1979,6 +2063,8 @@ module.exports = {
   fetchLatestReleaseJson,
   findAvailablePort,
   buildMainPageUrl,
+  buildPersonalNewsUpdateState,
+  clearPersonalNewsDesktopCache,
   migrateMacPackagedRuntimeState,
   normalizeVersionString,
   parseSemver,
@@ -1996,6 +2082,9 @@ module.exports = {
   __setBackendProcessForTest,
   __setMainWindowForTest(mainWindowRef = null) {
     mainWindow = mainWindowRef;
+  },
+  __setPersonalNewsBundleModeForTest(enabled = false) {
+    personalNewsBundleMode = Boolean(enabled);
   },
   waitForBackendExit,
 };

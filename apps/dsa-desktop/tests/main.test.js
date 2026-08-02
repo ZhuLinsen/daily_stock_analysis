@@ -151,6 +151,15 @@ test('buildMainPageUrl uses a connect host when provided', (t) => {
   );
 });
 
+test('buildMainPageUrl can open the personal news page directly', (t) => {
+  const mainModule = loadMainModule(t);
+
+  assert.equal(
+    mainModule.buildMainPageUrl(8123, 1234567890, '127.0.0.1', '/news'),
+    'http://127.0.0.1:8123/news?desktop_version=3.12.0&cache_bust=1234567890'
+  );
+});
+
 test('resolveDesktopConnectHost keeps desktop navigation local for public binds', (t) => {
   const mainModule = loadMainModule(t);
 
@@ -368,6 +377,15 @@ test('buildBackendArgs passes resolved host to main.py', (t) => {
     '--port',
     '8123',
   ]);
+});
+
+test('buildBackendArgs enables the scheduled news watcher for a personal-news bundle', (t) => {
+  const mainModule = loadMainModule(t, { platform: 'win32' });
+
+  assert.deepEqual(
+    mainModule.buildBackendArgs({ host: '127.0.0.1', port: 8123, personalNewsMode: true }),
+    ['--news-watch', '--host', '127.0.0.1', '--port', '8123']
+  );
 });
 
 test('buildBackendArgs normalizes wildcard hosts before spawning main.py', (t) => {
@@ -796,6 +814,69 @@ test('auto update backup copies AlphaSift hotspot detail directories recursively
   t.after(() => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
+});
+
+test('personal news bundle never checks or installs from the official updater', async (t) => {
+  let updateChecks = 0;
+  let installAttempts = 0;
+  const mainModule = loadMainModule(t, {
+    platform: 'win32',
+    app: {
+      isPackaged: true,
+      getPath: (name) => name === 'exe'
+        ? 'C:\\Portable\\Daily Stock Analysis.exe'
+        : 'C:\\Portable\\userData',
+    },
+    electronUpdater: {
+      on: () => undefined,
+      checkForUpdates: async () => {
+        updateChecks += 1;
+      },
+      quitAndInstall: () => {
+        installAttempts += 1;
+      },
+    },
+  });
+
+  mainModule.__setPersonalNewsBundleModeForTest(true);
+  const state = await mainModule.__getIpcMainHandler('desktop:check-for-updates')();
+
+  assert.equal(updateChecks, 0);
+  assert.equal(state.status, mainModule.UPDATE_STATUS.UP_TO_DATE);
+  assert.equal(state.updateMode, mainModule.UPDATE_MODE.MANUAL);
+  assert.match(state.message, /定制版已关闭官方自动更新/);
+  await assert.rejects(
+    mainModule.__getIpcMainHandler('desktop:install-downloaded-update')(),
+    /不能安装官方更新/
+  );
+  assert.equal(installAttempts, 0);
+});
+
+test('personal news startup clears service workers, cache storage, and HTTP cache for its origin', async (t) => {
+  const clearStorageCalls = [];
+  let clearCacheCalls = 0;
+  const mainModule = loadMainModule(t);
+
+  const cleared = await mainModule.clearPersonalNewsDesktopCache(
+    {
+      session: {
+        clearStorageData: async (options) => {
+          clearStorageCalls.push(options);
+        },
+        clearCache: async () => {
+          clearCacheCalls += 1;
+        },
+      },
+    },
+    'http://127.0.0.1:8123/news?desktop_version=3.21.0'
+  );
+
+  assert.equal(cleared, true);
+  assert.deepEqual(clearStorageCalls, [{
+    origin: 'http://127.0.0.1:8123',
+    storages: ['serviceworkers', 'cachestorage'],
+  }]);
+  assert.equal(clearCacheCalls, 1);
 });
 
 test('desktop update backup list includes WAL and SHM artifacts', (t) => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'stock-radar-v1';
+const CACHE_NAME = 'stock-radar-v2';
 const APP_SHELL = ['/', '/news', '/manifest.webmanifest', '/icon-192.svg', '/icon-512.svg'];
 
 self.addEventListener('install', (event) => {
@@ -33,6 +33,18 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).catch(() => caches.match('/news').then((cached) => cached || caches.match('/'))));
+    return;
+  }
+
+  if (url.pathname.startsWith('/assets/')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+          return response;
+        })
+        .catch(() => caches.match(request)),
+    );
     return;
   }
 

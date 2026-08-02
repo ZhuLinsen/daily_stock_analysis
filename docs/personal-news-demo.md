@@ -60,3 +60,32 @@ python main.py --news-watch
 香港轻量服务器可继续使用现有 systemd + Caddy 部署方式：构建 Web 后让 systemd 执行 `python main.py --news-watch`，Caddy 反向代理到 FastAPI。凭据只保存在服务器 `.env`，不要写入浏览器、service worker 或 Git。
 
 该 Demo 不是交易所级实时系统，不自动交易，也不提供确定性买卖建议或目标价。
+
+## 制作可转发的 Windows 安装包
+
+项目复用已有 Electron、PyInstaller 和 NSIS 桌面发行链路。把私有发行配置放在仓库根目录的 `.env.personal-news-bundle`（已被 Git 忽略）：
+
+```env
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_API_KEY=你的模型 API Key
+OPENAI_MODEL=deepseek-v4-flash
+BOCHA_API_KEYS=你的博查 API Key
+FEISHU_WEBHOOK_URL=你的飞书机器人 Webhook
+FEISHU_WEBHOOK_SECRET=
+```
+
+然后在 Windows PowerShell 运行：
+
+```powershell
+.\scripts\build-personal-news-installer.ps1
+```
+
+也可以把私有配置放在仓库外，并显式传入：
+
+```powershell
+.\scripts\build-personal-news-installer.ps1 -ConfigPath 'D:\private\personal-news.env'
+```
+
+最终可转发文件位于 `dist/personal-news-release/`：Windows 安装器、免安装 ZIP 和简短安装说明。安装器会创建桌面及开始菜单快捷方式，安装结束后自动启动。首次启动时才从包内 `.env.initial` 创建用户 `.env`，以后升级不会覆盖现有配置；桌面程序会自动运行新闻监控并直接打开 `/news`。
+
+构建脚本只输出配置项数量，不打印值；`.env.personal-news-bundle` 不会进入 Git。但嵌入安装包的共享 API Key 和 Webhook 仍可被收件人提取，因此只应发给可信对象，并使用限额、可轮换的专用凭据。不要把带凭据的产物上传到公开 Release、公开网盘或公共群。
