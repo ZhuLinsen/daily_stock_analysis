@@ -1156,7 +1156,8 @@ describe('StockScreeningPage', () => {
 
     expect(await screen.findByText('恢复后的候选')).toBeInTheDocument();
     expect(screen.getByText('选股完成')).toBeInTheDocument();
-    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toBeNull();
+    // 方案A：任务完成后保留 runId（而非清空），刷新后可从 history API 恢复
+    expect(window.sessionStorage.getItem('dsa.screening.activeScreenTask.v1')).toContain('screen-task-1');
   });
 
   it('keeps a restored screening task recoverable when status polling times out', async () => {

@@ -33,6 +33,7 @@ import {
   type ScreeningHotspotDetail,
   type ScreeningHotspot,
   type ScreeningHotspotsResponse,
+  type ScreeningRunSummary,
   type ScreeningScreenResponse,
   type ScreeningScreenTaskStatus,
   type ScreeningStrategy,
@@ -64,9 +65,27 @@ const formatStrategyCategory = (value?: string) => {
 
 type PersistedScreenTask = {
   taskId: string;
+  runId?: string;
   market: string;
   strategy: string;
   maxResults: number;
+};
+
+const formatRunCreatedAt = (value: string | null | undefined) => {
+  if (!value) {
+    return '时间未知';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
 };
 
 const readPersistedScreenTask = (): PersistedScreenTask | null => {
@@ -85,6 +104,7 @@ const readPersistedScreenTask = (): PersistedScreenTask | null => {
     const restoredMaxResults = Number(parsed.maxResults);
     return {
       taskId: parsed.taskId,
+      runId: typeof parsed.runId === 'string' && parsed.runId.trim() ? parsed.runId : undefined,
       market: typeof parsed.market === 'string' && parsed.market.trim() ? parsed.market : 'cn',
       strategy: typeof parsed.strategy === 'string' && parsed.strategy.trim() ? parsed.strategy : 'dual_low',
       maxResults: Number.isFinite(restoredMaxResults) ? Math.min(100, Math.max(1, restoredMaxResults)) : 3,
@@ -828,6 +848,10 @@ const StockScreeningPage: React.FC = () => {
   const [expandedCode, setExpandedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(restoredTask?.taskId));
   const [enabling, setEnabling] = useState(false);
+  const [historyRuns, setHistoryRuns] = useState<ScreeningRunSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [restoreResolved, setRestoreResolved] = useState(() => !restoredTask?.runId);
   const [loadingStrategies, setLoadingStrategies] = useState(false);
   const [error, setError] = useState('');
   const [strategyLoadError, setStrategyLoadError] = useState('');
@@ -862,6 +886,39 @@ const StockScreeningPage: React.FC = () => {
     setCandidates(nextCandidates);
     setExpandedCode(nextCandidates[0]?.code ?? null);
   }, []);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const result = await screeningApi.getHistory({ limit: 10 });
+      setHistoryRuns(result.runs || []);
+    } catch (err) {
+      setHistoryError(toApiErrorMessage(err, '历史记录加载失败'));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const handleHistoryRunSelect = useCallback(async (runId: string) => {
+    setHistoryError('');
+    setLoading(true);
+    try {
+      const detail = await screeningApi.getRun(runId);
+      if (detail?.result) {
+        applyScreenResult(detail.result);
+        setError('');
+        setTaskProgress(100);
+        setTaskMessage('已加载历史选股结果');
+      } else {
+        setError('历史记录中未找到该次运行的结果。');
+      }
+    } catch (err) {
+      setError(toApiErrorMessage(err, '历史结果加载失败'));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyScreenResult]);
 
   const clearScreeningResults = () => {
     setCandidates([]);
@@ -1083,6 +1140,7 @@ const StockScreeningPage: React.FC = () => {
         if (status.enabled && status.available) {
           void loadStrategies();
           void loadHotspots(false);
+          void loadHistory();
         }
       })
       .catch(() => {
@@ -1096,8 +1154,48 @@ const StockScreeningPage: React.FC = () => {
     };
   }, [loadHotspots, loadStrategies]);
 
+  // 刷新后优先从 history API 按 run_id 恢复结果；恢复失败再回退到 task 轮询
   useEffect(() => {
-    if (!activeTaskId) {
+    const runId = restoredTask?.runId;
+    if (!runId) {
+      setRestoreResolved(true);
+      return undefined;
+    }
+    let active = true;
+    setLoading(true);
+    screeningApi
+      .getRun(runId)
+      .then((detail) => {
+        if (!active) {
+          return;
+        }
+        if (detail?.result) {
+          applyScreenResult(detail.result);
+          setError('');
+          setTaskProgress(100);
+          setTaskMessage('已从历史记录恢复上次选股结果');
+          setActiveTaskId(null);
+        }
+      })
+      .catch(() => {
+        // 历史记录恢复失败（run 不存在或服务重启），回退到 task 轮询
+        if (active) {
+          setActiveTaskId(restoredTask?.taskId ?? null);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setRestoreResolved(true);
+          setLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [applyScreenResult, restoredTask]);
+
+  useEffect(() => {
+    if (!activeTaskId || !restoreResolved) {
       return undefined;
     }
 
@@ -1106,7 +1204,6 @@ const StockScreeningPage: React.FC = () => {
     let timer: ReturnType<typeof window.setTimeout> | undefined;
 
     function finishTask() {
-      clearPersistedScreenTask();
       setActiveTaskId(null);
       setLoading(false);
     }
@@ -1120,6 +1217,17 @@ const StockScreeningPage: React.FC = () => {
         if (task.result) {
           applyScreenResult(task.result);
           setError('');
+          // 持久化 runId：刷新后优先从 history API 恢复结果，而非依赖内存 task
+          const completedRunId = task.result.runId || screenMeta?.runId;
+          if (completedRunId) {
+            persistScreenTask({
+              taskId: pollingTaskId,
+              runId: completedRunId,
+              market,
+              strategy,
+              maxResults,
+            });
+          }
         } else {
           setError('选股任务已完成，但服务端未返回候选结果。');
           setCandidates([]);
@@ -1134,6 +1242,7 @@ const StockScreeningPage: React.FC = () => {
         setScreenMeta(null);
         setExpandedCode(null);
         setError(formatScreenTaskFailure(task.error || task.message));
+        clearPersistedScreenTask();
         finishTask();
         return;
       }
@@ -1145,6 +1254,7 @@ const StockScreeningPage: React.FC = () => {
       }
 
       setError(`选股任务返回未知状态：${task.status || 'unknown'}`);
+      clearPersistedScreenTask();
       finishTask();
     }
 
@@ -1181,7 +1291,7 @@ const StockScreeningPage: React.FC = () => {
         window.clearTimeout(timer);
       }
     };
-  }, [activeTaskId, applyScreenResult]);
+  }, [activeTaskId, applyScreenResult, restoreResolved]);
 
   const handleEnable = async () => {
     setEnabling(true);
@@ -1632,6 +1742,59 @@ const StockScreeningPage: React.FC = () => {
             ? strategyLoadError
             : selectedStrategy?.description || '策略会先执行硬过滤和因子评分，再进行风险与组合约束。'}
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-border/80 bg-card/95 p-4 shadow-soft-card">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Clock3 className="h-4 w-4 text-cyan" />
+            历史记录
+          </div>
+          <button
+            type="button"
+            className="text-xs font-medium text-cyan transition-colors hover:text-foreground"
+            onClick={() => void loadHistory()}
+            disabled={historyLoading}
+          >
+            {historyLoading ? '加载中...' : '刷新'}
+          </button>
+        </div>
+        {historyError ? (
+          <p className="mb-3 text-xs text-danger">{historyError}</p>
+        ) : null}
+        {historyRuns.length === 0 ? (
+          <p className="py-3 text-center text-xs text-secondary-text">
+            {historyLoading ? '正在加载历史记录...' : '暂无历史选股记录'}
+          </p>
+        ) : (
+          <div className="divide-y divide-border/70">
+            {historyRuns.map((run) => (
+              <button
+                key={run.runId}
+                type="button"
+                className="flex w-full items-center justify-between gap-3 py-2.5 text-left transition-colors hover:bg-hover/50"
+                onClick={() => void handleHistoryRunSelect(run.runId)}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-foreground">
+                    {run.strategy || '未知策略'}
+                    <span className="ml-2 text-xs font-normal text-secondary-text">
+                      {run.market || 'cn'}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block text-xs text-secondary-text">
+                    {run.candidateCount ?? 0} 条候选
+                    {run.snapshotCount != null ? ` · 快照 ${run.snapshotCount}` : ''}
+                    {run.llmRanked ? ' · 智能重排' : ''}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs text-secondary-text">
+                  {formatRunCreatedAt(run.createdAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       {loading || screenMeta ? (
